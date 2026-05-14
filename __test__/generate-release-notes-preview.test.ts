@@ -34,7 +34,14 @@ vi.mock("@actions/core");
 vi.mock("@actions/exec");
 vi.mock("@actions/github");
 vi.mock("node:fs");
-vi.mock("workspaces-effect");
+vi.mock("workspaces-effect", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("workspaces-effect")>();
+	return {
+		...actual,
+		findWorkspaceRootSync: vi.fn(),
+		getWorkspacePackagesSync: vi.fn(),
+	};
+});
 
 describe("generate-release-notes-preview", () => {
 	let mockOctokit: MockOctokit;

@@ -3,8 +3,18 @@ import type { WorkspacePackage } from "workspaces-effect";
 import { findWorkspaceRootSync, getWorkspacePackagesSync } from "workspaces-effect";
 import { sortPackageMapTopologically, sortPackagesTopologically } from "../src/utils/topological-sort.js";
 
-// Mock workspaces-effect
-vi.mock("workspaces-effect");
+// Partial mock — auto-mock triggers getters on the bundled error classes
+// (e.g. CyclicDependencyError.message reads `.join` off undefined) and
+// crashes at import time. Keep real exports for everything except the two
+// sync APIs we actually stub.
+vi.mock("workspaces-effect", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("workspaces-effect")>();
+	return {
+		...actual,
+		findWorkspaceRootSync: vi.fn(),
+		getWorkspacePackagesSync: vi.fn(),
+	};
+});
 
 // Mock @actions/core
 vi.mock("@actions/core", () => ({

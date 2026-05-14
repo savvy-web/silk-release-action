@@ -31,10 +31,14 @@ vi.mock("node:fs/promises", () => ({
 	readFile: vi.fn(),
 }));
 
-vi.mock("workspaces-effect", () => ({
-	findWorkspaceRootSync: vi.fn(),
-	getWorkspacePackagesSync: vi.fn(),
-}));
+vi.mock("workspaces-effect", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("workspaces-effect")>();
+	return {
+		...actual,
+		findWorkspaceRootSync: vi.fn(),
+		getWorkspacePackagesSync: vi.fn(),
+	};
+});
 
 const mockWorkspace = (packages: WorkspacePackage[], root: string | null = "/workspace") => {
 	vi.mocked(findWorkspaceRootSync).mockReturnValue(root);

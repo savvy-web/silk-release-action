@@ -14,7 +14,18 @@ vi.mock("@actions/core");
 vi.mock("@actions/exec");
 vi.mock("@actions/github");
 vi.mock("node:fs/promises");
-vi.mock("workspaces-effect");
+// Partial mock — keep PublishTarget (and other exports) real because the
+// production code transitively constructs PublishTarget instances via
+// silk-publishability. Auto-mock triggers BaseEffectError getters at import
+// time, so we narrow to the two sync functions we actually stub.
+vi.mock("workspaces-effect", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("workspaces-effect")>();
+	return {
+		...actual,
+		findWorkspaceRootSync: vi.fn(),
+		getWorkspacePackagesSync: vi.fn(),
+	};
+});
 
 interface WorkspaceFixture {
 	name: string;

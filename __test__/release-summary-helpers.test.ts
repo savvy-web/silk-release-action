@@ -17,7 +17,14 @@ import {
 
 vi.mock("node:fs");
 vi.mock("@actions/core");
-vi.mock("workspaces-effect");
+vi.mock("workspaces-effect", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("workspaces-effect")>();
+	return {
+		...actual,
+		findWorkspaceRootSync: vi.fn(),
+		getWorkspacePackagesSync: vi.fn(),
+	};
+});
 
 interface WorkspaceFixture {
 	name: string;
@@ -188,7 +195,7 @@ describe("release-summary-helpers", () => {
 					name: "@test/pkg-a",
 					path: "/test/workspace/packages/a",
 					version: "1.0.0",
-					private: false,
+					private: true,
 					publishConfig: { access: "public", targets: ["npm", "github"] },
 				},
 				{
@@ -214,10 +221,10 @@ describe("release-summary-helpers", () => {
 				name: "@test/pkg-a",
 				version: "1.0.0",
 				path: "/test/workspace/packages/a",
-				private: false,
+				private: true,
 				hasPublishConfig: true,
 				access: "public",
-				// public + 2 string targets → 2 silk targets
+				// private + 2 string targets → 2 silk targets
 				targetCount: 2,
 			});
 			expect(result[1]).toEqual({

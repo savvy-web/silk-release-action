@@ -7,7 +7,14 @@ import { cleanupTestEnvironment, setupTestEnvironment } from "./utils/github-moc
 
 // Mock modules
 vi.mock("@actions/core");
-vi.mock("workspaces-effect");
+vi.mock("workspaces-effect", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("workspaces-effect")>();
+	return {
+		...actual,
+		findWorkspaceRootSync: vi.fn(),
+		getWorkspacePackagesSync: vi.fn(),
+	};
+});
 
 describe("find-package-path", () => {
 	beforeEach(() => {
