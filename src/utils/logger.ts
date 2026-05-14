@@ -53,14 +53,14 @@ export const logger = {
 	 */
 	context(data: {
 		branch: string;
-		commitMessage?: string;
+		commitMessage?: string | undefined;
 		isReleaseBranch: boolean;
 		isMainBranch: boolean;
 		isReleaseCommit: boolean;
-		mergedReleasePR?: string;
-		isPullRequestEvent?: boolean;
-		isPRMerged?: boolean;
-		isReleasePRMerged?: boolean;
+		mergedReleasePR?: string | undefined;
+		isPullRequestEvent?: boolean | undefined;
+		isPRMerged?: boolean | undefined;
+		isReleasePRMerged?: boolean | undefined;
 		dryRun: boolean;
 	}): void {
 		info("");

@@ -74,7 +74,7 @@ export const summaryWriter = {
 	 * Build a markdown code block
 	 */
 	codeBlock(code: string, lang: string = ""): string {
-		return tsMarkdown([codeblock(code, { language: lang || undefined, fenced: true })]);
+		return tsMarkdown([codeblock(code, lang ? { language: lang, fenced: true } : { fenced: true })]);
 	},
 
 	/**

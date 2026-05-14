@@ -4,7 +4,7 @@ Source code architecture and coding patterns for workflow-release-action.
 
 **See also:** [Root CLAUDE.md](../CLAUDE.md) | [**tests**/CLAUDE.md](../__tests__/CLAUDE.md)
 
-**For full architecture documentation:** `@../.claude/design/release-action/architecture.md` -- covers all entry points, phase detection, module dependency graph, and shared infrastructure (45 source files documented).
+**For full architecture documentation:** `@../.claude/design/release-action/architecture.md` -- covers all entry points, phase detection, module dependency graph, and shared infrastructure (46 source files documented, including `silk-publishability.ts` for silk publishability rules and `workspaces-effect` integration).
 
 **For integration/publishing details:** `@../.claude/design/release-action/integration.md` -- covers registry infrastructure, SBOM generation, and publish summaries.
 

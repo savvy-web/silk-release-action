@@ -29,8 +29,8 @@ interface PackageJsonForSBOM {
  * @returns Parsed author name and email
  */
 export function parseAuthor(author: string | { name?: string; email?: string; url?: string } | undefined): {
-	name?: string;
-	email?: string;
+	name?: string | undefined;
+	email?: string | undefined;
 } {
 	if (!author) {
 		return {};

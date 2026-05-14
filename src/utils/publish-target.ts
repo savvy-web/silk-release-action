@@ -427,7 +427,11 @@ export async function checkVersionExists(
 async function compareTarballIntegrity(
 	target: ResolvedTarget,
 	packageManager: string,
-): Promise<{ reason: AlreadyPublishedReason; localIntegrity?: string; remoteIntegrity?: string }> {
+): Promise<{
+	reason: AlreadyPublishedReason;
+	localIntegrity?: string | undefined;
+	remoteIntegrity?: string | undefined;
+}> {
 	const pkgJsonPath = join(target.directory, "package.json");
 	if (!existsSync(pkgJsonPath)) {
 		return { reason: "unknown" };

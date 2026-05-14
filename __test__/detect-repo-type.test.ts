@@ -1,13 +1,25 @@
 import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { WorkspaceInfos } from "workspace-tools";
-import { getWorkspaceInfos } from "workspace-tools";
+import type { WorkspacePackage } from "workspaces-effect";
+import { findWorkspaceRootSync, getWorkspacePackagesSync } from "workspaces-effect";
 import { detectRepoType, isSinglePackage } from "../src/utils/detect-repo-type.js";
 
-// Helper to create mock workspace info with minimal required data
-const createMockWorkspace = (name: string, path: string): WorkspaceInfos[number] =>
-	({ name, path, packageJson: {} }) as WorkspaceInfos[number];
+// Helper to create a WorkspacePackage-shaped fixture with the fields the
+// repo-type detector actually reads (`name`).
+const createMockWorkspace = (name: string, path: string): WorkspacePackage =>
+	({
+		name,
+		path,
+		packageJsonPath: `${path}/package.json`,
+		relativePath: path === "/" ? "." : path,
+		version: "1.0.0",
+		private: false,
+		dependencies: {},
+		devDependencies: {},
+		peerDependencies: {},
+		optionalDependencies: {},
+	}) as unknown as WorkspacePackage;
 
 // Mock modules
 vi.mock("node:fs", () => ({
@@ -19,9 +31,15 @@ vi.mock("node:fs/promises", () => ({
 	readFile: vi.fn(),
 }));
 
-vi.mock("workspace-tools", () => ({
-	getWorkspaceInfos: vi.fn(),
+vi.mock("workspaces-effect", () => ({
+	findWorkspaceRootSync: vi.fn(),
+	getWorkspacePackagesSync: vi.fn(),
 }));
+
+const mockWorkspace = (packages: WorkspacePackage[], root: string | null = "/workspace") => {
+	vi.mocked(findWorkspaceRootSync).mockReturnValue(root);
+	vi.mocked(getWorkspacePackagesSync).mockReturnValue(packages);
+};
 
 describe("detect-repo-type", () => {
 	beforeEach(() => {
@@ -34,29 +52,27 @@ describe("detect-repo-type", () => {
 
 	describe("isSinglePackage", () => {
 		it("should return true when only one workspace exists", () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([createMockWorkspace("my-package", "/path/to/pkg")]);
+			mockWorkspace([createMockWorkspace("my-package", "/path/to/pkg")]);
 
 			expect(isSinglePackage()).toBe(true);
 		});
 
 		it("should return false when multiple workspaces exist", () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([
-				createMockWorkspace("pkg-a", "/path/to/a"),
-				createMockWorkspace("pkg-b", "/path/to/b"),
-			]);
+			mockWorkspace([createMockWorkspace("pkg-a", "/path/to/a"), createMockWorkspace("pkg-b", "/path/to/b")]);
 
 			expect(isSinglePackage()).toBe(false);
 		});
 
 		it("should return true when no workspaces exist (single-package repo)", () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([]);
+			mockWorkspace([], null);
 
 			// A repo with no workspace config is a single-package repo
 			expect(isSinglePackage()).toBe(true);
 		});
 
-		it("should return true when getWorkspaceInfos throws", () => {
-			vi.mocked(getWorkspaceInfos).mockImplementation(() => {
+		it("should return true when getWorkspacePackagesSync throws", () => {
+			vi.mocked(findWorkspaceRootSync).mockReturnValue("/workspace");
+			vi.mocked(getWorkspacePackagesSync).mockImplementation(() => {
 				throw new Error("Failed to detect workspaces");
 			});
 
@@ -66,7 +82,7 @@ describe("detect-repo-type", () => {
 
 		it("should return true when all non-root packages are in changeset ignore list", () => {
 			// Multiple workspaces exist, but all non-root packages are ignored by changesets
-			vi.mocked(getWorkspaceInfos).mockReturnValue([
+			mockWorkspace([
 				createMockWorkspace("@savvy-web/rslib-builder", "/root"),
 				createMockWorkspace("@fixtures/multi-entry", "/test/fixtures/multi-entry"),
 				createMockWorkspace("@fixtures/single-entry", "/test/fixtures/single-entry"),
@@ -91,7 +107,7 @@ describe("detect-repo-type", () => {
 		});
 
 		it("should return false when non-root packages are not in ignore list", () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([
+			mockWorkspace([
 				createMockWorkspace("root-pkg", "/root"),
 				createMockWorkspace("pkg-a", "/packages/a"),
 				createMockWorkspace("pkg-b", "/packages/b"),
@@ -116,7 +132,7 @@ describe("detect-repo-type", () => {
 		});
 
 		it("should handle exact match ignore patterns", () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([
+			mockWorkspace([
 				createMockWorkspace("main-pkg", "/root"),
 				createMockWorkspace("ignored-pkg", "/packages/ignored"),
 			]);
@@ -140,10 +156,7 @@ describe("detect-repo-type", () => {
 		});
 
 		it("should return false when no ignore patterns and multiple packages", () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([
-				createMockWorkspace("root", "/"),
-				createMockWorkspace("pkg-a", "/packages/a"),
-			]);
+			mockWorkspace([createMockWorkspace("root", "/"), createMockWorkspace("pkg-a", "/packages/a")]);
 			vi.mocked(existsSync).mockReturnValue(true);
 			vi.mocked(readFileSync).mockImplementation((path) => {
 				const pathStr = String(path);
@@ -160,20 +173,14 @@ describe("detect-repo-type", () => {
 		});
 
 		it("should return false when changeset config does not exist and multiple packages", () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([
-				createMockWorkspace("root", "/"),
-				createMockWorkspace("pkg-a", "/packages/a"),
-			]);
+			mockWorkspace([createMockWorkspace("root", "/"), createMockWorkspace("pkg-a", "/packages/a")]);
 			vi.mocked(existsSync).mockReturnValue(false);
 
 			expect(isSinglePackage()).toBe(false);
 		});
 
 		it("should return false when package.json read fails", () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([
-				createMockWorkspace("root", "/"),
-				createMockWorkspace("@fixtures/test", "/test/fixtures"),
-			]);
+			mockWorkspace([createMockWorkspace("root", "/"), createMockWorkspace("@fixtures/test", "/test/fixtures")]);
 			vi.mocked(existsSync).mockReturnValue(true);
 			vi.mocked(readFileSync).mockImplementation((path) => {
 				const pathStr = String(path);
@@ -190,10 +197,7 @@ describe("detect-repo-type", () => {
 		});
 
 		it("should handle changeset config with invalid JSON gracefully", () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([
-				createMockWorkspace("root", "/"),
-				createMockWorkspace("pkg-a", "/packages/a"),
-			]);
+			mockWorkspace([createMockWorkspace("root", "/"), createMockWorkspace("pkg-a", "/packages/a")]);
 			vi.mocked(existsSync).mockReturnValue(true);
 			vi.mocked(readFileSync).mockImplementation((path) => {
 				const pathStr = String(path);
@@ -211,7 +215,7 @@ describe("detect-repo-type", () => {
 		});
 
 		it("should handle mixed ignored and non-ignored packages", () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([
+			mockWorkspace([
 				createMockWorkspace("root-pkg", "/"),
 				createMockWorkspace("@fixtures/test", "/test/fixtures"),
 				createMockWorkspace("pkg-publishable", "/packages/pub"),
@@ -253,7 +257,7 @@ describe("detect-repo-type", () => {
 				throw new Error("File not found");
 			});
 			vi.mocked(existsSync).mockReturnValue(true);
-			vi.mocked(getWorkspaceInfos).mockReturnValue([createMockWorkspace("my-package", "/path")]);
+			mockWorkspace([createMockWorkspace("my-package", "/path")]);
 
 			const result = await detectRepoType();
 
@@ -279,7 +283,7 @@ describe("detect-repo-type", () => {
 				throw new Error("File not found");
 			});
 			vi.mocked(existsSync).mockReturnValue(true);
-			vi.mocked(getWorkspaceInfos).mockReturnValue([
+			mockWorkspace([
 				createMockWorkspace("root", "/"),
 				createMockWorkspace("pkg-a", "/packages/a"),
 				createMockWorkspace("pkg-b", "/packages/b"),
@@ -302,7 +306,7 @@ describe("detect-repo-type", () => {
 				throw new Error("File not found");
 			});
 			vi.mocked(existsSync).mockReturnValue(false);
-			vi.mocked(getWorkspaceInfos).mockReturnValue([]);
+			mockWorkspace([], null);
 
 			const result = await detectRepoType();
 
@@ -319,7 +323,7 @@ describe("detect-repo-type", () => {
 				throw new Error("File not found");
 			});
 			vi.mocked(existsSync).mockReturnValue(false);
-			vi.mocked(getWorkspaceInfos).mockReturnValue([]);
+			mockWorkspace([], null);
 
 			const result = await detectRepoType();
 
@@ -336,7 +340,7 @@ describe("detect-repo-type", () => {
 				throw new Error("File not found");
 			});
 			vi.mocked(existsSync).mockReturnValue(false);
-			vi.mocked(getWorkspaceInfos).mockReturnValue([]);
+			mockWorkspace([], null);
 
 			const result = await detectRepoType();
 
@@ -351,7 +355,7 @@ describe("detect-repo-type", () => {
 				throw new Error("File not found");
 			});
 			vi.mocked(existsSync).mockReturnValue(false);
-			vi.mocked(getWorkspaceInfos).mockReturnValue([]);
+			mockWorkspace([], null);
 
 			const result = await detectRepoType();
 
@@ -368,7 +372,7 @@ describe("detect-repo-type", () => {
 				throw new Error("File not found");
 			});
 			vi.mocked(existsSync).mockReturnValue(false);
-			vi.mocked(getWorkspaceInfos).mockReturnValue([]);
+			mockWorkspace([], null);
 
 			const result = await detectRepoType();
 
@@ -383,7 +387,7 @@ describe("detect-repo-type", () => {
 				throw new Error("File not found");
 			});
 			vi.mocked(existsSync).mockReturnValue(false);
-			vi.mocked(getWorkspaceInfos).mockReturnValue([]);
+			mockWorkspace([], null);
 
 			const result = await detectRepoType();
 
@@ -401,7 +405,7 @@ describe("detect-repo-type", () => {
 				throw new Error("File not found");
 			});
 			vi.mocked(existsSync).mockReturnValue(true);
-			vi.mocked(getWorkspaceInfos).mockReturnValue([]);
+			mockWorkspace([], null);
 
 			const result = await detectRepoType();
 
@@ -421,7 +425,7 @@ describe("detect-repo-type", () => {
 				throw new Error("File not found");
 			});
 			vi.mocked(existsSync).mockReturnValue(true);
-			vi.mocked(getWorkspaceInfos).mockReturnValue([]);
+			mockWorkspace([], null);
 
 			const result = await detectRepoType();
 
@@ -441,7 +445,7 @@ describe("detect-repo-type", () => {
 				throw new Error("File not found");
 			});
 			vi.mocked(existsSync).mockReturnValue(true);
-			vi.mocked(getWorkspaceInfos).mockReturnValue([]);
+			mockWorkspace([], null);
 
 			const result = await detectRepoType();
 
@@ -456,7 +460,7 @@ describe("detect-repo-type", () => {
 				throw new Error("File not found");
 			});
 			vi.mocked(existsSync).mockReturnValue(false);
-			vi.mocked(getWorkspaceInfos).mockImplementation(() => {
+			vi.mocked(findWorkspaceRootSync).mockImplementation(() => {
 				throw new Error("Workspace detection failed");
 			});
 
@@ -476,7 +480,7 @@ describe("detect-repo-type", () => {
 				throw new Error("File not found");
 			});
 			vi.mocked(existsSync).mockReturnValue(false);
-			vi.mocked(getWorkspaceInfos).mockReturnValue([]);
+			mockWorkspace([], null);
 
 			const result = await detectRepoType();
 
@@ -500,10 +504,7 @@ describe("detect-repo-type", () => {
 				throw new Error("File not found");
 			});
 			vi.mocked(existsSync).mockReturnValue(true);
-			vi.mocked(getWorkspaceInfos).mockReturnValue([
-				createMockWorkspace("root", "/"),
-				createMockWorkspace("pkg-a", "/packages/a"),
-			]);
+			mockWorkspace([createMockWorkspace("root", "/"), createMockWorkspace("pkg-a", "/packages/a")]);
 
 			const result = await detectRepoType();
 
@@ -528,7 +529,7 @@ describe("detect-repo-type", () => {
 				throw new Error("File not found");
 			});
 			vi.mocked(existsSync).mockReturnValue(true);
-			vi.mocked(getWorkspaceInfos).mockReturnValue([createMockWorkspace("my-package", "/")]);
+			mockWorkspace([createMockWorkspace("my-package", "/")]);
 
 			const result = await detectRepoType();
 

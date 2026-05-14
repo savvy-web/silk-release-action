@@ -21,7 +21,7 @@ Load design docs when working on the relevant subsystem:
 
 ## Workflow Release Action
 
-TypeScript-based GitHub Action (~17,000 lines across 45 source files) for automated release management with changesets.
+TypeScript-based GitHub Action (~17,000 lines across 46 source files) for automated release management with changesets.
 
 **Three-phase workflow:**
 

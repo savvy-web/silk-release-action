@@ -76,10 +76,10 @@ interface TargetPreValidation {
 	packageName: string;
 	version: string;
 	status: PreValidationStatus;
-	versionCheck?: VersionCheckResult;
-	localIntegrity?: string;
-	remoteIntegrity?: string;
-	error?: string;
+	versionCheck?: VersionCheckResult | undefined;
+	localIntegrity?: string | undefined;
+	remoteIntegrity?: string | undefined;
+	error?: string | undefined;
 }
 
 /**

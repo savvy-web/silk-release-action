@@ -192,8 +192,9 @@ function generateRegistryTable(validation: PackagePublishValidation): string {
  * @returns Release notes preview result
  *
  * @remarks
- * Uses workspace-tools to discover package paths from workspace configuration.
- * This handles cases where directory names don't match package names.
+ * Uses `workspaces-effect` to discover package paths from workspace
+ * configuration. This handles cases where directory names don't match
+ * package names.
  */
 export async function generateReleaseNotesPreview(
 	packageManager: string,
@@ -244,7 +245,7 @@ export async function generateReleaseNotesPreview(
 	for (const release of changesetStatus.releases) {
 		info(`Processing ${release.name}@${release.newVersion}`);
 
-		// Find package directory using workspace-tools
+		// Find package directory via workspaces-effect-backed lookup
 		const packagePath = findPackagePath(release.name);
 
 		if (!packagePath) {

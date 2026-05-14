@@ -3,14 +3,22 @@ title: Multi-Registry Publishing and Integration
 category: integration
 status: current
 completeness: 90
-last-synced: 2026-02-08
+created: 2026-02-07
+updated: 2026-05-13
+last-synced: 2026-05-13
 module: release-action
+related:
+  - architecture.md
+  - testing.md
+dependencies:
+  - architecture.md
 ---
 
 ## Table of Contents
 
 - [Overview](#overview)
 - [Current State](#current-state)
+  - [Publishability Detection (Silk Rules)](#publishability-detection-silk-rules)
   - [Registry Infrastructure](#registry-infrastructure)
   - [Type System](#type-system)
   - [SBOM and Compliance System](#sbom-and-compliance-system)
@@ -33,12 +41,60 @@ some registries succeed and others fail.
 
 ## Current State
 
+### Publishability Detection (Silk Rules)
+
+Before any registry-specific logic runs, the action must answer a single
+question: "is this package publishable, and if so, to how many targets?"
+The silk-flavored rules are encoded in `src/utils/silk-publishability.ts`
+(141 lines), which exports `silkDetect(pkgName, rawPackageJson) →
+PublishTarget[]` (the `PublishTarget` Schema.Class comes from
+`workspaces-effect`) and the convenience predicate
+`isSilkPublishable()`.
+
+The four rules, in order:
+
+1. **`private !== true`** -- publishable to one default target. Registry,
+   access, and directory come from `publishConfig` if present, else from
+   defaults (`https://registry.npmjs.org/`, `"public"`, `"."`).
+2. **`private === true` + `publishConfig.targets`** -- publishable to
+   each target in the array. String targets (`"npm"`, `"github"`,
+   `"jsr"`, or URL strings) inherit parent `access`; object targets
+   may override `access` and `registry`. Targets whose resolved access
+   is not `"public"` or `"restricted"` are dropped.
+3. **`private === true` + `publishConfig.access`** (no `targets`) --
+   publishable to one target using that access and the configured
+   `registry`/`directory`.
+4. **Otherwise** -- empty array (not publishable).
+
+The helper is non-Effect on purpose: it consumes a `RawPackageJson`
+plain object (not the typed `workspaces-effect` `PackageJson`) so it
+can see `publishConfig.targets`, which is not in the typed
+`PublishConfig` schema. Call sites that need access to `targets` re-read
+the raw `package.json` from disk and pass it in. The same rules are
+encoded identically in `pnpm-config-dependency-action` and the silk
+`changesets` package; the three projects agree by construction on
+which packages count as publishable.
+
+Two release-action call sites consume `silkDetect`:
+
+- **`detect-publishable-changes.ts`** (Phase 1) -- routes packages
+  with a non-empty silk target list to the "publishable" bucket and
+  packages with an empty list to "version-only" (GitHub release only).
+  This replaces an older check that only honored `publishConfig.access`
+  and would misclassify private packages with `publishConfig.targets`.
+- **`release-summary-helpers.ts:getAllWorkspacePackages`** --
+  populates `WorkspacePackageInfo.targetCount` from
+  `silkDetect(...).length` so Phase 1 summaries and Phase 3 tag-strategy
+  decisions count targets the same way as the routing logic above.
+
 ### Registry Infrastructure
 
 #### Target Resolution (`resolve-targets.ts`, 208 lines)
 
-Converts `publishConfig` in `package.json` to concrete `ResolvedTarget`
-objects. The resolution follows four rules:
+Once a package is known to be publishable, `resolve-targets.ts` converts
+its `publishConfig` to concrete `ResolvedTarget` objects with absolute
+paths and null-safe registry/tokenEnv. The resolution follows four
+rules:
 
 1. No `publishConfig` + `private: true` -- empty array (not publishable)
 2. No `publishConfig` + `private: false` -- default npm with OIDC
@@ -427,6 +483,28 @@ Error categorization detects and suggests fixes for:
 
 ## Rationale
 
+### Why Silk-Specific Publishability Rules?
+
+`workspaces-effect`'s built-in `PublishabilityDetectorLive` treats
+`private: true` as a hard "not publishable" stop. Silk's convention
+broadens that: a package can be private (so it never leaks into a
+public npm install transitively) while still being publishable to one
+or more declared targets. The most common case is a package that
+publishes only to GitHub Packages or to an internal silk registry. The
+`silkDetect()` helper encodes that broadening in 141 lines and is
+shared in spirit (not as a literal dependency) with
+`pnpm-config-dependency-action` and the silk `changesets` package so
+the three tools cannot drift.
+
+Wiring `silkDetect()` into both `detect-publishable-changes.ts` and
+`release-summary-helpers.ts:getAllWorkspacePackages` also closes a
+prior bug where Phase 1 routing used
+`hasPublishConfig && isPublicOrRestricted`, which honored only
+`publishConfig.access`. Private packages declaring
+`publishConfig.targets` were silently demoted to "version-only" and
+never reached the publish step. Both call sites now go through the
+same helper.
+
 ### Why OIDC-First Authentication?
 
 OIDC (OpenID Connect) trusted publishing eliminates the need for
@@ -504,6 +582,12 @@ match or proper subdomain match, preventing injection attacks.
 | `src/types/publish-config.ts` | 334 | Core publishing types (targets, validation, results) |
 | `src/types/sbom-config.ts` | 328 | SBOM metadata, CycloneDX, and NTIA compliance types |
 | `src/types/shared-types.ts` | 69 | Cross-cutting validation result types |
+
+### Publishability Detection
+
+| File | Lines | Description |
+| --- | --- | --- |
+| `src/utils/silk-publishability.ts` | 141 | Silk publishability rules (private+targets, private+access, public default) |
 
 ### Registry Infrastructure
 

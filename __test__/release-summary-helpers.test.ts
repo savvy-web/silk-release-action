@@ -1,7 +1,8 @@
 import * as fs from "node:fs";
 import * as core from "@actions/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { findProjectRoot, getWorkspaceInfos } from "workspace-tools";
+import type { WorkspacePackage } from "workspaces-effect";
+import { findWorkspaceRootSync, getWorkspacePackagesSync } from "workspaces-effect";
 import {
 	countChangesetsPerPackage,
 	findPackageGroup,
@@ -16,7 +17,60 @@ import {
 
 vi.mock("node:fs");
 vi.mock("@actions/core");
-vi.mock("workspace-tools");
+vi.mock("workspaces-effect");
+
+interface WorkspaceFixture {
+	name: string;
+	path: string;
+	version?: string;
+	private?: boolean;
+	publishConfig?: {
+		access?: "public" | "restricted";
+		registry?: string;
+		directory?: string;
+		targets?: ReadonlyArray<string | { access?: string; registry?: string }>;
+	};
+}
+
+// Build a WorkspacePackage-shaped fixture plus the raw package.json JSON the
+// helper will re-read off disk for silk-rule evaluation.
+const buildFixture = (
+	fixtures: WorkspaceFixture[],
+): {
+	workspaces: WorkspacePackage[];
+	pkgJsonFor: Map<string, string>;
+} => {
+	const workspaces = fixtures.map(
+		(f) =>
+			({
+				name: f.name,
+				path: f.path,
+				packageJsonPath: `${f.path}/package.json`,
+				relativePath: f.path,
+				version: f.version ?? "1.0.0",
+				private: f.private ?? false,
+				dependencies: {},
+				devDependencies: {},
+				peerDependencies: {},
+				optionalDependencies: {},
+			}) as unknown as WorkspacePackage,
+	);
+
+	const pkgJsonFor = new Map<string, string>();
+	for (const f of fixtures) {
+		pkgJsonFor.set(
+			`${f.path}/package.json`,
+			JSON.stringify({
+				name: f.name,
+				version: f.version,
+				private: f.private,
+				publishConfig: f.publishConfig,
+			}),
+		);
+	}
+
+	return { workspaces, pkgJsonFor };
+};
 
 describe("release-summary-helpers", () => {
 	beforeEach(() => {
@@ -129,30 +183,29 @@ describe("release-summary-helpers", () => {
 
 	describe("getAllWorkspacePackages", () => {
 		it("should return all workspace packages with their info", () => {
-			vi.mocked(findProjectRoot).mockReturnValue("/test/workspace");
-			vi.mocked(getWorkspaceInfos).mockReturnValue([
+			const { workspaces, pkgJsonFor } = buildFixture([
 				{
 					name: "@test/pkg-a",
 					path: "/test/workspace/packages/a",
-					packageJson: {
-						packageJsonPath: "/test/workspace/packages/a/package.json",
-						name: "@test/pkg-a",
-						version: "1.0.0",
-						private: false,
-						publishConfig: { access: "public", targets: ["npm", "github"] },
-					},
+					version: "1.0.0",
+					private: false,
+					publishConfig: { access: "public", targets: ["npm", "github"] },
 				},
 				{
 					name: "@test/pkg-b",
 					path: "/test/workspace/packages/b",
-					packageJson: {
-						packageJsonPath: "/test/workspace/packages/b/package.json",
-						name: "@test/pkg-b",
-						version: "2.0.0",
-						private: true,
-					},
+					version: "2.0.0",
+					private: true,
 				},
 			]);
+
+			vi.mocked(findWorkspaceRootSync).mockReturnValue("/test/workspace");
+			vi.mocked(getWorkspacePackagesSync).mockReturnValue(workspaces);
+			vi.mocked(fs.readFileSync).mockImplementation((p: fs.PathOrFileDescriptor) => {
+				const content = pkgJsonFor.get(String(p));
+				if (content === undefined) throw new Error(`Unexpected read: ${String(p)}`);
+				return content;
+			});
 
 			const result = getAllWorkspacePackages();
 
@@ -164,6 +217,7 @@ describe("release-summary-helpers", () => {
 				private: false,
 				hasPublishConfig: true,
 				access: "public",
+				// public + 2 string targets → 2 silk targets
 				targetCount: 2,
 			});
 			expect(result[1]).toEqual({
@@ -173,13 +227,13 @@ describe("release-summary-helpers", () => {
 				private: true,
 				hasPublishConfig: false,
 				access: undefined,
+				// private + no publishConfig → 0 silk targets
 				targetCount: 0,
 			});
 		});
 
 		it("should return empty array when no workspace root found", () => {
-			// findProjectRoot can return undefined at runtime even though types say string
-			vi.mocked(findProjectRoot).mockReturnValue(undefined as unknown as string);
+			vi.mocked(findWorkspaceRootSync).mockReturnValue(null);
 
 			const result = getAllWorkspacePackages();
 
@@ -187,30 +241,17 @@ describe("release-summary-helpers", () => {
 			expect(core.debug).toHaveBeenCalledWith("No workspace root found");
 		});
 
-		it("should skip packages without name", () => {
-			vi.mocked(findProjectRoot).mockReturnValue("/test/workspace");
-			vi.mocked(getWorkspaceInfos).mockReturnValue([
-				{
-					name: "",
-					path: "/test/workspace/packages/unnamed",
-					packageJson: { packageJsonPath: "/test/workspace/packages/unnamed/package.json", name: "", version: "1.0.0" },
-				},
-			]);
-
-			const result = getAllWorkspacePackages();
-
-			expect(result).toHaveLength(0);
-		});
-
 		it("should default version to 0.0.0 when not specified", () => {
-			vi.mocked(findProjectRoot).mockReturnValue("/test/workspace");
-			vi.mocked(getWorkspaceInfos).mockReturnValue([
+			const { workspaces } = buildFixture([
 				{
 					name: "@test/pkg",
 					path: "/test/workspace/packages/pkg",
-					packageJson: { packageJsonPath: "/test/workspace/packages/pkg/package.json", name: "@test/pkg", version: "" },
+					version: "",
 				},
 			]);
+			vi.mocked(findWorkspaceRootSync).mockReturnValue("/test/workspace");
+			vi.mocked(getWorkspacePackagesSync).mockReturnValue(workspaces);
+			vi.mocked(fs.readFileSync).mockReturnValue(JSON.stringify({ name: "@test/pkg", version: "" }));
 
 			const result = getAllWorkspacePackages();
 
@@ -218,23 +259,49 @@ describe("release-summary-helpers", () => {
 		});
 
 		it("should count single target when only access is specified", () => {
-			vi.mocked(findProjectRoot).mockReturnValue("/test/workspace");
-			vi.mocked(getWorkspaceInfos).mockReturnValue([
+			const { workspaces, pkgJsonFor } = buildFixture([
 				{
 					name: "@test/pkg",
 					path: "/test/workspace/packages/pkg",
-					packageJson: {
-						packageJsonPath: "/test/workspace/packages/pkg/package.json",
-						name: "@test/pkg",
-						version: "1.0.0",
-						publishConfig: { access: "public" },
-					},
+					version: "1.0.0",
+					publishConfig: { access: "public" },
 				},
 			]);
+			vi.mocked(findWorkspaceRootSync).mockReturnValue("/test/workspace");
+			vi.mocked(getWorkspacePackagesSync).mockReturnValue(workspaces);
+			vi.mocked(fs.readFileSync).mockImplementation((p: fs.PathOrFileDescriptor) => {
+				const content = pkgJsonFor.get(String(p));
+				if (content === undefined) throw new Error(`Unexpected read: ${String(p)}`);
+				return content;
+			});
 
 			const result = getAllWorkspacePackages();
 
 			expect(result[0].targetCount).toBe(1);
+		});
+
+		it("should treat private+publishConfig.targets as publishable under silk rules", () => {
+			const { workspaces, pkgJsonFor } = buildFixture([
+				{
+					name: "@test/pkg",
+					path: "/test/workspace/packages/pkg",
+					version: "1.0.0",
+					private: true,
+					publishConfig: { access: "restricted", targets: ["npm", "github"] },
+				},
+			]);
+			vi.mocked(findWorkspaceRootSync).mockReturnValue("/test/workspace");
+			vi.mocked(getWorkspacePackagesSync).mockReturnValue(workspaces);
+			vi.mocked(fs.readFileSync).mockImplementation((p: fs.PathOrFileDescriptor) => {
+				const content = pkgJsonFor.get(String(p));
+				if (content === undefined) throw new Error(`Unexpected read: ${String(p)}`);
+				return content;
+			});
+
+			const result = getAllWorkspacePackages();
+
+			expect(result[0].private).toBe(true);
+			expect(result[0].targetCount).toBe(2);
 		});
 	});
 

@@ -3,26 +3,38 @@ import * as core from "@actions/core";
 import * as exec from "@actions/exec";
 import { context, getOctokit } from "@actions/github";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { WorkspaceInfos } from "workspace-tools";
-import { findProjectRoot, getWorkspaceInfos } from "workspace-tools";
+import type { WorkspacePackage } from "workspaces-effect";
+import { findWorkspaceRootSync, getWorkspacePackagesSync } from "workspaces-effect";
 import { clearWorkspaceCache } from "../src/utils/find-package-path.js";
 import { generateReleaseNotesPreview } from "../src/utils/generate-release-notes-preview.js";
 import { cleanupTestEnvironment, createMockOctokit, setupTestEnvironment } from "./utils/github-mocks.js";
 import type { ExecOptionsWithListeners, MockOctokit } from "./utils/test-types.js";
 
-// Helper to create minimal workspace info for mocking
-const createWorkspace = (name: string, path: string): WorkspaceInfos[number] => ({
-	name,
-	path,
-	packageJson: { packageJsonPath: `${path}/package.json`, name, version: "1.0.0" },
-});
+// Helper to create minimal WorkspacePackage-shaped fixtures for mocking
+const createWorkspace = (
+	name: string,
+	path: string,
+	overrides: { version?: string; private?: boolean } = {},
+): WorkspacePackage =>
+	({
+		name,
+		path,
+		packageJsonPath: `${path}/package.json`,
+		relativePath: path,
+		version: overrides.version ?? "1.0.0",
+		private: overrides.private ?? false,
+		dependencies: {},
+		devDependencies: {},
+		peerDependencies: {},
+		optionalDependencies: {},
+	}) as unknown as WorkspacePackage;
 
 // Mock modules
 vi.mock("@actions/core");
 vi.mock("@actions/exec");
 vi.mock("@actions/github");
 vi.mock("node:fs");
-vi.mock("workspace-tools");
+vi.mock("workspaces-effect");
 
 describe("generate-release-notes-preview", () => {
 	let mockOctokit: MockOctokit;
@@ -68,8 +80,9 @@ describe("generate-release-notes-preview", () => {
 		// Default exec mock
 		vi.mocked(exec.exec).mockResolvedValue(0);
 
-		// Default workspace-tools mock - returns empty workspace by default
-		vi.mocked(getWorkspaceInfos).mockReturnValue([]);
+		// Default workspaces-effect mocks
+		vi.mocked(findWorkspaceRootSync).mockReturnValue("/test/workspace");
+		vi.mocked(getWorkspacePackagesSync).mockReturnValue([]);
 
 		// Default fs mocks - changeset writes to a temp file
 		vi.mocked(fs.existsSync).mockImplementation((path) => {
@@ -102,8 +115,8 @@ describe("generate-release-notes-preview", () => {
 	});
 
 	it("should extract release notes from CHANGELOG", async () => {
-		// Mock workspace-tools to return the package
-		vi.mocked(getWorkspaceInfos).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
+		// Mock workspaces-effect to return the package
+		vi.mocked(getWorkspacePackagesSync).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
 
 		vi.mocked(fs.existsSync).mockImplementation((path) => {
 			const pathStr = String(path);
@@ -145,8 +158,8 @@ describe("generate-release-notes-preview", () => {
 	});
 
 	it("should handle missing CHANGELOG", async () => {
-		// Mock workspace-tools to return the package
-		vi.mocked(getWorkspaceInfos).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
+		// Mock workspaces-effect to return the package
+		vi.mocked(getWorkspacePackagesSync).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
 
 		vi.mocked(fs.existsSync).mockImplementation((path) => {
 			const pathStr = String(path);
@@ -173,7 +186,7 @@ describe("generate-release-notes-preview", () => {
 	});
 
 	it("should handle package directory not found", async () => {
-		// Default getWorkspaceInfos mock returns empty array, so package won't be found
+		// Default getWorkspacePackagesSync mock returns empty array, so package won't be found
 		vi.mocked(fs.existsSync).mockImplementation((path) => {
 			const pathStr = String(path);
 			return pathStr.includes(".changeset-status");
@@ -208,8 +221,8 @@ describe("generate-release-notes-preview", () => {
 	});
 
 	it("should handle version section not found in CHANGELOG", async () => {
-		// Mock workspace-tools to return the package
-		vi.mocked(getWorkspaceInfos).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
+		// Mock workspaces-effect to return the package
+		vi.mocked(getWorkspacePackagesSync).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
 
 		vi.mocked(fs.existsSync).mockReturnValue(true);
 		vi.mocked(fs.readFileSync).mockImplementation((path) => {
@@ -239,8 +252,8 @@ describe("generate-release-notes-preview", () => {
 	});
 
 	it("should handle multiple packages", async () => {
-		// Mock workspace-tools to return both packages
-		vi.mocked(getWorkspaceInfos).mockReturnValue([
+		// Mock workspaces-effect to return both packages
+		vi.mocked(getWorkspacePackagesSync).mockReturnValue([
 			createWorkspace("@test/pkg-a", "/test/pkg-a"),
 			createWorkspace("@test/pkg-b", "/test/pkg-b"),
 		]);
@@ -309,8 +322,8 @@ describe("generate-release-notes-preview", () => {
 	});
 
 	it("should handle error when reading CHANGELOG throws", async () => {
-		// Mock workspace-tools to return the package
-		vi.mocked(getWorkspaceInfos).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
+		// Mock workspaces-effect to return the package
+		vi.mocked(getWorkspacePackagesSync).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
 
 		vi.mocked(fs.existsSync).mockReturnValue(true);
 		vi.mocked(fs.readFileSync).mockImplementation((path) => {
@@ -336,8 +349,8 @@ describe("generate-release-notes-preview", () => {
 	});
 
 	it("should handle non-Error throw when reading CHANGELOG", async () => {
-		// Mock workspace-tools to return the package
-		vi.mocked(getWorkspaceInfos).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
+		// Mock workspaces-effect to return the package
+		vi.mocked(getWorkspacePackagesSync).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
 
 		vi.mocked(fs.existsSync).mockReturnValue(true);
 		vi.mocked(fs.readFileSync).mockImplementation((path) => {
@@ -361,8 +374,8 @@ describe("generate-release-notes-preview", () => {
 	});
 
 	it("should show 'no release notes' when notes are empty", async () => {
-		// Mock workspace-tools to return the package
-		vi.mocked(getWorkspaceInfos).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
+		// Mock workspaces-effect to return the package
+		vi.mocked(getWorkspacePackagesSync).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
 
 		vi.mocked(fs.existsSync).mockReturnValue(true);
 		vi.mocked(fs.readFileSync).mockImplementation((path) => {
@@ -416,7 +429,7 @@ Previous notes`;
 
 	describe("enhanced summary with publishValidations", () => {
 		it("should generate registry table when publishValidations provided", async () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
+			vi.mocked(getWorkspacePackagesSync).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
 
 			vi.mocked(fs.existsSync).mockReturnValue(true);
 			vi.mocked(fs.readFileSync).mockImplementation((path) => {
@@ -475,7 +488,7 @@ Previous notes`;
 		});
 
 		it("should show provenance warning when not ready", async () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
+			vi.mocked(getWorkspacePackagesSync).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
 
 			vi.mocked(fs.existsSync).mockReturnValue(true);
 			vi.mocked(fs.readFileSync).mockImplementation((path) => {
@@ -532,7 +545,7 @@ Previous notes`;
 		});
 
 		it("should show dash when provenance is disabled", async () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
+			vi.mocked(getWorkspacePackagesSync).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
 
 			vi.mocked(fs.existsSync).mockReturnValue(true);
 			vi.mocked(fs.readFileSync).mockImplementation((path) => {
@@ -589,7 +602,7 @@ Previous notes`;
 		});
 
 		it("should handle empty targets in publishValidations", async () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
+			vi.mocked(getWorkspacePackagesSync).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
 
 			vi.mocked(fs.existsSync).mockReturnValue(true);
 			vi.mocked(fs.readFileSync).mockImplementation((path) => {
@@ -623,7 +636,7 @@ Previous notes`;
 		});
 
 		it("should show first release indicator for 0.0.0 version", async () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
+			vi.mocked(getWorkspacePackagesSync).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
 
 			vi.mocked(fs.existsSync).mockReturnValue(true);
 			vi.mocked(fs.readFileSync).mockImplementation((path) => {
@@ -647,31 +660,11 @@ Previous notes`;
 		});
 
 		it("should generate Packages Not Releasing section", async () => {
-			// Mock findProjectRoot for getAllWorkspacePackages
-			vi.mocked(findProjectRoot).mockReturnValue("/test/workspace");
-
 			// Two packages in workspace, only one releasing
-			vi.mocked(getWorkspaceInfos).mockReturnValue([
-				{
-					name: "@test/pkg-a",
-					path: "/test/pkg-a",
-					packageJson: {
-						packageJsonPath: "/test/pkg-a/package.json",
-						name: "@test/pkg-a",
-						version: "1.0.0",
-						publishConfig: { access: "public" },
-					},
-				},
-				{
-					name: "@test/pkg-b",
-					path: "/test/pkg-b",
-					packageJson: {
-						packageJsonPath: "/test/pkg-b/package.json",
-						name: "@test/pkg-b",
-						version: "2.0.0",
-						private: true, // Private package - won't release
-					},
-				},
+			vi.mocked(findWorkspaceRootSync).mockReturnValue("/test/workspace");
+			vi.mocked(getWorkspacePackagesSync).mockReturnValue([
+				createWorkspace("@test/pkg-a", "/test/pkg-a"),
+				createWorkspace("@test/pkg-b", "/test/pkg-b", { version: "2.0.0", private: true }),
 			]);
 
 			vi.mocked(fs.existsSync).mockReturnValue(true);
@@ -686,6 +679,20 @@ Previous notes`;
 				if (pathStr.includes("CHANGELOG.md")) {
 					return `# Changelog\n\n## 1.1.0\n\nNotes`;
 				}
+				if (pathStr === "/test/pkg-a/package.json") {
+					return JSON.stringify({
+						name: "@test/pkg-a",
+						version: "1.0.0",
+						publishConfig: { access: "public" },
+					});
+				}
+				if (pathStr === "/test/pkg-b/package.json") {
+					return JSON.stringify({
+						name: "@test/pkg-b",
+						version: "2.0.0",
+						private: true,
+					});
+				}
 				return "";
 			});
 
@@ -698,7 +705,7 @@ Previous notes`;
 		});
 
 		it("should count changesets per package in summary", async () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
+			vi.mocked(getWorkspacePackagesSync).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
 
 			vi.mocked(fs.existsSync).mockReturnValue(true);
 			vi.mocked(fs.readFileSync).mockImplementation((path) => {
@@ -727,7 +734,7 @@ Previous notes`;
 
 	describe("linked package handling", () => {
 		it("should generate explanatory notes for linked packages with no direct changes", async () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([
+			vi.mocked(getWorkspacePackagesSync).mockReturnValue([
 				createWorkspace("@test/pkg-a", "/test/pkg-a"),
 				createWorkspace("@test/pkg-b", "/test/pkg-b"),
 			]);
@@ -775,8 +782,8 @@ Previous notes`;
 
 	describe("fixed package handling", () => {
 		it("should generate explanatory notes for fixed packages with no direct changes", async () => {
-			// Mock workspace-tools to return both packages
-			vi.mocked(getWorkspaceInfos).mockReturnValue([
+			// Mock workspaces-effect to return both packages
+			vi.mocked(getWorkspacePackagesSync).mockReturnValue([
 				createWorkspace("@test/pkg-a", "/test/pkg-a"),
 				createWorkspace("@test/pkg-b", "/test/pkg-b"),
 			]);
@@ -833,7 +840,7 @@ Previous notes`;
 		});
 
 		it("should not generate fixed notes when package is not in a fixed group", async () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
+			vi.mocked(getWorkspacePackagesSync).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
 
 			vi.mocked(fs.existsSync).mockImplementation((path) => {
 				const pathStr = String(path);
@@ -870,7 +877,7 @@ Previous notes`;
 		});
 
 		it("should handle missing changeset config gracefully", async () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
+			vi.mocked(getWorkspacePackagesSync).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
 
 			vi.mocked(fs.existsSync).mockImplementation((path) => {
 				const pathStr = String(path);
@@ -902,7 +909,7 @@ Previous notes`;
 		});
 
 		it("should handle empty notes for non-fixed packages", async () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
+			vi.mocked(getWorkspacePackagesSync).mockReturnValue([createWorkspace("@test/pkg", "/test/pkg")]);
 
 			vi.mocked(fs.existsSync).mockImplementation((path) => {
 				const pathStr = String(path);
@@ -940,7 +947,7 @@ Previous notes`;
 		});
 
 		it("should handle fixed group with only one sibling being released", async () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([
+			vi.mocked(getWorkspacePackagesSync).mockReturnValue([
 				createWorkspace("@test/pkg-a", "/test/pkg-a"),
 				createWorkspace("@test/pkg-b", "/test/pkg-b"),
 			]);

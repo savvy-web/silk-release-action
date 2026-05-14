@@ -1,0 +1,165 @@
+name: Workflow Release
+description: Automated release management with changesets, build validation, and GitHub releases
+branding:
+  icon: package
+  color: blue
+inputs:
+  app-id:
+    description: GitHub App ID for authentication
+    required: true
+  private-key:
+    description: GitHub App private key (PEM format)
+    required: true
+  github-token:
+    description: |
+      GitHub token for GitHub Packages publishing (optional).
+      Use this when the GitHub App doesn't have packages:write permission.
+      Typically pass secrets.GITHUB_TOKEN with workflow permissions: packages: write.
+    required: false
+    default: ""
+  skip-token-revoke:
+    description: Skip token revocation in post-action (tokens expire after 1 hour anyway)
+    required: false
+    default: "false"
+  release-branch:
+    description: Release branch name
+    required: false
+    default: changeset-release/main
+  target-branch:
+    description: Target branch for PR (usually main)
+    required: false
+    default: main
+  version-command:
+    description: Custom version command (defaults to auto-detected package-manager ci:version)
+    required: false
+    default: ""
+  pr-title-prefix:
+    description: Prefix for release PR title
+    required: false
+    default: "chore: release"
+  dry-run:
+    description: Run in dry-run mode (preview only, no actual changes)
+    required: false
+    default: "false"
+  phase:
+    description: |
+      Explicitly set the workflow phase to run, skipping automatic detection.
+      Useful when phase was already determined by workflow-control-action.
+      Valid values: branch-management, validation, publishing, close-issues, none
+    required: false
+    default: ""
+  npm-token:
+    description: |
+      NPM access token for publishing to npmjs.org (optional).
+
+      When to use:
+      - First-time publish: OIDC requires the package to exist on npmjs.com first
+      - Packages not configured for OIDC: If trusted publishing isn't set up
+      - Fallback authentication: When OIDC fails or isn't available
+
+      When NOT needed:
+      - Packages configured with npm OIDC trusted publishing
+      - The package already exists and trusts your GitHub repository
+
+      Token types supported:
+      - Granular access tokens (recommended, 90-day max expiry)
+      - Automation tokens (for CI/CD, bypasses 2FA)
+
+      Create at: https://www.npmjs.com/settings/tokens
+    required: false
+    default: ""
+  sbom-config:
+    description: |
+      SBOM metadata configuration (JSON). Provides supplier, copyright, and other
+      metadata for NTIA-compliant SBOM generation.
+
+      Format: JSON with an "sbom" key containing the metadata:
+      {
+        "sbom": {
+          "supplier": {
+            "name": "Your Company",
+            "url": "https://company.com",
+            "contact": { "email": "security@company.com" }
+          },
+          "copyright": { "holder": "Your Company LLC" }
+        }
+      }
+
+      Can also be passed via SILK_RELEASE_SBOM_TEMPLATE environment variable.
+      Input takes precedence over environment variable.
+    required: false
+    default: ""
+  custom-registries:
+    description: |
+      Custom registries with authentication (one per line).
+
+      Format (one registry per line):
+        https://registry.example.com/_authToken=<token>
+        https://registry.example.com/_auth=<base64-credentials>
+        https://registry.example.com/                          # Falls back to GitHub App token
+
+      For reusable workflows, store the entire config in a secret:
+        1. Create a repository secret (e.g., CUSTOM_REGISTRIES) containing:
+           https://registry.example.com/_authToken=npm_abc123
+           https://other-registry.com/_authToken=npm_xyz789
+
+        2. Pass it to the action:
+           custom-registries: $\{{ secrets.CUSTOM_REGISTRIES }}
+
+      Note: For npm, use the npm-token input instead of custom-registries
+      Note: JSR uses OIDC trusted publishing (no configuration needed)
+      Note: GitHub Packages authenticates automatically with the GitHub App token
+    required: false
+    default: ""
+outputs:
+  token:
+    description: Generated GitHub App installation token (for use in subsequent steps)
+  installation-id:
+    description: GitHub App installation ID
+  app-slug:
+    description: GitHub App slug (URL-friendly name)
+  has_changes:
+    description: Whether releasable changes were detected (publishable or version-only)
+  publishable_packages:
+    description: JSON array of packages with registry publish targets
+  version_only_packages:
+    description: JSON array of version-only packages (GitHub release only, no registry publishing)
+  releasable_packages:
+    description: JSON array of all releasable packages (publishable + version-only combined)
+  release_branch_exists:
+    description: Whether the release branch exists
+  release_branch_has_open_pr:
+    description: Whether there's an open PR
+  release_pr_number:
+    description: PR number if PR exists
+  release_branch_created:
+    description: Whether a new release branch was created
+  release_branch_updated:
+    description: Whether the release branch was updated
+  has_conflicts:
+    description: Whether the update resulted in conflicts
+  linked_issues:
+    description: JSON array of linked issues
+  builds_passed:
+    description: Whether all builds passed
+  npm_publish_ready:
+    description: Whether packages are ready for NPM publish
+  github_packages_ready:
+    description: Whether packages are ready for GitHub Packages
+  released_packages:
+    description: JSON array of released packages with name, version, and targets
+  release_type:
+    description: Type of release (major, minor, or patch)
+  release_tags:
+    description: JSON array of created git tags
+  package_count:
+    description: Number of packages released
+  publish_results:
+    description: JSON array of publish results per package and target
+  success:
+    description: Whether the release was fully successful
+runs:
+  using: node24
+  pre: dist/pre.js
+  main: dist/main.js
+  post: dist/post.js

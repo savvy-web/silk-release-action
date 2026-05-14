@@ -35,11 +35,11 @@ export interface EnhanceSBOMOptions {
 	/** Directory containing package.json (for metadata inference) */
 	packageDirectory: string;
 	/** Repository root directory (for config loading) */
-	rootDirectory?: string;
+	rootDirectory?: string | undefined;
 	/** Optional pre-loaded SBOM config (avoids re-reading file) */
-	sbomConfig?: SBOMMetadataConfig;
+	sbomConfig?: SBOMMetadataConfig | undefined;
 	/** Optional npm registry for copyright year detection */
-	registry?: string;
+	registry?: string | undefined;
 }
 
 /**

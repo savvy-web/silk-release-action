@@ -139,7 +139,7 @@ describe("generateSBOMPreview", () => {
 
 	it("should generate SBOM when no existing validation is available", async () => {
 		const sbom = {
-			bomFormat: "CycloneDX",
+			bomFormat: "CycloneDX" as const,
 			specVersion: "1.5",
 			version: 1,
 			components: [
@@ -192,7 +192,7 @@ describe("generateSBOMPreview", () => {
 
 	it("should detect NTIA compliance warnings", async () => {
 		const sbom = {
-			bomFormat: "CycloneDX",
+			bomFormat: "CycloneDX" as const,
 			specVersion: "1.5",
 			version: 1,
 			components: [],
@@ -228,7 +228,7 @@ describe("generateSBOMPreview", () => {
 
 	it("should generate correct check title for all success", async () => {
 		const sbom = {
-			bomFormat: "CycloneDX",
+			bomFormat: "CycloneDX" as const,
 			specVersion: "1.5",
 			version: 1,
 			components: [],
@@ -253,7 +253,7 @@ describe("generateSBOMPreview", () => {
 			valid: true,
 			hasDependencies: true,
 			dependencyCount: 1,
-			generatedSbom: { bomFormat: "CycloneDX", specVersion: "1.5", version: 1, components: [] },
+			generatedSbom: { bomFormat: "CycloneDX" as const, specVersion: "1.5", version: 1, components: [] },
 		});
 
 		vi.mocked(validateSBOMGeneration).mockResolvedValueOnce({
@@ -273,7 +273,7 @@ describe("generateSBOMPreview", () => {
 
 	it("should include summary content with table and package details", async () => {
 		const sbom = {
-			bomFormat: "CycloneDX",
+			bomFormat: "CycloneDX" as const,
 			specVersion: "1.5",
 			version: 1,
 			metadata: {
@@ -348,7 +348,7 @@ describe("generateSBOMPreview", () => {
 
 	it("should handle empty components", async () => {
 		const sbom = {
-			bomFormat: "CycloneDX",
+			bomFormat: "CycloneDX" as const,
 			specVersion: "1.5",
 			version: 1,
 			components: [],
@@ -385,7 +385,7 @@ describe("generateSBOMPreview", () => {
 
 	it("should handle package with warning", async () => {
 		const sbom = {
-			bomFormat: "CycloneDX",
+			bomFormat: "CycloneDX" as const,
 			specVersion: "1.5",
 			version: 1,
 			components: [],
@@ -435,7 +435,7 @@ describe("generateSBOMPreview", () => {
 		}));
 
 		const sbom = {
-			bomFormat: "CycloneDX",
+			bomFormat: "CycloneDX" as const,
 			specVersion: "1.5",
 			version: 1,
 			components,
@@ -464,7 +464,7 @@ describe("generateSBOMPreview", () => {
 		}));
 
 		const sbom = {
-			bomFormat: "CycloneDX",
+			bomFormat: "CycloneDX" as const,
 			specVersion: "1.5",
 			version: 1,
 			components,
@@ -498,7 +498,7 @@ describe("generateSBOMPreview", () => {
 		];
 
 		const sbom = {
-			bomFormat: "CycloneDX",
+			bomFormat: "CycloneDX" as const,
 			specVersion: "1.5",
 			version: 1,
 			components,
@@ -529,7 +529,7 @@ describe("generateSBOMPreview", () => {
 
 	it("should include raw SBOM JSON in details block", async () => {
 		const sbom = {
-			bomFormat: "CycloneDX",
+			bomFormat: "CycloneDX" as const,
 			specVersion: "1.5",
 			version: 1,
 			components: [],

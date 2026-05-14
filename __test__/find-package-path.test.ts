@@ -1,17 +1,19 @@
 import * as core from "@actions/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { WorkspaceInfos } from "workspace-tools";
-import { getWorkspaceInfos } from "workspace-tools";
+import type { WorkspacePackage } from "workspaces-effect";
+import { findWorkspaceRootSync, getWorkspacePackagesSync } from "workspaces-effect";
 import { clearWorkspaceCache, findPackagePath, findPublishablePath } from "../src/utils/find-package-path.js";
 import { cleanupTestEnvironment, setupTestEnvironment } from "./utils/github-mocks.js";
 
 // Mock modules
 vi.mock("@actions/core");
-vi.mock("workspace-tools");
+vi.mock("workspaces-effect");
 
 describe("find-package-path", () => {
 	beforeEach(() => {
 		setupTestEnvironment({ suppressOutput: true });
+		// Default: walking up from cwd discovers a workspace root.
+		vi.mocked(findWorkspaceRootSync).mockReturnValue("/workspace");
 	});
 
 	afterEach(() => {
@@ -19,16 +21,25 @@ describe("find-package-path", () => {
 		cleanupTestEnvironment();
 	});
 
-	// Helper to create minimal workspace info
-	const createWorkspace = (name: string, path: string): WorkspaceInfos[number] => ({
-		name,
-		path,
-		packageJson: { packageJsonPath: `${path}/package.json`, name, version: "1.0.0" },
-	});
+	// Helper to create a minimal WorkspacePackage-shaped fixture. We cast through
+	// unknown because mocks only need the fields we read (name, path).
+	const createWorkspace = (name: string, path: string): WorkspacePackage =>
+		({
+			name,
+			path,
+			packageJsonPath: `${path}/package.json`,
+			relativePath: path,
+			version: "1.0.0",
+			private: false,
+			dependencies: {},
+			devDependencies: {},
+			peerDependencies: {},
+			optionalDependencies: {},
+		}) as unknown as WorkspacePackage;
 
 	describe("findPackagePath", () => {
-		it("should find package path from workspace-tools", () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([createWorkspace("@test/pkg", "/workspace/pkgs/my-package")]);
+		it("should find package path from workspaces-effect", () => {
+			vi.mocked(getWorkspacePackagesSync).mockReturnValue([createWorkspace("@test/pkg", "/workspace/pkgs/my-package")]);
 
 			const result = findPackagePath("@test/pkg");
 
@@ -37,7 +48,7 @@ describe("find-package-path", () => {
 		});
 
 		it("should return null for unknown package", () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([createWorkspace("@test/other", "/workspace/pkgs/other")]);
+			vi.mocked(getWorkspacePackagesSync).mockReturnValue([createWorkspace("@test/other", "/workspace/pkgs/other")]);
 
 			const result = findPackagePath("@test/unknown");
 
@@ -46,19 +57,19 @@ describe("find-package-path", () => {
 		});
 
 		it("should cache workspace data between calls", () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([createWorkspace("@test/pkg", "/workspace/pkgs/pkg")]);
+			vi.mocked(getWorkspacePackagesSync).mockReturnValue([createWorkspace("@test/pkg", "/workspace/pkgs/pkg")]);
 
 			// First call
 			findPackagePath("@test/pkg");
 			// Second call
 			findPackagePath("@test/pkg");
 
-			// getWorkspaceInfos should only be called once due to caching
-			expect(getWorkspaceInfos).toHaveBeenCalledTimes(1);
+			// getWorkspacePackagesSync should only be called once due to caching
+			expect(getWorkspacePackagesSync).toHaveBeenCalledTimes(1);
 		});
 
 		it("should append publishSubdir to path when provided", () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([createWorkspace("@test/pkg", "/workspace/pkgs/my-package")]);
+			vi.mocked(getWorkspacePackagesSync).mockReturnValue([createWorkspace("@test/pkg", "/workspace/pkgs/my-package")]);
 
 			const result = findPackagePath("@test/pkg", "dist/npm");
 
@@ -67,7 +78,7 @@ describe("find-package-path", () => {
 		});
 
 		it("should handle multiple packages in workspace", () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([
+			vi.mocked(getWorkspacePackagesSync).mockReturnValue([
 				createWorkspace("@test/pkg-a", "/workspace/pkgs/a"),
 				createWorkspace("@test/pkg-b", "/workspace/pkgs/b"),
 				createWorkspace("@test/pkg-c", "/workspace/pkgs/c"),
@@ -79,17 +90,26 @@ describe("find-package-path", () => {
 		});
 
 		it("should log workspace discovery info", () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([createWorkspace("@test/pkg", "/workspace/pkgs/pkg")]);
+			vi.mocked(getWorkspacePackagesSync).mockReturnValue([createWorkspace("@test/pkg", "/workspace/pkgs/pkg")]);
 
 			findPackagePath("@test/pkg");
 
 			expect(core.info).toHaveBeenCalledWith(expect.stringContaining("1 workspace"));
 		});
+
+		it("should produce an empty package map when no workspace root is detected", () => {
+			vi.mocked(findWorkspaceRootSync).mockReturnValue(null);
+
+			const result = findPackagePath("@test/anything");
+
+			expect(result).toBeNull();
+			expect(getWorkspacePackagesSync).not.toHaveBeenCalled();
+		});
 	});
 
 	describe("findPublishablePath", () => {
 		it("should return dist/npm path for package", () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([createWorkspace("@test/pkg", "/workspace/pkgs/my-package")]);
+			vi.mocked(getWorkspacePackagesSync).mockReturnValue([createWorkspace("@test/pkg", "/workspace/pkgs/my-package")]);
 
 			const result = findPublishablePath("@test/pkg");
 
@@ -97,7 +117,7 @@ describe("find-package-path", () => {
 		});
 
 		it("should return null for unknown package", () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([]);
+			vi.mocked(getWorkspacePackagesSync).mockReturnValue([]);
 
 			const result = findPublishablePath("@test/unknown");
 
@@ -107,18 +127,18 @@ describe("find-package-path", () => {
 
 	describe("clearWorkspaceCache", () => {
 		it("should clear cache and allow fresh workspace discovery", () => {
-			vi.mocked(getWorkspaceInfos).mockReturnValue([createWorkspace("@test/pkg", "/workspace/pkgs/pkg")]);
+			vi.mocked(getWorkspacePackagesSync).mockReturnValue([createWorkspace("@test/pkg", "/workspace/pkgs/pkg")]);
 
 			// First call
 			findPackagePath("@test/pkg");
-			expect(getWorkspaceInfos).toHaveBeenCalledTimes(1);
+			expect(getWorkspacePackagesSync).toHaveBeenCalledTimes(1);
 
 			// Clear cache
 			clearWorkspaceCache();
 
-			// Second call should invoke getWorkspaceInfos again
+			// Second call should invoke getWorkspacePackagesSync again
 			findPackagePath("@test/pkg");
-			expect(getWorkspaceInfos).toHaveBeenCalledTimes(2);
+			expect(getWorkspacePackagesSync).toHaveBeenCalledTimes(2);
 		});
 	});
 });

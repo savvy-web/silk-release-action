@@ -3,7 +3,8 @@ import { dirname, join } from "node:path";
 import { debug, error, getState, info, warning } from "@actions/core";
 import { exec } from "@actions/exec";
 import { context, getOctokit } from "@actions/github";
-import { findProjectRoot, getWorkspaceInfos } from "workspace-tools";
+import { findWorkspaceRootSync, getWorkspacePackagesSync } from "workspaces-effect";
+import { silkDetect } from "./silk-publishability.js";
 import { summaryWriter } from "./summary-writer.js";
 
 /**
@@ -38,6 +39,27 @@ interface ChangesetStatus {
 }
 
 /**
+ * Raw publishConfig entry (full silk-rule shape).
+ */
+interface PackagePublishConfig {
+	/** Access level for publishing (public or restricted) */
+	access?: "public" | "restricted";
+	/** Custom registry URL */
+	registry?: string;
+	/** Directory containing the publishable artifact */
+	directory?: string;
+	/** Multi-target publish specification */
+	targets?: ReadonlyArray<
+		| string
+		| {
+				readonly access?: "public" | "restricted";
+				readonly protocol?: string;
+				readonly registry?: string;
+		  }
+	>;
+}
+
+/**
  * Package.json structure
  */
 interface PackageJson {
@@ -48,12 +70,7 @@ interface PackageJson {
 	/** Whether package is private */
 	private?: boolean;
 	/** Publish configuration */
-	publishConfig?: {
-		/** Access level for publishing (public or restricted) */
-		access?: "public" | "restricted";
-		/** Custom registry URL */
-		registry?: string;
-	};
+	publishConfig?: PackagePublishConfig;
 }
 
 /**
@@ -70,14 +87,15 @@ interface PackageJson {
  * @remarks
  * This function:
  * 1. Runs `changeset status --output=json` to get pending changes
- * 2. Filters for packages with valid `publishConfig.access`
+ * 2. Applies silk publishability rules to each release
  * 3. Creates a GitHub check run to report findings
  * 4. Returns publishable packages and check details
  *
- * A package is considered publishable if:
- * - It has a changeset with version bump
- * - It has `publishConfig.access` set to "public" or "restricted"
- * - It's not marked as private: true in package.json (or has publishConfig.access override)
+ * A package is considered publishable if it has a changeset with a version
+ * bump AND (under silk rules) any of:
+ * - `private` is not `true` (publishes to default npm)
+ * - `private: true` plus `publishConfig.access` (single target)
+ * - `private: true` plus `publishConfig.targets` (one or more targets)
  */
 export async function detectPublishableChanges(
 	packageManager: string,
@@ -240,25 +258,32 @@ export async function detectPublishableChanges(
 	// Create lookup map: package name -> { path, packageJson }
 	const packageMap = new Map<string, { path: string; packageJson: PackageJson }>();
 
-	// Try to detect workspaces using workspace-tools
-	// Note: workspace-tools may not recognize all lock files (e.g., bun.lock)
+	// Discover workspaces via `workspaces-effect`'s sync API.
 	try {
-		const workspaceRoot = findProjectRoot(cwd);
-		debug(`workspace-tools findProjectRoot: ${workspaceRoot || "null"}`);
+		const workspaceRoot = findWorkspaceRootSync(cwd);
+		debug(`workspaces-effect findWorkspaceRootSync: ${workspaceRoot || "null"}`);
 
 		if (workspaceRoot) {
-			const workspaces = getWorkspaceInfos(workspaceRoot) ?? [];
-			debug(`workspace-tools getWorkspaceInfos returned ${workspaces.length} workspace(s)`);
+			const workspaces = getWorkspacePackagesSync(workspaceRoot);
+			debug(`workspaces-effect getWorkspacePackagesSync returned ${workspaces.length} workspace(s)`);
 
 			for (const workspace of workspaces) {
-				packageMap.set(workspace.name, {
-					path: workspace.path,
-					packageJson: workspace.packageJson as PackageJson,
-				});
+				// `WorkspacePackage.publishConfig` is a typed subset (no `targets`),
+				// so re-read raw package.json for silk rules.
+				let raw: PackageJson;
+				try {
+					raw = JSON.parse(await readFile(join(workspace.path, "package.json"), "utf-8")) as PackageJson;
+				} catch (err) {
+					debug(
+						`Failed to re-read ${workspace.path}/package.json: ${err instanceof Error ? err.message : String(err)}`,
+					);
+					raw = { name: workspace.name, version: workspace.version, private: workspace.private };
+				}
+				packageMap.set(workspace.name, { path: workspace.path, packageJson: raw });
 			}
 		}
 	} catch (err) {
-		debug(`workspace-tools failed: ${err instanceof Error ? err.message : String(err)}`);
+		debug(`workspaces-effect failed: ${err instanceof Error ? err.message : String(err)}`);
 	}
 
 	// Always check root package.json for single-package repos
@@ -310,13 +335,15 @@ export async function detectPublishableChanges(
 	if (packageMap.size > 0) {
 		info(`📦 Discovered ${packageMap.size} package(s) in workspace:`);
 		for (const [name, pkgInfo] of packageMap) {
-			const access = pkgInfo.packageJson.publishConfig?.access;
-			const isPrivate = pkgInfo.packageJson.private;
-			const strategy = access
-				? `publishConfig.access: ${access}`
-				: isPrivate
-					? "private (no publish)"
-					: "no publishConfig";
+			const targets = silkDetect(name, pkgInfo.packageJson);
+			let strategy: string;
+			if (targets.length === 0) {
+				strategy = pkgInfo.packageJson.private ? "private (no publish)" : "no publishConfig";
+			} else if (targets.length === 1) {
+				strategy = `publishes to ${targets[0].registry} (access: ${targets[0].access})`;
+			} else {
+				strategy = `publishes to ${targets.length} target(s): ${targets.map((t) => t.registry).join(", ")}`;
+			}
 			info(`   • ${name} (${strategy})`);
 		}
 	} else {
@@ -347,13 +374,19 @@ export async function detectPublishableChanges(
 		debug(`Found package.json for ${release.name} at ${packagePath}`);
 		debug(`Package config: ${JSON.stringify(packageJson, null, 2)}`);
 
-		// Check if package is publishable
-		const hasPublishConfig = packageJson.publishConfig?.access !== undefined;
-		const isPublicOrRestricted =
-			packageJson.publishConfig?.access === "public" || packageJson.publishConfig?.access === "restricted";
+		// Check if package is publishable under silk rules:
+		// - public (private!=true) → publishable
+		// - private + publishConfig.access → publishable
+		// - private + publishConfig.targets → publishable to each target
+		// - otherwise → version-only (GitHub release only)
+		const targets = silkDetect(release.name, packageJson);
 
-		if (hasPublishConfig && isPublicOrRestricted) {
-			info(`✓ ${release.name} is publishable (access: ${packageJson.publishConfig?.access})`);
+		if (targets.length > 0) {
+			const summary =
+				targets.length === 1
+					? `access: ${targets[0].access}, registry: ${targets[0].registry}`
+					: `${targets.length} targets`;
+			info(`✓ ${release.name} is publishable (${summary})`);
 			publishablePackages.push(release);
 		} else {
 			// Package has changesets but no publish targets - version-only (GitHub release only)

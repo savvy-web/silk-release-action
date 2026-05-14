@@ -37,9 +37,10 @@ describe("runCloseLinkedIssues", () => {
 			closedCount: 2,
 			failedCount: 0,
 			issues: [
-				{ number: 1, title: "Bug fix", state: "closed" as const, url: "https://github.com/test/issues/1" },
-				{ number: 2, title: "Feature", state: "closed" as const, url: "https://github.com/test/issues/2" },
+				{ number: 1, title: "Bug fix", closed: true },
+				{ number: 2, title: "Feature", closed: true },
 			],
+			checkId: 1,
 		});
 
 		await runCloseLinkedIssues({ token: "test-token", dryRun: false }, 42);
@@ -57,6 +58,7 @@ describe("runCloseLinkedIssues", () => {
 			closedCount: 0,
 			failedCount: 0,
 			issues: [],
+			checkId: 1,
 		});
 
 		await runCloseLinkedIssues({ token: "test-token", dryRun: false }, 42);
@@ -68,7 +70,8 @@ describe("runCloseLinkedIssues", () => {
 		vi.mocked(closeLinkedIssues).mockResolvedValue({
 			closedCount: 1,
 			failedCount: 1,
-			issues: [{ number: 1, title: "Bug fix", state: "closed" as const, url: "https://github.com/test/issues/1" }],
+			issues: [{ number: 1, title: "Bug fix", closed: true }],
+			checkId: 1,
 		});
 
 		await runCloseLinkedIssues({ token: "test-token", dryRun: false }, 42);
@@ -81,6 +84,7 @@ describe("runCloseLinkedIssues", () => {
 			closedCount: 0,
 			failedCount: 0,
 			issues: [],
+			checkId: 1,
 		});
 
 		await runCloseLinkedIssues({ token: "test-token", dryRun: true }, 10);
@@ -108,11 +112,12 @@ describe("runCloseLinkedIssues", () => {
 	});
 
 	it("should serialize issues array as JSON in output", async () => {
-		const issues = [{ number: 5, title: "Test", state: "closed" as const, url: "https://github.com/test/issues/5" }];
+		const issues = [{ number: 5, title: "Test", closed: true }];
 		vi.mocked(closeLinkedIssues).mockResolvedValue({
 			closedCount: 1,
 			failedCount: 0,
 			issues,
+			checkId: 1,
 		});
 
 		await runCloseLinkedIssues({ token: "test-token", dryRun: false }, 42);

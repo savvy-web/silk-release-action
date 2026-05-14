@@ -662,9 +662,10 @@ describe("update-release-branch", () => {
 		// Should not have duplicated the "Linked Issues" section
 		// calls[0] is title update, calls[1] is body update with linked issues
 		const bodyUpdateCall = mockOctokit.rest.pulls.update.mock.calls.find(
-			(call: [{ body?: string }]) => call[0].body !== undefined,
+			(call: unknown[]) => (call[0] as { body?: string }).body !== undefined,
 		);
-		const linkedIssuesCount = (bodyUpdateCall?.[0].body?.match(/## Linked Issues/g) || []).length;
+		const bodyArg = bodyUpdateCall?.[0] as { body?: string } | undefined;
+		const linkedIssuesCount = (bodyArg?.body?.match(/## Linked Issues/g) || []).length;
 		expect(linkedIssuesCount).toBe(1);
 	});
 

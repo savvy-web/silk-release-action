@@ -17,15 +17,15 @@ export interface AttestationResult {
 	/** Whether the attestation was created successfully */
 	success: boolean;
 	/** URL to the attestation on GitHub */
-	attestationUrl?: string;
+	attestationUrl?: string | undefined;
 	/** Attestation ID */
-	attestationId?: string;
+	attestationId?: string | undefined;
 	/** Transparency log ID */
-	tlogId?: string;
+	tlogId?: string | undefined;
 	/** Error message if failed */
-	error?: string;
+	error?: string | undefined;
 	/** Path to the SBOM JSON file (for SBOM attestations) */
-	sbomPath?: string;
+	sbomPath?: string | undefined;
 }
 
 /**
@@ -39,15 +39,15 @@ export interface SBOMValidationResult {
 	/** Number of production dependencies */
 	dependencyCount: number;
 	/** Warning message if SBOM will be empty or limited */
-	warning?: string;
+	warning?: string | undefined;
 	/** Error message if validation failed */
-	error?: string;
+	error?: string | undefined;
 	/**
 	 * The generated SBOM document if validation succeeded.
 	 * This can be reused during the actual attestation creation.
 	 * May be enhanced with additional metadata if enhanceMetadata option was enabled.
 	 */
-	generatedSbom?: CycloneDXDocument | EnhancedCycloneDXDocument;
+	generatedSbom?: CycloneDXDocument | EnhancedCycloneDXDocument | undefined;
 }
 
 /**
@@ -347,18 +347,18 @@ export interface CreatePackageAttestationOptions {
 	/** Whether to skip actual attestation creation */
 	dryRun: boolean;
 	/** Package manager to use for creating tarball if needed */
-	packageManager?: string;
+	packageManager?: string | undefined;
 	/**
 	 * Pre-computed SHA-256 digest from the published tarball (format: "sha256:hex").
 	 * If provided, this digest is used directly instead of computing from a local tarball.
 	 * This ensures the attestation matches the exact artifact published to the registry.
 	 */
-	tarballDigest?: string;
+	tarballDigest?: string | undefined;
 	/**
 	 * Registry URL where the package was published.
 	 * Used to determine if artifact metadata linking is applicable (GitHub Packages only).
 	 */
-	registry?: string;
+	registry?: string | undefined;
 }
 
 /**
@@ -1061,15 +1061,15 @@ export interface ValidateSBOMGenerationOptions {
 	/** Package manager to use for generating SBOM */
 	packageManager: string;
 	/** Map of workspace package names to their info for file: linking */
-	workspacePackages?: Map<string, WorkspacePackageInfo>;
+	workspacePackages?: Map<string, WorkspacePackageInfo> | undefined;
 	/** Package name (required for metadata enhancement) */
-	packageName?: string;
+	packageName?: string | undefined;
 	/** Package version (required for metadata enhancement) */
-	packageVersion?: string;
+	packageVersion?: string | undefined;
 	/** Repository root directory (for loading release config) */
-	rootDirectory?: string;
+	rootDirectory?: string | undefined;
 	/** Whether to enhance SBOM with metadata from config and package.json */
-	enhanceMetadata?: boolean;
+	enhanceMetadata?: boolean | undefined;
 }
 
 /**

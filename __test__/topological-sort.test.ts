@@ -1,19 +1,43 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PackageInfos } from "workspace-tools";
-import { createDependencyMap, getPackageInfos } from "workspace-tools";
+import type { WorkspacePackage } from "workspaces-effect";
+import { findWorkspaceRootSync, getWorkspacePackagesSync } from "workspaces-effect";
 import { sortPackageMapTopologically, sortPackagesTopologically } from "../src/utils/topological-sort.js";
 
-// Mock workspace-tools
-vi.mock("workspace-tools", () => ({
-	getPackageInfos: vi.fn(),
-	createDependencyMap: vi.fn(),
-}));
+// Mock workspaces-effect
+vi.mock("workspaces-effect");
 
 // Mock @actions/core
 vi.mock("@actions/core", () => ({
 	debug: vi.fn(),
 	info: vi.fn(),
 }));
+
+interface WorkspaceFixture {
+	name: string;
+	dependencies?: Record<string, string>;
+}
+
+const makePackages = (entries: WorkspaceFixture[]): WorkspacePackage[] =>
+	entries.map(
+		({ name, dependencies = {} }, idx) =>
+			({
+				name,
+				version: "1.0.0",
+				path: `/workspace/${name}`,
+				packageJsonPath: `/workspace/${name}/package.json`,
+				relativePath: idx === 0 ? "." : name,
+				private: false,
+				dependencies,
+				devDependencies: {},
+				peerDependencies: {},
+				optionalDependencies: {},
+			}) as unknown as WorkspacePackage,
+	);
+
+const mockWorkspace = (entries: WorkspaceFixture[], root = "/workspace") => {
+	vi.mocked(findWorkspaceRootSync).mockReturnValue(root);
+	vi.mocked(getWorkspacePackagesSync).mockReturnValue(makePackages(entries));
+};
 
 describe("topological-sort", () => {
 	beforeEach(() => {
@@ -40,21 +64,7 @@ describe("topological-sort", () => {
 		});
 
 		it("should handle packages with no dependencies", () => {
-			const mockPackageInfos = {
-				"pkg-a": { name: "pkg-a", packageJsonPath: "/path/a/package.json", version: "1.0.0" },
-				"pkg-b": { name: "pkg-b", packageJsonPath: "/path/b/package.json", version: "1.0.0" },
-				"pkg-c": { name: "pkg-c", packageJsonPath: "/path/c/package.json", version: "1.0.0" },
-			} as unknown as PackageInfos;
-
-			vi.mocked(getPackageInfos).mockReturnValue(mockPackageInfos);
-			vi.mocked(createDependencyMap).mockReturnValue({
-				dependencies: new Map([
-					["pkg-a", new Set<string>()],
-					["pkg-b", new Set<string>()],
-					["pkg-c", new Set<string>()],
-				]),
-				dependents: new Map(),
-			});
+			mockWorkspace([{ name: "pkg-a" }, { name: "pkg-b" }, { name: "pkg-c" }]);
 
 			const result = sortPackagesTopologically(["pkg-a", "pkg-b", "pkg-c"]);
 
@@ -68,21 +78,11 @@ describe("topological-sort", () => {
 
 		it("should sort packages with linear dependencies", () => {
 			// pkg-c depends on pkg-b, pkg-b depends on pkg-a
-			const mockPackageInfos = {
-				"pkg-a": { name: "pkg-a", packageJsonPath: "/path/a/package.json", version: "1.0.0" },
-				"pkg-b": { name: "pkg-b", packageJsonPath: "/path/b/package.json", version: "1.0.0" },
-				"pkg-c": { name: "pkg-c", packageJsonPath: "/path/c/package.json", version: "1.0.0" },
-			} as unknown as PackageInfos;
-
-			vi.mocked(getPackageInfos).mockReturnValue(mockPackageInfos);
-			vi.mocked(createDependencyMap).mockReturnValue({
-				dependencies: new Map([
-					["pkg-a", new Set<string>()],
-					["pkg-b", new Set(["pkg-a"])],
-					["pkg-c", new Set(["pkg-b"])],
-				]),
-				dependents: new Map(),
-			});
+			mockWorkspace([
+				{ name: "pkg-a" },
+				{ name: "pkg-b", dependencies: { "pkg-a": "1.0.0" } },
+				{ name: "pkg-c", dependencies: { "pkg-b": "1.0.0" } },
+			]);
 
 			const result = sortPackagesTopologically(["pkg-c", "pkg-b", "pkg-a"]);
 
@@ -92,23 +92,12 @@ describe("topological-sort", () => {
 
 		it("should sort packages with diamond dependencies", () => {
 			// pkg-d depends on pkg-b and pkg-c, both depend on pkg-a
-			const mockPackageInfos = {
-				"pkg-a": { name: "pkg-a", packageJsonPath: "/path/a/package.json", version: "1.0.0" },
-				"pkg-b": { name: "pkg-b", packageJsonPath: "/path/b/package.json", version: "1.0.0" },
-				"pkg-c": { name: "pkg-c", packageJsonPath: "/path/c/package.json", version: "1.0.0" },
-				"pkg-d": { name: "pkg-d", packageJsonPath: "/path/d/package.json", version: "1.0.0" },
-			} as unknown as PackageInfos;
-
-			vi.mocked(getPackageInfos).mockReturnValue(mockPackageInfos);
-			vi.mocked(createDependencyMap).mockReturnValue({
-				dependencies: new Map([
-					["pkg-a", new Set<string>()],
-					["pkg-b", new Set(["pkg-a"])],
-					["pkg-c", new Set(["pkg-a"])],
-					["pkg-d", new Set(["pkg-b", "pkg-c"])],
-				]),
-				dependents: new Map(),
-			});
+			mockWorkspace([
+				{ name: "pkg-a" },
+				{ name: "pkg-b", dependencies: { "pkg-a": "1.0.0" } },
+				{ name: "pkg-c", dependencies: { "pkg-a": "1.0.0" } },
+				{ name: "pkg-d", dependencies: { "pkg-b": "1.0.0", "pkg-c": "1.0.0" } },
+			]);
 
 			const result = sortPackagesTopologically(["pkg-d", "pkg-c", "pkg-b", "pkg-a"]);
 
@@ -121,23 +110,12 @@ describe("topological-sort", () => {
 		});
 
 		it("should filter out dependencies not in package set", () => {
-			// pkg-b depends on pkg-a and external-pkg (not in our set)
-			const mockPackageInfos = {
-				"pkg-a": { name: "pkg-a", packageJsonPath: "/path/a/package.json", version: "1.0.0" },
-				"pkg-b": { name: "pkg-b", packageJsonPath: "/path/b/package.json", version: "1.0.0" },
-				"external-pkg": { name: "external-pkg", packageJsonPath: "/path/ext/package.json", version: "1.0.0" },
-			} as unknown as PackageInfos;
+			// pkg-b depends on pkg-a and external-pkg (not a workspace member)
+			mockWorkspace([
+				{ name: "pkg-a" },
+				{ name: "pkg-b", dependencies: { "pkg-a": "1.0.0", "external-pkg": "1.0.0" } },
+			]);
 
-			vi.mocked(getPackageInfos).mockReturnValue(mockPackageInfos);
-			vi.mocked(createDependencyMap).mockReturnValue({
-				dependencies: new Map([
-					["pkg-a", new Set<string>()],
-					["pkg-b", new Set(["pkg-a", "external-pkg"])],
-				]),
-				dependents: new Map(),
-			});
-
-			// Only sorting pkg-a and pkg-b, external-pkg not included
 			const result = sortPackagesTopologically(["pkg-b", "pkg-a"]);
 
 			expect(result.success).toBe(true);
@@ -146,19 +124,10 @@ describe("topological-sort", () => {
 
 		it("should detect circular dependencies", () => {
 			// pkg-a depends on pkg-b, pkg-b depends on pkg-a
-			const mockPackageInfos = {
-				"pkg-a": { name: "pkg-a", packageJsonPath: "/path/a/package.json", version: "1.0.0" },
-				"pkg-b": { name: "pkg-b", packageJsonPath: "/path/b/package.json", version: "1.0.0" },
-			} as unknown as PackageInfos;
-
-			vi.mocked(getPackageInfos).mockReturnValue(mockPackageInfos);
-			vi.mocked(createDependencyMap).mockReturnValue({
-				dependencies: new Map([
-					["pkg-a", new Set(["pkg-b"])],
-					["pkg-b", new Set(["pkg-a"])],
-				]),
-				dependents: new Map(),
-			});
+			mockWorkspace([
+				{ name: "pkg-a", dependencies: { "pkg-b": "1.0.0" } },
+				{ name: "pkg-b", dependencies: { "pkg-a": "1.0.0" } },
+			]);
 
 			const result = sortPackagesTopologically(["pkg-a", "pkg-b"]);
 
@@ -168,38 +137,34 @@ describe("topological-sort", () => {
 			expect(result.sorted).toEqual(["pkg-a", "pkg-b"]);
 		});
 
-		it("should handle getPackageInfos throwing error", () => {
-			vi.mocked(getPackageInfos).mockImplementation(() => {
-				throw new Error("Failed to get package infos");
+		it("should handle getWorkspacePackagesSync throwing error", () => {
+			vi.mocked(findWorkspaceRootSync).mockReturnValue("/workspace");
+			vi.mocked(getWorkspacePackagesSync).mockImplementation(() => {
+				throw new Error("Failed to enumerate workspace packages");
 			});
 
 			const result = sortPackagesTopologically(["pkg-a", "pkg-b"]);
 
 			expect(result.success).toBe(false);
-			expect(result.error).toBe("Failed to get package infos");
+			expect(result.error).toBe("Failed to enumerate workspace packages");
 			// Should fall back to original order
 			expect(result.sorted).toEqual(["pkg-a", "pkg-b"]);
 		});
 
-		it("should handle createDependencyMap throwing error", () => {
-			const mockPackageInfos = {
-				"pkg-a": { name: "pkg-a", packageJsonPath: "/path/a/package.json", version: "1.0.0" },
-			} as unknown as PackageInfos;
-
-			vi.mocked(getPackageInfos).mockReturnValue(mockPackageInfos);
-			vi.mocked(createDependencyMap).mockImplementation(() => {
-				throw new Error("Failed to create dependency map");
+		it("should handle findWorkspaceRootSync throwing error", () => {
+			vi.mocked(findWorkspaceRootSync).mockImplementation(() => {
+				throw new Error("Failed to find workspace root");
 			});
 
 			const result = sortPackagesTopologically(["pkg-a", "pkg-b"]);
 
 			expect(result.success).toBe(false);
-			expect(result.error).toBe("Failed to create dependency map");
+			expect(result.error).toBe("Failed to find workspace root");
 			expect(result.sorted).toEqual(["pkg-a", "pkg-b"]);
 		});
 
 		it("should handle non-Error throws", () => {
-			vi.mocked(getPackageInfos).mockImplementation(() => {
+			vi.mocked(findWorkspaceRootSync).mockImplementation(() => {
 				throw "string error";
 			});
 
@@ -210,41 +175,21 @@ describe("topological-sort", () => {
 		});
 
 		it("should use custom cwd parameter", () => {
-			const mockPackageInfos = {
-				"pkg-a": { name: "pkg-a", packageJsonPath: "/custom/path/a/package.json", version: "1.0.0" },
-				"pkg-b": { name: "pkg-b", packageJsonPath: "/custom/path/b/package.json", version: "1.0.0" },
-			} as unknown as PackageInfos;
-
-			vi.mocked(getPackageInfos).mockReturnValue(mockPackageInfos);
-			vi.mocked(createDependencyMap).mockReturnValue({
-				dependencies: new Map([
-					["pkg-a", new Set<string>()],
-					["pkg-b", new Set<string>()],
-				]),
-				dependents: new Map(),
-			});
+			mockWorkspace([{ name: "pkg-a" }, { name: "pkg-b" }], "/custom/path");
 
 			// Need 2+ packages to trigger actual sorting (single package short-circuits)
 			sortPackagesTopologically(["pkg-a", "pkg-b"], "/custom/path");
 
-			expect(getPackageInfos).toHaveBeenCalledWith("/custom/path");
+			expect(findWorkspaceRootSync).toHaveBeenCalledWith("/custom/path");
 		});
 
-		it("should handle packages with missing dependency info", () => {
-			const mockPackageInfos = {
-				"pkg-a": { name: "pkg-a", packageJsonPath: "/path/a/package.json", version: "1.0.0" },
-				"pkg-b": { name: "pkg-b", packageJsonPath: "/path/b/package.json", version: "1.0.0" },
-			} as unknown as PackageInfos;
-
-			vi.mocked(getPackageInfos).mockReturnValue(mockPackageInfos);
-			// Return empty map - no dependency info for any package
-			vi.mocked(createDependencyMap).mockReturnValue({
-				dependencies: new Map(),
-				dependents: new Map(),
-			});
+		it("should handle workspace with no detectable root", () => {
+			vi.mocked(findWorkspaceRootSync).mockReturnValue(null);
 
 			const result = sortPackagesTopologically(["pkg-a", "pkg-b"]);
 
+			// With no workspace root, dependency map is empty, so packages appear
+			// independent and sort succeeds in arbitrary order.
 			expect(result.success).toBe(true);
 			expect(result.sorted).toHaveLength(2);
 		});
@@ -252,19 +197,7 @@ describe("topological-sort", () => {
 
 	describe("sortPackageMapTopologically", () => {
 		it("should sort map entries in dependency order", () => {
-			const mockPackageInfos = {
-				"pkg-a": { name: "pkg-a", packageJsonPath: "/path/a/package.json", version: "1.0.0" },
-				"pkg-b": { name: "pkg-b", packageJsonPath: "/path/b/package.json", version: "1.0.0" },
-			} as unknown as PackageInfos;
-
-			vi.mocked(getPackageInfos).mockReturnValue(mockPackageInfos);
-			vi.mocked(createDependencyMap).mockReturnValue({
-				dependencies: new Map([
-					["pkg-a", new Set<string>()],
-					["pkg-b", new Set(["pkg-a"])],
-				]),
-				dependents: new Map(),
-			});
+			mockWorkspace([{ name: "pkg-a" }, { name: "pkg-b", dependencies: { "pkg-a": "1.0.0" } }]);
 
 			const packageMap = new Map<string, { version: string }>([
 				["pkg-b", { version: "2.0.0" }],
@@ -280,15 +213,7 @@ describe("topological-sort", () => {
 		});
 
 		it("should preserve package info in tuples", () => {
-			const mockPackageInfos = {
-				"pkg-a": { name: "pkg-a", packageJsonPath: "/path/a/package.json", version: "1.0.0" },
-			} as unknown as PackageInfos;
-
-			vi.mocked(getPackageInfos).mockReturnValue(mockPackageInfos);
-			vi.mocked(createDependencyMap).mockReturnValue({
-				dependencies: new Map([["pkg-a", new Set<string>()]]),
-				dependents: new Map(),
-			});
+			mockWorkspace([{ name: "pkg-a" }]);
 
 			const complexInfo = {
 				version: "1.0.0",
@@ -313,19 +238,10 @@ describe("topological-sort", () => {
 		it("should log warning on circular dependency", async () => {
 			const { info } = await import("@actions/core");
 
-			const mockPackageInfos = {
-				"pkg-a": { name: "pkg-a", packageJsonPath: "/path/a/package.json", version: "1.0.0" },
-				"pkg-b": { name: "pkg-b", packageJsonPath: "/path/b/package.json", version: "1.0.0" },
-			} as unknown as PackageInfos;
-
-			vi.mocked(getPackageInfos).mockReturnValue(mockPackageInfos);
-			vi.mocked(createDependencyMap).mockReturnValue({
-				dependencies: new Map([
-					["pkg-a", new Set(["pkg-b"])],
-					["pkg-b", new Set(["pkg-a"])],
-				]),
-				dependents: new Map(),
-			});
+			mockWorkspace([
+				{ name: "pkg-a", dependencies: { "pkg-b": "1.0.0" } },
+				{ name: "pkg-b", dependencies: { "pkg-a": "1.0.0" } },
+			]);
 
 			const packageMap = new Map([
 				["pkg-a", { version: "1.0.0" }],
@@ -341,15 +257,7 @@ describe("topological-sort", () => {
 		it("should filter out packages not found in map", () => {
 			// This tests when sortPackagesTopologically returns a package name
 			// that somehow isn't in our map (edge case)
-			const mockPackageInfos = {
-				"pkg-a": { name: "pkg-a", packageJsonPath: "/path/a/package.json", version: "1.0.0" },
-			} as unknown as PackageInfos;
-
-			vi.mocked(getPackageInfos).mockReturnValue(mockPackageInfos);
-			vi.mocked(createDependencyMap).mockReturnValue({
-				dependencies: new Map([["pkg-a", new Set<string>()]]),
-				dependents: new Map(),
-			});
+			mockWorkspace([{ name: "pkg-a" }]);
 
 			const packageMap = new Map([["pkg-a", { version: "1.0.0" }]]);
 
@@ -359,19 +267,7 @@ describe("topological-sort", () => {
 		});
 
 		it("should use custom cwd parameter", () => {
-			const mockPackageInfos = {
-				"pkg-a": { name: "pkg-a", packageJsonPath: "/custom/path/a/package.json", version: "1.0.0" },
-				"pkg-b": { name: "pkg-b", packageJsonPath: "/custom/path/b/package.json", version: "1.0.0" },
-			} as unknown as PackageInfos;
-
-			vi.mocked(getPackageInfos).mockReturnValue(mockPackageInfos);
-			vi.mocked(createDependencyMap).mockReturnValue({
-				dependencies: new Map([
-					["pkg-a", new Set<string>()],
-					["pkg-b", new Set<string>()],
-				]),
-				dependents: new Map(),
-			});
+			mockWorkspace([{ name: "pkg-a" }, { name: "pkg-b" }], "/custom/path");
 
 			// Need 2+ packages to trigger actual sorting (single package short-circuits)
 			const packageMap = new Map([
@@ -381,7 +277,7 @@ describe("topological-sort", () => {
 
 			sortPackageMapTopologically(packageMap, "/custom/path");
 
-			expect(getPackageInfos).toHaveBeenCalledWith("/custom/path");
+			expect(findWorkspaceRootSync).toHaveBeenCalledWith("/custom/path");
 		});
 	});
 });

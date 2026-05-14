@@ -15,11 +15,11 @@
  */
 export interface SBOMContact {
 	/** Contact name (inferred from package.json author) */
-	name?: string;
+	name?: string | undefined;
 	/** Contact email (inferred from package.json author or security contact) */
-	email?: string;
+	email?: string | undefined;
 	/** Contact phone */
-	phone?: string;
+	phone?: string | undefined;
 }
 
 /**
@@ -33,9 +33,9 @@ export interface SBOMSupplierConfig {
 	/** Organization or company name (required for NTIA compliance) */
 	name: string;
 	/** Organization website URLs */
-	url?: string | string[];
+	url?: string | string[] | undefined;
 	/** Contact information (security contact recommended) */
-	contact?: SBOMContact | SBOMContact[];
+	contact?: SBOMContact | SBOMContact[] | undefined;
 }
 
 /**
@@ -183,17 +183,17 @@ export interface ReleaseConfig {
  */
 export interface InferredSBOMMetadata {
 	/** Author name parsed from package.json author field */
-	authorName?: string;
+	authorName?: string | undefined;
 	/** Author email parsed from package.json author field */
-	authorEmail?: string;
+	authorEmail?: string | undefined;
 	/** VCS URL from package.json repository field */
-	vcsUrl?: string;
+	vcsUrl?: string | undefined;
 	/** Issue tracker URL from package.json bugs field */
-	issueTrackerUrl?: string;
+	issueTrackerUrl?: string | undefined;
 	/** Documentation/homepage URL from package.json homepage field */
-	documentationUrl?: string;
+	documentationUrl?: string | undefined;
 	/** Package license from package.json license field */
-	license?: string;
+	license?: string | undefined;
 }
 
 /**
@@ -205,19 +205,25 @@ export interface InferredSBOMMetadata {
  */
 export interface ResolvedSBOMMetadata {
 	/** Supplier information */
-	supplier?: {
-		name: string;
-		url?: string[];
-		contact?: Array<{ name?: string; email?: string; phone?: string }>;
-	};
+	supplier?:
+		| {
+				name: string;
+				url?: string[] | undefined;
+				contact?:
+					| Array<{ name?: string | undefined; email?: string | undefined; phone?: string | undefined }>
+					| undefined;
+		  }
+		| undefined;
 	/** Component metadata */
-	component?: {
-		publisher?: string;
-		copyright?: string;
-		externalReferences?: SBOMExternalReference[];
-	};
+	component?:
+		| {
+				publisher?: string | undefined;
+				copyright?: string | undefined;
+				externalReferences?: SBOMExternalReference[] | undefined;
+		  }
+		| undefined;
 	/** Author of the component */
-	author?: string;
+	author?: string | undefined;
 }
 
 /**
@@ -249,9 +255,9 @@ export interface NTIAFieldResult {
 	/** Whether the field passes compliance */
 	passed: boolean;
 	/** Value found (if any) */
-	value?: string;
+	value?: string | undefined;
 	/** Suggestion for how to fix if missing */
-	suggestion?: string;
+	suggestion?: string | undefined;
 }
 
 /**
@@ -263,31 +269,41 @@ export interface NTIAFieldResult {
  */
 export interface EnhancedCycloneDXMetadata {
 	/** Timestamp when SBOM was generated */
-	timestamp?: string;
+	timestamp?: string | undefined;
 	/** Supplier/distributor information */
-	supplier?: {
-		name: string;
-		url?: string[];
-		contact?: Array<{ name?: string; email?: string; phone?: string }>;
-	};
+	supplier?:
+		| {
+				name: string;
+				url?: string[] | undefined;
+				contact?:
+					| Array<{ name?: string | undefined; email?: string | undefined; phone?: string | undefined }>
+					| undefined;
+		  }
+		| undefined;
 	/** Component being described */
-	component?: {
-		type?: string;
-		name: string;
-		version?: string;
-		publisher?: string;
-		copyright?: string;
-		purl?: string;
-		externalReferences?: SBOMExternalReference[];
-	};
+	component?:
+		| {
+				type?: string | undefined;
+				name: string;
+				version?: string | undefined;
+				publisher?: string | undefined;
+				copyright?: string | undefined;
+				purl?: string | undefined;
+				externalReferences?: SBOMExternalReference[] | undefined;
+		  }
+		| undefined;
 	/** Tool that generated the SBOM */
-	tools?: {
-		components?: Array<{
-			type: string;
-			name: string;
-			version?: string;
-		}>;
-	};
+	tools?:
+		| {
+				components?:
+					| Array<{
+							type: string;
+							name: string;
+							version?: string | undefined;
+					  }>
+					| undefined;
+		  }
+		| undefined;
 }
 
 /**
@@ -296,19 +312,23 @@ export interface EnhancedCycloneDXMetadata {
 export interface EnhancedCycloneDXComponent {
 	type: string;
 	name: string;
-	version?: string;
-	purl?: string;
-	publisher?: string;
-	copyright?: string;
-	licenses?: Array<{
-		license?: {
-			id?: string;
-			name?: string;
-			url?: string;
-		};
-		expression?: string;
-	}>;
-	externalReferences?: SBOMExternalReference[];
+	version?: string | undefined;
+	purl?: string | undefined;
+	publisher?: string | undefined;
+	copyright?: string | undefined;
+	licenses?:
+		| Array<{
+				license?:
+					| {
+							id?: string | undefined;
+							name?: string | undefined;
+							url?: string | undefined;
+					  }
+					| undefined;
+				expression?: string | undefined;
+		  }>
+		| undefined;
+	externalReferences?: SBOMExternalReference[] | undefined;
 }
 
 /**
@@ -318,11 +338,13 @@ export interface EnhancedCycloneDXDocument {
 	bomFormat: "CycloneDX";
 	specVersion: string;
 	version: number;
-	serialNumber?: string;
-	metadata?: EnhancedCycloneDXMetadata;
-	components?: EnhancedCycloneDXComponent[];
-	dependencies?: Array<{
-		ref: string;
-		dependsOn?: string[];
-	}>;
+	serialNumber?: string | undefined;
+	metadata?: EnhancedCycloneDXMetadata | undefined;
+	components?: EnhancedCycloneDXComponent[] | undefined;
+	dependencies?:
+		| Array<{
+				ref: string;
+				dependsOn?: string[] | undefined;
+		  }>
+		| undefined;
 }

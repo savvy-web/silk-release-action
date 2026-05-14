@@ -4,7 +4,7 @@ Unit testing patterns and infrastructure for workflow-release-action.
 
 __See also:__ [Root CLAUDE.md](../CLAUDE.md) | [src/CLAUDE.md](../src/CLAUDE.md)
 
-__For comprehensive testing documentation:__ `@../.claude/design/release-action/testing.md` -- covers mock factory internals, all specialized patterns (exec listeners, fake timers, filesystem, workspace-tools, GitHub context, core.summary), complete coverage map (38 test files), and coverage gap analysis.
+__For comprehensive testing documentation:__ `@../.claude/design/release-action/testing.md` -- covers mock factory internals, all specialized patterns (exec listeners, fake timers, filesystem, workspaces-effect sync APIs, GitHub context, core.summary), complete coverage map (39 test files, 956 tests), and coverage gap analysis.
 
 ## Running Tests
 

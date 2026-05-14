@@ -49,9 +49,9 @@ export interface AssetInfo {
 	/** Asset size in bytes */
 	size: number;
 	/** Attestation URL if attestation was created */
-	attestationUrl?: string;
+	attestationUrl?: string | undefined;
 	/** Registry this tarball was published to (if multi-target) */
-	registry?: string;
+	registry?: string | undefined;
 }
 
 /**
@@ -392,7 +392,7 @@ export async function createGitHubReleases(
 		let releaseNotes = "";
 
 		for (const pkg of associatedPackages) {
-			// Try to find CHANGELOG in the package directory using workspace-tools
+			// Try to find CHANGELOG in the package directory via workspaces-effect-backed lookup
 			const pkgPath = findPackagePath(pkg.name);
 			const changelogPaths: string[] = [];
 

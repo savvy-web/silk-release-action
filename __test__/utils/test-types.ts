@@ -16,6 +16,12 @@ export interface MockOctokit {
 		};
 		git?: {
 			getRef: ReturnType<typeof vi.fn>;
+			getCommit?: ReturnType<typeof vi.fn>;
+			createBlob?: ReturnType<typeof vi.fn>;
+			createTree?: ReturnType<typeof vi.fn>;
+			createCommit?: ReturnType<typeof vi.fn>;
+			updateRef?: ReturnType<typeof vi.fn>;
+			createRef?: ReturnType<typeof vi.fn>;
 		};
 		repos: {
 			get: ReturnType<typeof vi.fn>;

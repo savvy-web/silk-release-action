@@ -388,27 +388,27 @@ export function generatePublishSummary(
 export interface TargetPublishResult {
 	target: ResolvedTarget;
 	success: boolean;
-	registryUrl?: string;
-	attestationUrl?: string;
-	error?: string;
+	registryUrl?: string | undefined;
+	attestationUrl?: string | undefined;
+	error?: string | undefined;
 	/** Full stdout from publish command */
-	stdout?: string;
+	stdout?: string | undefined;
 	/** Full stderr from publish command */
-	stderr?: string;
+	stderr?: string | undefined;
 	/** Exit code from publish command */
-	exitCode?: number;
+	exitCode?: number | undefined;
 	/** True if version was already published - not an error, just skipped */
-	alreadyPublished?: boolean;
+	alreadyPublished?: boolean | undefined;
 	/** Reason for already published state */
-	alreadyPublishedReason?: AlreadyPublishedReason;
+	alreadyPublishedReason?: AlreadyPublishedReason | undefined;
 	/** Path to the tarball that was published */
-	tarballPath?: string;
+	tarballPath?: string | undefined;
 	/** SHA-256 digest of the published tarball (format: "sha256:hex") */
-	tarballDigest?: string;
+	tarballDigest?: string | undefined;
 	/** Path to the SBOM JSON file for this target */
-	sbomPath?: string;
+	sbomPath?: string | undefined;
 	/** URL to SBOM attestation for this target */
-	sbomAttestationUrl?: string;
+	sbomAttestationUrl?: string | undefined;
 }
 
 /**
@@ -419,7 +419,7 @@ export interface PackagePublishResult {
 	version: string;
 	targets: TargetPublishResult[];
 	/** URL to GitHub attestation (SLSA provenance) */
-	githubAttestationUrl?: string;
+	githubAttestationUrl?: string | undefined;
 }
 
 /**
@@ -755,13 +755,13 @@ export interface PreValidationTarget {
 	/** Validation status */
 	status: PreValidationStatus;
 	/** Error message if status is 'error' */
-	error?: string;
+	error?: string | undefined;
 	/** Local tarball shasum */
-	localIntegrity?: string;
+	localIntegrity?: string | undefined;
 	/** Remote tarball shasum */
-	remoteIntegrity?: string;
+	remoteIntegrity?: string | undefined;
 	/** Original registry URL */
-	registryUrl?: string | null;
+	registryUrl?: string | null | undefined;
 }
 
 /**

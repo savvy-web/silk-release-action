@@ -131,11 +131,11 @@ export interface PreValidationResult {
  */
 export interface PackageStats {
 	/** Packed tarball size (e.g., "1.2 kB") */
-	packageSize?: string;
+	packageSize?: string | undefined;
 	/** Unpacked size (e.g., "1.9 kB") */
-	unpackedSize?: string;
+	unpackedSize?: string | undefined;
 	/** Total number of files in the package */
-	totalFiles?: number;
+	totalFiles?: number | undefined;
 }
 
 /**
@@ -146,10 +146,10 @@ export interface DryRunResult {
 	output: string;
 	error: string;
 	versionConflict: boolean;
-	existingVersion?: string;
+	existingVersion?: string | undefined;
 	provenanceReady: boolean;
 	/** Package statistics from dry-run output */
-	stats?: PackageStats;
+	stats?: PackageStats | undefined;
 }
 
 /**
@@ -170,13 +170,13 @@ export interface TargetValidationResult {
 
 	// Version conflict detection
 	versionConflict: boolean;
-	existingVersion?: string;
+	existingVersion?: string | undefined;
 
 	// Provenance readiness
 	provenanceReady: boolean;
 
 	// Package statistics from dry-run
-	stats?: PackageStats;
+	stats?: PackageStats | undefined;
 
 	message: string;
 }
@@ -198,28 +198,34 @@ export interface PackagePublishValidation {
 	hasPublishableTargets: boolean;
 
 	/** Error message if package discovery failed (workspace path or package.json not found) */
-	discoveryError?: string;
+	discoveryError?: string | undefined;
 
 	/** SBOM validation result */
-	sbomValidation?: {
-		/** Whether SBOM generation is expected to work */
-		valid: boolean;
-		/** Whether the package has production dependencies */
-		hasDependencies: boolean;
-		/** Number of production dependencies */
-		dependencyCount: number;
-		/** Warning message if SBOM will be empty or limited */
-		warning?: string;
-		/** Error message if validation failed */
-		error?: string;
-		/** The generated SBOM document if validation succeeded */
-		generatedSbom?: {
-			bomFormat: string;
-			specVersion: string;
-			version: number;
-			components?: Array<{ type: string; name: string; version?: string; purl?: string }>;
-		};
-	};
+	sbomValidation?:
+		| {
+				/** Whether SBOM generation is expected to work */
+				valid: boolean;
+				/** Whether the package has production dependencies */
+				hasDependencies: boolean;
+				/** Number of production dependencies */
+				dependencyCount: number;
+				/** Warning message if SBOM will be empty or limited */
+				warning?: string | undefined;
+				/** Error message if validation failed */
+				error?: string | undefined;
+				/** The generated SBOM document if validation succeeded */
+				generatedSbom?:
+					| {
+							bomFormat: string;
+							specVersion: string;
+							version: number;
+							components?:
+								| Array<{ type: string; name: string; version?: string | undefined; purl?: string | undefined }>
+								| undefined;
+					  }
+					| undefined;
+		  }
+		| undefined;
 }
 
 /**
@@ -237,21 +243,21 @@ export interface PublishResult {
 	success: boolean;
 	output: string;
 	error: string;
-	exitCode?: number; // Exit code from publish command
-	registryUrl?: string; // URL to the published package
-	attestationUrl?: string; // URL to provenance/attestation
+	exitCode?: number | undefined; // Exit code from publish command
+	registryUrl?: string | undefined; // URL to the published package
+	attestationUrl?: string | undefined; // URL to provenance/attestation
 	/** True if publish failed because version already exists */
-	alreadyPublished?: boolean;
+	alreadyPublished?: boolean | undefined;
 	/** Reason for already published state - helps determine if it's safe to skip */
-	alreadyPublishedReason?: AlreadyPublishedReason;
+	alreadyPublishedReason?: AlreadyPublishedReason | undefined;
 	/** Local tarball integrity (shasum) */
-	localIntegrity?: string;
+	localIntegrity?: string | undefined;
 	/** Remote tarball integrity (shasum) from registry */
-	remoteIntegrity?: string;
+	remoteIntegrity?: string | undefined;
 	/** Path to the tarball that was published */
-	tarballPath?: string;
+	tarballPath?: string | undefined;
 	/** SHA-256 digest of the published tarball (format: "sha256:hex") */
-	tarballDigest?: string;
+	tarballDigest?: string | undefined;
 }
 
 /**
@@ -292,13 +298,15 @@ export interface NpmVersionInfo {
 	/** Dist-tags (latest, next, etc.) */
 	distTags: Record<string, string>;
 	/** Distribution info for the specific version */
-	dist?: {
-		integrity?: string;
-		shasum?: string;
-		tarball?: string;
-	};
+	dist?:
+		| {
+				integrity?: string | undefined;
+				shasum?: string | undefined;
+				tarball?: string | undefined;
+		  }
+		| undefined;
 	/** Timestamps for when each version was published */
-	time?: Record<string, string>;
+	time?: Record<string, string> | undefined;
 }
 
 /**

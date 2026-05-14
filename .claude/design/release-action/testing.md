@@ -3,8 +3,15 @@ title: Testing Strategy and Infrastructure
 category: testing
 status: current
 completeness: 90
-last-synced: 2026-02-10
+created: 2026-02-07
+updated: 2026-05-13
+last-synced: 2026-05-13
 module: release-action
+related:
+  - architecture.md
+  - integration.md
+dependencies:
+  - architecture.md
 ---
 
 ## Table of Contents
@@ -29,11 +36,12 @@ module: release-action
 
 ## Overview
 
-The project uses Vitest 4.0.8 with a comprehensive test suite of 38 test
-files (~23,340 lines) covering 37+ utility modules. Tests enforce type-safe
-mocking with zero `any` types and maintain 85%+ coverage per file via the
-V8 provider. All external dependencies (GitHub API, exec, file system) are
-mocked to ensure tests are fast, reliable, and isolated.
+The project uses Vitest 4.0.8 with a comprehensive test suite of 39 test
+files (956 tests) covering the silk-publishability rules and all utility
+modules. Tests enforce type-safe mocking with zero `any` types and maintain
+85%+ coverage per file via the V8 provider. All external dependencies
+(GitHub API, exec, file system, `workspaces-effect`) are mocked to ensure
+tests are fast, reliable, and isolated.
 
 ## Current State
 
@@ -231,22 +239,72 @@ vi.mocked(readFile).mockImplementation(async (path) => {
 });
 ```
 
-#### Workspace Tools Mocking
+#### Workspace Mocking (`workspaces-effect`)
 
-Workspace-related tests mock the `getWorkspaceInfos` utility to simulate
-monorepo package discovery:
+Workspace-related tests mock `workspaces-effect`'s sync API to simulate
+monorepo (and single-package) discovery. Tests typically stub both
+`findWorkspaceRootSync` (returns the workspace root, or `null` for
+"not a workspace") and `getWorkspacePackagesSync` (returns the array
+of `WorkspacePackage` Schema.Class instances):
 
 ```typescript
-vi.mocked(getWorkspaceInfos).mockReturnValue([{
-  name: "@test/pkg-a",
-  path: "/test/workspace/packages/pkg-a",
-  packageJson: {
+import { findWorkspaceRootSync, getWorkspacePackagesSync } from "workspaces-effect";
+
+vi.mock("workspaces-effect");
+
+vi.mocked(findWorkspaceRootSync).mockReturnValue("/test/workspace");
+vi.mocked(getWorkspacePackagesSync).mockReturnValue([
+  {
     name: "@test/pkg-a",
     version: "0.0.0",
+    path: "/test/workspace/packages/pkg-a",
+    packageJsonPath: "/test/workspace/packages/pkg-a/package.json",
+    relativePath: "packages/pkg-a",
+    private: false,
+    dependencies: {},
+    devDependencies: {},
+    peerDependencies: {},
+    optionalDependencies: {},
     publishConfig: { access: "public" },
   },
-}]);
+]);
 ```
+
+Tests that need to inspect `publishConfig.targets` (which is not in
+`workspaces-effect`'s typed `PublishConfig` schema) additionally stub
+`fs.readFileSync` per workspace path to return the raw `package.json`
+JSON string. This mirrors the production pattern in
+`release-summary-helpers.ts:getAllWorkspacePackages` and
+`detect-publishable-changes.ts`, which re-read each package's raw
+`package.json` from disk and feed it through `silkDetect()`:
+
+```typescript
+vi.mocked(findWorkspaceRootSync).mockReturnValue("/test/workspace");
+vi.mocked(getWorkspacePackagesSync).mockReturnValue([
+  /* ...workspace package stubs... */
+]);
+vi.mocked(fs.readFileSync).mockImplementation((p: fs.PathOrFileDescriptor) => {
+  const path = String(p);
+  if (path.includes("packages/pkg-a/package.json")) {
+    return JSON.stringify({
+      name: "@test/pkg-a",
+      version: "0.0.0",
+      private: true,
+      publishConfig: { targets: ["npm", "github"] },
+    });
+  }
+  if (path.includes(".changeset/config.json")) {
+    return JSON.stringify({ ignore: [] });
+  }
+  return "{}";
+});
+```
+
+This per-path `readFileSync` routing is used in
+`__test__/release-summary-helpers.test.ts` and
+`__test__/detect-publishable-changes.test.ts` to exercise the full silk
+publishability matrix (private+targets, private+access, public default,
+not publishable) without touching the real filesystem.
 
 #### GitHub Context Mocking
 
@@ -287,7 +345,7 @@ Object.defineProperty(core, "summary", {
 
 ### Test Coverage Map
 
-All 38 test files mapped to their source modules and workflow phase:
+All 39 test files mapped to their source modules and workflow phase:
 
 | Test File | Source Module | Category |
 | --------- | ------------ | -------- |
@@ -326,6 +384,7 @@ All 38 test files mapped to their source modules and workflow phase:
 | `create-app-token.test.ts` | `create-app-token.ts` | Infra |
 | `check-version-exists.test.ts` | `check-version-exists.ts` | Infra |
 | `detect-repo-type.test.ts` | `detect-repo-type.ts` | Infra |
+| `silk-publishability.test.ts` | `silk-publishability.ts` | Infra |
 | `detect-copyright-year.test.ts` | `detect-copyright-year.ts` | SBOM |
 | `enhance-sbom-metadata.test.ts` | `enhance-sbom-metadata.ts` | SBOM |
 | `infer-sbom-metadata.test.ts` | `infer-sbom-metadata.ts` | SBOM |

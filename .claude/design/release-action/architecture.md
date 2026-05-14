@@ -3,8 +3,14 @@ title: Release Action Architecture
 category: architecture
 status: current
 completeness: 95
-last-synced: 2026-02-10
+created: 2026-02-07
+updated: 2026-05-13
+last-synced: 2026-05-13
 module: release-action
+related:
+  - integration.md
+  - testing.md
+dependencies: []
 ---
 
 ## Table of Contents
@@ -26,6 +32,7 @@ module: release-action
   - [Why Recreate vs Rebase?](#why-recreate-vs-rebase)
   - [Why Pre-validate All Targets?](#why-pre-validate-all-targets)
   - [Why Topological Sorting?](#why-topological-sorting)
+  - [Why a Silk-Specific Publishability Helper?](#why-a-silk-specific-publishability-helper)
 - [Key Design Patterns](#key-design-patterns)
   - [State Management](#state-management)
   - [Error Handling Strategy](#error-handling-strategy)
@@ -49,7 +56,7 @@ operations produce GitHub Check Runs for rich CI feedback and post sticky
 comments on the release PR for at-a-glance status.
 
 The codebase totals approximately 17,000 lines of TypeScript across 3 entry
-points, 38 utility modules, and 4 type definition files.
+points, 39 utility modules, and 4 type definition files.
 
 ## Current State
 
@@ -124,12 +131,20 @@ Detection priority order:
 Triggers on push to `main` (non-release commits). Three sequential steps:
 
 - **`detect-publishable-changes.ts`** (467 lines) -- Runs
-  `changeset status --output=json` to find pending changesets. Builds a
-  package map from `workspace-tools`, reads each package's `package.json` to
-  check for `publishConfig.access` or publish targets. Separates packages into
-  two categories: publishable (have registry targets) and version-only (have
-  changesets but no publish targets -- receive version bumps and GitHub
-  releases only). Creates a GitHub Check Run summarizing discovered packages.
+  `changeset status --output=json` to find pending changesets. Discovers
+  workspace packages via `workspaces-effect`'s sync API
+  (`findWorkspaceRootSync` + `getWorkspacePackagesSync`), reads each
+  package's raw `package.json`, then applies the silk publishability rules
+  via `silkDetect()` from `silk-publishability.ts`. Separates packages
+  into two categories: publishable (silk returns one or more
+  `PublishTarget`s) and version-only (have changesets but silk returns
+  an empty target list -- receive version bumps and GitHub releases
+  only). Creates a GitHub Check Run summarizing discovered packages.
+  Historical note: an earlier implementation gated publishability on
+  `hasPublishConfig && isPublicOrRestricted`, which honored only
+  `publishConfig.access`. Private packages that declared
+  `publishConfig.targets` were misclassified as version-only. The silk
+  helper makes private+targets first-class.
 
 - **`get-changeset-status.ts`** (236 lines) -- Wraps the changeset status
   command with fallback logic. If changesets have already been consumed (after
@@ -277,7 +292,9 @@ main.ts
   |     detect-publishable-changes.ts
   |       +-- get-changeset-status.ts
   |       +-- find-package-path.ts
+  |       +-- silk-publishability.ts
   |       +-- release-summary-helpers.ts
+  |         +-- silk-publishability.ts
   |     check-release-branch.ts
   |     create-release-branch.ts
   |       +-- create-api-commit.ts
@@ -329,6 +346,9 @@ main.ts
         resolve-targets.ts (Phase 2: validate, Phase 3: publish)
         find-package-path.ts (Phase 1: detect, Phase 3: detect)
         release-summary-helpers.ts (Phase 1: detect, Phase 3: tags)
+        silk-publishability.ts
+          (Phase 1: detect-publishable-changes,
+           Phase 1/3: release-summary-helpers)
         logger.ts (all phases)
         summary-writer.ts (all phases)
 ```
@@ -346,10 +366,16 @@ main.ts
   bulleted lists, headings, code blocks, sections, and multi-section document
   building. Writes to the GitHub Actions job summary.
 
-- **`topological-sort.ts`** (150 lines) -- Implements Kahn's algorithm for
-  sorting packages in dependency order. Uses `workspace-tools` to build the
-  dependency graph. Returns sorted package names with dependencies first,
-  or reports circular dependency errors.
+- **`topological-sort.ts`** (170 lines) -- Implements Kahn's algorithm for
+  sorting packages in dependency order. Discovers workspaces via
+  `workspaces-effect` (`findWorkspaceRootSync` + `getWorkspacePackagesSync`)
+  and builds the production-dependency map inline from each
+  `WorkspacePackage.dependencies` field. This intentionally mirrors the
+  old `workspace-tools` `createDependencyMap` call with
+  `withDevDependencies: false`, `withPeerDependencies: false`,
+  `withOptionalDependencies: false` -- only `dependencies` participates
+  in publish order. Returns sorted package names with dependencies
+  first, or reports circular dependency errors.
 
 - **`create-api-commit.ts`** (326 lines) -- Creates Git commits via the
   GitHub REST API (blob, tree, commit, ref update). Produces automatically
@@ -366,15 +392,40 @@ main.ts
   the token prefix and querying the API. Logs diagnostic information about
   the authenticated identity.
 
-- **`find-package-path.ts`** (106 lines) -- Resolves package names to
-  filesystem paths using `workspace-tools`. Caches the workspace map to
-  avoid repeated filesystem operations across multiple lookups.
+- **`find-package-path.ts`** (96 lines) -- Resolves package names to
+  filesystem paths using `workspaces-effect`'s sync API
+  (`findWorkspaceRootSync` + `getWorkspacePackagesSync`). Caches the
+  workspace map to avoid repeated filesystem operations across multiple
+  lookups.
 
-- **`detect-repo-type.ts`** (289 lines) -- Detects whether the repository is
-  a monorepo or single-package repo. Auto-detects the package manager from
-  the `packageManager` field in `package.json` or lockfile presence
-  (`pnpm-lock.yaml`, `yarn.lock`, `bun.lock`, `package-lock.json`). Reads
-  changeset configuration for ignore patterns and private package handling.
+- **`detect-repo-type.ts`** (298 lines) -- Detects whether the repository is
+  a monorepo or single-package repo. A small `listWorkspacePackages()`
+  helper wraps `workspaces-effect`'s sync API; `isSinglePackage()`,
+  `hasWorkspacePackages()`, and `detectRepoType()` all consume it.
+  Auto-detects the package manager from the `packageManager` field in
+  `package.json`. Reads changeset configuration for ignore patterns and
+  private package handling.
+
+- **`silk-publishability.ts`** (141 lines) -- Non-Effect helper that
+  encodes the silk publishability rules used across all silk release
+  tooling. Exports `silkDetect(pkgName, rawPackageJson) → PublishTarget[]`
+  (the `PublishTarget` Schema.Class comes from `workspaces-effect`) and
+  the `isSilkPublishable()` predicate. The rules:
+  1. `private !== true` -- publishable to one default npm target (or
+     whatever `publishConfig.registry`/`access`/`directory` says).
+  2. `private === true` with `publishConfig.targets` -- publishable to
+     each target. String targets (`"npm"`, `"github"`, `"jsr"`, or URL
+     strings) inherit parent `access`; object targets may override
+     `access` and `registry`.
+  3. `private === true` with `publishConfig.access` (no `targets`) --
+     publishable to one target using that access.
+  4. Otherwise -- not publishable (empty array).
+  Mirrors the canonical implementations in
+  `pnpm-config-dependency-action/src/services/publishability.ts` and
+  `changesets/package/src/services/silk-publishability.ts` so that the
+  three actions agree on what counts as publishable. Used by
+  `detect-publishable-changes.ts` (Phase 1 routing) and
+  `release-summary-helpers.ts` (target counting for summaries).
 
 - **`parse-changesets.ts`** (246 lines) -- Parses changeset YAML frontmatter
   from `.changeset/*.md` files. Extracts package names, bump types, and
@@ -383,7 +434,12 @@ main.ts
 - **`release-summary-helpers.ts`** (282 lines) -- Package discovery and
   workspace analysis utilities. Provides changeset config reading
   (fixed/linked groups), workspace package info retrieval, and package
-  group classification.
+  group classification. `getAllWorkspacePackages()` re-reads each
+  workspace's raw `package.json` from disk (needed because
+  `workspaces-effect`'s typed `PublishConfig` schema does not surface
+  `publishConfig.targets`) and feeds the raw JSON through `silkDetect()`
+  so that `WorkspacePackageInfo.targetCount` reflects silk rules
+  rather than `publishConfig.access` alone.
 
 - **`registry-utils.ts`** (149 lines) -- Registry URL utilities including
   display name generation, package view URL construction, npm registry
@@ -510,6 +566,30 @@ at publish time. Without topological sorting, a package referencing
 registry, causing the publish to fail or the package to be installed with
 a stale dependency.
 
+### Why a Silk-Specific Publishability Helper?
+
+The vanilla `PublishabilityDetectorLive` exposed by `workspaces-effect`
+treats `package.json#private: true` as "not publishable" full stop. Silk
+convention extends that in two ways: private packages may opt back in by
+declaring `publishConfig.access` (one default target) or
+`publishConfig.targets` (one or more targets, possibly to private
+registries). Encoding those rules in a small non-Effect helper
+(`silk-publishability.ts`) gives the action three things:
+
+- **Cross-action agreement** -- the same rules are encoded identically in
+  `pnpm-config-dependency-action` and `changesets`, so all three tools
+  agree on which packages count as publishable.
+- **A clean swap path** -- when this repo eventually adopts the Effect
+  service shape used elsewhere in silk, the helper can be replaced by
+  the `PublishabilityDetector` Context.Tag without touching call sites.
+- **A real bug fix** -- the previous implementation gated on
+  `hasPublishConfig && publishConfig.access in {public, restricted}`,
+  which silently misclassified private packages with
+  `publishConfig.targets` as version-only (GitHub release only, no
+  registry publish). Both `detect-publishable-changes.ts` and
+  `release-summary-helpers.ts:getAllWorkspacePackages` now route
+  through `silkDetect()` so the two phases agree on the target list.
+
 ## Key Design Patterns
 
 ### State Management
@@ -601,12 +681,12 @@ releases, or publishing to any registry.
 | `src/utils/detect-copyright-year.ts` | 142 | Copyright year detection from LICENSE/git history |
 | `src/utils/detect-publishable-changes.ts` | 467 | Changeset detection and package discovery |
 | `src/utils/detect-released-packages.ts` | 303 | Detect version bumps from PR diff or commit |
-| `src/utils/detect-repo-type.ts` | 289 | Monorepo/single-repo and package manager detection |
+| `src/utils/detect-repo-type.ts` | 298 | Monorepo/single-repo and package manager detection (workspaces-effect) |
 | `src/utils/detect-workflow-phase.ts` | 411 | Phase routing based on GitHub event context |
 | `src/utils/determine-tag-strategy.ts` | 215 | Single vs per-package tag strategy selection |
 | `src/utils/dry-run-publish.ts` | 217 | Dry-run publish validation per registry |
 | `src/utils/enhance-sbom-metadata.ts` | 247 | Enrich CycloneDX SBOMs with supplier/copyright |
-| `src/utils/find-package-path.ts` | 106 | Workspace package path resolution with caching |
+| `src/utils/find-package-path.ts` | 96 | Workspace package path resolution with caching (workspaces-effect) |
 | `src/utils/generate-publish-summary.ts` | 1,055 | Markdown summaries for publish results |
 | `src/utils/generate-release-notes-preview.ts` | 460 | CHANGELOG extraction and preview Check Run |
 | `src/utils/generate-sbom-preview.ts` | 471 | SBOM preview generation and NTIA validation |
@@ -625,7 +705,8 @@ releases, or publishing to any registry.
 | `src/utils/resolve-targets.ts` | 208 | publishConfig to ResolvedTarget resolution |
 | `src/utils/run-close-linked-issues.ts` | 48 | Thin wrapper for close-linked-issues |
 | `src/utils/summary-writer.ts` | 125 | Type-safe markdown via ts-markdown |
-| `src/utils/topological-sort.ts` | 150 | Kahn's algorithm for dependency ordering |
+| `src/utils/silk-publishability.ts` | 141 | Silk publishability rules (private+targets, private+access, public default) |
+| `src/utils/topological-sort.ts` | 170 | Kahn's algorithm for dependency ordering (workspaces-effect) |
 | `src/utils/update-release-branch.ts` | 868 | Recreate release branch from main |
 | `src/utils/update-sticky-comment.ts` | 120 | Idempotent PR comment management |
 | `src/utils/validate-builds.ts` | 232 | Build validation with error annotation |
