@@ -172,6 +172,8 @@ const runBranchManagement = Effect.gen(function* () {
 						? null
 						: {
 								number: prNumber,
+								// runBranchManagement does not yield ActionEnvironment, so the
+								// repository slug is read straight from the env var here.
 								url: `https://github.com/${process.env.GITHUB_REPOSITORY ?? ""}/pull/${prNumber}`,
 								action: branchCheck.exists ? "updated" : "created",
 							},
@@ -197,13 +199,12 @@ const runValidation = Effect.gen(function* () {
 	const outputs = yield* ActionOutputs;
 	const env = yield* ActionEnvironment;
 	const client = yield* GitHubClient;
-	const fs = yield* FileSystem.FileSystem;
 
 	const releaseBranch = yield* Config.string("release-branch").pipe(Config.withDefault("changeset-release/main"));
 	const targetBranch = yield* Config.string("target-branch").pipe(Config.withDefault("main"));
 	const dryRun = yield* Config.boolean("dry-run").pipe(Config.withDefault(false));
 	const packageManager = yield* detectPackageManager;
-	const { sha, repository } = yield* env.github;
+	const { repository } = yield* env.github;
 	const [owner, repo] = repository.split("/");
 
 	yield* logger.group(
@@ -375,10 +376,7 @@ const runValidation = Effect.gen(function* () {
 				},
 			];
 			const unified = yield* createValidationCheck(checkResults, dryRun);
-			const checkRunUrl =
-				unified.checkId > 0
-					? `https://github.com/${process.env.GITHUB_REPOSITORY ?? ""}/runs/${unified.checkId}`
-					: null;
+			const checkRunUrl = unified.checkId > 0 ? `https://github.com/${repository}/runs/${unified.checkId}` : null;
 			const checkRunResult: { url: string; conclusion: string } | null =
 				checkRunUrl !== null ? { url: checkRunUrl, conclusion: unified.success ? "success" : "failure" } : null;
 
@@ -475,10 +473,6 @@ const runValidation = Effect.gen(function* () {
 				// the release-pr-number scalar is left empty for the validation phase.
 				releasePrNumber: null,
 			});
-
-			// Touch unused vars to satisfy unused-binding lint.
-			void sha;
-			void fs;
 		}).pipe(
 			Effect.catchAll((e) =>
 				Effect.gen(function* () {

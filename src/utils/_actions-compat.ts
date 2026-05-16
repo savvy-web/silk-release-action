@@ -24,7 +24,9 @@ import { spawn } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
 import { Octokit } from "@octokit/rest";
 
-const escapeCmd = (s: string): string => String(s).replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+// Matches @actions/core's workflow-command escaping, including the null byte.
+const escapeCmd = (s: string): string =>
+	String(s).replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A").replace(/\0/g, "%00");
 
 // ---------------------------------------------------------------------------
 // @actions/core — logging

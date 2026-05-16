@@ -36,7 +36,18 @@ export type ReleaseStatus = Schema.Schema.Type<typeof StatusLiteral>;
 
 /**
  * Derive the human-readable `status` label from the machine flags.
- * Precedence: no-op wins, then success, then partial, then failed.
+ *
+ * @remarks
+ * Precedence: no-op wins, then success, then partial, then failed. `status` is
+ * a coarse label for logs and summaries only — the three flags (`noop`,
+ * `succeeded`, `hasFailures`) are the machine contract.
+ *
+ * Because the projections set `hasFailures` on *any* failure, `"partial"`
+ * here means "completed with failures" — it does not distinguish a fully
+ * failed run from a mixed one (the three booleans carry no "some work landed"
+ * signal). The `"failed"` arm is therefore a defensive fallthrough that the
+ * current projections never reach; a consumer that needs failure granularity
+ * should read `succeeded`/`hasFailures` and the phase payload, not `status`.
  */
 export const deriveStatus = (flags: ReleaseFlags): ReleaseStatus => {
 	if (flags.noop) return "no-op";

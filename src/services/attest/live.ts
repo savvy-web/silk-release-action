@@ -84,6 +84,9 @@ const attestFromInput = (
 			),
 		);
 
+		// Flatten the bundle to a pure JSON value for the request body: the
+		// round-trip drops any class prototypes and non-JSON fields from the
+		// in-memory `@sigstore/bundle` object so only wire-safe data is POSTed.
 		const bundlePayload = JSON.parse(JSON.stringify(bundle)) as Record<string, unknown>;
 		const attestationId = yield* client
 			.rest("repos.createAttestation", async (octokit) => {
