@@ -22,6 +22,7 @@
 		"ci:version": "savvy-changesets version && biome format --write .",
 		"commit:check": "savvy-commit check",
 		"commit:init": "savvy-commit init",
+		"generate-schema": "tsx lib/scripts/generate-schema.ts",
 		"lint": "biome check --max-diagnostics=none",
 		"lint:fix": "biome check --write --max-diagnostics=none",
 		"lint:fix:unsafe": "biome check --write --unsafe --max-diagnostics=none",
@@ -36,7 +37,6 @@
 		"validate": "github-action-builder validate"
 	},
 	"dependencies": {
-		"@actions/attest": "^3.2.0",
 		"@actions/cache": "^6.0.0",
 		"@actions/core": "^3.0.0",
 		"@actions/exec": "^3.0.0",
@@ -45,20 +45,30 @@
 		"@actions/http-client": "^4.0.0",
 		"@actions/io": "^3.0.2",
 		"@actions/tool-cache": "^4.0.0",
+		"@cyclonedx/cyclonedx-library": "^10.0.0",
+		"@effect/platform": "catalog:silk",
+		"@effect/platform-node": "catalog:silk",
 		"@octokit/auth-app": "^8.2.0",
 		"@octokit/request": "^10.0.8",
 		"@octokit/rest": "^22.0.1",
+		"@savvy-web/github-action-effects": "^1.1.1",
+		"@sigstore/bundle": "^4",
+		"@sigstore/sign": "^4.1.1",
+		"effect": "catalog:silk",
 		"jsonc-parser": "^3.3.1",
 		"semver": "^7.7.4",
 		"ts-markdown": "^1.3.0",
-		"workspace-tools": "^0.41.0"
+		"workspaces-effect": "^1.0.0"
 	},
 	"devDependencies": {
-		"@savvy-web/changesets": "^0.9.0",
+		"@savvy-web/changesets": "^0.10.0",
 		"@savvy-web/commitlint": "^0.9.0",
-		"@savvy-web/github-action-builder": "^0.6.3",
-		"@savvy-web/lint-staged": "^1.0.0",
-		"@savvy-web/vitest": "^1.3.2"
+		"@savvy-web/github-action-builder": "^0.7.0",
+		"@savvy-web/lint-staged": "^1.0.1",
+		"@savvy-web/vitest": "^1.3.2",
+		"ajv": "^8.20.0",
+		"json-schema-effect": "^0.2.1",
+		"tsx": "^4.22.0"
 	},
 	"packageManager": "pnpm@10.33.4+sha512.1c67b3b359b2d408119ba1ed289f34b8fc3c6873412bec6fd264fbdc82489e510fcbecb9ce9d22dae7f3b76269d8441046014bdca53b9979cd7a561ad631b800",
 	"devEngines": {

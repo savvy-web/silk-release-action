@@ -7,10 +7,10 @@ branding:
 
 inputs:
   # GitHub App authentication (required)
-  app-id:
-    description: GitHub App ID for authentication
+  app-client-id:
+    description: GitHub App client ID for authentication
     required: true
-  private-key:
+  app-private-key:
     description: GitHub App private key (PEM format)
     required: true
   github-token:
@@ -102,57 +102,27 @@ inputs:
     default: ""
 
 outputs:
-  # Token outputs (when using app-id/private-key)
   token:
     description: Generated GitHub App installation token (for use in subsequent steps)
   installation-id:
     description: GitHub App installation ID
   app-slug:
     description: GitHub App slug (URL-friendly name)
-
-  # Phase 1: Detection outputs
-  has_changes:
-    description: Whether publishable changes were detected
-  publishable_packages:
-    description: JSON array of packages with changes
-
-  # Phase 1: Branch outputs
-  release_branch_exists:
-    description: Whether the release branch exists
-  release_branch_has_open_pr:
-    description: Whether there's an open PR
-  release_pr_number:
-    description: PR number if PR exists
-  release_branch_created:
-    description: Whether a new release branch was created
-  release_branch_updated:
-    description: Whether the release branch was updated
-  has_conflicts:
-    description: Whether the update resulted in conflicts
-
-  # Phase 2: Validation outputs
-  linked_issues:
-    description: JSON array of linked issues
-  builds_passed:
-    description: Whether all builds passed
-  npm_publish_ready:
-    description: Whether packages are ready for NPM publish
-  github_packages_ready:
-    description: Whether packages are ready for GitHub Packages
-
-  # Multi-registry publish outputs
-  released_packages:
-    description: JSON array of released packages with name, version, and targets
-  release_type:
-    description: Type of release (major, minor, or patch)
-  release_tags:
-    description: JSON array of created git tags
-  package_count:
-    description: Number of packages released
-  publish_results:
-    description: JSON array of publish results per package and target
-  success:
-    description: Whether the release was fully successful
+  result:
+    description: |
+      Structured JSON describing what the run did. A phase-discriminated object
+      validated by https://json.schemastore.org/silk-release-action.schema.json.
+      Parse it for the full contract; the scalars below mirror the common facts.
+  phase:
+    description: "Phase that ran: branch-management, validation, or publishing"
+  status:
+    description: "Human-readable run status: no-op, success, partial, or failed"
+  succeeded:
+    description: Whether all intended work completed (or correctly did nothing)
+  package-count:
+    description: Number of packages the phase touched
+  release-pr-number:
+    description: Release PR number, when one is involved (empty otherwise)
 
 runs:
   using: node24

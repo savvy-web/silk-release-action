@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { debug, getInput, info, warning } from "@actions/core";
 import { parse as parseJsonc } from "jsonc-parser";
 import type { ReleaseConfig, SBOMMetadataConfig } from "../types/sbom-config.js";
+import { debug, getInput, info, warning } from "./_actions-compat.js";
 
 /**
  * Config file names to search for (in order of preference)

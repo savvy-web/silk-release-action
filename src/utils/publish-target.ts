@@ -1,8 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { debug, error, info, warning } from "@actions/core";
-import { exec } from "@actions/exec";
 import type {
 	AlreadyPublishedReason,
 	NpmVersionInfo,
@@ -11,6 +9,7 @@ import type {
 	ResolvedTarget,
 	VersionCheckResult,
 } from "../types/publish-config.js";
+import { debug, error, exec, info, warning } from "./_actions-compat.js";
 import { generatePackageViewUrl, getRegistryDisplayName } from "./registry-utils.js";
 
 /**
@@ -427,7 +426,11 @@ export async function checkVersionExists(
 async function compareTarballIntegrity(
 	target: ResolvedTarget,
 	packageManager: string,
-): Promise<{ reason: AlreadyPublishedReason; localIntegrity?: string; remoteIntegrity?: string }> {
+): Promise<{
+	reason: AlreadyPublishedReason;
+	localIntegrity?: string | undefined;
+	remoteIntegrity?: string | undefined;
+}> {
 	const pkgJsonPath = join(target.directory, "package.json");
 	if (!existsSync(pkgJsonPath)) {
 		return { reason: "unknown" };
@@ -534,6 +537,14 @@ async function publishToNpmCompatible(
 					info(`  Current dist-tags: ${tagsList}`);
 				}
 
+				// Pack fresh from target.directory if no pre-packed tarball
+				// was supplied. Downstream consumers (release assets, SBOM
+				// uploads, provenance attestations) need a path to the
+				// actual artifact — npm pack resolves the published file
+				// set via the directory's own package.json, so this
+				// reproduces the same digest the registry already has.
+				const resolvedTarball = prePackedTarball ?? (await packAndComputeDigest(target.directory, packageManager));
+
 				return {
 					success: true,
 					output: `Version ${version} already published with identical content`,
@@ -544,9 +555,8 @@ async function publishToNpmCompatible(
 					alreadyPublishedReason: "identical",
 					localIntegrity,
 					remoteIntegrity,
-					// Include tarball path so SBOM can still be uploaded
-					tarballPath: prePackedTarball?.path,
-					tarballDigest: prePackedTarball?.digest,
+					tarballPath: resolvedTarball?.path,
+					tarballDigest: resolvedTarball?.digest,
 				};
 			}
 
@@ -574,6 +584,8 @@ async function publishToNpmCompatible(
 		);
 		info(`✓ Skipping publish - version already exists`);
 
+		const resolvedTarball = prePackedTarball ?? (await packAndComputeDigest(target.directory, packageManager));
+
 		return {
 			success: true,
 			output: `Version ${version} already published (integrity comparison unavailable)`,
@@ -584,9 +596,8 @@ async function publishToNpmCompatible(
 			alreadyPublishedReason: "unknown",
 			localIntegrity,
 			remoteIntegrity,
-			// Include tarball path so SBOM can still be uploaded
-			tarballPath: prePackedTarball?.path,
-			tarballDigest: prePackedTarball?.digest,
+			tarballPath: resolvedTarball?.path,
+			tarballDigest: resolvedTarball?.digest,
 		};
 	} else {
 		// Version doesn't exist - show available versions for context

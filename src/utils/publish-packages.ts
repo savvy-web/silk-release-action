@@ -1,9 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { debug, endGroup, error, info, startGroup, warning } from "@actions/core";
-import { exec } from "@actions/exec";
 import type { PackageJson, ResolvedTarget, VersionCheckResult } from "../types/publish-config.js";
-import type { WorkspacePackageInfo } from "./create-attestation.js";
+import { debug, endGroup, error, exec, info, startGroup, warning } from "./_actions-compat.js";
 import { createPackageAttestation, createSBOMAttestation } from "./create-attestation.js";
 import { findPackagePath } from "./find-package-path.js";
 import type {
@@ -76,10 +74,10 @@ interface TargetPreValidation {
 	packageName: string;
 	version: string;
 	status: PreValidationStatus;
-	versionCheck?: VersionCheckResult;
-	localIntegrity?: string;
-	remoteIntegrity?: string;
-	error?: string;
+	versionCheck?: VersionCheckResult | undefined;
+	localIntegrity?: string | undefined;
+	remoteIntegrity?: string | undefined;
+	error?: string | undefined;
 }
 
 /**
@@ -647,11 +645,31 @@ export async function publishPackages(
 				info(`✓ Skipping ${registryName} - already published with identical content`);
 				successfulTargets++;
 
+				// Pack on demand for downstream release-asset / attestation
+				// consumers. The pre-pack stage above skips directories
+				// where every target is pre-validated skip, so we may not
+				// have a tarball cached yet. Pack here and cache so
+				// sibling targets in the same directory reuse it.
+				let cachedTarball = target.protocol === "npm" ? prePackedTarballs.get(target.directory) : undefined;
+				if (target.protocol === "npm" && !cachedTarball && !failedPackDirectories.has(target.directory)) {
+					info(`Packing ${target.directory} for release-asset / attestation use...`);
+					cachedTarball = await packAndComputeDigest(target.directory, packageManager);
+					if (cachedTarball) {
+						prePackedTarballs.set(target.directory, cachedTarball);
+						info(`✓ Created tarball: ${cachedTarball.filename}`);
+					} else {
+						warning(`Failed to pack tarball for skipped target ${target.directory}`);
+						failedPackDirectories.add(target.directory);
+					}
+				}
+
 				targetResults.push({
 					target,
 					success: true,
 					alreadyPublished: true,
 					alreadyPublishedReason: "identical",
+					tarballPath: cachedTarball?.path,
+					tarballDigest: cachedTarball?.digest,
 				});
 				continue;
 			}
@@ -777,20 +795,6 @@ export async function publishPackages(
 		if (allTargetsSuccess && prePackedTarballs.size > 0) {
 			const processedDirectories = new Set<string>();
 
-			// Build a map of all workspace packages for file: linking during npm install
-			// This allows npm to resolve workspace dependencies that may not yet be on the registry
-			const workspacePackages = new Map<string, WorkspacePackageInfo>();
-			for (const [pkgName, pkgInfo] of packageTargetsMap) {
-				// Use the first target's directory as the workspace package location
-				const firstTarget = pkgInfo.targets[0];
-				if (firstTarget) {
-					workspacePackages.set(pkgName, {
-						directory: firstTarget.directory,
-						version: pkgInfo.version,
-					});
-				}
-			}
-
 			for (const result of targetResults) {
 				const dir = result.target.directory;
 				// Skip if we already processed this directory (multiple targets can share a directory)
@@ -823,7 +827,6 @@ export async function publishPackages(
 					packageManager,
 					tarballDigest: tarball.digest,
 					targetName,
-					workspacePackages,
 				});
 
 				if (sbomResult.success) {

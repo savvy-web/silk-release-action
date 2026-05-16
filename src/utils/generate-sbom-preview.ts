@@ -1,10 +1,10 @@
-import { debug, endGroup, info, startGroup, warning } from "@actions/core";
 import type { PackagePublishValidation } from "../types/publish-config.js";
 import type {
 	EnhancedCycloneDXComponent,
 	EnhancedCycloneDXDocument,
 	NTIAComplianceResult,
 } from "../types/sbom-config.js";
+import { debug, endGroup, info, startGroup, warning } from "./_actions-compat.js";
 import type { CycloneDXDocument, SBOMValidationResult } from "./create-attestation.js";
 import { validateSBOMGeneration } from "./create-attestation.js";
 import { formatNTIAComplianceMarkdown, validateNTIACompliance } from "./validate-ntia-compliance.js";
@@ -24,13 +24,13 @@ interface PackageSBOMPreview {
 	/** Number of components in the SBOM */
 	componentCount: number;
 	/** The generated SBOM document */
-	sbom?: CycloneDXDocument | EnhancedCycloneDXDocument;
+	sbom?: CycloneDXDocument | EnhancedCycloneDXDocument | undefined;
 	/** NTIA compliance result */
-	ntiaCompliance?: NTIAComplianceResult;
+	ntiaCompliance?: NTIAComplianceResult | undefined;
 	/** Error message if generation failed */
-	error?: string;
+	error?: string | undefined;
 	/** Warning message */
-	warning?: string;
+	warning?: string | undefined;
 }
 
 /**
@@ -48,7 +48,7 @@ export interface SBOMPreviewResult {
 	/** Whether any packages have NTIA compliance warnings */
 	hasComplianceWarnings: boolean;
 	/** Summary of compliance issues (for outcome display) */
-	complianceSummary?: string;
+	complianceSummary?: string | undefined;
 }
 
 /**
@@ -65,9 +65,14 @@ interface LicenseInfo {
  * Group components by type for better display
  */
 function groupComponentsByType(
-	components: Array<{ type: string; name: string; version?: string; purl?: string }>,
-): Map<string, Array<{ name: string; version?: string }>> {
-	const groups = new Map<string, Array<{ name: string; version?: string }>>();
+	components: ReadonlyArray<{
+		readonly type: string;
+		readonly name: string;
+		readonly version?: string | undefined;
+		readonly purl?: string | undefined;
+	}>,
+): Map<string, Array<{ name: string; version?: string | undefined }>> {
+	const groups = new Map<string, Array<{ name: string; version?: string | undefined }>>();
 
 	for (const component of components) {
 		const type = component.type || "unknown";

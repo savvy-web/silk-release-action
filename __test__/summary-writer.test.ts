@@ -1,20 +1,17 @@
-import * as core from "@actions/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as actionsCompat from "../src/utils/_actions-compat.js";
 import { summaryWriter } from "../src/utils/summary-writer.js";
 import { cleanupTestEnvironment, setupTestEnvironment } from "./utils/github-mocks.js";
-
-vi.mock("@actions/core");
 
 describe("summary-writer", () => {
 	beforeEach(() => {
 		setupTestEnvironment({ suppressOutput: true });
 
-		// Mock core.summary
 		const mockSummary = {
 			addRaw: vi.fn().mockReturnThis(),
 			write: vi.fn().mockResolvedValue(undefined),
 		};
-		Object.defineProperty(core, "summary", { value: mockSummary, writable: true });
+		Object.defineProperty(actionsCompat, "summary", { value: mockSummary, writable: true, configurable: true });
 	});
 
 	afterEach(() => {
@@ -26,8 +23,8 @@ describe("summary-writer", () => {
 			await summaryWriter.write("# Test");
 
 			// Appends trailing newlines to separate from subsequent summaries
-			expect(core.summary.addRaw).toHaveBeenCalledWith("# Test\n\n");
-			expect(core.summary.write).toHaveBeenCalled();
+			expect(actionsCompat.summary.addRaw).toHaveBeenCalledWith("# Test\n\n");
+			expect(actionsCompat.summary.write).toHaveBeenCalled();
 		});
 	});
 

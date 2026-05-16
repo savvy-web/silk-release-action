@@ -1,8 +1,17 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { debug, endGroup, error, getState, info, startGroup, warning } from "@actions/core";
-import { exec } from "@actions/exec";
-import { context, getOctokit } from "@actions/github";
+import {
+	context,
+	debug,
+	endGroup,
+	error,
+	exec,
+	getOctokit,
+	getState,
+	info,
+	startGroup,
+	warning,
+} from "./_actions-compat.js";
 import { createReleaseAssetAttestation } from "./create-attestation.js";
 import type { TagInfo } from "./determine-tag-strategy.js";
 import { findPackagePath } from "./find-package-path.js";
@@ -49,9 +58,9 @@ export interface AssetInfo {
 	/** Asset size in bytes */
 	size: number;
 	/** Attestation URL if attestation was created */
-	attestationUrl?: string;
+	attestationUrl?: string | undefined;
 	/** Registry this tarball was published to (if multi-target) */
-	registry?: string;
+	registry?: string | undefined;
 }
 
 /**
@@ -164,87 +173,6 @@ function findApiDocFile(directory: string | undefined, packageName: string): str
 }
 
 /**
- * Get the pack command for the current package manager
- *
- * @param packageManager - Package manager to use (npm, pnpm, yarn, bun)
- * @returns Command and args for creating a package tarball
- */
-function getPackCommand(packageManager: string): { cmd: string; args: string[] } {
-	// Use each package manager's dlx/npx to run npm pack for consistent behavior
-	// This ensures we use a compatible npm version, not whatever the user has installed
-	// --json flag provides structured output for reliable parsing
-	switch (packageManager) {
-		case "pnpm":
-			return { cmd: "pnpm", args: ["dlx", "npm", "pack", "--json"] };
-		case "yarn":
-			// yarn dlx is for yarn 2+, yarn 1.x uses npx
-			return { cmd: "yarn", args: ["dlx", "npm", "pack", "--json"] };
-		case "bun":
-			return { cmd: "bun", args: ["x", "npm", "pack", "--json"] };
-		default:
-			// npm uses npx
-			return { cmd: "npx", args: ["npm", "pack", "--json"] };
-	}
-}
-
-/**
- * npm pack --json output structure
- */
-interface NpmPackResult {
-	filename: string;
-	name: string;
-	version: string;
-}
-
-/**
- * Find package artifacts to upload
- *
- * @param packagePath - Path to the package directory
- * @param packageManager - Package manager to use (npm, pnpm, yarn, bun)
- * @returns Array of artifact file paths
- */
-async function findPackageArtifacts(packagePath: string, packageManager: string): Promise<string[]> {
-	const artifacts: string[] = [];
-
-	// Check for .tgz files (from npm pack)
-	const files = readdirSync(packagePath);
-	for (const file of files) {
-		if (file.endsWith(".tgz")) {
-			artifacts.push(join(packagePath, file));
-		}
-	}
-
-	// If no tgz found, try to create one
-	if (artifacts.length === 0) {
-		try {
-			const { cmd, args } = getPackCommand(packageManager);
-			let output = "";
-			await exec(cmd, args, {
-				cwd: packagePath,
-				listeners: {
-					stdout: (data: Buffer) => {
-						output += data.toString();
-					},
-				},
-			});
-
-			// Parse JSON output from npm pack --json
-			const packResults = JSON.parse(output.trim()) as NpmPackResult[];
-			for (const result of packResults) {
-				if (result.filename) {
-					artifacts.push(join(packagePath, result.filename));
-					debug(`npm pack created: ${result.filename} (${result.name}@${result.version})`);
-				}
-			}
-		} catch (err) {
-			debug(`Failed to create package tarball: ${err instanceof Error ? err.message : String(err)}`);
-		}
-	}
-
-	return artifacts;
-}
-
-/**
  * Configure git identity for creating annotated tags
  *
  * @remarks
@@ -318,18 +246,144 @@ async function createGitTag(tagName: string, message: string, dryRun: boolean): 
 		});
 
 		// Create a reference pointing to the tag object
-		await octokit.rest.git.createRef({
-			owner,
-			repo,
-			ref: `refs/tags/${tagName}`,
-			sha: tagObject.sha,
-		});
+		try {
+			await octokit.rest.git.createRef({
+				owner,
+				repo,
+				ref: `refs/tags/${tagName}`,
+				sha: tagObject.sha,
+			});
+		} catch (refErr) {
+			// On re-run the tag may already exist. Treat it as idempotent if
+			// the existing ref resolves to the same commit; warn loudly only
+			// when it points elsewhere (something genuinely diverged).
+			const status = (refErr as { status?: number }).status;
+			const refMessage = refErr instanceof Error ? refErr.message : String(refErr);
+			if (status === 422 && /already exists/i.test(refMessage)) {
+				try {
+					const { data: existingRef } = await octokit.rest.git.getRef({
+						owner,
+						repo,
+						ref: `tags/${tagName}`,
+					});
+					let existingCommitSha = existingRef.object.sha;
+					if (existingRef.object.type === "tag") {
+						const { data: existingTag } = await octokit.rest.git.getTag({
+							owner,
+							repo,
+							tag_sha: existingRef.object.sha,
+						});
+						existingCommitSha = existingTag.object.sha;
+					}
+					if (existingCommitSha === headSha) {
+						info(`Tag ${tagName} already exists at ${headSha} — treating as idempotent success`);
+						return true;
+					}
+					warning(
+						`Tag ${tagName} already exists but points to ${existingCommitSha}, not ${headSha} — skipping (manual review needed)`,
+					);
+					return false;
+				} catch (lookupErr) {
+					warning(
+						`Tag ${tagName} reportedly already exists but lookup failed: ${lookupErr instanceof Error ? lookupErr.message : String(lookupErr)}`,
+					);
+					return false;
+				}
+			}
+			throw refErr;
+		}
 
 		info(`Created and pushed tag: ${tagName}`);
 		return true;
 	} catch (err) {
 		error(`Failed to create tag ${tagName}: ${err instanceof Error ? err.message : String(err)}`);
 		return false;
+	}
+}
+
+/**
+ * Shape of the release object we keep around per tag — narrowed enough
+ * to cover both the freshly-created and the looked-up paths without
+ * dragging in Octokit's full response types.
+ */
+interface ResolvedRelease {
+	readonly id: number;
+	readonly htmlUrl: string;
+}
+
+/**
+ * Asset descriptor used to short-circuit upload calls on re-run.
+ */
+interface ExistingAsset {
+	readonly name: string;
+	readonly browserDownloadUrl: string;
+	readonly size: number;
+}
+
+/**
+ * Upload an asset, but treat a name collision on re-run as a no-op —
+ * the function returns the existing asset's URL so release notes and
+ * `releaseInfo.assets` stay coherent.
+ *
+ * @remarks
+ * GitHub returns 422 with `code: "already_exists"` when a release
+ * already has an asset by the same name. Rather than delete-and-retry
+ * (which risks racing with a concurrent run), we skip and reuse — the
+ * user can delete the asset manually to force a re-upload.
+ */
+async function uploadAssetIdempotent(
+	octokit: ReturnType<typeof getOctokit>,
+	owner: string,
+	repo: string,
+	releaseId: number,
+	fileName: string,
+	fileContent: Buffer,
+	existingAssets: Map<string, ExistingAsset>,
+): Promise<ExistingAsset> {
+	const cached = existingAssets.get(fileName);
+	if (cached) {
+		info(`Asset ${fileName} already attached to release — skipping upload`);
+		return cached;
+	}
+	try {
+		const asset = await octokit.rest.repos.uploadReleaseAsset({
+			owner,
+			repo,
+			release_id: releaseId,
+			name: fileName,
+			data: fileContent as unknown as string,
+		});
+		const result: ExistingAsset = {
+			name: fileName,
+			browserDownloadUrl: asset.data.browser_download_url,
+			size: asset.data.size,
+		};
+		existingAssets.set(fileName, result);
+		return result;
+	} catch (err) {
+		const status = (err as { status?: number }).status;
+		if (status === 422 && /already_exists/i.test(err instanceof Error ? err.message : String(err))) {
+			// A concurrent run beat us to it. Fall back to a fresh list-assets
+			// fetch so we can hand back the same shape as the success path.
+			const { data: assets } = await octokit.rest.repos.listReleaseAssets({
+				owner,
+				repo,
+				release_id: releaseId,
+				per_page: 100,
+			});
+			const found = assets.find((a) => a.name === fileName);
+			if (found) {
+				const result: ExistingAsset = {
+					name: fileName,
+					browserDownloadUrl: found.browser_download_url,
+					size: found.size,
+				};
+				existingAssets.set(fileName, result);
+				info(`Asset ${fileName} already attached (raced) — using existing copy`);
+				return result;
+			}
+		}
+		throw err;
 	}
 }
 
@@ -351,7 +405,7 @@ async function createGitTag(tagName: string, message: string, dryRun: boolean): 
 export async function createGitHubReleases(
 	tags: TagInfo[],
 	publishResults: PackagePublishResult[],
-	packageManager: string,
+	_packageManager: string,
 	dryRun: boolean,
 ): Promise<CreateReleasesResult> {
 	const token = getState("token");
@@ -392,7 +446,7 @@ export async function createGitHubReleases(
 		let releaseNotes = "";
 
 		for (const pkg of associatedPackages) {
-			// Try to find CHANGELOG in the package directory using workspace-tools
+			// Try to find CHANGELOG in the package directory via workspaces-effect-backed lookup
 			const pkgPath = findPackagePath(pkg.name);
 			const changelogPaths: string[] = [];
 
@@ -497,22 +551,66 @@ export async function createGitHubReleases(
 		}
 
 		try {
-			const release = await octokit.rest.repos.createRelease({
-				owner: context.repo.owner,
-				repo: context.repo.repo,
-				tag_name: tag.name,
-				name: tag.name,
-				body: releaseNotes.trim(),
-				draft: false,
-				prerelease: tag.version.includes("-"),
-			});
+			// Resolve the release for this tag. On re-run GitHub returns 422
+			// with `already_exists` — in that case we fetch the existing
+			// release and proceed, so the asset-upload loop can refresh any
+			// missing files instead of failing the whole job.
+			let release: ResolvedRelease;
+			try {
+				const created = await octokit.rest.repos.createRelease({
+					owner: context.repo.owner,
+					repo: context.repo.repo,
+					tag_name: tag.name,
+					name: tag.name,
+					body: releaseNotes.trim(),
+					draft: false,
+					prerelease: tag.version.includes("-"),
+				});
+				release = { id: created.data.id, htmlUrl: created.data.html_url };
+				info(`Created release: ${release.htmlUrl}`);
+			} catch (createErr) {
+				const status = (createErr as { status?: number }).status;
+				const createMessage = createErr instanceof Error ? createErr.message : String(createErr);
+				if (status === 422 && /already_exists|already exists/i.test(createMessage)) {
+					const existing = await octokit.rest.repos.getReleaseByTag({
+						owner: context.repo.owner,
+						repo: context.repo.repo,
+						tag: tag.name,
+					});
+					release = { id: existing.data.id, htmlUrl: existing.data.html_url };
+					info(`Release for ${tag.name} already exists — reusing: ${release.htmlUrl}`);
+				} else {
+					throw createErr;
+				}
+			}
 
-			info(`Created release: ${release.data.html_url}`);
+			// Pre-fetch existing assets so the helper can skip name collisions
+			// without an extra round-trip per upload.
+			const existingAssetsByName = new Map<string, ExistingAsset>();
+			try {
+				const { data: assets } = await octokit.rest.repos.listReleaseAssets({
+					owner: context.repo.owner,
+					repo: context.repo.repo,
+					release_id: release.id,
+					per_page: 100,
+				});
+				for (const a of assets) {
+					existingAssetsByName.set(a.name, {
+						name: a.name,
+						browserDownloadUrl: a.browser_download_url,
+						size: a.size,
+					});
+				}
+			} catch (listErr) {
+				warning(
+					`Failed to enumerate existing assets for ${tag.name}: ${listErr instanceof Error ? listErr.message : String(listErr)}`,
+				);
+			}
 
 			const releaseInfo: ReleaseInfo = {
 				tag: tag.name,
-				url: release.data.html_url,
-				id: release.data.id,
+				url: release.htmlUrl,
+				id: release.id,
 				assets: [],
 			};
 
@@ -522,52 +620,16 @@ export async function createGitHubReleases(
 				const targetsWithTarballs = pkg.targets.filter((t) => t.success && t.tarballPath);
 
 				if (targetsWithTarballs.length === 0) {
-					// Fallback to old behavior for packages without tarball info
-					const pkgPath = findPackagePath(pkg.name);
-					if (!pkgPath) {
-						warning(`Could not find path for package ${pkg.name}, skipping artifact upload`);
-						continue;
-					}
-					const artifacts = await findPackageArtifacts(pkgPath, packageManager);
-
-					for (const artifactPath of artifacts) {
-						try {
-							const fileName = basename(artifactPath);
-							const fileContent = readFileSync(artifactPath);
-
-							info(`Uploading asset: ${fileName}`);
-
-							const asset = await octokit.rest.repos.uploadReleaseAsset({
-								owner: context.repo.owner,
-								repo: context.repo.repo,
-								release_id: release.data.id,
-								name: fileName,
-								data: fileContent as unknown as string,
-							});
-
-							info(`Uploaded: ${asset.data.browser_download_url}`);
-
-							const attestationResult = await createReleaseAssetAttestation(
-								artifactPath,
-								pkg.name,
-								pkg.version,
-								dryRun,
-							);
-
-							releaseInfo.assets.push({
-								name: fileName,
-								downloadUrl: asset.data.browser_download_url,
-								size: asset.data.size,
-								attestationUrl: attestationResult.success ? attestationResult.attestationUrl : undefined,
-							});
-
-							if (attestationResult.success && attestationResult.attestationUrl) {
-								info(`  ✓ Created attestation: ${attestationResult.attestationUrl}`);
-							}
-						} catch (err) {
-							warning(`Failed to upload artifact ${artifactPath}: ${err instanceof Error ? err.message : String(err)}`);
-						}
-					}
+					// Don't fall back to packing from the package's source
+					// directory — that tarball would include source files
+					// (test/, build cache, configs) that aren't part of the
+					// published artifact, so any attestation against it
+					// would describe a different bundle than what's on the
+					// registry. The publish path always packs from
+					// target.directory (which honors publishConfig.targets),
+					// so a missing tarballPath here means the publish step
+					// itself didn't produce one — skip with a warning.
+					warning(`No tarball path recorded for ${pkg.name}@${pkg.version} — skipping release-asset upload`);
 					continue;
 				}
 
@@ -603,22 +665,24 @@ export async function createGitHubReleases(
 
 						info(`Uploading asset: ${fileName}${needsPrefix ? ` (from ${targetResult.target.directory})` : ""}`);
 
-						const asset = await octokit.rest.repos.uploadReleaseAsset({
-							owner: context.repo.owner,
-							repo: context.repo.repo,
-							release_id: release.data.id,
-							name: fileName,
-							data: fileContent as unknown as string,
-						});
+						const asset = await uploadAssetIdempotent(
+							octokit,
+							context.repo.owner,
+							context.repo.repo,
+							release.id,
+							fileName,
+							fileContent,
+							existingAssetsByName,
+						);
 
-						info(`Uploaded: ${asset.data.browser_download_url}`);
+						info(`Uploaded: ${asset.browserDownloadUrl}`);
 
 						const attestationResult = await createReleaseAssetAttestation(artifactPath, pkg.name, pkg.version, dryRun);
 
 						releaseInfo.assets.push({
 							name: fileName,
-							downloadUrl: asset.data.browser_download_url,
-							size: asset.data.size,
+							downloadUrl: asset.browserDownloadUrl,
+							size: asset.size,
 							attestationUrl: attestationResult.success ? attestationResult.attestationUrl : undefined,
 							registry: targetResult.target.registry ?? undefined,
 						});
@@ -635,23 +699,25 @@ export async function createGitHubReleases(
 
 								info(`Uploading SBOM: ${sbomFileName}`);
 
-								const sbomAsset = await octokit.rest.repos.uploadReleaseAsset({
-									owner: context.repo.owner,
-									repo: context.repo.repo,
-									release_id: release.data.id,
-									name: sbomFileName,
-									data: sbomContent as unknown as string,
-								});
+								const sbomAsset = await uploadAssetIdempotent(
+									octokit,
+									context.repo.owner,
+									context.repo.repo,
+									release.id,
+									sbomFileName,
+									sbomContent,
+									existingAssetsByName,
+								);
 
-								info(`Uploaded SBOM: ${sbomAsset.data.browser_download_url}`);
+								info(`Uploaded SBOM: ${sbomAsset.browserDownloadUrl}`);
 
 								// Track SBOM URL for release notes
-								sbomAssetUrls.set(targetResult.target.directory, sbomAsset.data.browser_download_url);
+								sbomAssetUrls.set(targetResult.target.directory, sbomAsset.browserDownloadUrl);
 
 								releaseInfo.assets.push({
 									name: sbomFileName,
-									downloadUrl: sbomAsset.data.browser_download_url,
-									size: sbomAsset.data.size,
+									downloadUrl: sbomAsset.browserDownloadUrl,
+									size: sbomAsset.size,
 								});
 							} catch (sbomErr) {
 								warning(
@@ -673,23 +739,25 @@ export async function createGitHubReleases(
 
 								info(`Uploading API doc: ${finalApiDocFileName}`);
 
-								const apiDocAsset = await octokit.rest.repos.uploadReleaseAsset({
-									owner: context.repo.owner,
-									repo: context.repo.repo,
-									release_id: release.data.id,
-									name: finalApiDocFileName,
-									data: apiDocContent as unknown as string,
-								});
+								const apiDocAsset = await uploadAssetIdempotent(
+									octokit,
+									context.repo.owner,
+									context.repo.repo,
+									release.id,
+									finalApiDocFileName,
+									apiDocContent,
+									existingAssetsByName,
+								);
 
-								info(`Uploaded API doc: ${apiDocAsset.data.browser_download_url}`);
+								info(`Uploaded API doc: ${apiDocAsset.browserDownloadUrl}`);
 
 								// Track API doc URL for release notes
-								apiDocAssetUrls.set(targetResult.target.directory, apiDocAsset.data.browser_download_url);
+								apiDocAssetUrls.set(targetResult.target.directory, apiDocAsset.browserDownloadUrl);
 
 								releaseInfo.assets.push({
 									name: finalApiDocFileName,
-									downloadUrl: apiDocAsset.data.browser_download_url,
-									size: apiDocAsset.data.size,
+									downloadUrl: apiDocAsset.browserDownloadUrl,
+									size: apiDocAsset.size,
 								});
 							} catch (apiDocErr) {
 								warning(
@@ -733,7 +801,7 @@ export async function createGitHubReleases(
 					await octokit.rest.repos.updateRelease({
 						owner: context.repo.owner,
 						repo: context.repo.repo,
-						release_id: release.data.id,
+						release_id: release.id,
 						body: releaseNotes.trim(),
 					});
 					info(`Updated release notes with asset links`);

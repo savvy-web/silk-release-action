@@ -2,9 +2,16 @@
 title: Testing Strategy and Infrastructure
 category: testing
 status: current
-completeness: 90
-last-synced: 2026-02-10
+completeness: 88
+created: 2026-02-07
+updated: 2026-05-16
+last-synced: 2026-05-16
 module: release-action
+related:
+  - architecture.md
+  - integration.md
+dependencies:
+  - architecture.md
 ---
 
 ## Table of Contents
@@ -29,40 +36,30 @@ module: release-action
 
 ## Overview
 
-The project uses Vitest 4.0.8 with a comprehensive test suite of 38 test
-files (~23,340 lines) covering 37+ utility modules. Tests enforce type-safe
-mocking with zero `any` types and maintain 85%+ coverage per file via the
-V8 provider. All external dependencies (GitHub API, exec, file system) are
-mocked to ensure tests are fast, reliable, and isolated.
+The project uses Vitest 4.0.8 with a comprehensive test suite covering the silk-publishability rules and all utility modules. Tests enforce type-safe mocking with zero `any` types and maintain 85%+ coverage per file via the V8 provider. All external dependencies (GitHub API, exec, file system, `workspaces-effect`) are mocked to ensure tests are fast, reliable, and isolated.
+
+The `src/services/attest/` service has its own test layer (`AttestTest` / `SbomTest`) defined in `src/services/attest/testing.ts`. These layers expose the full `Attest` and `Sbom` service surfaces without any cryptographic work; tests assert against call-recording state arrays rather than inspecting signed bundles.
 
 ## Current State
 
 ### Test Framework Configuration
 
-Vitest is configured in `vitest.config.ts` with the following settings:
+Vitest is configured via `@savvy-web/vitest`'s `VitestConfig.create()` in `vitest.config.ts`. The shared config enforces standard settings; key effective values:
 
-- **Include pattern:** `**/__tests__/**/*.test.ts`
-- **Exclude patterns:** `**/node_modules/**`, `**/dist/**`
-- **Global setup:** `vitest.setup.ts` (currently a placeholder for future
-  global setup needs)
-- **Test timeout:** 240,000ms (4 minutes) to accommodate network-heavy and
-  retry-logic tests
-- **Reporters:** `["default"]`
+- **Test directory:** `__test__/` (singular — note distinction from the conventional `__tests__/`)
+- **Test timeout:** 240,000ms (4 minutes) to accommodate retry-logic and fake-timer tests
 - **Coverage provider:** V8
-- **Coverage reporters:** `text`, `json`, `html` (with `report` subdir)
-- **Coverage directory:** `./.coverage`
 - **Coverage thresholds (per file):**
   - Lines: 85%
   - Functions: 85%
   - Branches: 85%
   - Statements: 85%
 
-Coverage exclusions (4 modules with documented reasons):
+Coverage exclusions (documented reasons):
 
 | Excluded Module | Reason |
 | --------------- | ------ |
-| `__tests__/utils/**/*.ts` | Test utilities themselves |
-| `src/utils/generate-pr-description.ts` | Anthropic SDK integration |
+| `__test__/utils/**/*.ts` | Test utilities themselves |
 | `src/utils/create-api-commit.ts` | Complex fs/exec mocking for GitHub API commits |
 | `src/utils/publish-target.ts` | Tested indirectly via publish-packages tests |
 
@@ -121,6 +118,14 @@ Type definitions in `__tests__/utils/test-types.ts`:
 Key constraint: No `any` types are allowed anywhere in test code. Use the
 `as unknown as Type` pattern for Octokit mock casting.
 
+**Effect service test layers:** The `src/services/attest/testing.ts` module
+provides `AttestTest` and `SbomTest` Effect layers for testing code that
+depends on the `Attest` or `Sbom` services. These are structured as
+`layer(state)` (records calls + returns canned responses) and `empty()`
+(sensible no-ops). No Fulcio, Rekor, or GitHub API calls happen in tests
+using these layers. `GitHubClientTest` from `@savvy-web/github-action-effects`
+provides the same pattern for the GitHub API surface.
+
 ### Standard Test Setup Pattern
 
 Every test file follows this consistent initialization pattern:
@@ -132,6 +137,7 @@ import {
   cleanupTestEnvironment,
 } from "./utils/github-mocks.js";
 import type { MockOctokit } from "./utils/test-types.js";
+// Note: test files live in __test__/ (singular), not __tests__/
 
 describe("my-feature", () => {
   let mockOctokit: MockOctokit;
@@ -231,22 +237,71 @@ vi.mocked(readFile).mockImplementation(async (path) => {
 });
 ```
 
-#### Workspace Tools Mocking
+#### Workspace Mocking (`workspaces-effect`)
 
-Workspace-related tests mock the `getWorkspaceInfos` utility to simulate
-monorepo package discovery:
+Workspace-related tests mock `workspaces-effect`'s sync API to simulate
+monorepo (and single-package) discovery. Tests typically stub both
+`findWorkspaceRootSync` (returns the workspace root, or `null` for
+"not a workspace") and `getWorkspacePackagesSync` (returns the array
+of `WorkspacePackage` Schema.Class instances):
 
 ```typescript
-vi.mocked(getWorkspaceInfos).mockReturnValue([{
-  name: "@test/pkg-a",
-  path: "/test/workspace/packages/pkg-a",
-  packageJson: {
+import { findWorkspaceRootSync, getWorkspacePackagesSync } from "workspaces-effect";
+
+vi.mock("workspaces-effect");
+
+vi.mocked(findWorkspaceRootSync).mockReturnValue("/test/workspace");
+vi.mocked(getWorkspacePackagesSync).mockReturnValue([
+  {
     name: "@test/pkg-a",
     version: "0.0.0",
+    path: "/test/workspace/packages/pkg-a",
+    packageJsonPath: "/test/workspace/packages/pkg-a/package.json",
+    relativePath: "packages/pkg-a",
+    private: false,
+    dependencies: {},
+    devDependencies: {},
+    peerDependencies: {},
+    optionalDependencies: {},
     publishConfig: { access: "public" },
   },
-}]);
+]);
 ```
+
+Tests that need to inspect `publishConfig.targets` (which is not in
+`workspaces-effect`'s typed `PublishConfig` schema) additionally stub
+`fs.readFileSync` per workspace path to return the raw `package.json`
+JSON string. This mirrors the production pattern in
+`release-summary-helpers.ts:getAllWorkspacePackages` and
+`detect-publishable-changes.ts`, which re-read each package's raw
+`package.json` from disk and feed it through `silkDetect()`:
+
+```typescript
+vi.mocked(findWorkspaceRootSync).mockReturnValue("/test/workspace");
+vi.mocked(getWorkspacePackagesSync).mockReturnValue([
+  /* ...workspace package stubs... */
+]);
+vi.mocked(fs.readFileSync).mockImplementation((p: fs.PathOrFileDescriptor) => {
+  const path = String(p);
+  if (path.includes("packages/pkg-a/package.json")) {
+    return JSON.stringify({
+      name: "@test/pkg-a",
+      version: "0.0.0",
+      private: true,
+      publishConfig: { targets: ["npm", "github"] },
+    });
+  }
+  if (path.includes(".changeset/config.json")) {
+    return JSON.stringify({ ignore: [] });
+  }
+  return "{}";
+});
+```
+
+This per-path `readFileSync` routing exercises the full silk publishability
+matrix (private+targets, private+access, public default, not publishable)
+without touching the real filesystem. See `detect-publishable-changes.test.ts`
+in `__test__/` for the canonical example.
 
 #### GitHub Context Mocking
 
@@ -287,70 +342,60 @@ Object.defineProperty(core, "summary", {
 
 ### Test Coverage Map
 
-All 38 test files mapped to their source modules and workflow phase:
+Test files live in `__test__/` (singular). The Vitest include pattern matches `**/__tests__/**/*.test.ts` — see `vitest.config.ts` for the current pattern; it may have been updated to match `__test__/` on this branch.
 
 | Test File | Source Module | Category |
 | --------- | ------------ | -------- |
+| `pre.test.ts` | `src/pre.ts` | Entry points |
+| `post.test.ts` | `src/post.ts` | Entry points |
 | `check-release-branch.test.ts` | `check-release-branch.ts` | Phase 1 |
 | `detect-publishable-changes.test.ts` | `detect-publishable-changes.ts` | Phase 1 |
-| `create-release-branch.test.ts` | `create-release-branch.ts` | Phase 1 |
-| `update-release-branch.test.ts` | `update-release-branch.ts` | Phase 1 |
-| `get-changeset-status.test.ts` | `get-changeset-status.ts` | Phase 1 |
-| `link-issues-from-commits.test.ts` | `link-issues-from-commits.ts` | Phase 2 |
-| `validate-builds.test.ts` | `validate-builds.ts` | Phase 2 |
-| `validate-publish.test.ts` | `validate-publish.ts` | Phase 2 |
-| `generate-release-notes-preview.test.ts` | `generate-release-notes-preview.ts` | Phase 2 |
-| `create-validation-check.test.ts` | `create-validation-check.ts` | Phase 2 |
-| `update-sticky-comment.test.ts` | `update-sticky-comment.ts` | Phase 2 |
-| `cleanup-validation-checks.test.ts` | `cleanup-validation-checks.ts` | Phase 2 |
-| `detect-released-packages.test.ts` | `detect-released-packages.ts` | Phase 3 |
-| `publish-packages.test.ts` | `publish-packages.ts` | Phase 3 |
-| `determine-tag-strategy.test.ts` | `determine-tag-strategy.ts` | Phase 3 |
-| `create-github-releases.test.ts` | `create-github-releases.ts` | Phase 3 |
-| `create-attestation.test.ts` | `create-attestation.ts` | Phase 3 |
 | `close-linked-issues.test.ts` | `close-linked-issues.ts` | Phase 3a |
-| `topological-sort.test.ts` | `topological-sort.ts` | Infra |
-| `registry-utils.test.ts` | `registry-utils.ts` | Infra |
-| `registry-auth.test.ts` | `registry-auth.ts` | Infra |
-| `resolve-targets.test.ts` | `resolve-targets.ts` | Infra |
-| `pre-validate-target.test.ts` | `pre-validate-target.ts` | Infra |
-| `dry-run-publish.test.ts` | `dry-run-publish.ts` | Infra |
-| `load-release-config.test.ts` | `load-release-config.ts` | Infra |
-| `parse-changesets.test.ts` | `parse-changesets.ts` | Infra |
-| `find-package-path.test.ts` | `find-package-path.ts` | Infra |
-| `detect-workflow-phase.test.ts` | `detect-workflow-phase.ts` | Infra |
-| `release-summary-helpers.test.ts` | `release-summary-helpers.ts` | Infra |
+| `determine-tag-strategy.test.ts` | `determine-tag-strategy.ts` | Phase 3 |
 | `generate-publish-summary.test.ts` | `generate-publish-summary.ts` | Infra |
-| `summary-writer.test.ts` | `summary-writer.ts` | Infra |
-| `check-token-permissions.test.ts` | `check-token-permissions.ts` | Infra |
-| `create-app-token.test.ts` | `create-app-token.ts` | Infra |
-| `check-version-exists.test.ts` | `check-version-exists.ts` | Infra |
-| `detect-repo-type.test.ts` | `detect-repo-type.ts` | Infra |
-| `detect-copyright-year.test.ts` | `detect-copyright-year.ts` | SBOM |
-| `enhance-sbom-metadata.test.ts` | `enhance-sbom-metadata.ts` | SBOM |
+| `generate-sbom-preview.test.ts` | `generate-sbom-preview.ts` | Phase 2 |
+| `generate-schema.test.ts` | `src/schema/release-output.ts` | Schema |
 | `infer-sbom-metadata.test.ts` | `infer-sbom-metadata.ts` | SBOM |
+| `parse-changesets.test.ts` | `parse-changesets.ts` | Infra |
+| `pre-validate-target.test.ts` | `pre-validate-target.ts` | Infra |
+| `projections.test.ts` | `src/schema/projections.ts` | Schema |
+| `registry-utils.test.ts` | `registry-utils.ts` | Infra |
+| `release-output.test.ts` | `src/schema/release-output.ts` | Schema |
+| `resolve-targets.test.ts` | `resolve-targets.ts` | Infra |
+| `silk-publishability.test.ts` | `silk-publishability.ts` | Infra |
+| `summary-writer.test.ts` | `summary-writer.ts` | Infra |
+| `tokens.test.ts` | `tokens.ts` | Infra |
 | `validate-ntia-compliance.test.ts` | `validate-ntia-compliance.ts` | SBOM |
+| `detect-repo-type.test.ts` | `detect-repo-type.ts` | Infra |
+| `commit-signoff.test.ts` | `commit-signoff.ts` | Infra |
+| `attest-bundle.test.ts` | `services/attest/signer.ts` | Attest service |
+| `attest-end-to-end.test.ts` | `services/attest/live.ts` | Attest service |
+| `attest-oidc.test.ts` | `services/attest/oidc.ts` | Attest service |
+| `attest-sbom.test.ts` | `services/attest/sbom.ts` | Attest service |
+| `attest-slsa.test.ts` | `services/attest/slsa.ts` | Attest service |
+| `attest-statement.test.ts` | `services/attest/intoto.ts` | Attest service |
+| `attest-testing.test.ts` | `services/attest/testing.ts` | Attest service |
+| `attest-wrappers.test.ts` | `attest-runner.ts` | Attest service |
 
 ### Coverage Gaps
 
-Source modules without dedicated test files:
+Source modules without dedicated test files (as of this branch):
 
 | Module | Reason for Gap |
 | ------ | -------------- |
 | `src/main.ts` | Main action entry point; orchestrates phases |
-| `src/pre.ts` | Pre-execution script; thin entry point |
-| `src/post.ts` | Post-execution script; thin entry point |
 | `src/types/*.ts` | Type definitions with no runtime behavior |
 | `src/utils/logger.ts` | Logging utility; trivial wrapper |
 | `src/utils/run-close-linked-issues.ts` | Thin CLI wrapper around `close-linked-issues` |
-| `src/utils/generate-sbom-preview.ts` | SBOM preview generation |
-| `src/utils/generate-pr-description.ts` | Anthropic SDK integration (excluded from coverage) |
 | `src/utils/create-api-commit.ts` | GitHub API commit (excluded from coverage) |
 | `src/utils/publish-target.ts` | Tested indirectly via publish-packages (excluded) |
+| `src/utils/_actions-compat.ts` | Actions shim; thin Node.js wrapper |
+| `src/utils/create-attestation.ts` | Delegates to attest-runner, tested via attest-wrappers |
 
-Some of these modules are excluded from coverage thresholds in
-`vitest.config.ts` and are validated indirectly through higher-level module
-tests or through integration testing.
+Note: `check-version-exists.ts` was folded into `publish-target.ts` and no
+longer exists as a standalone module. `generate-pr-description.ts` was removed.
+Some of these modules are excluded from coverage thresholds in `vitest.config.ts`
+and are validated indirectly or through integration testing in `savvy-web/workflow-integration`.
 
 ### Test Best Practices
 
@@ -448,12 +493,8 @@ catching genuine infinite loops or deadlocks.
 
 ### Why Exclude Certain Modules from Coverage?
 
-Three source modules are excluded from coverage thresholds for specific
+Two source modules are excluded from coverage thresholds for specific
 technical reasons:
-
-- **`generate-pr-description.ts`** -- Integrates with the Anthropic SDK.
-  Mocking the SDK's streaming response interface is fragile and provides
-  limited confidence. Validated through manual testing and integration runs.
 
 - **`create-api-commit.ts`** -- Requires simultaneously mocking the file
   system, `@actions/exec`, and the GitHub API's tree/blob/commit creation
@@ -466,6 +507,18 @@ technical reasons:
   token management, and registry-specific commands. Tested indirectly through
   `publish-packages.test.ts` which exercises all code paths via its caller.
 
+### Why Effect Test Layers for the Attest Service?
+
+The `Attest` service depends on `SigstoreSigner` (Fulcio + Rekor network
+calls), `OidcTokenIssuer` (GitHub Actions runner env vars), and `GitHubClient`
+(GitHub API). None of these can be satisfied in unit tests without complex
+mocking or live credentials. The `AttestTest` / `SbomTest` layers in
+`src/services/attest/testing.ts` replace all three dependencies with
+call-recording implementations: tests assert that the right calls happened
+with the right arguments without any actual cryptographic or network work.
+This is the same pattern used by `GitHubClientTest` in
+`@savvy-web/github-action-effects`.
+
 ## File Reference
 
 Test infrastructure files:
@@ -474,17 +527,18 @@ Test infrastructure files:
 | ---- | ------- |
 | `vitest.config.ts` | Vitest configuration with coverage thresholds |
 | `vitest.setup.ts` | Global setup hook (placeholder for future needs) |
-| `__tests__/utils/github-mocks.ts` | Mock factory functions and environment helpers |
-| `__tests__/utils/test-types.ts` | TypeScript type definitions for all mock shapes |
-| `__tests__/CLAUDE.md` | Testing documentation for Claude Code context |
+| `__test__/utils/github-mocks.ts` | Mock factory functions and environment helpers |
+| `__test__/utils/test-types.ts` | TypeScript type definitions for all mock shapes |
+| `__test__/CLAUDE.md` | Testing documentation for Claude Code context |
+| `src/services/attest/testing.ts` | AttestTest and SbomTest Effect layers |
 
-Source entry points (untested, thin orchestration layers):
+Source entry points (thin orchestration layers):
 
-| File | Purpose |
-| ---- | ------- |
-| `src/main.ts` | Main action entry point |
-| `src/pre.ts` | Pre-execution hook |
-| `src/post.ts` | Post-execution hook |
+| File | Status |
+| ---- | ------ |
+| `src/main.ts` | No dedicated test; integration-tested |
+| `src/pre.ts` | `pre.test.ts` covers Effect program |
+| `src/post.ts` | `post.test.ts` covers Effect program |
 
 Type definition files (no runtime behavior):
 

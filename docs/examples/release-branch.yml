@@ -88,6 +88,6 @@ jobs:
       - name: Run release action
         uses: savvy-web/workflow-release-action@main
         with:
-          app-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          app-client-id: ${{ vars.APP_CLIENT_ID }}
+          app-private-key: ${{ secrets.APP_PRIVATE_KEY }}
           dry-run: ${{ inputs.dry_run || 'false' }}

@@ -1,10 +1,10 @@
-import { debug, info } from "@actions/core";
 import type {
 	EnhancedCycloneDXDocument,
 	ResolvedSBOMMetadata,
 	SBOMExternalReference,
 	SBOMMetadataConfig,
 } from "../types/sbom-config.js";
+import { debug, info } from "./_actions-compat.js";
 import type { CycloneDXDocument } from "./create-attestation.js";
 import { detectCopyrightYear } from "./detect-copyright-year.js";
 import { inferSBOMMetadata, resolveSBOMMetadata } from "./infer-sbom-metadata.js";
@@ -35,11 +35,11 @@ export interface EnhanceSBOMOptions {
 	/** Directory containing package.json (for metadata inference) */
 	packageDirectory: string;
 	/** Repository root directory (for config loading) */
-	rootDirectory?: string;
+	rootDirectory?: string | undefined;
 	/** Optional pre-loaded SBOM config (avoids re-reading file) */
-	sbomConfig?: SBOMMetadataConfig;
+	sbomConfig?: SBOMMetadataConfig | undefined;
 	/** Optional npm registry for copyright year detection */
-	registry?: string;
+	registry?: string | undefined;
 }
 
 /**

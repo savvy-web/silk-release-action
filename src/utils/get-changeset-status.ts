@@ -1,7 +1,6 @@
 import { existsSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { debug, info, warning } from "@actions/core";
-import { exec } from "@actions/exec";
+import { debug, exec, info, warning } from "./_actions-compat.js";
 
 /**
  * Changeset status result

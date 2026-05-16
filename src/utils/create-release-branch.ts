@@ -1,504 +1,498 @@
-import { readFile } from "node:fs/promises";
+/**
+ * Phase 1 stage: cut the release branch, run changeset version, commit the
+ * version bump via the Git Data API, link the branch to closed issues from
+ * the release, and open the release PR.
+ *
+ * @remarks
+ * The commit is created through {@link GitCommit} so it is signed by the
+ * GitHub App identity. Branch-linking and PR creation go through GraphQL
+ * because that preserves the issue↔branch link the imperative version
+ * established. PR creation is retried once on failure (network blip).
+ */
 
-import { endGroup, getBooleanInput, getInput, getState, info, startGroup, warning } from "@actions/core";
-import type { ExecOptions } from "@actions/exec";
-import { exec } from "@actions/exec";
-import { context, getOctokit } from "@actions/github";
-
-import { createApiCommit } from "./create-api-commit.js";
+import { FileSystem } from "@effect/platform";
+import type {
+	ActionEnvironmentError,
+	ActionOutputError,
+	ActionState,
+	CheckRunError,
+	CommandRunnerError,
+	GitCommitError,
+	GitHubClientError,
+} from "@savvy-web/github-action-effects";
+import {
+	ActionEnvironment,
+	ActionOutputs,
+	CheckRun,
+	CommandRunner,
+	GitCommit,
+	GitHubClient,
+} from "@savvy-web/github-action-effects";
+import type { ConfigError } from "effect";
+import { Config, Duration, Effect } from "effect";
+import { resolveSignoff } from "./commit-signoff.js";
 import { isSinglePackage } from "./detect-repo-type.js";
 import { getLinkedIssuesFromCommits } from "./link-issues-from-commits.js";
 import { summaryWriter } from "./summary-writer.js";
 
-/**
- * Create release branch result
- */
-interface CreateReleaseBranchResult {
-	/** Whether the branch was created */
+/** Public result returned to the orchestrator. */
+export interface CreateReleaseBranchResult {
 	created: boolean;
-	/** PR number if PR was created */
 	prNumber: number | null;
-	/** GitHub check run ID */
 	checkId: number;
-	/** Version summary */
 	versionSummary: string;
 }
 
-/**
- * Executes a command with retry logic and exponential backoff
- *
+/** Errors that bubble out of git/version exec calls or the changeset retry. */
+const RETRYABLE_NETWORK_ERRORS = ["ECONNRESET", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN"];
 
- * @param exec - GitHub Actions exec module
- * @param command - Command to execute
- * @param args - Command arguments
- * @param options - Exec options
- * @param maxRetries - Maximum number of retries (default: 3)
- * @returns Promise that resolves when command succeeds
+/**
+ * Run a command with exponential backoff on transient network errors. The
+ * underlying {@link CommandRunner.exec} call already returns a non-zero
+ * exit code as an error, so we only need to filter on the reason string
+ * to decide whether to retry.
+ *
+ * @internal
  */
-async function execWithRetry(
+const execWithRetry = (
 	command: string,
-	args: string[],
-	options: ExecOptions = {},
-	maxRetries: number = 3,
-): Promise<void> {
-	const retryableErrors = ["ECONNRESET", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN"];
-	const baseDelay = 1000;
-	const maxDelay = 10000;
+	args: ReadonlyArray<string>,
+	maxRetries = 3,
+): Effect.Effect<void, CommandRunnerError, CommandRunner> =>
+	Effect.gen(function* () {
+		const runner = yield* CommandRunner;
+		const baseDelay = Duration.seconds(1);
+		const maxDelay = Duration.seconds(10);
 
-	for (let attempt = 0; attempt <= maxRetries; attempt++) {
-		try {
-			await exec(command, args, options);
-			return;
-		} catch (err) {
-			const isLastAttempt = attempt === maxRetries;
-			/* v8 ignore next -- @preserve - Defensive: handles non-Error throws (extremely rare) */
-			const errorMessage = err instanceof Error ? err.message : String(err);
-			const isRetryable = retryableErrors.some((errType) => errorMessage.includes(errType));
+		for (let attempt = 0; attempt <= maxRetries; attempt++) {
+			const result = yield* Effect.either(runner.exec(command, args).pipe(Effect.asVoid));
+			if (result._tag === "Right") return;
 
-			if (isLastAttempt || !isRetryable) {
-				throw err;
+			const isRetryable = RETRYABLE_NETWORK_ERRORS.some((code) => result.left.reason.includes(code));
+			if (attempt === maxRetries || !isRetryable) {
+				return yield* Effect.fail(result.left);
 			}
 
-			// Exponential backoff with jitter
-			const delay = Math.min(baseDelay * 2 ** attempt + Math.random() * 1000, maxDelay);
-			warning(`Attempt ${attempt + 1} failed: ${errorMessage}. Retrying in ${Math.round(delay)}ms...`);
-
-			await new Promise((resolve) => setTimeout(resolve, delay));
+			const exp = Math.min(2 ** attempt * Duration.toMillis(baseDelay), Duration.toMillis(maxDelay));
+			const jitter = exp * (0.5 + Math.random() * 0.5);
+			yield* Effect.logWarning(
+				`Command failed on attempt ${attempt + 1}/${maxRetries + 1} (${result.left.reason}); retrying in ${Math.round(jitter)}ms`,
+			);
+			yield* Effect.sleep(Duration.millis(jitter));
 		}
-	}
-}
-
-/**
- * Creates the release branch and PR
- *
- * @param packageManager - Package manager to use (npm, pnpm, yarn, bun)
- * @returns Create release branch result
- */
-export async function createReleaseBranch(packageManager: string): Promise<CreateReleaseBranchResult> {
-	// Read all inputs
-	const token = getState("token");
-	if (!token) {
-		throw new Error("No token available from state - ensure pre.ts ran successfully");
-	}
-	const releaseBranch = getInput("release-branch") || "changeset-release/main";
-	const targetBranch = getInput("target-branch") || "main";
-	const versionCommand = getInput("version-command") || "";
-	const prTitlePrefix = getInput("pr-title-prefix") || "chore: release";
-	const dryRun = getBooleanInput("dry-run") || false;
-
-	const github = getOctokit(token);
-
-	startGroup("Creating release branch");
-
-	// Create and checkout release branch from target branch HEAD
-	info(`Creating branch '${releaseBranch}' from '${targetBranch}' HEAD`);
-	if (!dryRun) {
-		await exec("git", ["checkout", "-b", releaseBranch, `origin/${targetBranch}`]);
-	} else {
-		info(`[DRY RUN] Would create branch: ${releaseBranch} from origin/${targetBranch}`);
-	}
-
-	// Run changeset version
-	info("Running changeset version");
-	const versionCmd =
-		versionCommand ||
-		(packageManager === "pnpm"
-			? "pnpm"
-			: packageManager === "yarn"
-				? "yarn"
-				: packageManager === "bun"
-					? "bun"
-					: "npm");
-	const versionArgs =
-		versionCommand === ""
-			? packageManager === "pnpm"
-				? ["ci:version"]
-				: packageManager === "yarn"
-					? ["ci:version"]
-					: packageManager === "bun"
-						? ["run", "ci:version"]
-						: ["run", "ci:version"]
-			: versionCommand.split(" ");
-
-	if (!dryRun) {
-		await execWithRetry(versionCmd, versionArgs);
-	} else {
-		info(`[DRY RUN] Would run: ${versionCmd} ${versionArgs.join(" ")}`);
-	}
-
-	// Check for changes
-	let hasChanges = false;
-	let changedFiles = "";
-
-	if (!dryRun) {
-		await exec("git", ["status", "--porcelain"], {
-			listeners: {
-				stdout: (data: Buffer) => {
-					changedFiles += data.toString();
-				},
-			},
-		});
-		hasChanges = changedFiles.trim().length > 0;
-	} else {
-		// In dry-run mode, assume changes exist
-		hasChanges = true;
-		info("[DRY RUN] Assuming changes exist for version bump");
-	}
-
-	if (!hasChanges) {
-		info("No changes generated by changeset version. Cleaning up and exiting.");
-		if (!dryRun) {
-			await exec("git", ["checkout", targetBranch]);
-			await exec("git", ["branch", "-D", releaseBranch]);
-		}
-		endGroup();
-
-		// Create check run for no changes
-		const { data: checkRun } = await github.rest.checks.create({
-			owner: context.repo.owner,
-			repo: context.repo.repo,
-			name: dryRun ? "🧪 Create Release Branch (Dry Run)" : "Create Release Branch",
-			head_sha: context.sha,
-			status: "completed",
-			conclusion: "neutral",
-			output: {
-				title: "No version changes generated",
-				summary: "Changeset version command did not produce any changes. No release branch created.",
-			},
-		});
-
-		// Write job summary using summaryWriter (markdown, not HTML)
-		const noChangesTitle = dryRun ? "🧪 Create Release Branch (Dry Run)" : "Create Release Branch";
-		const noChangesSummary = summaryWriter.build([
-			{ heading: noChangesTitle, content: "No version changes generated" },
-			{ content: "Changeset version command did not produce any changes. No release branch created." },
-		]);
-		await summaryWriter.write(noChangesSummary);
-
-		return {
-			created: false,
-			prNumber: null,
-			checkId: checkRun.id,
-			versionSummary: "No changes",
-		};
-	}
-
-	// Generate version summary from changed files
-	const versionSummary = changedFiles
-		.split("\n")
-		.filter((line) => line.includes("package.json") || line.includes("CHANGELOG.md"))
-		.join("\n");
-
-	info("Version changes:");
-	info(versionSummary);
-
-	// Detect single-package repo and get version for PR title
-	let prTitle = prTitlePrefix;
-	const singlePackage = isSinglePackage();
-	if (singlePackage) {
-		try {
-			const packageJsonContent = await readFile("package.json", "utf-8");
-			const packageJson = JSON.parse(packageJsonContent) as { version?: string };
-			if (packageJson.version) {
-				prTitle = `release: ${packageJson.version}`;
-				info(`Single-package repo detected, using PR title: ${prTitle}`);
-			}
-		} catch (error) {
-			warning(`Failed to read version for PR title: ${error instanceof Error ? error.message : String(error)}`);
-		}
-	}
-
-	// Get the current local commit SHA to use as parent for the API commit
-	let parentSha = "";
-	if (!dryRun) {
-		await exec("git", ["rev-parse", "HEAD"], {
-			listeners: {
-				stdout: (data: Buffer) => {
-					parentSha += data.toString().trim();
-				},
-			},
-		});
-		info(`Current HEAD: ${parentSha}`);
-	}
-
-	// Create commit via GitHub API (automatically signed and attributed to GitHub App)
-	const commitMessage = `${prTitlePrefix}\n\nVersion bump from changesets`;
-	let finalCommitSha = "";
-	if (!dryRun) {
-		info("Creating verified commit via GitHub API...");
-		const commitResult = await createApiCommit(token, releaseBranch, commitMessage, {
-			parentCommitSha: parentSha,
-		});
-		if (!commitResult.created) {
-			warning("No changes to commit via API");
-		} else {
-			info(`✓ Created verified commit: ${commitResult.sha}`);
-			finalCommitSha = commitResult.sha;
-		}
-	} else {
-		info(`[DRY RUN] Would commit with message: ${commitMessage}`);
-	}
-
-	// Get repository node ID (needed for both branch linking and PR creation)
-	let repoNodeId = "";
-	if (!dryRun) {
-		info("Fetching repository node ID...");
-		const { data: repo } = await github.rest.repos.get({
-			owner: context.repo.owner,
-			repo: context.repo.repo,
-		});
-		repoNodeId = repo.node_id;
-		info(`Repository node ID: ${repoNodeId}`);
-	}
-
-	// Link branch to issues from commits (AFTER creating the final commit)
-	if (!dryRun && finalCommitSha) {
-		startGroup("Linking branch to issues");
-		try {
-			info(`Searching for linked issues from commits on branch: ${targetBranch}`);
-			const { linkedIssues, commits } = await getLinkedIssuesFromCommits(github, targetBranch);
-			info(`Found ${commits.length} commit(s) to analyze`);
-
-			if (linkedIssues.length > 0) {
-				info(`Found ${linkedIssues.length} issue(s) to link to branch:`);
-				for (const issue of linkedIssues) {
-					info(`  - Issue #${issue.number}: ${issue.title} (${issue.node_id})`);
-				}
-
-				// Link the branch to each issue using the final commit SHA
-				info(`Linking branch '${releaseBranch}' at commit ${finalCommitSha} to issues...`);
-				for (const issue of linkedIssues) {
-					try {
-						info(`  Linking to issue #${issue.number}...`);
-						await github.graphql(
-							`
-							mutation ($issueId: ID!, $name: String!, $oid: GitObjectID!, $repositoryId: ID!) {
-								createLinkedBranch(input: {
-									issueId: $issueId
-									name: $name
-									oid: $oid
-									repositoryId: $repositoryId
-								}) {
-									linkedBranch {
-										id
-									}
-								}
-							}
-							`,
-							{
-								issueId: issue.node_id,
-								name: releaseBranch,
-								oid: finalCommitSha,
-								repositoryId: repoNodeId,
-							},
-						);
-						info(`  ✓ Linked branch to issue #${issue.number}`);
-					} catch (error) {
-						warning(
-							`  Failed to link issue #${issue.number}: ${error instanceof Error ? error.message : String(error)}`,
-						);
-					}
-				}
-
-				info(`✓ Successfully linked branch to ${linkedIssues.length} issue(s)`);
-			} else {
-				info("No issues found to link to branch");
-				info("This could mean:");
-				info("  - No commits reference issues with 'Closes #N', 'Fixes #N', etc.");
-				info("  - No merged PRs on this branch had linked issues");
-			}
-		} catch (error) {
-			warning(`Failed to link branch to issues: ${error instanceof Error ? error.message : String(error)}`);
-		}
-		endGroup();
-	} else if (!dryRun && !finalCommitSha) {
-		info("No final commit SHA available, skipping branch linking");
-	} else {
-		info("[DRY RUN] Would link branch to issues from commits");
-	}
-
-	endGroup();
-
-	// Create PR with retry
-	startGroup("Creating pull request");
-
-	let prNumber: number | null = null;
-	let prUrl = "";
-
-	// Leave PR body empty - users can automate the description or fill it in themselves
-	const prBody = "";
-
-	if (!dryRun) {
-		try {
-			info(`Creating PR via GraphQL API...`);
-			info(`  Repository: ${repoNodeId}`);
-			info(`  Base: ${targetBranch}`);
-			info(`  Head: ${releaseBranch}`);
-			info(`  Title: ${prTitle}`);
-
-			// Create PR via GraphQL (preserves branch-issue links)
-			const prResult = (await github.graphql(
-				`
-				mutation ($repositoryId: ID!, $baseRefName: String!, $headRefName: String!, $title: String!, $body: String!) {
-					createPullRequest(input: {
-						repositoryId: $repositoryId
-						baseRefName: $baseRefName
-						headRefName: $headRefName
-						title: $title
-						body: $body
-					}) {
-						pullRequest {
-							number
-							url
-							id
-						}
-					}
-				}
-				`,
-				{
-					repositoryId: repoNodeId,
-					baseRefName: targetBranch,
-					headRefName: releaseBranch,
-					title: prTitle,
-					body: prBody,
-				},
-			)) as { createPullRequest: { pullRequest: { number: number; url: string; id: string } } };
-
-			prNumber = prResult.createPullRequest.pullRequest.number;
-			prUrl = prResult.createPullRequest.pullRequest.url;
-			info(`✓ PR created with GraphQL: #${prNumber} (${prResult.createPullRequest.pullRequest.id})`);
-
-			// Add labels
-			info(`Adding labels to PR #${prNumber}...`);
-			await github.rest.issues.addLabels({
-				owner: context.repo.owner,
-				repo: context.repo.repo,
-				issue_number: prNumber,
-				labels: ["automated", "release"],
-			});
-
-			info(`✓ Created PR #${prNumber}: ${prUrl}`);
-		} catch (error) {
-			// Retry PR creation once after brief delay
-			warning(`PR creation failed, retrying: ${error instanceof Error ? error.message : String(error)}`);
-			await new Promise((resolve) => setTimeout(resolve, 2000));
-
-			info(`Retrying PR creation via GraphQL...`);
-
-			// Create PR via GraphQL (preserves branch-issue links)
-			const prResult = (await github.graphql(
-				`
-				mutation ($repositoryId: ID!, $baseRefName: String!, $headRefName: String!, $title: String!, $body: String!) {
-					createPullRequest(input: {
-						repositoryId: $repositoryId
-						baseRefName: $baseRefName
-						headRefName: $headRefName
-						title: $title
-						body: $body
-					}) {
-						pullRequest {
-							number
-							url
-							id
-						}
-					}
-				}
-				`,
-				{
-					repositoryId: repoNodeId,
-					baseRefName: targetBranch,
-					headRefName: releaseBranch,
-					title: prTitle,
-					body: prBody,
-				},
-			)) as { createPullRequest: { pullRequest: { number: number; url: string; id: string } } };
-
-			prNumber = prResult.createPullRequest.pullRequest.number;
-			prUrl = prResult.createPullRequest.pullRequest.url;
-			info(`✓ PR created on retry: #${prNumber}`);
-
-			await github.rest.issues.addLabels({
-				owner: context.repo.owner,
-				repo: context.repo.repo,
-				issue_number: prNumber,
-				labels: ["automated", "release"],
-			});
-
-			info(`✓ Created PR #${prNumber}: ${prUrl}`);
-		}
-	} else {
-		info(`[DRY RUN] Would create PR with title: ${prTitle}`);
-		info(`[DRY RUN] PR body:\n${prBody}`);
-	}
-
-	endGroup();
-
-	// Build check details using summaryWriter (markdown, not HTML)
-	const checkStatusTable = summaryWriter.keyValueTable([
-		{ key: "Branch", value: `\`${releaseBranch}\`` },
-		{ key: "Target", value: `\`${targetBranch}\`` },
-		{ key: "PR", value: prNumber ? `[#${prNumber}](${prUrl})` : "_N/A (dry run)_" },
-	]);
-
-	const checkSections: Array<{ heading?: string; level?: 2 | 3; content: string }> = [
-		{ heading: "Release Branch Created", content: checkStatusTable },
-	];
-
-	if (versionSummary) {
-		checkSections.push({
-			heading: "Version Changes",
-			level: 3,
-			content: summaryWriter.codeBlock(versionSummary, "text"),
-		});
-	}
-
-	const checkDetails = summaryWriter.build(checkSections);
-
-	const { data: checkRun } = await github.rest.checks.create({
-		owner: context.repo.owner,
-		repo: context.repo.repo,
-		name: dryRun ? "🧪 Create Release Branch (Dry Run)" : "Create Release Branch",
-		head_sha: context.sha,
-		status: "completed",
-		conclusion: "success",
-		output: {
-			title: prNumber ? `Created release PR #${prNumber}` : "Release branch created (dry run)",
-			summary: checkDetails,
-		},
 	});
 
-	// Write job summary using summaryWriter (markdown, not HTML)
-	const jobCheckTitle = dryRun ? "🧪 Create Release Branch (Dry Run)" : "Create Release Branch";
-	const jobStatusTable = summaryWriter.keyValueTable([
-		{ key: "Branch", value: `\`${releaseBranch}\`` },
-		{ key: "Target", value: `\`${targetBranch}\`` },
-		{ key: "PR", value: prNumber ? `#${prNumber}` : "_N/A (dry run)_" },
-	]);
-
-	const jobSections: Array<{ heading?: string; level?: 2 | 3; content: string }> = [
-		{
-			heading: jobCheckTitle,
-			content: prNumber ? `Created release PR #${prNumber}` : "Release branch created (dry run)",
-		},
-		{ heading: "Release Branch Created", level: 3, content: jobStatusTable },
-	];
-
-	if (versionSummary) {
-		jobSections.push({
-			heading: "Version Changes",
-			level: 3,
-			content: summaryWriter.codeBlock(versionSummary, "text"),
-		});
+/** Map package manager name to (command, version-args) defaults. */
+const defaultVersionInvocation = (packageManager: string, versionCommand: string): { cmd: string; args: string[] } => {
+	if (versionCommand !== "") {
+		const parts = versionCommand.split(" ");
+		return { cmd: parts[0], args: parts.slice(1) };
 	}
+	switch (packageManager) {
+		case "pnpm":
+			return { cmd: "pnpm", args: ["ci:version"] };
+		case "yarn":
+			return { cmd: "yarn", args: ["ci:version"] };
+		case "bun":
+			return { cmd: "bun", args: ["run", "ci:version"] };
+		default:
+			return { cmd: "npm", args: ["run", "ci:version"] };
+	}
+};
 
-	const jobSummary = summaryWriter.build(jobSections);
-
-	await summaryWriter.write(jobSummary);
-
-	return {
-		created: true,
-		prNumber,
-		checkId: checkRun.id,
-		versionSummary,
-	};
+/** GraphQL response shape for the createLinkedBranch mutation. */
+interface CreateLinkedBranchResponse {
+	createLinkedBranch?: { linkedBranch: { id: string } };
 }
+
+/** GraphQL response shape for the createPullRequest mutation. */
+interface CreatePullRequestResponse {
+	createPullRequest: { pullRequest: { number: number; url: string; id: string } };
+}
+
+/** REST response shape for repos.get (we only need node_id). */
+interface RepoNodeResponse {
+	node_id: string;
+}
+
+const CREATE_LINKED_BRANCH_MUTATION = `
+	mutation ($issueId: ID!, $name: String!, $oid: GitObjectID!, $repositoryId: ID!) {
+		createLinkedBranch(input: { issueId: $issueId, name: $name, oid: $oid, repositoryId: $repositoryId }) {
+			linkedBranch { id }
+		}
+	}
+`;
+
+const CREATE_PULL_REQUEST_MUTATION = `
+	mutation ($repositoryId: ID!, $baseRefName: String!, $headRefName: String!, $title: String!, $body: String!) {
+		createPullRequest(input: {
+			repositoryId: $repositoryId
+			baseRefName: $baseRefName
+			headRefName: $headRefName
+			title: $title
+			body: $body
+		}) {
+			pullRequest { number url id }
+		}
+	}
+`;
+
+/**
+ * Run the `createReleaseBranch` stage.
+ *
+ * @public
+ */
+export const createReleaseBranch = (
+	packageManager: string,
+): Effect.Effect<
+	CreateReleaseBranchResult,
+	| ActionEnvironmentError
+	| ActionOutputError
+	| CheckRunError
+	| CommandRunnerError
+	| ConfigError.ConfigError
+	| GitCommitError
+	| GitHubClientError,
+	| ActionEnvironment
+	| ActionOutputs
+	| ActionState
+	| CheckRun
+	| CommandRunner
+	| FileSystem.FileSystem
+	| GitCommit
+	| GitHubClient
+> =>
+	Effect.gen(function* () {
+		const env = yield* ActionEnvironment;
+		const outputs = yield* ActionOutputs;
+		const checks = yield* CheckRun;
+		const runner = yield* CommandRunner;
+		const gitCommit = yield* GitCommit;
+		const client = yield* GitHubClient;
+		const fs = yield* FileSystem.FileSystem;
+		const signoff = yield* resolveSignoff();
+
+		const releaseBranch = yield* Config.string("release-branch").pipe(Config.withDefault("changeset-release/main"));
+		const targetBranch = yield* Config.string("target-branch").pipe(Config.withDefault("main"));
+		const versionCommand = yield* Config.string("version-command").pipe(Config.withDefault(""));
+		const prTitlePrefix = yield* Config.string("pr-title-prefix").pipe(Config.withDefault("chore: release"));
+		const dryRun = yield* Config.boolean("dry-run").pipe(Config.withDefault(false));
+
+		const { sha, repository } = yield* env.github;
+		const [owner, repo] = repository.split("/");
+
+		yield* Effect.logInfo(`Creating branch '${releaseBranch}' from '${targetBranch}' HEAD`);
+		if (!dryRun) {
+			yield* runner.exec("git", ["checkout", "-b", releaseBranch, `origin/${targetBranch}`]);
+		} else {
+			yield* Effect.logInfo(`[DRY RUN] Would create branch: ${releaseBranch} from origin/${targetBranch}`);
+		}
+
+		yield* Effect.logInfo("Running changeset version");
+		const { cmd: versionCmd, args: versionArgs } = defaultVersionInvocation(packageManager, versionCommand);
+		if (!dryRun) {
+			yield* execWithRetry(versionCmd, versionArgs);
+		} else {
+			yield* Effect.logInfo(`[DRY RUN] Would run: ${versionCmd} ${versionArgs.join(" ")}`);
+		}
+
+		let changedFiles = "";
+		let hasChanges = false;
+		if (!dryRun) {
+			const status = yield* runner.execCapture("git", ["status", "--porcelain"]);
+			changedFiles = status.stdout;
+			hasChanges = changedFiles.trim().length > 0;
+		} else {
+			hasChanges = true;
+			yield* Effect.logInfo("[DRY RUN] Assuming changes exist for version bump");
+		}
+
+		if (!hasChanges) {
+			yield* Effect.logInfo("No changes generated by changeset version. Cleaning up and exiting.");
+			if (!dryRun) {
+				yield* runner.exec("git", ["checkout", targetBranch]);
+				yield* runner.exec("git", ["branch", "-D", releaseBranch]);
+			}
+
+			const checkTitle = dryRun ? "🧪 Create Release Branch (Dry Run)" : "Create Release Branch";
+			const noChangesId = yield* checks.create(checkTitle, sha);
+			yield* checks.complete(noChangesId, "neutral", {
+				title: "No version changes generated",
+				summary: "Changeset version command did not produce any changes. No release branch created.",
+			});
+
+			const noChangesSummary = summaryWriter.build([
+				{ heading: checkTitle, content: "No version changes generated" },
+				{ content: "Changeset version command did not produce any changes. No release branch created." },
+			]);
+			yield* outputs.summary(noChangesSummary);
+
+			return { created: false, prNumber: null, checkId: noChangesId, versionSummary: "No changes" };
+		}
+
+		const versionSummary = changedFiles
+			.split("\n")
+			.filter((line) => line.includes("package.json") || line.includes("CHANGELOG.md"))
+			.join("\n");
+		yield* Effect.logInfo("Version changes:");
+		yield* Effect.logInfo(versionSummary);
+
+		let prTitle = prTitlePrefix;
+		const singlePackage = isSinglePackage();
+		if (singlePackage) {
+			const readResult = yield* Effect.either(fs.readFileString("package.json"));
+			if (readResult._tag === "Right") {
+				try {
+					const parsed = JSON.parse(readResult.right) as { version?: string };
+					if (parsed.version) {
+						prTitle = `release: ${parsed.version}`;
+						yield* Effect.logInfo(`Single-package repo detected, using PR title: ${prTitle}`);
+					}
+				} catch (error) {
+					yield* Effect.logWarning(
+						`Failed to read version for PR title: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
+			} else {
+				yield* Effect.logWarning(`Failed to read package.json: ${readResult.left.message}`);
+			}
+		}
+
+		let parentSha = "";
+		if (!dryRun) {
+			const head = yield* runner.execCapture("git", ["rev-parse", "HEAD"]);
+			parentSha = head.stdout.trim();
+			yield* Effect.logInfo(`Current HEAD: ${parentSha}`);
+		}
+
+		const commitMessage = `${prTitlePrefix}\n\nVersion bump from changesets\n\n${signoff}`;
+		let finalCommitSha = "";
+		if (!dryRun) {
+			yield* Effect.logInfo("Creating verified commit via GitHub API...");
+			// `-z` uses NUL separators so the positional [0..2]=status, [3..]=path
+			// parsing survives whitespace and trailing CRLF; trimming the line
+			// itself would shift the column for unstaged changes (" M file" → "M file").
+			const status = yield* runner.execCapture("git", ["status", "--porcelain", "-z"]);
+			const files: Array<
+				| { readonly path: string; readonly mode: "100644" | "100755"; readonly content: string }
+				| { readonly path: string; readonly mode: "100644"; readonly sha: null }
+			> = [];
+			for (const entry of status.stdout.split("\0")) {
+				if (entry.length === 0) continue;
+				const statusCode = entry.substring(0, 2).trim();
+				let filePath = entry.substring(3);
+				if (filePath.includes(" -> ")) filePath = filePath.split(" -> ")[1];
+				if (filePath === "") continue;
+				if (statusCode === "D" || statusCode === "DD" || statusCode === "AD") {
+					files.push({ path: filePath, mode: "100644", sha: null });
+				} else {
+					const content = yield* fs.readFileString(filePath).pipe(Effect.catchAll(() => Effect.succeed("")));
+					const statResult = yield* Effect.either(fs.stat(filePath));
+					const isExecutable = statResult._tag === "Right" && (Number(statResult.right.mode ?? 0n) & 0o111) !== 0;
+					files.push({ path: filePath, mode: isExecutable ? "100755" : "100644", content });
+				}
+			}
+
+			if (files.length === 0) {
+				yield* Effect.logWarning("No changes to commit via API");
+			} else {
+				// The Git Data API's `base_tree` wants a tree SHA, not a commit
+				// SHA — fetch the parent commit and read its tree.sha.
+				const parentCommit = yield* client.rest<{ tree: { sha: string } }>("git.getCommit", (octokit) =>
+					(
+						octokit as {
+							rest: {
+								git: {
+									getCommit: (params: { owner: string; repo: string; commit_sha: string }) => Promise<{
+										data: { tree: { sha: string } };
+									}>;
+								};
+							};
+						}
+					).rest.git.getCommit({ owner, repo, commit_sha: parentSha }),
+				);
+				const treeSha = yield* gitCommit.createTree(files, parentCommit.tree.sha);
+				finalCommitSha = yield* gitCommit.createCommit(commitMessage, treeSha, [parentSha]);
+				// updateRef fails 404/422 for a brand-new branch — fall back to createRef.
+				// GitCommit.updateRef prefixes "heads/" itself — pass the bare branch name.
+				const updateResult = yield* Effect.either(gitCommit.updateRef(releaseBranch, finalCommitSha, true));
+				if (updateResult._tag === "Left") {
+					yield* Effect.logInfo(`Ref heads/${releaseBranch} does not exist yet; creating it`);
+					yield* client.rest<undefined>("git.createRef", (octokit) =>
+						(
+							octokit as {
+								rest: {
+									git: {
+										createRef: (params: { owner: string; repo: string; ref: string; sha: string }) => Promise<{
+											data: undefined;
+										}>;
+									};
+								};
+							}
+						).rest.git.createRef({
+							owner,
+							repo,
+							ref: `refs/heads/${releaseBranch}`,
+							sha: finalCommitSha,
+						}),
+					);
+				}
+				yield* Effect.logInfo(`✓ Created verified commit: ${finalCommitSha}`);
+			}
+		} else {
+			yield* Effect.logInfo(`[DRY RUN] Would commit with message: ${commitMessage}`);
+		}
+
+		let repoNodeId = "";
+		if (!dryRun) {
+			yield* Effect.logInfo("Fetching repository node ID...");
+			const repoInfo = yield* client.rest<RepoNodeResponse>("repos.get", (octokit) =>
+				(
+					octokit as {
+						rest: {
+							repos: {
+								get: (params: { owner: string; repo: string }) => Promise<{ data: RepoNodeResponse }>;
+							};
+						};
+					}
+				).rest.repos.get({ owner, repo }),
+			);
+			repoNodeId = repoInfo.node_id;
+			yield* Effect.logInfo(`Repository node ID: ${repoNodeId}`);
+		}
+
+		if (!dryRun && finalCommitSha) {
+			yield* Effect.logInfo(`Searching for linked issues from commits on branch: ${targetBranch}`);
+			const { linkedIssues, commits } = yield* getLinkedIssuesFromCommits(targetBranch);
+			yield* Effect.logInfo(`Found ${commits.length} commit(s) to analyze`);
+
+			if (linkedIssues.length > 0) {
+				yield* Effect.logInfo(`Found ${linkedIssues.length} issue(s) to link to branch:`);
+				for (const issue of linkedIssues) {
+					yield* Effect.logInfo(`  - Issue #${issue.number}: ${issue.title} (${issue.node_id})`);
+				}
+				yield* Effect.logInfo(`Linking branch '${releaseBranch}' at commit ${finalCommitSha} to issues...`);
+				for (const issue of linkedIssues) {
+					const linkResult = yield* Effect.either(
+						client.graphql<CreateLinkedBranchResponse>(CREATE_LINKED_BRANCH_MUTATION, {
+							issueId: issue.node_id,
+							name: releaseBranch,
+							oid: finalCommitSha,
+							repositoryId: repoNodeId,
+						}),
+					);
+					if (linkResult._tag === "Right") {
+						yield* Effect.logInfo(`  ✓ Linked branch to issue #${issue.number}`);
+					} else {
+						yield* Effect.logWarning(`  Failed to link issue #${issue.number}: ${linkResult.left.reason}`);
+					}
+				}
+				yield* Effect.logInfo(`✓ Successfully linked branch to ${linkedIssues.length} issue(s)`);
+			} else {
+				yield* Effect.logInfo("No issues found to link to branch");
+			}
+		} else if (!dryRun && !finalCommitSha) {
+			yield* Effect.logInfo("No final commit SHA available, skipping branch linking");
+		} else {
+			yield* Effect.logInfo("[DRY RUN] Would link branch to issues from commits");
+		}
+
+		let prNumber: number | null = null;
+		let prUrl = "";
+		const prBody = "";
+
+		if (!dryRun) {
+			yield* Effect.logInfo("Creating PR via GraphQL API...");
+			yield* Effect.logInfo(`  Repository: ${repoNodeId}`);
+			yield* Effect.logInfo(`  Base: ${targetBranch}`);
+			yield* Effect.logInfo(`  Head: ${releaseBranch}`);
+			yield* Effect.logInfo(`  Title: ${prTitle}`);
+
+			const createPr = client.graphql<CreatePullRequestResponse>(CREATE_PULL_REQUEST_MUTATION, {
+				repositoryId: repoNodeId,
+				baseRefName: targetBranch,
+				headRefName: releaseBranch,
+				title: prTitle,
+				body: prBody,
+			});
+
+			const prResult = yield* createPr.pipe(
+				Effect.tapError((error) => Effect.logWarning(`PR creation failed, retrying: ${error.reason}`)),
+				Effect.retry({ times: 1, schedule: undefined }),
+			);
+
+			prNumber = prResult.createPullRequest.pullRequest.number;
+			prUrl = prResult.createPullRequest.pullRequest.url;
+			yield* Effect.logInfo(`✓ PR created: #${prNumber} (${prResult.createPullRequest.pullRequest.id})`);
+
+			yield* Effect.logInfo(`Adding labels to PR #${prNumber}...`);
+			yield* client.rest<undefined>("issues.addLabels", (octokit) =>
+				(
+					octokit as {
+						rest: {
+							issues: {
+								addLabels: (params: {
+									owner: string;
+									repo: string;
+									issue_number: number;
+									labels: string[];
+								}) => Promise<{ data: undefined }>;
+							};
+						};
+					}
+				).rest.issues.addLabels({ owner, repo, issue_number: prNumber as number, labels: ["automated", "release"] }),
+			);
+			yield* Effect.logInfo(`✓ Created PR #${prNumber}: ${prUrl}`);
+		} else {
+			yield* Effect.logInfo(`[DRY RUN] Would create PR with title: ${prTitle}`);
+			yield* Effect.logInfo(`[DRY RUN] PR body:\n${prBody}`);
+		}
+
+		const checkStatusTable = summaryWriter.keyValueTable([
+			{ key: "Branch", value: `\`${releaseBranch}\`` },
+			{ key: "Target", value: `\`${targetBranch}\`` },
+			{ key: "PR", value: prNumber ? `[#${prNumber}](${prUrl})` : "_N/A (dry run)_" },
+		]);
+
+		const checkSections: Array<{ heading?: string; level?: 2 | 3; content: string }> = [
+			{ heading: "Release Branch Created", content: checkStatusTable },
+		];
+		if (versionSummary) {
+			checkSections.push({
+				heading: "Version Changes",
+				level: 3,
+				content: summaryWriter.codeBlock(versionSummary, "text"),
+			});
+		}
+		const checkDetails = summaryWriter.build(checkSections);
+
+		const checkTitle = dryRun ? "🧪 Create Release Branch (Dry Run)" : "Create Release Branch";
+		const finalCheckId = yield* checks.create(checkTitle, sha);
+		yield* checks.complete(finalCheckId, "success", {
+			title: prNumber ? `Created release PR #${prNumber}` : "Release branch created (dry run)",
+			summary: checkDetails,
+		});
+
+		const jobStatusTable = summaryWriter.keyValueTable([
+			{ key: "Branch", value: `\`${releaseBranch}\`` },
+			{ key: "Target", value: `\`${targetBranch}\`` },
+			{ key: "PR", value: prNumber ? `#${prNumber}` : "_N/A (dry run)_" },
+		]);
+		const jobSections: Array<{ heading?: string; level?: 2 | 3; content: string }> = [
+			{
+				heading: checkTitle,
+				content: prNumber ? `Created release PR #${prNumber}` : "Release branch created (dry run)",
+			},
+			{ heading: "Release Branch Created", level: 3, content: jobStatusTable },
+		];
+		if (versionSummary) {
+			jobSections.push({
+				heading: "Version Changes",
+				level: 3,
+				content: summaryWriter.codeBlock(versionSummary, "text"),
+			});
+		}
+		yield* outputs.summary(summaryWriter.build(jobSections));
+
+		return { created: true, prNumber, checkId: finalCheckId, versionSummary };
+	});

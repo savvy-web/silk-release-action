@@ -1,467 +1,434 @@
-import { readFile, unlink } from "node:fs/promises";
+/**
+ * Detect publishable changes from changeset status.
+ *
+ * @remarks
+ * Runs `changeset status --output=json`, parses the result, and classifies
+ * each release under silk publishability rules. Creates a Check Run for PR
+ * feedback and writes a summary to the job summary.
+ *
+ * Workspace discovery uses `workspaces-effect`'s sync API; the silk
+ * publishability rules live in `./silk-publishability.ts`.
+ */
+
 import { dirname, join } from "node:path";
-import { debug, error, getState, info, warning } from "@actions/core";
-import { exec } from "@actions/exec";
-import { context, getOctokit } from "@actions/github";
-import { findProjectRoot, getWorkspaceInfos } from "workspace-tools";
+import { FileSystem } from "@effect/platform";
+import type { CommandRunnerError } from "@savvy-web/github-action-effects";
+import { ActionOutputs, CheckRun, CommandRunner } from "@savvy-web/github-action-effects";
+import { Effect } from "effect";
+import { findWorkspaceRootSync, getWorkspacePackagesSync } from "workspaces-effect";
+import type { RawPackageJson } from "./silk-publishability.js";
+import { silkDetect } from "./silk-publishability.js";
 import { summaryWriter } from "./summary-writer.js";
 
 /**
- * Package information from changeset status
+ * Package information from changeset status.
  */
 export interface ChangesetPackage {
-	/** Package name */
 	name: string;
-	/** Current version before changeset application */
 	oldVersion: string;
-	/** New version after changeset application */
 	newVersion: string;
-	/** Type of version bump */
 	type: "major" | "minor" | "patch" | "none";
 }
 
 /**
- * Changeset status output from `changeset status --output=json`
+ * Result of the detect-publishable-changes stage.
+ */
+export interface DetectPublishableChangesResult {
+	hasChanges: boolean;
+	packages: ChangesetPackage[];
+	versionOnlyPackages: ChangesetPackage[];
+	checkId: number;
+}
+
+/**
+ * Changeset status output from `changeset status --output=json`.
  */
 interface ChangesetStatus {
-	/** Packages that will be released */
 	releases: ChangesetPackage[];
-	/** Changeset information */
 	changesets: Array<{
-		/** Changeset ID */
 		id: string;
-		/** Changeset summary */
 		summary: string;
-		/** Packages affected by this changeset */
 		releases: Array<{ name: string; type: string }>;
 	}>;
 }
 
 /**
- * Package.json structure
+ * Resolve the package-manager-specific argv for `changeset status`.
+ *
+ * @internal
  */
-interface PackageJson {
-	/** Package name */
-	name?: string;
-	/** Package version */
-	version?: string;
-	/** Whether package is private */
-	private?: boolean;
-	/** Publish configuration */
-	publishConfig?: {
-		/** Access level for publishing (public or restricted) */
-		access?: "public" | "restricted";
-		/** Custom registry URL */
-		registry?: string;
-	};
-}
+const resolveChangesetCommand = (packageManager: string): { command: string; args: (file: string) => string[] } => {
+	switch (packageManager) {
+		case "pnpm":
+			return { command: "pnpm", args: (f) => ["exec", "changeset", "status", "--output", f] };
+		case "yarn":
+			return { command: "yarn", args: (f) => ["changeset", "status", "--output", f] };
+		case "bun":
+			return { command: "bun", args: (f) => ["x", "changeset", "status", "--output", f] };
+		default:
+			return { command: "npx", args: (f) => ["changeset", "status", "--output", f] };
+	}
+};
 
 /**
- * Detects publishable changes by checking changeset status and package configurations
+ * Detects whether the runner output indicates a Changeset ValidationError.
  *
-
- * @param exec - GitHub Actions exec module
-
-
- * @param packageManager - Package manager to use (npm, pnpm, yarn, bun)
- * @param dryRun - Whether this is a dry-run (no actual operations)
- * @returns Detection result with publishable packages
- *
- * @remarks
- * This function:
- * 1. Runs `changeset status --output=json` to get pending changes
- * 2. Filters for packages with valid `publishConfig.access`
- * 3. Creates a GitHub check run to report findings
- * 4. Returns publishable packages and check details
- *
- * A package is considered publishable if:
- * - It has a changeset with version bump
- * - It has `publishConfig.access` set to "public" or "restricted"
- * - It's not marked as private: true in package.json (or has publishConfig.access override)
+ * @internal
  */
-export async function detectPublishableChanges(
-	packageManager: string,
-	dryRun: boolean,
-): Promise<{
-	hasChanges: boolean;
-	packages: ChangesetPackage[];
-	versionOnlyPackages: ChangesetPackage[];
-	checkId: number;
-}> {
-	const token = getState("token");
-	if (!token) {
-		throw new Error("No token available from state - ensure pre.ts ran successfully");
-	}
-	const github = getOctokit(token);
+const isValidationError = (stderr: string): boolean =>
+	stderr.includes("ValidationError") ||
+	stderr.includes("depends on the ignored package") ||
+	stderr.includes("is not being ignored");
 
-	// Create temp file for changeset status output
-	// The --output flag writes JSON to a file, not stdout
-	// Use relative path because changeset CLI treats absolute paths as relative
-	const statusFile = `.changeset-status-${Date.now()}.json`;
+const extractValidationMessage = (stderr: string): string => {
+	const lines = stderr
+		.split("\n")
+		.filter((line) => line.includes("error") && !line.includes("at "))
+		.map((line) => line.replace(/^\s*🦋\s*error\s*/, "").trim())
+		.filter((line) => line.length > 0 && !line.startsWith("{"));
+	return lines.length > 0 ? lines.join("\n") : "Changeset configuration validation failed";
+};
 
-	// Determine changeset command based on package manager
-	const changesetCommand =
-		packageManager === "pnpm" ? "pnpm" : packageManager === "yarn" ? "yarn" : packageManager === "bun" ? "bun" : "npx";
-	const changesetArgs =
-		packageManager === "pnpm"
-			? ["exec", "changeset", "status", "--output", statusFile]
-			: packageManager === "yarn"
-				? ["changeset", "status", "--output", statusFile]
-				: packageManager === "bun"
-					? ["x", "changeset", "status", "--output", statusFile]
-					: ["changeset", "status", "--output", statusFile];
+/**
+ * Aggregate per-changeset releases when the top-level `releases` array is
+ * empty (changesets sometimes omits private packages from that field).
+ *
+ * @internal
+ */
+const aggregateReleases = (status: ChangesetStatus): ChangesetStatus => {
+	if ((status.releases?.length ?? 0) > 0 || status.changesets.length === 0) return status;
 
-	// Run changeset status
-	let statusError = "";
-	let statusStdout = "";
-
-	info(`Running: ${changesetCommand} ${changesetArgs.join(" ")}`);
-
-	const exitCode = await exec(changesetCommand, changesetArgs, {
-		listeners: {
-			stdout: (data: Buffer) => {
-				statusStdout += data.toString();
-			},
-			stderr: (data: Buffer) => {
-				statusError += data.toString();
-			},
-		},
-		ignoreReturnCode: true,
-		silent: true,
-	});
-
-	info(`Changeset status exit code: ${exitCode}`);
-	if (statusStdout) {
-		info(`Changeset stdout: ${statusStdout.trim()}`);
-	}
-	if (statusError) {
-		info(`Changeset stderr: ${statusError.trim()}`);
-	}
-
-	// Check for changeset validation errors (exit code 1 with specific error patterns)
-	if (exitCode !== 0 && statusError) {
-		const isValidationError =
-			statusError.includes("ValidationError") ||
-			statusError.includes("depends on the ignored package") ||
-			statusError.includes("is not being ignored");
-
-		if (isValidationError) {
-			// Extract the specific error messages for clearer reporting
-			const errorLines = statusError
-				.split("\n")
-				.filter((line) => line.includes("error") && !line.includes("at "))
-				.map((line) => line.replace(/^\s*🦋\s*error\s*/, "").trim())
-				.filter((line) => line.length > 0 && !line.startsWith("{"));
-
-			const errorSummary = errorLines.length > 0 ? errorLines.join("\n") : "Changeset configuration validation failed";
-
-			error(`Changeset validation error:\n${errorSummary}`);
-			throw new Error(`Changeset configuration is invalid:\n${errorSummary}`);
-		}
-	}
-
-	// Parse changeset status from temp file
-	let changesetStatus: ChangesetStatus;
-
-	try {
-		const statusContent = await readFile(statusFile, "utf-8");
-		const trimmedOutput = statusContent.trim();
-		info(`Changeset status file contents (${statusContent.length} bytes): ${trimmedOutput.slice(0, 500)}`);
-
-		if (!trimmedOutput || trimmedOutput === "") {
-			info("Changeset status file is empty (no changesets present)");
-			changesetStatus = { releases: [], changesets: [] };
-		} else {
-			changesetStatus = JSON.parse(trimmedOutput) as ChangesetStatus;
-
-			// If top-level releases is empty but changesets have releases, aggregate them
-			// This handles private packages where changesets doesn't populate top-level releases
-			if (
-				(!changesetStatus.releases || changesetStatus.releases.length === 0) &&
-				changesetStatus.changesets.length > 0
-			) {
-				const aggregatedReleases = new Map<string, ChangesetPackage>();
-				for (const cs of changesetStatus.changesets) {
-					if (cs.releases) {
-						for (const rel of cs.releases) {
-							// Use the first occurrence of each package (type from first changeset)
-							if (!aggregatedReleases.has(rel.name)) {
-								aggregatedReleases.set(rel.name, {
-									name: rel.name,
-									type: rel.type as ChangesetPackage["type"],
-									oldVersion: "", // Will be populated later from package.json
-									newVersion: "", // Will be populated later from package.json
-								});
-							}
-						}
-					}
-				}
-				if (aggregatedReleases.size > 0) {
-					changesetStatus.releases = Array.from(aggregatedReleases.values());
-					info(`Aggregated ${changesetStatus.releases.length} release(s) from changesets`);
-				}
-			}
-
-			info(`Parsed ${changesetStatus.changesets.length} changesets, ${changesetStatus.releases.length} releases`);
-		}
-	} catch (err) {
-		if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-			// File not created means no changesets or command failed
-			info(`Changeset status file not created at ${statusFile}`);
-			changesetStatus = { releases: [], changesets: [] };
-		} else {
-			warning(`Failed to read/parse changeset status: ${err instanceof Error ? err.message : String(err)}`);
-			changesetStatus = { releases: [], changesets: [] };
-		}
-	} finally {
-		// Clean up temp file
-		try {
-			await unlink(statusFile);
-		} catch {
-			// Ignore cleanup errors
-		}
-	}
-
-	debug(`Changeset status: ${JSON.stringify(changesetStatus, null, 2)}`);
-
-	// Log what changesets found
-	if (changesetStatus.changesets.length > 0) {
-		info(`Found ${changesetStatus.changesets.length} changeset(s)`);
-	}
-	if (changesetStatus.releases.length > 0) {
-		info(`Found ${changesetStatus.releases.length} package(s) with pending releases`);
-	} else {
-		info("No packages with pending releases found");
-	}
-
-	// Build a map of package name -> package info using workspace-tools
-	const cwd = process.cwd();
-
-	// Create lookup map: package name -> { path, packageJson }
-	const packageMap = new Map<string, { path: string; packageJson: PackageJson }>();
-
-	// Try to detect workspaces using workspace-tools
-	// Note: workspace-tools may not recognize all lock files (e.g., bun.lock)
-	try {
-		const workspaceRoot = findProjectRoot(cwd);
-		debug(`workspace-tools findProjectRoot: ${workspaceRoot || "null"}`);
-
-		if (workspaceRoot) {
-			const workspaces = getWorkspaceInfos(workspaceRoot) ?? [];
-			debug(`workspace-tools getWorkspaceInfos returned ${workspaces.length} workspace(s)`);
-
-			for (const workspace of workspaces) {
-				packageMap.set(workspace.name, {
-					path: workspace.path,
-					packageJson: workspace.packageJson as PackageJson,
+	const map = new Map<string, ChangesetPackage>();
+	for (const cs of status.changesets) {
+		for (const rel of cs.releases ?? []) {
+			if (!map.has(rel.name)) {
+				map.set(rel.name, {
+					name: rel.name,
+					type: rel.type as ChangesetPackage["type"],
+					oldVersion: "",
+					newVersion: "",
 				});
 			}
 		}
-	} catch (err) {
-		debug(`workspace-tools failed: ${err instanceof Error ? err.message : String(err)}`);
 	}
+	return map.size > 0 ? { ...status, releases: Array.from(map.values()) } : status;
+};
 
-	// Always check root package.json for single-package repos
-	// This is the primary detection method when no workspaces are defined
-	// NOTE: Using join() instead of string concatenation to prevent ncc bundler
-	// from incorrectly treating "package.json" as a static asset reference
-	const pkgJsonFilename = "package.json";
-	const rootPkgPath = join(cwd, pkgJsonFilename);
+/**
+ * Run `changeset status` and capture its output to a temp file, returning
+ * the parsed payload (or an empty payload on missing/invalid output).
+ *
+ * @internal
+ */
+const runChangesetStatus = (
+	packageManager: string,
+): Effect.Effect<ChangesetStatus, CommandRunnerError | Error, CommandRunner | FileSystem.FileSystem> =>
+	Effect.gen(function* () {
+		const runner = yield* CommandRunner;
+		const fs = yield* FileSystem.FileSystem;
 
-	info(`Reading root package.json from: ${rootPkgPath}`);
-	debug(`Current working directory: ${cwd}`);
+		// Relative path because the changeset CLI treats absolute paths as relative.
+		const statusFile = `.changeset-status-${Date.now()}.json`;
+		const { command, args } = resolveChangesetCommand(packageManager);
+		yield* Effect.logInfo(`Running: ${command} ${args(statusFile).join(" ")}`);
 
-	try {
-		const rootContent = await readFile(rootPkgPath, "utf-8");
-		debug(`Root package.json content length: ${rootContent.length} bytes`);
+		// Capture stdout/stderr; tolerate non-zero exit codes via Effect.either.
+		const result = yield* Effect.either(runner.execCapture(command, args(statusFile), { silent: true }));
 
-		// Log first 200 chars of content for debugging (helps identify wrong file issues)
-		const contentPreview = rootContent.slice(0, 200).replace(/\n/g, " ");
-		debug(`Root package.json preview: ${contentPreview}...`);
-
-		const rootPkg = JSON.parse(rootContent) as PackageJson;
-
-		// Info-level logging for key fields (always visible)
-		info(`Root package.json parsed: name="${rootPkg.name || "(none)"}", private=${rootPkg.private ?? false}`);
-		if (rootPkg.publishConfig) {
-			info(`  publishConfig.access: ${rootPkg.publishConfig.access || "(not set)"}`);
-		}
-
-		// Debug-level for full details
-		debug(
-			`Root package.json full details: name=${rootPkg.name}, private=${rootPkg.private}, publishConfig=${JSON.stringify(rootPkg.publishConfig)}`,
-		);
-
-		if (rootPkg.name && !packageMap.has(rootPkg.name)) {
-			packageMap.set(rootPkg.name, { path: dirname(rootPkgPath), packageJson: rootPkg });
-			info(`✓ Added root package "${rootPkg.name}" to package map`);
-		} else if (rootPkg.name) {
-			debug(`Root package "${rootPkg.name}" already in package map from workspaces`);
+		if (result._tag === "Left") {
+			const stderr = result.left.stderr ?? "";
+			if (stderr && isValidationError(stderr)) {
+				const summary = extractValidationMessage(stderr);
+				yield* Effect.logError(`Changeset validation error:\n${summary}`);
+				return yield* Effect.fail(new Error(`Changeset configuration is invalid:\n${summary}`));
+			}
 		} else {
-			warning("Root package.json has no 'name' field - cannot detect package for release");
-			warning("Ensure your package.json has a 'name' field");
-		}
-	} catch (err) {
-		warning(`Failed to read root package.json at ${rootPkgPath}: ${err instanceof Error ? err.message : String(err)}`);
-		debug(`Read error details: ${err instanceof Error ? err.stack : "no stack"}`);
-	}
-
-	// Log discovered packages and their publish configurations
-	if (packageMap.size > 0) {
-		info(`📦 Discovered ${packageMap.size} package(s) in workspace:`);
-		for (const [name, pkgInfo] of packageMap) {
-			const access = pkgInfo.packageJson.publishConfig?.access;
-			const isPrivate = pkgInfo.packageJson.private;
-			const strategy = access
-				? `publishConfig.access: ${access}`
-				: isPrivate
-					? "private (no publish)"
-					: "no publishConfig";
-			info(`   • ${name} (${strategy})`);
-		}
-	} else {
-		info("📦 No packages found in workspace");
-	}
-
-	// Filter for publishable packages and version-only packages
-	const publishablePackages: ChangesetPackage[] = [];
-	const versionOnlyPackages: ChangesetPackage[] = [];
-
-	for (const release of changesetStatus.releases) {
-		// Skip if no version bump
-		if (release.type === "none") {
-			debug(`Skipping ${release.name}: no version bump`);
-			continue;
+			yield* Effect.logInfo(`Changeset status exit code: ${result.right.exitCode}`);
+			if (result.right.stdout.trim()) yield* Effect.logInfo(`Changeset stdout: ${result.right.stdout.trim()}`);
+			if (result.right.stderr.trim()) yield* Effect.logInfo(`Changeset stderr: ${result.right.stderr.trim()}`);
 		}
 
-		// Find package info from workspace map
-		const pkgInfo = packageMap.get(release.name);
+		// Parse output file.
+		const exists = yield* fs.exists(statusFile);
+		let parsed: ChangesetStatus = { releases: [], changesets: [] };
 
-		if (!pkgInfo) {
-			warning(`Could not find package.json for ${release.name}, skipping`);
-			continue;
-		}
-
-		const { path: packagePath, packageJson } = pkgInfo;
-
-		debug(`Found package.json for ${release.name} at ${packagePath}`);
-		debug(`Package config: ${JSON.stringify(packageJson, null, 2)}`);
-
-		// Check if package is publishable
-		const hasPublishConfig = packageJson.publishConfig?.access !== undefined;
-		const isPublicOrRestricted =
-			packageJson.publishConfig?.access === "public" || packageJson.publishConfig?.access === "restricted";
-
-		if (hasPublishConfig && isPublicOrRestricted) {
-			info(`✓ ${release.name} is publishable (access: ${packageJson.publishConfig?.access})`);
-			publishablePackages.push(release);
+		if (exists) {
+			const content = yield* fs.readFileString(statusFile);
+			const trimmed = content.trim();
+			yield* Effect.logInfo(`Changeset status file contents (${content.length} bytes): ${trimmed.slice(0, 500)}`);
+			if (trimmed) {
+				try {
+					parsed = aggregateReleases(JSON.parse(trimmed) as ChangesetStatus);
+					if (parsed.releases?.length && parsed.releases.length > 0) {
+						yield* Effect.logInfo(`Parsed ${parsed.changesets.length} changesets, ${parsed.releases.length} releases`);
+					} else {
+						yield* Effect.logInfo(`Parsed ${parsed.changesets.length} changesets, 0 releases`);
+					}
+				} catch (err) {
+					yield* Effect.logWarning(
+						`Failed to read/parse changeset status: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
+			} else {
+				yield* Effect.logInfo("Changeset status file is empty (no changesets present)");
+			}
 		} else {
-			// Package has changesets but no publish targets - version-only (GitHub release only)
-			info(`🏷️ ${release.name}: version-only (GitHub release only)`);
-			versionOnlyPackages.push(release);
+			yield* Effect.logInfo(`Changeset status file not created at ${statusFile}`);
 		}
-	}
 
-	// Create GitHub check run
-	const checkTitle = dryRun ? "🧪 Detect Publishable Changes (Dry Run)" : "Detect Publishable Changes";
-	const totalReleasable = publishablePackages.length + versionOnlyPackages.length;
-	const checkSummary =
-		totalReleasable > 0
-			? `Found ${totalReleasable} releasable package(s) with changes` +
-				(versionOnlyPackages.length > 0
-					? ` (${publishablePackages.length} publishable, ${versionOnlyPackages.length} version-only)`
-					: "")
-			: "No releasable packages with changes";
+		// Best-effort cleanup; ignore failures.
+		yield* fs.remove(statusFile).pipe(Effect.catchAll(() => Effect.void));
 
-	// Build check details using summaryWriter
-	// The checks API output field expects markdown, not HTML
-	const checkDetailSections: Array<{ heading?: string; level?: 2 | 3 | 4; content: string }> = [];
-
-	const packagesContent =
-		publishablePackages.length > 0
-			? summaryWriter.list(
-					publishablePackages.map(
-						(pkg) => `**${pkg.name}**: \`${pkg.oldVersion}\` → \`${pkg.newVersion}\` (${pkg.type})`,
-					),
-				)
-			: "_No publishable packages found_";
-
-	checkDetailSections.push({ heading: "Publishable Packages", content: packagesContent });
-
-	if (versionOnlyPackages.length > 0) {
-		const versionOnlyContent = summaryWriter.list(
-			versionOnlyPackages.map(
-				(pkg) => `**${pkg.name}**: \`${pkg.oldVersion}\` → \`${pkg.newVersion}\` (${pkg.type}) — GitHub release only`,
-			),
-		);
-		checkDetailSections.push({ heading: "Version-Only Packages", content: versionOnlyContent });
-	}
-
-	if (dryRun) {
-		checkDetailSections.push({
-			content: "> **Dry Run Mode**: This is a preview run. No actual publishing will occur.",
-		});
-	}
-
-	const changesetContent =
-		changesetStatus.changesets.length > 0
-			? `Found ${changesetStatus.changesets.length} changeset(s)`
-			: "No changesets found";
-
-	checkDetailSections.push({ heading: "Changeset Summary", content: changesetContent });
-
-	const checkDetails = summaryWriter.build(checkDetailSections);
-
-	const { data: checkRun } = await github.rest.checks.create({
-		owner: context.repo.owner,
-		repo: context.repo.repo,
-		name: checkTitle,
-		head_sha: context.sha,
-		status: "completed",
-		conclusion: "success",
-		output: {
-			title: checkSummary,
-			summary: checkDetails,
-		},
+		return parsed;
 	});
 
-	info(`Created check run: ${checkRun.html_url}`);
+/**
+ * Discover workspace packages and read their raw `package.json` files so
+ * silk rules can be applied to the full publishConfig (including
+ * `targets`, which `workspaces-effect`'s typed PublishConfig omits).
+ *
+ * @internal
+ */
+const loadPackageMap = (): Effect.Effect<
+	Map<string, { path: string; packageJson: RawPackageJson }>,
+	never,
+	FileSystem.FileSystem
+> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem;
+		const cwd = process.cwd();
+		const packageMap = new Map<string, { path: string; packageJson: RawPackageJson }>();
 
-	// Write job summary using summaryWriter
-	const jobSummarySections: Array<{ heading?: string; level?: 2 | 3 | 4; content: string }> = [
-		{ heading: checkTitle, content: checkSummary },
-	];
+		const root = findWorkspaceRootSync(cwd);
+		yield* Effect.logDebug(`workspaces-effect findWorkspaceRootSync: ${root ?? "null"}`);
 
-	const jobPackagesContent =
-		publishablePackages.length > 0
-			? summaryWriter.table(
-					["Package", "Current", "Next", "Type"],
-					publishablePackages.map((pkg) => [pkg.name, pkg.oldVersion, pkg.newVersion, pkg.type]),
-				)
-			: "_No publishable packages found_";
+		if (root !== null) {
+			try {
+				const workspaces = getWorkspacePackagesSync(root);
+				yield* Effect.logDebug(`workspaces-effect getWorkspacePackagesSync returned ${workspaces.length} workspace(s)`);
+				for (const workspace of workspaces) {
+					const path = join(workspace.path, "package.json");
+					const result = yield* Effect.either(fs.readFileString(path));
+					let raw: RawPackageJson;
+					if (result._tag === "Right") {
+						try {
+							raw = JSON.parse(result.right) as RawPackageJson;
+						} catch {
+							raw = { name: workspace.name, version: workspace.version, private: workspace.private };
+						}
+					} else {
+						yield* Effect.logDebug(`Failed to re-read ${path}: ${result.left.message ?? String(result.left)}`);
+						raw = { name: workspace.name, version: workspace.version, private: workspace.private };
+					}
+					packageMap.set(workspace.name, { path: workspace.path, packageJson: raw });
+				}
+			} catch (err) {
+				yield* Effect.logDebug(`workspaces-effect failed: ${err instanceof Error ? err.message : String(err)}`);
+			}
+		}
 
-	jobSummarySections.push({ heading: "Publishable Packages", level: 3, content: jobPackagesContent });
+		// Always check root package.json for single-package repos.
+		const rootPkgPath = join(cwd, "package.json");
+		yield* Effect.logInfo(`Reading root package.json from: ${rootPkgPath}`);
+		const result = yield* Effect.either(fs.readFileString(rootPkgPath));
+		if (result._tag === "Right") {
+			try {
+				const rootPkg = JSON.parse(result.right) as RawPackageJson;
+				yield* Effect.logInfo(
+					`Root package.json parsed: name="${rootPkg.name || "(none)"}", private=${rootPkg.private ?? false}`,
+				);
+				if (rootPkg.publishConfig) {
+					yield* Effect.logInfo(`  publishConfig.access: ${rootPkg.publishConfig.access || "(not set)"}`);
+				}
+				if (rootPkg.name && !packageMap.has(rootPkg.name)) {
+					packageMap.set(rootPkg.name, { path: dirname(rootPkgPath), packageJson: rootPkg });
+					yield* Effect.logInfo(`✓ Added root package "${rootPkg.name}" to package map`);
+				} else if (rootPkg.name) {
+					yield* Effect.logDebug(`Root package "${rootPkg.name}" already in package map from workspaces`);
+				} else {
+					yield* Effect.logWarning("Root package.json has no 'name' field - cannot detect package for release");
+				}
+			} catch (err) {
+				yield* Effect.logWarning(
+					`Failed to parse root package.json: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
+		} else {
+			yield* Effect.logWarning(
+				`Failed to read root package.json at ${rootPkgPath}: ${result.left.message ?? String(result.left)}`,
+			);
+		}
 
-	if (versionOnlyPackages.length > 0) {
-		const jobVersionOnlyContent = summaryWriter.table(
-			["Package", "Current", "Next", "Type"],
-			versionOnlyPackages.map((pkg) => [pkg.name, pkg.oldVersion, pkg.newVersion, pkg.type]),
-		);
-		jobSummarySections.push({
-			heading: "Version-Only Packages (GitHub release only)",
-			level: 3,
-			content: jobVersionOnlyContent,
+		return packageMap;
+	});
+
+/**
+ * Detect publishable changes from changeset status, classify each
+ * release under silk rules, and report via a Check Run.
+ *
+ * @remarks
+ * A package is publishable when it has a changeset with a version bump
+ * AND silk rules return a non-empty target list. Packages with changesets
+ * that resolve to no silk targets are categorized as "version-only" — they
+ * still get version bumps and a GitHub Release, but skip registry publish.
+ */
+export const detectPublishableChanges = (
+	packageManager: string,
+	dryRun: boolean,
+): Effect.Effect<
+	DetectPublishableChangesResult,
+	CommandRunnerError | Error,
+	ActionOutputs | CheckRun | CommandRunner | FileSystem.FileSystem
+> =>
+	Effect.gen(function* () {
+		const outputs = yield* ActionOutputs;
+		const checks = yield* CheckRun;
+
+		const changesetStatus = yield* runChangesetStatus(packageManager);
+
+		yield* Effect.logDebug(`Changeset status: ${JSON.stringify(changesetStatus, null, 2)}`);
+		if (changesetStatus.changesets.length > 0) {
+			yield* Effect.logInfo(`Found ${changesetStatus.changesets.length} changeset(s)`);
+		}
+		if (changesetStatus.releases.length > 0) {
+			yield* Effect.logInfo(`Found ${changesetStatus.releases.length} package(s) with pending releases`);
+		} else {
+			yield* Effect.logInfo("No packages with pending releases found");
+		}
+
+		const packageMap = yield* loadPackageMap();
+
+		if (packageMap.size > 0) {
+			yield* Effect.logInfo(`📦 Discovered ${packageMap.size} package(s) in workspace:`);
+			for (const [name, pkgInfo] of packageMap) {
+				const targets = silkDetect(name, pkgInfo.packageJson);
+				let strategy: string;
+				if (targets.length === 0) {
+					strategy = pkgInfo.packageJson.private ? "private (no publish)" : "no publishConfig";
+				} else if (targets.length === 1) {
+					strategy = `publishes to ${targets[0].registry} (access: ${targets[0].access})`;
+				} else {
+					strategy = `publishes to ${targets.length} target(s): ${targets.map((t) => t.registry).join(", ")}`;
+				}
+				yield* Effect.logInfo(`   • ${name} (${strategy})`);
+			}
+		} else {
+			yield* Effect.logInfo("📦 No packages found in workspace");
+		}
+
+		const publishablePackages: ChangesetPackage[] = [];
+		const versionOnlyPackages: ChangesetPackage[] = [];
+
+		for (const release of changesetStatus.releases) {
+			if (release.type === "none") {
+				yield* Effect.logDebug(`Skipping ${release.name}: no version bump`);
+				continue;
+			}
+			const pkgInfo = packageMap.get(release.name);
+			if (!pkgInfo) {
+				yield* Effect.logWarning(`Could not find package.json for ${release.name}, skipping`);
+				continue;
+			}
+			const targets = silkDetect(release.name, pkgInfo.packageJson);
+			if (targets.length > 0) {
+				const summary =
+					targets.length === 1
+						? `access: ${targets[0].access}, registry: ${targets[0].registry}`
+						: `${targets.length} targets`;
+				yield* Effect.logInfo(`✓ ${release.name} is publishable (${summary})`);
+				publishablePackages.push(release);
+			} else {
+				yield* Effect.logInfo(`🏷️ ${release.name}: version-only (GitHub release only)`);
+				versionOnlyPackages.push(release);
+			}
+		}
+
+		// Build Check Run + job summary content.
+		const checkTitle = dryRun ? "🧪 Detect Publishable Changes (Dry Run)" : "Detect Publishable Changes";
+		const totalReleasable = publishablePackages.length + versionOnlyPackages.length;
+		const checkSummary =
+			totalReleasable > 0
+				? `Found ${totalReleasable} releasable package(s) with changes${
+						versionOnlyPackages.length > 0
+							? ` (${publishablePackages.length} publishable, ${versionOnlyPackages.length} version-only)`
+							: ""
+					}`
+				: "No releasable packages with changes";
+
+		const checkSections: Array<{ heading?: string; level?: 2 | 3 | 4; content: string }> = [
+			{
+				heading: "Publishable Packages",
+				content:
+					publishablePackages.length > 0
+						? summaryWriter.list(
+								publishablePackages.map(
+									(pkg) => `**${pkg.name}**: \`${pkg.oldVersion}\` → \`${pkg.newVersion}\` (${pkg.type})`,
+								),
+							)
+						: "_No publishable packages found_",
+			},
+		];
+		if (versionOnlyPackages.length > 0) {
+			checkSections.push({
+				heading: "Version-Only Packages",
+				content: summaryWriter.list(
+					versionOnlyPackages.map(
+						(pkg) =>
+							`**${pkg.name}**: \`${pkg.oldVersion}\` → \`${pkg.newVersion}\` (${pkg.type}) — GitHub release only`,
+					),
+				),
+			});
+		}
+		if (dryRun) {
+			checkSections.push({
+				content: "> **Dry Run Mode**: This is a preview run. No actual publishing will occur.",
+			});
+		}
+		const changesetContent =
+			changesetStatus.changesets.length > 0
+				? `Found ${changesetStatus.changesets.length} changeset(s)`
+				: "No changesets found";
+		checkSections.push({ heading: "Changeset Summary", content: changesetContent });
+
+		const checkDetails = summaryWriter.build(checkSections);
+		const checkId = yield* checks.create(checkTitle, process.env.GITHUB_SHA ?? "");
+		yield* checks.complete(checkId, "success", {
+			title: checkSummary,
+			summary: checkDetails,
 		});
-	}
 
-	jobSummarySections.push({ heading: "Changeset Summary", level: 3, content: changesetContent });
+		// Job summary.
+		const jobSections: Array<{ heading?: string; level?: 2 | 3 | 4; content: string }> = [
+			{ heading: checkTitle, content: checkSummary },
+			{
+				heading: "Publishable Packages",
+				level: 3,
+				content:
+					publishablePackages.length > 0
+						? summaryWriter.table(
+								["Package", "Current", "Next", "Type"],
+								publishablePackages.map((pkg) => [pkg.name, pkg.oldVersion, pkg.newVersion, pkg.type]),
+							)
+						: "_No publishable packages found_",
+			},
+		];
+		if (versionOnlyPackages.length > 0) {
+			jobSections.push({
+				heading: "Version-Only Packages (GitHub release only)",
+				level: 3,
+				content: summaryWriter.table(
+					["Package", "Current", "Next", "Type"],
+					versionOnlyPackages.map((pkg) => [pkg.name, pkg.oldVersion, pkg.newVersion, pkg.type]),
+				),
+			});
+		}
+		jobSections.push({ heading: "Changeset Summary", level: 3, content: changesetContent });
+		yield* outputs.summary(summaryWriter.build(jobSections));
 
-	await summaryWriter.write(summaryWriter.build(jobSummarySections));
-
-	return {
-		hasChanges: publishablePackages.length > 0 || versionOnlyPackages.length > 0,
-		packages: publishablePackages,
-		versionOnlyPackages,
-		checkId: checkRun.id,
-	};
-}
+		return {
+			hasChanges: publishablePackages.length > 0 || versionOnlyPackages.length > 0,
+			packages: publishablePackages,
+			versionOnlyPackages,
+			checkId,
+		};
+	});

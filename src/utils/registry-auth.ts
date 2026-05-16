@@ -1,8 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { debug, getInput, getState, info, setSecret, warning } from "@actions/core";
-import { exec } from "@actions/exec";
 import type { AuthSetupResult, ResolvedTarget } from "../types/publish-config.js";
+import { debug, exec, getInput, getState, info, setSecret, warning } from "./_actions-compat.js";
 import { isGitHubPackagesRegistry, isNpmRegistry } from "./registry-utils.js";
 import { registryToEnvName } from "./resolve-targets.js";
 
@@ -394,7 +393,7 @@ export function generateNpmrc(targets: ResolvedTarget[]): void {
  * - **JSR**: Uses OIDC (no token needed)
  * - **Custom registries**: Uses tokens from `custom-registries` input, or GitHub App token if not specified
  *
- * The GitHub token is set to GITHUB_TOKEN for GitHub Packages auth.
+ * The GitHub Packages token is set to SILK_GITHUB_PACKAGES_TOKEN for the npm subprocess.
  * NPM_TOKEN is set when npm-token input is provided (for first-time publishes or OIDC fallback).
  * No .npmrc entry is needed for JSR since it uses OIDC.
  *
@@ -432,10 +431,11 @@ export async function setupRegistryAuth(targets: ResolvedTarget[], packageManage
 	if (!packagesToken) {
 		warning("No GitHub token available - GitHub Packages and custom registries may fail to authenticate");
 	} else {
-		// Set GITHUB_TOKEN for GitHub Packages
-		process.env.GITHUB_TOKEN = packagesToken;
+		// Provide the GitHub Packages token to the npm subprocess via a
+		// dedicated env var (the target's tokenEnv) — never GITHUB_TOKEN.
+		process.env.SILK_GITHUB_PACKAGES_TOKEN = packagesToken;
 		if (githubToken) {
-			info("Using workflow GITHUB_TOKEN for GitHub Packages authentication (packages:write)");
+			info("Using workflow github-token for GitHub Packages authentication (packages:write)");
 		} else {
 			info("Using GitHub App token for GitHub Packages authentication");
 		}

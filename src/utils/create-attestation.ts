@@ -1,14 +1,12 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import type { Attestation } from "@actions/attest";
-import { attest, attestProvenance, createStorageRecord } from "@actions/attest";
-import { debug, getState, info, warning } from "@actions/core";
-import { exec } from "@actions/exec";
-import { context } from "@actions/github";
 import type { EnhancedCycloneDXDocument } from "../types/sbom-config.js";
+import { context, debug, endGroup, exec, info, startGroup, warning } from "./_actions-compat.js";
 import { enhanceSBOMMetadata } from "./enhance-sbom-metadata.js";
 import { isGitHubPackagesRegistry } from "./registry-utils.js";
+import { getAllWorkspacePackages } from "./release-summary-helpers.js";
+import { packagesToken } from "./tokens.js";
 
 /**
  * Result of creating a GitHub attestation
@@ -17,15 +15,15 @@ export interface AttestationResult {
 	/** Whether the attestation was created successfully */
 	success: boolean;
 	/** URL to the attestation on GitHub */
-	attestationUrl?: string;
+	attestationUrl?: string | undefined;
 	/** Attestation ID */
-	attestationId?: string;
+	attestationId?: string | undefined;
 	/** Transparency log ID */
-	tlogId?: string;
+	tlogId?: string | undefined;
 	/** Error message if failed */
-	error?: string;
+	error?: string | undefined;
 	/** Path to the SBOM JSON file (for SBOM attestations) */
-	sbomPath?: string;
+	sbomPath?: string | undefined;
 }
 
 /**
@@ -39,15 +37,15 @@ export interface SBOMValidationResult {
 	/** Number of production dependencies */
 	dependencyCount: number;
 	/** Warning message if SBOM will be empty or limited */
-	warning?: string;
+	warning?: string | undefined;
 	/** Error message if validation failed */
-	error?: string;
+	error?: string | undefined;
 	/**
 	 * The generated SBOM document if validation succeeded.
 	 * This can be reused during the actual attestation creation.
 	 * May be enhanced with additional metadata if enhanceMetadata option was enabled.
 	 */
-	generatedSbom?: CycloneDXDocument | EnhancedCycloneDXDocument;
+	generatedSbom?: CycloneDXDocument | EnhancedCycloneDXDocument | undefined;
 }
 
 /**
@@ -138,8 +136,8 @@ function getDlxCommand(packageManager: string): { cmd: string; baseArgs: string[
  *
  * @remarks
  * This creates a storage record in GitHub's artifact metadata API, which links
- * the attestation to the package artifact in GitHub Packages. Uses the official
- * createStorageRecord function from @actions/attest.
+ * the attestation to the package artifact in GitHub Packages. Delegates to the
+ * Effect-based `runCreateStorageRecord` shim.
  *
  * @param packageName - Name of the package (e.g., "@org/pkg")
  * @param version - Package version
@@ -165,29 +163,24 @@ async function createArtifactMetadataRecord(
 	const artifactUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/pkgs/npm/${unscopedName}`;
 
 	try {
-		// The @actions/attest library passes extra properties through to the API via ...rest
-		// Fields we're setting:
-		// - repository: The package name within the npm registry (for "Artifact repository")
-		// - github_repository: The source GitHub repo (for "Source repository")
-		const storageRecordIds = await createStorageRecord(
-			{
-				name: purlName,
-				digest,
-				version,
-			},
-			{
-				registryUrl: "https://npm.pkg.github.com/",
-				artifactUrl,
-				// The repository within the registry (the npm package name)
-				repository: unscopedName,
-				// The GitHub source repository (only repo name, no owner prefix)
-				github_repository: context.repo.repo,
-			} as Parameters<typeof createStorageRecord>[1],
+		const { runCreateStorageRecord } = await import("./attest-runner.js");
+		const storageRecordIds = await runCreateStorageRecord({
+			purl: purlName,
+			digest,
+			version,
+			registryUrl: "https://npm.pkg.github.com/",
+			artifactUrl,
+			// The npm package name within the registry.
+			repo: unscopedName,
 			token,
-		);
+		});
 
-		debug(`Created artifact metadata storage record for ${purlName}, IDs: ${storageRecordIds.join(",")}`);
-		return storageRecordIds;
+		if (storageRecordIds && storageRecordIds.length > 0) {
+			debug(`Created artifact metadata storage record for ${purlName}, IDs: ${storageRecordIds.join(",")}`);
+			return [...storageRecordIds];
+		}
+		info(`  ⓘ Storage-record API accepted ${purlName} but recorded no IDs — artifact link not created`);
+		return undefined;
 	} catch (error) {
 		// Don't fail attestation if storage record creation fails
 		// This requires artifact-metadata:write permission which may not be available
@@ -272,7 +265,7 @@ export async function createReleaseAssetAttestation(
 	}
 
 	// Get the GITHUB_TOKEN for attestation API
-	const token = process.env.GITHUB_TOKEN || getState("githubToken");
+	const token = packagesToken();
 	if (!token) {
 		return {
 			success: false,
@@ -298,30 +291,17 @@ export async function createReleaseAssetAttestation(
 		debug(`Artifact digest: ${digest}`);
 		debug(`Subject name (PURL): ${purlName}`);
 
-		// Create the attestation
-		const attestation = await attestProvenance({
-			subjectName: purlName,
-			subjectDigest: { sha256: digest.replace("sha256:", "") },
-			token,
-		});
-
-		const attestationUrl = attestation.attestationID
-			? `https://github.com/${context.repo.owner}/${context.repo.repo}/attestations/${attestation.attestationID}`
-			: undefined;
+		// Run the Effect-based provenance pipeline (Sigstore + GitHub).
+		const { runProvenanceAttestation } = await import("./attest-runner.js");
+		const attestation = await runProvenanceAttestation(purlName, digest, token);
 
 		info(`✓ Created attestation for ${artifactName}`);
-		if (attestationUrl) {
-			info(`  Attestation URL: ${attestationUrl}`);
-		}
-		if (attestation.tlogID) {
-			info(`  Transparency log: https://search.sigstore.dev/?logIndex=${attestation.tlogID}`);
-		}
+		info(`  Attestation URL: ${attestation.attestationUrl}`);
 
 		return {
 			success: true,
-			attestationUrl,
-			attestationId: attestation.attestationID,
-			tlogId: attestation.tlogID,
+			attestationUrl: attestation.attestationUrl,
+			attestationId: attestation.attestationId,
 		};
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -347,18 +327,18 @@ export interface CreatePackageAttestationOptions {
 	/** Whether to skip actual attestation creation */
 	dryRun: boolean;
 	/** Package manager to use for creating tarball if needed */
-	packageManager?: string;
+	packageManager?: string | undefined;
 	/**
 	 * Pre-computed SHA-256 digest from the published tarball (format: "sha256:hex").
 	 * If provided, this digest is used directly instead of computing from a local tarball.
 	 * This ensures the attestation matches the exact artifact published to the registry.
 	 */
-	tarballDigest?: string;
+	tarballDigest?: string | undefined;
 	/**
 	 * Registry URL where the package was published.
 	 * Used to determine if artifact metadata linking is applicable (GitHub Packages only).
 	 */
-	registry?: string;
+	registry?: string | undefined;
 }
 
 /**
@@ -396,7 +376,7 @@ export async function createPackageAttestation(options: CreatePackageAttestation
 
 	// Get the GITHUB_TOKEN for attestation API
 	// We need the workflow token, not the App token, for attestations
-	const token = process.env.GITHUB_TOKEN || getState("githubToken");
+	const token = packagesToken();
 	if (!token) {
 		return {
 			success: false,
@@ -442,39 +422,31 @@ export async function createPackageAttestation(options: CreatePackageAttestation
 		debug(`Subject name (PURL): ${purlName}`);
 		debug(`Subject digest: ${digest}`);
 
-		// Create the attestation
-		const attestation = await attestProvenance({
-			subjectName: purlName,
-			subjectDigest: { sha256: digest.replace("sha256:", "") },
-			token,
-		});
-
-		const attestationUrl = attestation.attestationID
-			? `https://github.com/${context.repo.owner}/${context.repo.repo}/attestations/${attestation.attestationID}`
-			: undefined;
+		// Use the Effect-based provenance pipeline (Sigstore + GitHub).
+		const { runProvenanceAttestation } = await import("./attest-runner.js");
+		const attestation = await runProvenanceAttestation(purlName, digest, token);
 
 		info(`✓ Created attestation for ${tarballName}`);
-		if (attestationUrl) {
-			info(`  Attestation URL: ${attestationUrl}`);
-		}
-		if (attestation.tlogID) {
-			info(`  Transparency log: https://search.sigstore.dev/?logIndex=${attestation.tlogID}`);
-		}
+		info(`  Attestation URL: ${attestation.attestationUrl}`);
 
 		// Link attestation to GitHub Packages artifact via storage record API
 		// Only applicable for GitHub Packages registry
 		if (isGitHubPackagesRegistry(registry)) {
-			const storageRecordIds = await createArtifactMetadataRecord(packageName, version, digest, token);
-			if (storageRecordIds && storageRecordIds.length > 0) {
-				info(`  ✓ Linked attestation to GitHub Packages artifact (storage record IDs: ${storageRecordIds.join(",")})`);
+			const pkgToken = packagesToken();
+			if (pkgToken) {
+				const storageRecordIds = await createArtifactMetadataRecord(packageName, version, digest, pkgToken);
+				if (storageRecordIds && storageRecordIds.length > 0) {
+					info(
+						`  ✓ Linked attestation to GitHub Packages artifact (storage record IDs: ${storageRecordIds.join(",")})`,
+					);
+				}
 			}
 		}
 
 		return {
 			success: true,
-			attestationUrl,
-			attestationId: attestation.attestationID,
-			tlogId: attestation.tlogID,
+			attestationUrl: attestation.attestationUrl,
+			attestationId: attestation.attestationId,
 		};
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -526,11 +498,6 @@ export interface CycloneDXDocument {
 }
 
 /**
- * Workspace package info for SBOM generation (exported for use by publish-packages)
- */
-export type { WorkspacePackageInfo };
-
-/**
  * Options for creating an SBOM attestation
  */
 export interface CreateSBOMAttestationOptions {
@@ -558,12 +525,6 @@ export interface CreateSBOMAttestationOptions {
 	 * Used in the SBOM filename to distinguish between targets.
 	 */
 	targetName?: string;
-	/**
-	 * Map of workspace package names to their info (directory and version).
-	 * Used to create file: links for packages being published in the same batch,
-	 * which may not yet be available on the registry.
-	 */
-	workspacePackages?: Map<string, WorkspacePackageInfo>;
 	/**
 	 * Pre-generated SBOM from validation phase.
 	 * If provided, this SBOM will be used instead of generating a new one.
@@ -610,6 +571,31 @@ interface WorkspacePackageInfo {
 	directory: string;
 	/** Version of the package */
 	version: string;
+}
+
+/**
+ * Collect every workspace package keyed by name, pointing at its built
+ * `dist/npm` directory.
+ *
+ * @remarks
+ * SBOM generation runs `npm install` inside a package's `dist/npm`. When the
+ * package depends on a workspace sibling that is not published to the public
+ * registry, that install 404s. {@link rewriteWorkspaceDeps} rewrites such
+ * dependencies to `file:` references — but only for packages present in this
+ * map, so the map must cover **all** workspace packages, not just the ones
+ * being released in the current cycle.
+ *
+ * @returns Map of package name to its `dist/npm` directory and version.
+ */
+function collectWorkspacePackages(): Map<string, WorkspacePackageInfo> {
+	const map = new Map<string, WorkspacePackageInfo>();
+	for (const pkg of getAllWorkspacePackages()) {
+		const distDir = join(pkg.path, "dist", "npm");
+		if (existsSync(distDir)) {
+			map.set(pkg.name, { directory: distDir, version: pkg.version });
+		}
+	}
+	return map;
 }
 
 /**
@@ -767,14 +753,9 @@ async function installDependencies(
 		});
 
 		if (exitCode !== 0) {
-			debug(`npm install failed with exit code ${exitCode}`);
-			// Log errors with more visibility for troubleshooting
-			if (stdout) {
-				debug(`npm install stdout:\n${stdout.slice(0, 1000)}`);
-			}
-			if (stderr) {
-				debug(`npm install stderr:\n${stderr.slice(0, 1000)}`);
-			}
+			// Surface the real failure — the caller only logs a generic warning.
+			const detail = (stderr || stdout).trim().slice(0, 600);
+			warning(`npm install failed in ${directory} (exit ${exitCode})${detail ? `:\n${detail}` : ""}`);
 			return false;
 		}
 
@@ -803,20 +784,15 @@ async function installDependencies(
  *
  * @param directory - Directory containing the package
  * @param packageManager - Package manager to use for running cdxgen
- * @param workspacePackages - Optional map of workspace package names to their info for file: linking
  * @returns Parsed CycloneDX document or undefined if generation failed
  */
-async function generateSBOM(
-	directory: string,
-	packageManager: string,
-	workspacePackages?: Map<string, WorkspacePackageInfo>,
-): Promise<CycloneDXDocument | undefined> {
+async function generateSBOM(directory: string, packageManager: string): Promise<CycloneDXDocument | undefined> {
 	// Check if node_modules exists, if not install dependencies first
 	// cdxgen can work with lockfiles directly, but node_modules gives more accurate results
 	const nodeModulesPath = join(directory, "node_modules");
 	if (!existsSync(nodeModulesPath)) {
 		debug(`No node_modules in ${directory}, installing dependencies...`);
-		const installed = await installDependencies(directory, workspacePackages);
+		const installed = await installDependencies(directory, collectWorkspacePackages());
 		if (!installed) {
 			warning(`Failed to install dependencies in ${directory} for SBOM generation`);
 			return undefined;
@@ -885,6 +861,11 @@ async function generateSBOM(
 
 		const sbom = JSON.parse(sbomContent) as CycloneDXDocument;
 		debug(`Generated SBOM: ${sbom.bomFormat} v${sbom.specVersion}`);
+		// Emit the full SBOM in a collapsed log group so it can be inspected
+		// on demand without flooding the log on a healthy run.
+		startGroup(`CycloneDX SBOM — ${directory}`);
+		info(JSON.stringify(sbom, null, 2));
+		endGroup();
 		return sbom;
 	} catch (error) {
 		const errorMsg = error instanceof Error ? error.message : String(error);
@@ -925,7 +906,7 @@ async function generateSBOM(
  * @see https://github.com/actions/attest-sbom
  */
 export async function createSBOMAttestation(options: CreateSBOMAttestationOptions): Promise<AttestationResult> {
-	const { packageName, version, directory, dryRun, tarballDigest, workspacePackages } = options;
+	const { packageName, version, directory, dryRun, tarballDigest } = options;
 
 	if (dryRun) {
 		info(`[DRY RUN] Would create SBOM attestation for ${packageName}@${version}`);
@@ -936,7 +917,7 @@ export async function createSBOMAttestation(options: CreateSBOMAttestationOption
 	}
 
 	// Get the GITHUB_TOKEN for attestation API
-	const token = process.env.GITHUB_TOKEN || getState("githubToken");
+	const token = packagesToken();
 	if (!token) {
 		return {
 			success: false,
@@ -954,11 +935,11 @@ export async function createSBOMAttestation(options: CreateSBOMAttestationOption
 	} else {
 		// Generate the SBOM from the dist directory where package.json has resolved versions
 		// (workspace:* dependencies are transformed to real versions during build)
-		// generateSBOM will install dependencies if node_modules doesn't exist
-		// If workspacePackages is provided, dependencies on workspace packages will use file: references
+		// generateSBOM installs dependencies if node_modules doesn't exist,
+		// rewriting workspace-sibling deps to file: references first.
 		info(`Generating SBOM for ${packageName}@${version}...`);
 		const pm = options.packageManager || "npm";
-		sbom = await generateSBOM(directory, pm, workspacePackages);
+		sbom = await generateSBOM(directory, pm);
 	}
 
 	if (!sbom) {
@@ -1008,36 +989,18 @@ export async function createSBOMAttestation(options: CreateSBOMAttestationOption
 		debug(`Subject digest: ${digest}`);
 		debug(`Predicate type: ${CYCLONEDX_PREDICATE_TYPE}`);
 
-		// Create the SBOM attestation using the generic attest function
-		const attestation: Attestation = await attest({
-			subjects: [
-				{
-					name: purlName,
-					digest: { sha256: digest.replace("sha256:", "") },
-				},
-			],
-			predicateType: CYCLONEDX_PREDICATE_TYPE,
-			predicate: sbom,
-			token,
-		});
-
-		const attestationUrl = attestation.attestationID
-			? `https://github.com/${context.repo.owner}/${context.repo.repo}/attestations/${attestation.attestationID}`
-			: undefined;
+		// Use the Effect-based attestation pipeline with the BOM as the
+		// CycloneDX predicate.
+		const { runSbomAttestation } = await import("./attest-runner.js");
+		const attestation = await runSbomAttestation(purlName, digest, sbom, token);
 
 		info(`✓ Created SBOM attestation for ${packageName}@${version}`);
-		if (attestationUrl) {
-			info(`  Attestation URL: ${attestationUrl}`);
-		}
-		if (attestation.tlogID) {
-			info(`  Transparency log: https://search.sigstore.dev/?logIndex=${attestation.tlogID}`);
-		}
+		info(`  Attestation URL: ${attestation.attestationUrl}`);
 
 		return {
 			success: true,
-			attestationUrl,
-			attestationId: attestation.attestationID,
-			tlogId: attestation.tlogID,
+			attestationUrl: attestation.attestationUrl,
+			attestationId: attestation.attestationId,
 			sbomPath,
 		};
 	} catch (error) {
@@ -1060,16 +1023,14 @@ export interface ValidateSBOMGenerationOptions {
 	directory: string;
 	/** Package manager to use for generating SBOM */
 	packageManager: string;
-	/** Map of workspace package names to their info for file: linking */
-	workspacePackages?: Map<string, WorkspacePackageInfo>;
 	/** Package name (required for metadata enhancement) */
-	packageName?: string;
+	packageName?: string | undefined;
 	/** Package version (required for metadata enhancement) */
-	packageVersion?: string;
+	packageVersion?: string | undefined;
 	/** Repository root directory (for loading release config) */
-	rootDirectory?: string;
+	rootDirectory?: string | undefined;
 	/** Whether to enhance SBOM with metadata from config and package.json */
-	enhanceMetadata?: boolean;
+	enhanceMetadata?: boolean | undefined;
 }
 
 /**
@@ -1093,8 +1054,7 @@ export interface ValidateSBOMGenerationOptions {
  * @returns SBOM validation result with the generated SBOM if successful
  */
 export async function validateSBOMGeneration(options: ValidateSBOMGenerationOptions): Promise<SBOMValidationResult> {
-	const { directory, packageManager, workspacePackages, packageName, packageVersion, rootDirectory, enhanceMetadata } =
-		options;
+	const { directory, packageManager, packageName, packageVersion, rootDirectory, enhanceMetadata } = options;
 
 	// Check if package.json exists
 	const pkgJsonPath = join(directory, "package.json");
@@ -1137,7 +1097,7 @@ export async function validateSBOMGeneration(options: ValidateSBOMGenerationOpti
 	// Actually generate the SBOM to validate it works
 	// This catches issues like missing dependencies, cdxgen failures, etc.
 	debug(`Validating SBOM generation by generating SBOM for ${directory}`);
-	const sbom = await generateSBOM(directory, packageManager, workspacePackages);
+	const sbom = await generateSBOM(directory, packageManager);
 
 	if (!sbom) {
 		return {

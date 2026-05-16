@@ -1,7 +1,9 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { debug } from "@actions/core";
-import { findProjectRoot, getWorkspaceInfos } from "workspace-tools";
+import { findWorkspaceRootSync, getWorkspacePackagesSync } from "workspaces-effect";
+import { debug } from "./_actions-compat.js";
+import type { RawPackageJson } from "./silk-publishability.js";
+import { silkDetect } from "./silk-publishability.js";
 
 /**
  * Changeset configuration
@@ -36,7 +38,7 @@ export interface WorkspacePackageInfo {
 	/** Whether package has publishConfig.access */
 	hasPublishConfig: boolean;
 	/** Access level if configured */
-	access?: "public" | "restricted";
+	access?: "public" | "restricted" | undefined;
 	/** Number of publish targets */
 	targetCount: number;
 }
@@ -112,41 +114,38 @@ export function findPackageGroup(packageName: string, config: ChangesetConfig | 
  */
 export function getAllWorkspacePackages(): WorkspacePackageInfo[] {
 	const cwd = process.cwd();
-	const workspaceRoot = findProjectRoot(cwd);
+	const workspaceRoot = findWorkspaceRootSync(cwd);
 
 	if (!workspaceRoot) {
 		debug("No workspace root found");
 		return [];
 	}
 
-	const workspaces = getWorkspaceInfos(workspaceRoot) ?? [];
+	const workspaces = getWorkspacePackagesSync(workspaceRoot);
 	const packages: WorkspacePackageInfo[] = [];
 
 	for (const workspace of workspaces) {
-		const pkgJson = workspace.packageJson as {
-			name?: string;
-			version?: string;
-			private?: boolean;
-			publishConfig?: {
-				access?: "public" | "restricted";
-				targets?: unknown[];
-			};
-		};
+		// `workspaces-effect`'s typed PublishConfig doesn't carry `targets`, so
+		// re-read the raw package.json to compute target counts under silk rules.
+		const rawPath = join(workspace.path, "package.json");
+		let rawPkg: RawPackageJson = {};
+		try {
+			rawPkg = JSON.parse(readFileSync(rawPath, "utf8")) as RawPackageJson;
+		} catch (err) {
+			debug(`Failed to re-read ${rawPath}: ${err instanceof Error ? err.message : String(err)}`);
+		}
 
-		if (!pkgJson.name) continue;
-
-		const hasPublishConfig = pkgJson.publishConfig?.access !== undefined;
-		const targets = pkgJson.publishConfig?.targets;
-		const targetCount = Array.isArray(targets) ? targets.length : hasPublishConfig ? 1 : 0;
+		const hasPublishConfig = rawPkg.publishConfig?.access !== undefined;
+		const targets = silkDetect(workspace.name, rawPkg);
 
 		packages.push({
-			name: pkgJson.name,
-			version: pkgJson.version || "0.0.0",
+			name: workspace.name,
+			version: workspace.version || "0.0.0",
 			path: workspace.path,
-			private: pkgJson.private === true,
+			private: workspace.private === true,
 			hasPublishConfig,
-			access: pkgJson.publishConfig?.access,
-			targetCount,
+			access: rawPkg.publishConfig?.access,
+			targetCount: targets.length,
 		});
 	}
 

@@ -21,13 +21,13 @@ Load design docs when working on the relevant subsystem:
 
 ## Workflow Release Action
 
-TypeScript-based GitHub Action (~17,000 lines across 45 source files) for automated release management with changesets.
+TypeScript-based GitHub Action for automated release management with changesets. Entry points: `pre.ts`, `main.ts`, `post.ts`. Source layout: `src/utils/` (utility modules), `src/schema/` (output schema and projections), `src/services/attest/` (Effect-based attestation service), `src/types/` (shared types).
 
 **Three-phase workflow:**
 
 1. **Phase 1 (Branch Management)** - Push to `main` triggers changeset detection, creates/updates `changeset-release/main` branch and release PR
 2. **Phase 2 (Validation)** - Push to release branch triggers build validation, publish dry-runs, release notes preview, and sticky comment updates
-3. **Phase 3 (Publishing)** - Merge of release PR triggers multi-registry publishing, GitHub releases, and SBOM generation
+3. **Phase 3 (Publishing)** - Merge of release PR triggers multi-registry publishing, GitHub releases, and SBOM/attestation generation
 
 For full architecture, module dependency graph, and per-module documentation: `@.claude/design/release-action/architecture.md`
 
@@ -35,25 +35,30 @@ For full architecture, module dependency graph, and per-module documentation: `@
 
 | Input | Required | Default | Description |
 | ----- | -------- | ------- | ----------- |
-| `token` | Yes | - | GitHub App token |
+| `app-client-id` | Yes | - | GitHub App client ID |
+| `app-private-key` | Yes | - | GitHub App private key (PEM) |
+| `github-token` | No | `""` | GitHub token for GitHub Packages publishing |
 | `release-branch` | No | `changeset-release/main` | Release branch name |
 | `target-branch` | No | `main` | Target branch for release PR |
-| `package-manager` | No | `pnpm` | Package manager (`npm`, `pnpm`, `yarn`, `bun`) |
-| `version-command` | No | `{pm} ci:version` | Custom version command |
+| `version-command` | No | auto | Custom version command |
 | `pr-title-prefix` | No | `chore: release` | Release PR title prefix |
 | `dry-run` | No | `false` | Dry-run mode |
-| `registry-tokens` | No | - | Custom registry tokens (`registry=token` per line) |
+| `phase` | No | `""` | Explicitly set phase (skips auto-detection) |
+| `npm-token` | No | `""` | NPM token (OIDC fallback or first-time publish) |
+| `sbom-config` | No | `""` | SBOM metadata JSON |
+| `custom-registries` | No | `""` | Custom registry auth (one per line) |
+| `skip-token-revoke` | No | `false` | Skip App token revocation in post |
 
 ### Authentication Model
 
 | Registry | Method | Notes |
 | -------- | ------ | ----- |
-| **npm** | OIDC | Trusted publishing, no token needed |
+| **npm** | OIDC | Trusted publishing; use `npm-token` for first publish or OIDC fallback |
 | **JSR** | OIDC | Trusted publishing, no token needed |
-| **GitHub Packages** | GitHub App token | Uses `token` input |
-| **Custom registries** | `registry-tokens` | Format: `https://registry.example.com/=<TOKEN>` |
+| **GitHub Packages** | `github-token` input | Pass `secrets.GITHUB_TOKEN` with `packages: write` |
+| **Custom registries** | `custom-registries` input | Format: `https://registry.example.com/_authToken=<TOKEN>` |
 
-For full integration details: `@.claude/design/release-action/integration.md`
+For full integration details, token plumbing, and `SILK_GITHUB_PACKAGES_TOKEN`: `@.claude/design/release-action/integration.md`
 
 ### Integration Testing
 
@@ -183,9 +188,11 @@ This repository uses the **simple release workflow** (private repo, no NPM packa
 │   └── workflows/           # CI/CD workflows
 ├── .husky/                  # Git hooks
 ├── src/                     # Main action source code
+│   ├── schema/              # ReleaseOutput schema and projections
+│   ├── services/            # Effect-based service modules (attest/)
 │   ├── types/               # Type definitions
 │   └── utils/               # Utility modules
-├── __tests__/               # Test files and utilities
+├── __test__/                # Test files and utilities (singular)
 ├── biome.jsonc              # Biome configuration
 ├── tsconfig.json            # TypeScript configuration
 └── turbo.json               # Turborepo configuration
@@ -243,8 +250,8 @@ Use GitHub App tokens (not PATs) for workflows.
 
 | Secret | Purpose |
 | ------ | ------- |
-| `APP_ID` | GitHub App ID |
-| `APP_PRIVATE_KEY` | GitHub App private key (PEM) |
+| `APP_CLIENT_ID` | GitHub App client ID (maps to `app-client-id` input) |
+| `APP_PRIVATE_KEY` | GitHub App private key PEM (maps to `app-private-key` input) |
 | `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code integration |
 | `CLAUDE_REVIEW_PAT` | User context operations (thread resolution) |
 | `NPM_TOKEN` | NPM publishing (standard workflow only) |

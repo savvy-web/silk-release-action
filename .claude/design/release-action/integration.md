@@ -2,16 +2,26 @@
 title: Multi-Registry Publishing and Integration
 category: integration
 status: current
-completeness: 90
-last-synced: 2026-02-08
+completeness: 92
+created: 2026-02-07
+updated: 2026-05-16
+last-synced: 2026-05-16
 module: release-action
+related:
+  - architecture.md
+  - testing.md
+dependencies:
+  - architecture.md
 ---
 
 ## Table of Contents
 
 - [Overview](#overview)
 - [Current State](#current-state)
+  - [Publishability Detection (Silk Rules)](#publishability-detection-silk-rules)
   - [Registry Infrastructure](#registry-infrastructure)
+  - [Token Plumbing](#token-plumbing)
+  - [Attestation System](#attestation-system)
   - [Type System](#type-system)
   - [SBOM and Compliance System](#sbom-and-compliance-system)
   - [Publish Summary Generation](#publish-summary-generation)
@@ -20,25 +30,66 @@ module: release-action
 
 ## Overview
 
-The release action supports publishing to multiple registries simultaneously
-with OIDC-first authentication, SBOM generation, and NTIA compliance
-validation. This document covers the registry infrastructure, authentication
-model, SBOM/compliance system, and the type system that ties them together.
+The release action supports publishing to multiple registries simultaneously with OIDC-first authentication, SBOM generation, and NTIA compliance validation. This document covers the registry infrastructure, authentication model, SBOM/compliance system, and the type system that ties them together.
 
-The publishing pipeline follows a strict sequence: resolve targets from
-`publishConfig`, authenticate against each registry, pre-validate all
-targets, run dry-run publishes, generate SBOM previews, and finally
-publish. This all-or-nothing approach prevents partial releases where
-some registries succeed and others fail.
+The publishing pipeline follows a strict sequence: resolve targets from `publishConfig`, authenticate against each registry, pre-validate all targets, run dry-run publishes, generate SBOM previews, and finally publish. This all-or-nothing approach prevents partial releases where some registries succeed and others fail.
 
 ## Current State
+
+### Publishability Detection (Silk Rules)
+
+Before any registry-specific logic runs, the action must answer a single
+question: "is this package publishable, and if so, to how many targets?"
+The silk-flavored rules are encoded in `src/utils/silk-publishability.ts`
+(141 lines), which exports `silkDetect(pkgName, rawPackageJson) →
+PublishTarget[]` (the `PublishTarget` Schema.Class comes from
+`workspaces-effect`) and the convenience predicate
+`isSilkPublishable()`.
+
+The four rules, in order:
+
+1. **`private !== true`** -- publishable to one default target. Registry,
+   access, and directory come from `publishConfig` if present, else from
+   defaults (`https://registry.npmjs.org/`, `"public"`, `"."`).
+2. **`private === true` + `publishConfig.targets`** -- publishable to
+   each target in the array. String targets (`"npm"`, `"github"`,
+   `"jsr"`, or URL strings) inherit parent `access`; object targets
+   may override `access` and `registry`. Targets whose resolved access
+   is not `"public"` or `"restricted"` are dropped.
+3. **`private === true` + `publishConfig.access`** (no `targets`) --
+   publishable to one target using that access and the configured
+   `registry`/`directory`.
+4. **Otherwise** -- empty array (not publishable).
+
+The helper is non-Effect on purpose: it consumes a `RawPackageJson`
+plain object (not the typed `workspaces-effect` `PackageJson`) so it
+can see `publishConfig.targets`, which is not in the typed
+`PublishConfig` schema. Call sites that need access to `targets` re-read
+the raw `package.json` from disk and pass it in. The same rules are
+encoded identically in `pnpm-config-dependency-action` and the silk
+`changesets` package; the three projects agree by construction on
+which packages count as publishable.
+
+Two release-action call sites consume `silkDetect`:
+
+- **`detect-publishable-changes.ts`** (Phase 1) -- routes packages
+  with a non-empty silk target list to the "publishable" bucket and
+  packages with an empty list to "version-only" (GitHub release only).
+  This replaces an older check that only honored `publishConfig.access`
+  and would misclassify private packages with `publishConfig.targets`.
+- **`release-summary-helpers.ts:getAllWorkspacePackages`** --
+  populates `WorkspacePackageInfo.targetCount` from
+  `silkDetect(...).length` so Phase 1 summaries and Phase 3 tag-strategy
+  decisions count targets the same way as the routing logic above.
 
 ### Registry Infrastructure
 
 #### Target Resolution (`resolve-targets.ts`, 208 lines)
 
-Converts `publishConfig` in `package.json` to concrete `ResolvedTarget`
-objects. The resolution follows four rules:
+Once a package is known to be publishable, `resolve-targets.ts` converts
+its `publishConfig` to concrete `ResolvedTarget` objects with absolute
+paths and null-safe registry/tokenEnv. The resolution follows four
+rules:
 
 1. No `publishConfig` + `private: true` -- empty array (not publishable)
 2. No `publishConfig` + `private: false` -- default npm with OIDC
@@ -80,30 +131,19 @@ Exported functions:
 
 #### Registry Authentication (`registry-auth.ts`, 523 lines)
 
-Multi-registry auth setup with OIDC-first strategy. The module provides
-four primary functions:
+Multi-registry auth setup with OIDC-first strategy. The module provides four primary functions:
 
-**`validateRegistriesReachable()`** checks non-OIDC registries using
-`npm ping` with a 10-second timeout. Skips well-known OIDC registries
-(npm when no `NPM_TOKEN`, JSR) and GitHub Packages. Only tests custom
-registries that require token auth.
+**`validateRegistriesReachable()`** checks non-OIDC registries using `npm ping` with a 10-second timeout. Skips well-known OIDC registries (npm when no `NPM_TOKEN`, JSR) and GitHub Packages. Only tests custom registries that require token auth.
 
-**`validateTokensAvailable()`** performs OIDC-aware token validation.
-JSR and npm (without `NPM_TOKEN`) are skipped because they use OIDC.
-GitHub Packages and custom registries must have their `tokenEnv`
-environment variable set.
+**`validateTokensAvailable()`** performs OIDC-aware token validation. JSR and npm (without `NPM_TOKEN`) are skipped because they use OIDC. GitHub Packages and custom registries must have their `tokenEnv` environment variable set.
 
-**`generateNpmrc()`** writes `.npmrc` entries for non-OIDC registries.
-OIDC registries do not need `.npmrc` auth. The function supports both
-raw token values (wrapped with `_authToken=`) and pre-formatted auth
-strings (`_authToken=...` or `_auth=...` for htpasswd).
+**`generateNpmrc()`** writes `.npmrc` entries for non-OIDC registries. OIDC registries do not need `.npmrc` auth. The function supports both raw token values (wrapped with `_authToken=`) and pre-formatted auth strings (`_authToken=...` or `_auth=...` for htpasswd).
 
 **`setupRegistryAuth()`** orchestrates the complete auth setup:
 
-1. Reads tokens from action state (set by `pre.ts`)
+1. Reads tokens from action state (set by `pre.ts`) via `tokens.appToken()` / `tokens.packagesToken()`
 2. Configures `NPM_TOKEN` if provided (disables OIDC for npm)
-3. Sets `GITHUB_TOKEN` for GitHub Packages (prefers workflow token
-   with `packages:write`, falls back to GitHub App token)
+3. Sets `SILK_GITHUB_PACKAGES_TOKEN` for GitHub Packages (prefers workflow token with `packages:write`, falls back to App token). Note: this env var is used instead of `GITHUB_TOKEN` to avoid interfering with the runner's OIDC environment.
 4. Parses `custom-registries` input for custom registry auth
 5. Validates token availability across all targets
 6. Checks custom registry reachability
@@ -116,7 +156,7 @@ Authentication strategy by registry:
 | --- | --- | --- |
 | npm public | OIDC trusted publishing (default) | None (id-token) |
 | npm public | Token auth (when NPM_TOKEN set) | `NPM_TOKEN` |
-| GitHub Packages | GitHub App or workflow token | `GITHUB_TOKEN` |
+| GitHub Packages | Workflow token or App token | `SILK_GITHUB_PACKAGES_TOKEN` |
 | JSR | OIDC natively | None (id-token) |
 | Custom registries | `custom-registries` input or App token | Per-registry env |
 
@@ -128,8 +168,7 @@ Custom registries input supports three formats:
 
 #### Pre-Validation (`pre-validate-target.ts`, 238 lines)
 
-Pre-flight checks run before dry-run publishing to catch configuration
-errors early. Each target is validated based on its protocol.
+Pre-flight checks run before dry-run publishing to catch configuration errors early. Each target is validated based on its protocol.
 
 For npm-compatible targets:
 
@@ -147,13 +186,9 @@ For JSR targets:
 
 #### Dry-Run Publishing (`dry-run-publish.ts`, 217 lines)
 
-Simulates publishing to test registry readiness without actually
-publishing. The module dispatches to protocol-specific implementations.
+Simulates publishing to test registry readiness without actually publishing. The module dispatches to protocol-specific implementations.
 
-**`dryRunNpmCompatible()`** runs `npm publish --dry-run` via the package
-manager's dlx command (for example, `pnpm dlx npm publish --dry-run`).
-This avoids pnpm's strict branch validation that fails on release
-branches like `changeset-release/main`. The function:
+**`dryRunNpmCompatible()`** runs `npm publish --dry-run` via the package manager's dlx command (for example, `pnpm dlx npm publish --dry-run`). This avoids pnpm's strict branch validation that fails on release branches like `changeset-release/main`. The function:
 
 - Sets registry, provenance, access, and tag flags
 - Detects version conflicts ("cannot publish over previously published
@@ -185,6 +220,41 @@ Structural validation includes:
 - Detection of unwrapped SBOM config (a common mistake where users put
   supplier/copyright at root level instead of under an `sbom` key)
 - Helpful error messages pointing to the JSON schema
+
+### Token Plumbing
+
+`process.env.GITHUB_TOKEN` is never written by the action. The token landscape has three distinct identities:
+
+- **App installation token** — the action's primary GitHub identity. Provisioned by `pre.ts` via `GitHubToken.provision()` and stored in `ActionState` under an internal key. Read by the Effect-based `main.ts` orchestrator via `GitHubToken.client()`. The imperative publish utilities access it via `tokens.appToken()`, which calls `_actions-compat.ts`'s `getState("token")`.
+- **Workflow packages token** — the optional `github-token` action input (typically `secrets.GITHUB_TOKEN` with `permissions: packages: write`). When provided, stored in `GithubPackagesTokenState`. Exposed as `tokens.packagesToken()`, which prefers this token and falls back to the App token. npm publish subprocesses authenticate via `SILK_GITHUB_PACKAGES_TOKEN` (not `GITHUB_TOKEN`) to avoid interfering with the runner's OIDC environment.
+- **OIDC tokens** — short-lived JWTs fetched on demand by `OidcTokenIssuer` for Sigstore / Fulcio signing and for npm / JSR trusted publishing. Not stored in state; fetched fresh per attestation run.
+
+Attestation and storage-record calls use the workflow token because it carries `attestations:write` and `packages:write` from the workflow's own permissions block.
+
+### Attestation System
+
+Attestation was migrated off `@actions/attest` entirely. The new system is a layered Effect service in `src/services/attest/` with a Promise-returning shim (`attest-runner.ts`) for the still-imperative Phase 3 callers.
+
+**Flow for provenance attestation:**
+
+1. `create-attestation.ts` calls `runProvenanceAttestation(subjectName, sha256, token)` in `attest-runner.ts`.
+2. `attest-runner.ts` dynamically imports the Effect modules and builds a layer: `AttestLive + SigstoreSignerLive + OidcTokenIssuerLive(FetchHttpClient) + GitHubClientLive.fromToken(token)`.
+3. `OidcTokenIssuer.getToken("sigstore")` fetches a Fulcio-audience JWT from the GitHub Actions token service.
+4. `decodeJwtClaims` + `buildSLSAProvenancePredicate` construct a SLSA v1 predicate from the JWT.
+5. `Attest.provenance()` builds the in-toto statement, hands it to `SigstoreSigner.signStatement()`, which produces a DSSE bundle via Fulcio + Rekor, then POSTs the bundle to `POST /repos/{owner}/{repo}/attestations`.
+6. The returned `AttestationRecord` (attestation ID + UI URL) is passed back to the caller.
+
+**Flow for SBOM attestation:**
+
+1. `create-attestation.ts` calls `runSbomAttestation(subjectName, sha256, bom, token)` with an already-generated CycloneDX BOM JSON.
+2. `attest-runner.ts` calls `Attest.attest()` directly with `predicateType: CYCLONEDX_BOM` so the BOM flows through without re-running the `Sbom` service.
+3. Sign and upload steps are identical to provenance.
+
+**Storage-record linkage:** After a successful GitHub Packages publish, `runCreateStorageRecord()` POSTs to `POST /orgs/{owner}/artifacts/metadata/storage-record` to link the attestation to the artifact's metadata entry. This is what makes attestations appear in the org packages UI. Previously this call was absent, so attestations were created but not surfaced.
+
+**SBOM workspace-dep rewriting:** The workspace-deps rewriting in `create-attestation.ts` now covers all workspace packages (not just the released cycle). This fixes `npm install 404` errors against npmjs.org for non-released sibling deps that previously had their local workspace reference preserved in the SBOM component list.
+
+**SBOM preview:** `generate-sbom-preview.ts` now feeds real `validatePublish` validation results rather than re-running the SBOM generation independently.
 
 ### Type System
 
@@ -427,6 +497,44 @@ Error categorization detects and suggests fixes for:
 
 ## Rationale
 
+### Why Replace @actions/attest?
+
+`@actions/attest` had three structural problems that the Effect service solves:
+
+1. **Bundler incompatibility**: `@actions/core`'s barrel statically imports `oidc-utils.js` → `@actions/http-client` → `undici`. webpack/rspack cannot emit undici as CJS without producing `Class extends value [object Module] is not a constructor` at the `Dispatcher` class definition. The Effect service uses `@effect/platform` `HttpClient`, which is fully bundler-compatible.
+2. **Opaque failure surface**: `@actions/attest` error messages did not surface the root cause from Fulcio or Rekor. The new `AttestError` carries a `reason` discriminator and `cause` chain.
+3. **Private to the action**: `@actions/attest` is tightly coupled to the `@actions/` environment. The new service is designed to lift into `@savvy-web/github-action-effects` without interface changes once stable.
+
+### Why Not Set GITHUB_TOKEN?
+
+The action deliberately never writes `process.env.GITHUB_TOKEN`. The runner's `GITHUB_TOKEN` is used by the OIDC subsystem and by GitHub Actions' own trust mechanisms. Overwriting it breaks OIDC token fetches for npm and JSR trusted publishing. The `SILK_GITHUB_PACKAGES_TOKEN` env var is a namespaced alternative that carries the packages/attestation identity without contaminating the standard name.
+
+### Why Dynamic Imports for Attest?
+
+The Effect + sigstore dependency graph is heavy. Dry-run paths and phase-1/2 runs never need to sign or upload attestations. By wrapping all sigstore imports in `Promise.all([import(...), ...])` inside `attest-runner.ts`, the cold-start path of the main bundle pays none of that cost. Only Phase 3 attestation calls load the graph.
+
+### Why Silk-Specific Publishability Rules?
+
+`workspaces-effect`'s built-in `PublishabilityDetectorLive` treats
+`private: true` as a hard "not publishable" stop. Silk's convention
+broadens that: a package can be private (so it never leaks into a
+public npm install transitively) while still being publishable to one
+or more declared targets. The most common case is a package that
+publishes only to GitHub Packages or to an internal silk registry. The
+`silkDetect()` helper encodes that broadening in 141 lines and is
+shared in spirit (not as a literal dependency) with
+`pnpm-config-dependency-action` and the silk `changesets` package so
+the three tools cannot drift.
+
+Wiring `silkDetect()` into both `detect-publishable-changes.ts` and
+`release-summary-helpers.ts:getAllWorkspacePackages` also closes a
+prior bug where Phase 1 routing used
+`hasPublishConfig && isPublicOrRestricted`, which honored only
+`publishConfig.access`. Private packages declaring
+`publishConfig.targets` were silently demoted to "version-only" and
+never reached the publish step. Both call sites now go through the
+same helper.
+
 ### Why OIDC-First Authentication?
 
 OIDC (OpenID Connect) trusted publishing eliminates the need for
@@ -499,35 +607,64 @@ match or proper subdomain match, preventing injection attacks.
 
 ### Type Definitions
 
-| File | Lines | Description |
-| --- | --- | --- |
-| `src/types/publish-config.ts` | 334 | Core publishing types (targets, validation, results) |
-| `src/types/sbom-config.ts` | 328 | SBOM metadata, CycloneDX, and NTIA compliance types |
-| `src/types/shared-types.ts` | 69 | Cross-cutting validation result types |
+| File | Description |
+| --- | --- |
+| `src/types/publish-config.ts` | Core publishing types (targets, validation, results) |
+| `src/types/sbom-config.ts` | SBOM metadata, CycloneDX, and NTIA compliance types |
+| `src/types/shared-types.ts` | Cross-cutting validation result types |
+
+### Publishability Detection
+
+| File | Description |
+| --- | --- |
+| `src/utils/silk-publishability.ts` | Silk publishability rules (private+targets, private+access, public default) |
+
+### Token Plumbing
+
+| File | Description |
+| --- | --- |
+| `src/utils/tokens.ts` | appToken() and packagesToken() for the publish chain |
+| `src/utils/_actions-compat.ts` | Shim replacing @actions/core/exec/github (no undici) |
+
+### Attestation System
+
+| File | Description |
+| --- | --- |
+| `src/services/attest/service.ts` | Attest Context.Tag, AttestError |
+| `src/services/attest/live.ts` | AttestLive: build + sign + upload |
+| `src/services/attest/oidc.ts` | OidcTokenIssuer via @effect/platform HttpClient |
+| `src/services/attest/signer.ts` | SigstoreSigner via @sigstore/sign v4 |
+| `src/services/attest/sbom.ts` | Sbom: CycloneDX 1.5 BOM generation |
+| `src/services/attest/intoto.ts` | Pure in-toto statement builder |
+| `src/services/attest/slsa.ts` | SLSA Provenance v1 predicate builder |
+| `src/services/attest/types.ts` | Shared attestation types and predicate constants |
+| `src/services/attest/testing.ts` | AttestTest and SbomTest test layers |
+| `src/utils/attest-runner.ts` | Promise shim: runProvenanceAttestation, runSbomAttestation, runCreateStorageRecord |
+| `src/utils/create-attestation.ts` | Attestation orchestration (calls attest-runner) |
 
 ### Registry Infrastructure
 
-| File | Lines | Description |
-| --- | --- | --- |
-| `src/utils/resolve-targets.ts` | 208 | Target resolution from publishConfig |
-| `src/utils/registry-utils.ts` | 149 | URL-safe registry detection and display |
-| `src/utils/registry-auth.ts` | 523 | Multi-registry auth setup with OIDC |
-| `src/utils/pre-validate-target.ts` | 238 | Pre-flight validation per target |
-| `src/utils/dry-run-publish.ts` | 217 | Simulated publishing for readiness checks |
-| `src/utils/load-release-config.ts` | 377 | Layered configuration loading |
+| File | Description |
+| --- | --- |
+| `src/utils/resolve-targets.ts` | Target resolution from publishConfig |
+| `src/utils/registry-utils.ts` | URL-safe registry detection and display |
+| `src/utils/registry-auth.ts` | Multi-registry auth setup with OIDC |
+| `src/utils/pre-validate-target.ts` | Pre-flight validation per target |
+| `src/utils/dry-run-publish.ts` | Simulated publishing for readiness checks |
+| `src/utils/load-release-config.ts` | Layered configuration loading |
 
 ### SBOM and Compliance
 
-| File | Lines | Description |
-| --- | --- | --- |
-| `src/utils/infer-sbom-metadata.ts` | 289 | Auto-detection from package.json |
-| `src/utils/enhance-sbom-metadata.ts` | 247 | SBOM enrichment with PURL and metadata |
-| `src/utils/detect-copyright-year.ts` | 142 | Copyright year from npm registry |
-| `src/utils/validate-ntia-compliance.ts` | 256 | NTIA 7 minimum elements validation |
-| `src/utils/generate-sbom-preview.ts` | 471 | SBOM preview for PR check runs |
+| File | Description |
+| --- | --- |
+| `src/utils/infer-sbom-metadata.ts` | Auto-detection from package.json |
+| `src/utils/enhance-sbom-metadata.ts` | SBOM enrichment with PURL and metadata |
+| `src/utils/detect-copyright-year.ts` | Copyright year from npm registry |
+| `src/utils/validate-ntia-compliance.ts` | NTIA 7 minimum elements validation |
+| `src/utils/generate-sbom-preview.ts` | SBOM preview for PR check runs |
 
 ### Summary Generation
 
-| File | Lines | Description |
-| --- | --- | --- |
-| `src/utils/generate-publish-summary.ts` | 1,055 | Pre/post-publish markdown summaries |
+| File | Description |
+| --- | --- |
+| `src/utils/generate-publish-summary.ts` | Pre/post-publish markdown summaries |

@@ -1,0 +1,451 @@
+{
+	"$schema": "http://json-schema.org/draft-07/schema#",
+	"$id": "https://json.schemastore.org/silk-release-action.schema.json",
+	"anyOf": [
+		{
+			"type": "object",
+			"required": [
+				"$schema",
+				"schemaVersion",
+				"phase",
+				"status",
+				"noop",
+				"succeeded",
+				"hasFailures",
+				"dryRun",
+				"branchManagement"
+			],
+			"properties": {
+				"$schema": {
+					"type": "string",
+					"enum": ["https://json.schemastore.org/silk-release-action.schema.json"]
+				},
+				"schemaVersion": {
+					"type": "string",
+					"enum": ["1"]
+				},
+				"phase": {
+					"type": "string",
+					"enum": ["branch-management"]
+				},
+				"status": {
+					"type": "string",
+					"enum": ["no-op", "success", "partial", "failed"]
+				},
+				"noop": {
+					"type": "boolean"
+				},
+				"succeeded": {
+					"type": "boolean"
+				},
+				"hasFailures": {
+					"type": "boolean"
+				},
+				"dryRun": {
+					"type": "boolean"
+				},
+				"branchManagement": {
+					"type": "object",
+					"required": ["releaseBranch", "releasePr", "changesets"],
+					"properties": {
+						"releaseBranch": {
+							"type": "object",
+							"required": ["name", "existed", "created", "updated", "hasConflicts"],
+							"properties": {
+								"name": {
+									"type": "string"
+								},
+								"existed": {
+									"type": "boolean"
+								},
+								"created": {
+									"type": "boolean"
+								},
+								"updated": {
+									"type": "boolean"
+								},
+								"hasConflicts": {
+									"type": "boolean"
+								}
+							},
+							"additionalProperties": false
+						},
+						"releasePr": {
+							"anyOf": [
+								{
+									"type": "object",
+									"required": ["number", "url", "action"],
+									"properties": {
+										"number": {
+											"type": "number"
+										},
+										"url": {
+											"type": "string"
+										},
+										"action": {
+											"type": "string",
+											"enum": ["created", "updated"]
+										}
+									},
+									"additionalProperties": false
+								},
+								{
+									"type": "null"
+								}
+							]
+						},
+						"changesets": {
+							"type": "object",
+							"required": ["count", "packages"],
+							"properties": {
+								"count": {
+									"type": "number"
+								},
+								"packages": {
+									"type": "array",
+									"items": {
+										"type": "object",
+										"required": ["name", "bumpType"],
+										"properties": {
+											"name": {
+												"type": "string"
+											},
+											"bumpType": {
+												"type": "string",
+												"enum": ["major", "minor", "patch"]
+											}
+										},
+										"additionalProperties": false
+									}
+								}
+							},
+							"additionalProperties": false
+						}
+					},
+					"additionalProperties": false
+				}
+			},
+			"additionalProperties": false
+		},
+		{
+			"type": "object",
+			"required": [
+				"$schema",
+				"schemaVersion",
+				"phase",
+				"status",
+				"noop",
+				"succeeded",
+				"hasFailures",
+				"dryRun",
+				"validation"
+			],
+			"properties": {
+				"$schema": {
+					"type": "string",
+					"enum": ["https://json.schemastore.org/silk-release-action.schema.json"]
+				},
+				"schemaVersion": {
+					"type": "string",
+					"enum": ["1"]
+				},
+				"phase": {
+					"type": "string",
+					"enum": ["validation"]
+				},
+				"status": {
+					"type": "string",
+					"enum": ["no-op", "success", "partial", "failed"]
+				},
+				"noop": {
+					"type": "boolean"
+				},
+				"succeeded": {
+					"type": "boolean"
+				},
+				"hasFailures": {
+					"type": "boolean"
+				},
+				"dryRun": {
+					"type": "boolean"
+				},
+				"validation": {
+					"type": "object",
+					"required": ["builds", "publish", "checkRun"],
+					"properties": {
+						"builds": {
+							"type": "object",
+							"required": ["passed", "packageCount"],
+							"properties": {
+								"passed": {
+									"type": "boolean"
+								},
+								"packageCount": {
+									"type": "number"
+								}
+							},
+							"additionalProperties": false
+						},
+						"publish": {
+							"type": "object",
+							"required": ["npmReady", "githubPackagesReady", "packages"],
+							"properties": {
+								"npmReady": {
+									"type": "boolean"
+								},
+								"githubPackagesReady": {
+									"type": "boolean"
+								},
+								"packages": {
+									"type": "array",
+									"items": {
+										"type": "object",
+										"required": ["name", "version", "ready"],
+										"properties": {
+											"name": {
+												"type": "string"
+											},
+											"version": {
+												"type": "string"
+											},
+											"ready": {
+												"type": "boolean"
+											}
+										},
+										"additionalProperties": false
+									}
+								}
+							},
+							"additionalProperties": false
+						},
+						"checkRun": {
+							"anyOf": [
+								{
+									"type": "object",
+									"required": ["url", "conclusion"],
+									"properties": {
+										"url": {
+											"type": "string"
+										},
+										"conclusion": {
+											"type": "string"
+										}
+									},
+									"additionalProperties": false
+								},
+								{
+									"type": "null"
+								}
+							]
+						}
+					},
+					"additionalProperties": false
+				}
+			},
+			"additionalProperties": false
+		},
+		{
+			"type": "object",
+			"required": [
+				"$schema",
+				"schemaVersion",
+				"phase",
+				"status",
+				"noop",
+				"succeeded",
+				"hasFailures",
+				"dryRun",
+				"publishing"
+			],
+			"properties": {
+				"$schema": {
+					"type": "string",
+					"enum": ["https://json.schemastore.org/silk-release-action.schema.json"]
+				},
+				"schemaVersion": {
+					"type": "string",
+					"enum": ["1"]
+				},
+				"phase": {
+					"type": "string",
+					"enum": ["publishing"]
+				},
+				"status": {
+					"type": "string",
+					"enum": ["no-op", "success", "partial", "failed"]
+				},
+				"noop": {
+					"type": "boolean"
+				},
+				"succeeded": {
+					"type": "boolean"
+				},
+				"hasFailures": {
+					"type": "boolean"
+				},
+				"dryRun": {
+					"type": "boolean"
+				},
+				"publishing": {
+					"type": "object",
+					"required": ["packages", "tags", "releases"],
+					"properties": {
+						"packages": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"required": ["name", "version", "status", "skipReason", "targets", "attestations", "tarballDigest"],
+								"properties": {
+									"name": {
+										"type": "string"
+									},
+									"version": {
+										"type": "string"
+									},
+									"status": {
+										"type": "string",
+										"enum": ["published", "skipped", "failed"]
+									},
+									"skipReason": {
+										"anyOf": [
+											{
+												"type": "string",
+												"enum": ["already-published-identical", "already-published-unknown"]
+											},
+											{
+												"type": "null"
+											}
+										]
+									},
+									"targets": {
+										"type": "array",
+										"items": {
+											"type": "object",
+											"required": ["registry", "status", "registryUrl", "error"],
+											"properties": {
+												"registry": {
+													"type": "string"
+												},
+												"status": {
+													"type": "string",
+													"enum": ["published", "skipped", "failed"]
+												},
+												"registryUrl": {
+													"anyOf": [
+														{
+															"type": "string"
+														},
+														{
+															"type": "null"
+														}
+													]
+												},
+												"error": {
+													"anyOf": [
+														{
+															"type": "string"
+														},
+														{
+															"type": "null"
+														}
+													]
+												}
+											},
+											"additionalProperties": false
+										}
+									},
+									"attestations": {
+										"type": "object",
+										"required": ["provenanceUrl", "sbomUrl", "githubAttestationUrl"],
+										"properties": {
+											"provenanceUrl": {
+												"anyOf": [
+													{
+														"type": "string"
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"sbomUrl": {
+												"anyOf": [
+													{
+														"type": "string"
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"githubAttestationUrl": {
+												"anyOf": [
+													{
+														"type": "string"
+													},
+													{
+														"type": "null"
+													}
+												]
+											}
+										},
+										"additionalProperties": false
+									},
+									"tarballDigest": {
+										"anyOf": [
+											{
+												"type": "string"
+											},
+											{
+												"type": "null"
+											}
+										]
+									}
+								},
+								"additionalProperties": false
+							}
+						},
+						"tags": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"required": ["name", "sha"],
+								"properties": {
+									"name": {
+										"type": "string"
+									},
+									"sha": {
+										"type": "string"
+									}
+								},
+								"additionalProperties": false
+							}
+						},
+						"releases": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"required": ["tag", "url", "id"],
+								"properties": {
+									"tag": {
+										"type": "string"
+									},
+									"url": {
+										"type": "string"
+									},
+									"id": {
+										"type": "number"
+									}
+								},
+								"additionalProperties": false
+							}
+						}
+					},
+					"additionalProperties": false
+				}
+			},
+			"additionalProperties": false
+		}
+	],
+	"title": "Silk Release Action output"
+}

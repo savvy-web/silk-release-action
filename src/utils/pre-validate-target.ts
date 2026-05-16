@@ -1,6 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { debug } from "@actions/core";
 import type { PackageJson, PreValidationResult, ResolvedTarget } from "../types/publish-config.js";
 import { getRegistryDisplayName, isGitHubPackagesRegistry } from "./registry-utils.js";
 
@@ -26,9 +25,6 @@ function validateNpmPackageJson(target: ResolvedTarget, pkg: PackageJson): PreVa
 	// Must have version
 	if (!pkg.version) {
 		errors.push("Built package.json missing 'version' field");
-	} else {
-		// This might be okay during validation before version bump
-		debug(`Version in built package: ${pkg.version}`);
 	}
 
 	// For GitHub Packages, name must be scoped

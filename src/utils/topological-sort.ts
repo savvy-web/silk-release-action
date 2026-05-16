@@ -1,5 +1,5 @@
-import { debug, info } from "@actions/core";
-import { createDependencyMap, getPackageInfos } from "workspace-tools";
+import { findWorkspaceRootSync, getWorkspacePackagesSync } from "workspaces-effect";
+import { debug, info } from "./_actions-compat.js";
 
 /**
  * Result of topological sorting
@@ -11,6 +11,34 @@ export interface TopologicalSortResult {
 	success: boolean;
 	/** Error message if sorting failed */
 	error?: string;
+}
+
+/**
+ * Build a name -> production-deps map for every workspace package.
+ *
+ * @remarks
+ * Mirrors the old `workspace-tools` `createDependencyMap` call with
+ * `withDevDependencies: false`, `withPeerDependencies: false`,
+ * `withOptionalDependencies: false`. Only `dependencies` from each
+ * `package.json` participates in the publish order.
+ */
+function buildWorkspaceDependencyMap(cwd: string): Map<string, Set<string>> {
+	const map = new Map<string, Set<string>>();
+	const root = findWorkspaceRootSync(cwd);
+	if (!root) return map;
+
+	const packages = getWorkspacePackagesSync(root);
+	const known = new Set(packages.map((p) => p.name));
+
+	for (const pkg of packages) {
+		const deps = new Set<string>();
+		for (const depName of Object.keys(pkg.dependencies)) {
+			if (known.has(depName)) deps.add(depName);
+		}
+		map.set(pkg.name, deps);
+	}
+
+	return map;
 }
 
 /**
@@ -38,18 +66,10 @@ export function sortPackagesTopologically(packageNames: string[], cwd: string = 
 	}
 
 	try {
-		// Get all package infos from the workspace
-		const allPackages = getPackageInfos(cwd);
+		const dependencies = buildWorkspaceDependencyMap(cwd);
 
 		// Filter to only the packages we care about
 		const packageSet = new Set(packageNames);
-
-		// Create dependency map for all packages
-		const { dependencies } = createDependencyMap(allPackages, {
-			withDevDependencies: false,
-			withPeerDependencies: false,
-			withOptionalDependencies: false,
-		});
 
 		// Build in-degree map (count of dependencies within our package set)
 		const inDegree = new Map<string, number>();
@@ -62,7 +82,7 @@ export function sortPackagesTopologically(packageNames: string[], cwd: string = 
 
 		// Count dependencies that are within our package set
 		for (const pkg of packageNames) {
-			const deps = dependencies.get(pkg) || new Set();
+			const deps = dependencies.get(pkg) || new Set<string>();
 			for (const dep of deps) {
 				if (packageSet.has(dep)) {
 					filteredDeps.get(pkg)?.add(dep);

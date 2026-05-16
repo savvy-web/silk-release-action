@@ -108,7 +108,7 @@ describe("resolve-targets", () => {
 
 				expect(targets).toHaveLength(1);
 				expect(targets[0].registry).toBe("https://npm.pkg.github.com/");
-				expect(targets[0].tokenEnv).toBe("GITHUB_TOKEN");
+				expect(targets[0].tokenEnv).toBe("SILK_GITHUB_PACKAGES_TOKEN");
 			});
 
 			it("resolves directory relative to package path", () => {
@@ -166,7 +166,7 @@ describe("resolve-targets", () => {
 					protocol: "npm",
 					registry: "https://npm.pkg.github.com/",
 					provenance: true,
-					tokenEnv: "GITHUB_TOKEN",
+					tokenEnv: "SILK_GITHUB_PACKAGES_TOKEN",
 				});
 			});
 

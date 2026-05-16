@@ -1,8 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { debug, error, info, warning } from "@actions/core";
-import { context, getOctokit } from "@actions/github";
 import type { PackageJson } from "../types/publish-config.js";
+import { context, debug, error, getOctokit, info, warning } from "./_actions-compat.js";
 
 /**
  * Information about a released package detected from a merge commit

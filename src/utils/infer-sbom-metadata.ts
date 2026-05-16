@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { debug, info } from "@actions/core";
 import type { InferredSBOMMetadata, ResolvedSBOMMetadata, SBOMMetadataConfig } from "../types/sbom-config.js";
+import { debug, info } from "./_actions-compat.js";
 
 /**
  * Extended PackageJson interface with all fields needed for SBOM inference
@@ -29,8 +29,8 @@ interface PackageJsonForSBOM {
  * @returns Parsed author name and email
  */
 export function parseAuthor(author: string | { name?: string; email?: string; url?: string } | undefined): {
-	name?: string;
-	email?: string;
+	name?: string | undefined;
+	email?: string | undefined;
 } {
 	if (!author) {
 		return {};

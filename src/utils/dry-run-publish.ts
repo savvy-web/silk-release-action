@@ -1,6 +1,5 @@
-import { info } from "@actions/core";
-import { exec } from "@actions/exec";
 import type { DryRunResult, PackageStats, ResolvedTarget } from "../types/publish-config.js";
+import { exec, info } from "./_actions-compat.js";
 import { getRegistryDisplayName } from "./registry-utils.js";
 
 /**

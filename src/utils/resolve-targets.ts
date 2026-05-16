@@ -10,7 +10,7 @@ export { getRegistryDisplayName } from "./registry-utils.js";
  * @remarks
  * Authentication strategy:
  * - **npm**: Uses OIDC trusted publishing via Sigstore (no token needed)
- * - **github**: Uses GitHub App token (GITHUB_TOKEN)
+ * - **github**: Uses the GitHub Packages token (SILK_GITHUB_PACKAGES_TOKEN)
  * - **jsr**: Uses OIDC natively in GitHub Actions (no token needed)
  */
 const KNOWN_SHORTHANDS: Record<string, PublishTarget> = {
@@ -24,7 +24,7 @@ const KNOWN_SHORTHANDS: Record<string, PublishTarget> = {
 		protocol: "npm",
 		registry: "https://npm.pkg.github.com/",
 		provenance: true,
-		tokenEnv: "GITHUB_TOKEN",
+		tokenEnv: "SILK_GITHUB_PACKAGES_TOKEN",
 	},
 	jsr: {
 		protocol: "jsr",
@@ -38,7 +38,7 @@ const KNOWN_SHORTHANDS: Record<string, PublishTarget> = {
  *
  * @remarks
  * - npm public registry uses OIDC, so tokenEnv is null
- * - GitHub Packages requires GITHUB_TOKEN (GitHub App token)
+ * - GitHub Packages requires SILK_GITHUB_PACKAGES_TOKEN
  */
 const REGISTRY_DEFAULTS: Record<
 	string,
@@ -52,7 +52,7 @@ const REGISTRY_DEFAULTS: Record<
 	"https://npm.pkg.github.com/": {
 		provenance: true,
 		access: "restricted",
-		tokenEnv: "GITHUB_TOKEN",
+		tokenEnv: "SILK_GITHUB_PACKAGES_TOKEN",
 	},
 };
 

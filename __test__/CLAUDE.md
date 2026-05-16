@@ -1,17 +1,17 @@
-# __tests__/CLAUDE.md
+# __test__/CLAUDE.md
 
 Unit testing patterns and infrastructure for workflow-release-action.
 
 __See also:__ [Root CLAUDE.md](../CLAUDE.md) | [src/CLAUDE.md](../src/CLAUDE.md)
 
-__For comprehensive testing documentation:__ `@../.claude/design/release-action/testing.md` -- covers mock factory internals, all specialized patterns (exec listeners, fake timers, filesystem, workspace-tools, GitHub context, core.summary), complete coverage map (38 test files), and coverage gap analysis.
+__For comprehensive testing documentation:__ `@../.claude/design/release-action/testing.md` -- covers mock factory internals, all specialized patterns (exec listeners, fake timers, filesystem, workspaces-effect sync APIs, GitHub context, core.summary), attest test layers (`AttestTest`/`SbomTest`), complete coverage map, and coverage gap analysis.
 
 ## Running Tests
 
 ```bash
 pnpm test                                        # All tests with coverage
 pnpm test --watch                                # Watch mode
-pnpm test __tests__/check-release-branch.test.ts # Specific file
+pnpm test __test__/check-release-branch.test.ts # Specific file
 pnpm ci:test                                     # CI mode
 ```
 
@@ -71,6 +71,10 @@ describe("module-name", () => {
 - All MockOctokit properties are required (not optional) to prevent chaining issues
 - For retry logic, use `vi.useFakeTimers()` per-test (not globally) with `vi.advanceTimersByTimeAsync(60000)`
 - Always call `vi.useRealTimers()` in `afterEach` when using fake timers
+
+## Attest Service Tests
+
+The `src/services/attest/` service has its own test layers. Use `AttestTest` or `SbomTest` (from `src/services/attest/testing.ts`) instead of the standard mock factories. These layers record calls without performing cryptographic work. See `@../.claude/design/release-action/testing.md` for attest test layer details.
 
 ## Common Issues
 

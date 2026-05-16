@@ -1,12 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { debug, endGroup, error, info, startGroup, warning } from "@actions/core";
 import type {
 	PackageJson,
 	PackagePublishValidation,
 	ResolvedTarget,
 	TargetValidationResult,
 } from "../types/publish-config.js";
+import { debug, endGroup, error, info, startGroup, warning } from "./_actions-compat.js";
 import { validateSBOMGeneration } from "./create-attestation.js";
 import { dryRunPublish } from "./dry-run-publish.js";
 import { findPackagePath } from "./find-package-path.js";

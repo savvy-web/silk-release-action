@@ -1,5 +1,4 @@
-import { debug } from "@actions/core";
-import { exec } from "@actions/exec";
+import { debug, exec } from "./_actions-compat.js";
 
 /**
  * Result of copyright year detection

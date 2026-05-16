@@ -1,8 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-
-import { debug, info, warning } from "@actions/core";
-import { getWorkspaceInfos } from "workspace-tools";
+import { findWorkspaceRootSync, getWorkspacePackagesSync } from "workspaces-effect";
+import { debug, info, warning } from "./_actions-compat.js";
 
 /**
  * Cached workspace info to avoid repeated filesystem operations
@@ -20,29 +18,18 @@ function getWorkspaceMap(cwd: string = process.cwd()): Map<string, string> {
 		return cachedWorkspaces;
 	}
 
-	const workspaces = getWorkspaceInfos(cwd) ?? [];
 	cachedWorkspaces = new Map();
 
-	for (const workspace of workspaces) {
-		cachedWorkspaces.set(workspace.name, workspace.path);
-		debug(`Found workspace: ${workspace.name} at ${workspace.path}`);
+	const root = findWorkspaceRootSync(cwd);
+	if (!root) {
+		info("No workspace root detected from cwd; package map will be empty");
+		return cachedWorkspaces;
 	}
 
-	// Handle single-package repos without workspace configuration
-	// If no workspaces found, check if root package.json exists and use that
-	if (cachedWorkspaces.size === 0) {
-		const rootPkgPath = join(cwd, "package.json");
-		if (existsSync(rootPkgPath)) {
-			try {
-				const rootPkg = JSON.parse(readFileSync(rootPkgPath, "utf-8")) as { name?: string };
-				if (rootPkg.name) {
-					cachedWorkspaces.set(rootPkg.name, cwd);
-					debug(`Single-package repo detected: ${rootPkg.name} at ${cwd}`);
-				}
-			} catch {
-				// Ignore parse errors
-			}
-		}
+	const packages = getWorkspacePackagesSync(root);
+	for (const pkg of packages) {
+		cachedWorkspaces.set(pkg.name, pkg.path);
+		debug(`Found workspace: ${pkg.name} at ${pkg.path}`);
 	}
 
 	info(`Found ${cachedWorkspaces.size} workspace package(s)`);
@@ -57,19 +44,20 @@ export function clearWorkspaceCache(): void {
 }
 
 /**
- * Finds the file system path for a package using workspace-tools
+ * Finds the file system path for a package
  *
  * @param packageName - Package name to find
  * @param publishSubdir - Subdirectory containing publishable files (e.g., "dist/npm")
  * @returns Package path or null if not found
  *
  * @remarks
- * Uses workspace-tools to find package paths from the workspace configuration.
- * This handles cases where directory names don't match package names
- * (e.g., @savvy-web/dependency-package in directory "dependency").
+ * Uses `workspaces-effect` to find package paths from the workspace
+ * configuration. This handles cases where directory names don't match
+ * package names (e.g., `@savvy-web/dependency-package` in directory
+ * `dependency`).
  *
- * If publishSubdir is provided, it will be appended to the package path
- * to get the directory containing the publishable package.
+ * If `publishSubdir` is provided, it is appended to the package path to
+ * locate the directory containing the publishable package.
  */
 export function findPackagePath(packageName: string, publishSubdir?: string): string | null {
 	const workspaceMap = getWorkspaceMap();
