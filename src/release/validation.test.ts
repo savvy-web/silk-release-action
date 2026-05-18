@@ -8,6 +8,7 @@
 import type { CommandResponse } from "@savvy-web/github-action-effects/testing";
 import {
 	ActionLoggerTest,
+	ActionStateTest,
 	AttestTest,
 	CommandRunnerTest,
 	NpmRegistryTest,
@@ -107,6 +108,8 @@ const loggerLayer = ActionLoggerTest.layer(loggerState);
 const npmRegistryLayer = NpmRegistryTest.empty();
 const sbomLayer = SbomTest.empty();
 const attestLayer = AttestTest.empty();
+// Empty ActionState (no tokens persisted) — tests exercise the "no token" path.
+const actionStateLayer = ActionStateTest.layer(ActionStateTest.empty());
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
@@ -129,6 +132,7 @@ describe("runValidation", () => {
 
 			const layers = Layer.mergeAll(
 				loggerLayer,
+				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
 				npmRegistryLayer,
@@ -178,6 +182,7 @@ describe("runValidation", () => {
 
 			const layers = Layer.mergeAll(
 				loggerLayer,
+				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
 				npmRegistryLayer,
@@ -217,6 +222,7 @@ describe("runValidation", () => {
 
 			const layers = Layer.mergeAll(
 				loggerLayer,
+				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
 				npmRegistryLayer,
@@ -255,6 +261,7 @@ describe("runValidation", () => {
 
 			const layers = Layer.mergeAll(
 				loggerLayer,
+				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
 				npmRegistryLayer,
@@ -292,6 +299,7 @@ describe("runValidation", () => {
 
 			const layers = Layer.mergeAll(
 				loggerLayer,
+				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
 				npmRegistryLayer,
@@ -331,6 +339,7 @@ describe("runValidation", () => {
 
 			const layers = Layer.mergeAll(
 				loggerLayer,
+				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
 				npmRegistryLayer,
@@ -373,6 +382,7 @@ describe("runValidation", () => {
 
 			const layers = Layer.mergeAll(
 				loggerLayer,
+				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
 				npmRegistryLayer,
@@ -406,6 +416,7 @@ describe("runValidation", () => {
 
 			const layers = Layer.mergeAll(
 				loggerLayer,
+				actionStateLayer,
 				commandRunnerLayer,
 				pubLayer,
 				npmRegistryLayer,
@@ -455,6 +466,7 @@ describe("runValidation", () => {
 
 			const layers = Layer.mergeAll(
 				loggerLayer,
+				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
 				npmRegistryLayer,
@@ -494,6 +506,7 @@ describe("runValidation", () => {
 
 			const layers = Layer.mergeAll(
 				loggerLayer,
+				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
 				npmRegistryLayer,

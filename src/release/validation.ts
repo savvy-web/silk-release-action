@@ -10,11 +10,12 @@
  */
 
 import type { PackagePublishError, ResolvedDependency, SbomError } from "@savvy-web/github-action-effects";
-import { ActionLogger, CommandRunner, PackagePublish, Sbom } from "@savvy-web/github-action-effects";
-import { Effect } from "effect";
+import { ActionLogger, ActionState, CommandRunner, PackagePublish, Sbom } from "@savvy-web/github-action-effects";
+import { Config, Effect, Option } from "effect";
 import type { WorkspacePackage } from "workspaces-effect";
 import { PublishabilityDetector, WorkspaceDiscovery } from "workspaces-effect";
 
+import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
 import { isGitHubPackagesRegistry, isNpmRegistry } from "../utils/registry-utils.js";
 import { ValidationError } from "./errors.js";
 import { buildPublishSummary } from "./report.js";
@@ -75,37 +76,21 @@ interface ReleasedPackage {
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
 /**
- * Resolve a token to pass to `PackagePublish.setupAuth` for a given registry.
+ * Classify a registry URL and return the resolved token for it.
  *
- * Resolution order mirrors `registry-auth.setupRegistryAuth`:
- *  - npm public registry  → `process.env.NPM_TOKEN` (or `INPUT_NPM_TOKEN`)
- *  - GitHub Packages      → `STATE_githubPackagesToken` (ActionState persisted by
- *    `pre.ts`, JSON-encoded), falling back to `process.env.SILK_GITHUB_PACKAGES_TOKEN`
- *  - Custom registries    → env var derived from the registry URL
+ * Resolution:
+ *  - npm public registry  → resolved npm token from `Config` (Option)
+ *  - GitHub Packages      → resolved GitHub Packages token from `ActionState` (Option)
+ *  - Custom registries    → env var derived from the registry URL (unchanged)
  *
  * Returns `null` when no token is found (OIDC / first-time publish).
  */
-function resolveToken(registry: string): string | null {
+function pickToken(registry: string, npmToken: string | null, ghPkgsToken: string | null): string | null {
 	if (isNpmRegistry(registry)) {
-		return process.env.NPM_TOKEN ?? process.env.INPUT_NPM_TOKEN ?? null;
+		return npmToken;
 	}
 	if (isGitHubPackagesRegistry(registry)) {
-		// `pre.ts` persists the GitHub Packages token as ActionState
-		// `githubPackagesToken`; the runner exposes it as the
-		// `STATE_githubPackagesToken` env var holding the JSON-encoded
-		// `GithubPackagesTokenState` (`{"token":"..."}`).
-		const raw = process.env.STATE_githubPackagesToken;
-		if (raw !== undefined && raw !== "") {
-			try {
-				const parsed = JSON.parse(raw) as { readonly token?: unknown };
-				if (typeof parsed.token === "string" && parsed.token !== "") {
-					return parsed.token;
-				}
-			} catch {
-				// Malformed state — fall through to the env-var fallback.
-			}
-		}
-		return process.env.SILK_GITHUB_PACKAGES_TOKEN ?? null;
+		return ghPkgsToken;
 	}
 	// Custom registry: derive env var name from URL
 	// e.g. https://registry.example.com/ → REGISTRY_EXAMPLE_COM_TOKEN
@@ -210,6 +195,22 @@ export const runValidation = (args: ValidationInputArgs) =>
 		const publish = yield* PackagePublish;
 		const sbomSvc = yield* Sbom;
 		const runner = yield* CommandRunner;
+		const state = yield* ActionState;
+
+		// ── Resolve registry tokens once (Effect-native) ─────────────────────
+		// npm token: read via Config from the `npm-token` action input.
+		// An absent or empty input yields null (OIDC / no token).
+		const npmTokenOpt = yield* Config.string("npm-token").pipe(Config.option);
+		const npmToken: string | null = Option.isSome(npmTokenOpt) && npmTokenOpt.value !== "" ? npmTokenOpt.value : null;
+
+		// GitHub Packages token: read from ActionState (persisted by pre.ts).
+		// getOptional returns Option.none when the key is absent; any error is
+		// caught and treated as "no token".
+		const ghPkgsTokenOpt = yield* state
+			.getOptional(STATE_KEYS.githubPackagesToken, GithubPackagesTokenState)
+			.pipe(Effect.catchAll(() => Effect.succeed(Option.none<GithubPackagesTokenState>())));
+		const ghPkgsToken: string | null =
+			Option.isSome(ghPkgsTokenOpt) && ghPkgsTokenOpt.value.token !== "" ? ghPkgsTokenOpt.value.token : null;
 
 		// ── Step 1: Discover workspace packages ──────────────────────────────
 
@@ -311,7 +312,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 					`Dry-run ${pkg.name} → ${registryUrl}`,
 					Effect.gen(function* () {
 						// Set up registry auth before dry-run.
-						const token = resolveToken(registryUrl);
+						const token = pickToken(registryUrl, npmToken, ghPkgsToken);
 						if (token !== null) {
 							yield* publish.setupAuth(registryUrl, token).pipe(
 								Effect.catchAll((e: PackagePublishError) => {
@@ -348,9 +349,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 							);
 
 						if (!result.success) {
-							yield* Effect.logWarning(
-								`dry-run failed for ${pkg.name} → ${registryUrl}: ${result.output}`,
-							);
+							yield* Effect.logWarning(`dry-run failed for ${pkg.name} → ${registryUrl}: ${result.output}`);
 						}
 						return result;
 					}),
