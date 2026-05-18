@@ -79,7 +79,8 @@ interface ReleasedPackage {
  *
  * Resolution order mirrors `registry-auth.setupRegistryAuth`:
  *  - npm public registry  → `process.env.NPM_TOKEN` (or `INPUT_NPM_TOKEN`)
- *  - GitHub Packages      → `process.env.SILK_GITHUB_PACKAGES_TOKEN`
+ *  - GitHub Packages      → `STATE_githubPackagesToken` (ActionState persisted by
+ *    `pre.ts`, JSON-encoded), falling back to `process.env.SILK_GITHUB_PACKAGES_TOKEN`
  *  - Custom registries    → env var derived from the registry URL
  *
  * Returns `null` when no token is found (OIDC / first-time publish).
@@ -89,6 +90,21 @@ function resolveToken(registry: string): string | null {
 		return process.env.NPM_TOKEN ?? process.env.INPUT_NPM_TOKEN ?? null;
 	}
 	if (isGitHubPackagesRegistry(registry)) {
+		// `pre.ts` persists the GitHub Packages token as ActionState
+		// `githubPackagesToken`; the runner exposes it as the
+		// `STATE_githubPackagesToken` env var holding the JSON-encoded
+		// `GithubPackagesTokenState` (`{"token":"..."}`).
+		const raw = process.env.STATE_githubPackagesToken;
+		if (raw !== undefined && raw !== "") {
+			try {
+				const parsed = JSON.parse(raw) as { readonly token?: unknown };
+				if (typeof parsed.token === "string" && parsed.token !== "") {
+					return parsed.token;
+				}
+			} catch {
+				// Malformed state — fall through to the env-var fallback.
+			}
+		}
 		return process.env.SILK_GITHUB_PACKAGES_TOKEN ?? null;
 	}
 	// Custom registry: derive env var name from URL
@@ -331,6 +347,11 @@ export const runValidation = (args: ValidationInputArgs) =>
 								}),
 							);
 
+						if (!result.success) {
+							yield* Effect.logWarning(
+								`dry-run failed for ${pkg.name} → ${registryUrl}: ${result.output}`,
+							);
+						}
 						return result;
 					}),
 				);
