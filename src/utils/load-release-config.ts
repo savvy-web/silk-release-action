@@ -2,7 +2,6 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseJsonc } from "jsonc-parser";
 import type { ReleaseConfig, SBOMMetadataConfig } from "../types/sbom-config.js";
-import { debug, getInput, info, warning } from "./_actions-compat.js";
 
 /**
  * Config file names to search for (in order of preference)
@@ -120,20 +119,12 @@ function parseConfigContent(content: string, source: string): ReleaseConfig | un
 		const parsed = parseJsonc(content, errors) as Record<string, unknown>;
 
 		if (errors.length > 0) {
-			warning(`Failed to parse config from ${source}: JSON syntax error at offset ${errors[0].offset}`);
 			return undefined;
 		}
 
 		// Check for unwrapped SBOM config (common mistake)
 		const unwrappedFields = detectUnwrappedSBOMFields(parsed);
 		if (unwrappedFields.length > 0 && parsed.sbom === undefined) {
-			warning(
-				`Invalid config structure from ${source}: Found SBOM fields (${unwrappedFields.join(", ")}) at root level.\n` +
-					`  The configuration must be wrapped in an "sbom" key.\n` +
-					`  Expected: { "sbom": { "supplier": {...}, ... } }\n` +
-					`  Found:    { "supplier": {...}, ... }\n` +
-					`  See schema: https://raw.githubusercontent.com/savvy-web/workflow-release-action/main/.github/silk-release.schema.json`,
-			);
 			return undefined;
 		}
 
@@ -142,14 +133,12 @@ function parseConfigContent(content: string, source: string): ReleaseConfig | un
 		if (releaseConfig.sbom !== undefined) {
 			const validationErrors = validateSBOMConfig(releaseConfig.sbom);
 			if (validationErrors.length > 0) {
-				warning(`Invalid SBOM config from ${source}:\n${validationErrors.map((e) => `  - ${e}`).join("\n")}`);
 				return undefined;
 			}
 		}
 
 		return releaseConfig;
-	} catch (error) {
-		warning(`Failed to parse config from ${source}: ${error instanceof Error ? error.message : String(error)}`);
+	} catch {
 		return undefined;
 	}
 }
@@ -181,8 +170,6 @@ function loadConfigFromLocalRepo(rootDir: string): ReleaseConfig | undefined {
 		const config = loadConfigFromFile(configPath);
 
 		if (config !== undefined) {
-			info(`Loaded Silk release config from .github/${fileName}`);
-			debug(`Release config: ${JSON.stringify(config)}`);
 			return config;
 		}
 	}
@@ -216,24 +203,10 @@ function loadConfigFromEnvVar(): ReleaseConfig | undefined {
 	const envValue = process.env[CONFIG_ENV_VAR];
 
 	if (!envValue) {
-		debug(`${CONFIG_ENV_VAR} environment variable not set`);
 		return undefined;
 	}
 
-	info(`Found ${CONFIG_ENV_VAR} environment variable (${envValue.length} chars)`);
-
-	const config = parseConfigContent(envValue, `${CONFIG_ENV_VAR} variable`);
-
-	if (config !== undefined) {
-		info(`Loaded Silk release config from ${CONFIG_ENV_VAR} variable`);
-		if (config.sbom?.supplier?.name) {
-			info(`  Supplier: ${config.sbom.supplier.name}`);
-		}
-		debug(`Release config: ${JSON.stringify(config)}`);
-		return config;
-	}
-
-	return undefined;
+	return parseConfigContent(envValue, `${CONFIG_ENV_VAR} variable`);
 }
 
 /**
@@ -247,33 +220,15 @@ function loadConfigFromEnvVar(): ReleaseConfig | undefined {
  * @returns Configuration or undefined if not set or invalid
  */
 function loadConfigFromInput(): ReleaseConfig | undefined {
-	let inputValue: string;
-	try {
-		inputValue = getInput(CONFIG_INPUT_NAME);
-	} catch {
-		// getInput may throw if we're not in an action context
-		return undefined;
-	}
+	// Read the action input via the standard GitHub Actions env convention:
+	// INPUT_<NAME-UPPERCASED-WITH-UNDERSCORES>
+	const inputValue = (process.env[`INPUT_${CONFIG_INPUT_NAME.replace(/-/g, "_").toUpperCase()}`] ?? "").trim();
 
 	if (!inputValue) {
-		debug(`${CONFIG_INPUT_NAME} action input not set`);
 		return undefined;
 	}
 
-	info(`Found ${CONFIG_INPUT_NAME} action input (${inputValue.length} chars)`);
-
-	const config = parseConfigContent(inputValue, `${CONFIG_INPUT_NAME} input`);
-
-	if (config !== undefined) {
-		info(`Loaded Silk release config from ${CONFIG_INPUT_NAME} input`);
-		if (config.sbom?.supplier?.name) {
-			info(`  Supplier: ${config.sbom.supplier.name}`);
-		}
-		debug(`Release config: ${JSON.stringify(config)}`);
-		return config;
-	}
-
-	return undefined;
+	return parseConfigContent(inputValue, `${CONFIG_INPUT_NAME} input`);
 }
 
 /**
@@ -354,7 +309,6 @@ export function loadReleaseConfig(rootDir?: string): LoadReleaseConfigResult {
 		};
 	}
 
-	debug("No Silk release configuration found");
 	return {
 		config: undefined,
 		source: { source: "none" },

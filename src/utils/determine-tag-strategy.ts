@@ -1,5 +1,4 @@
 import type { PackagePublishResult } from "../release/types.js";
-import { debug, info, warning } from "./_actions-compat.js";
 import { getAllWorkspacePackages, readChangesetConfig } from "./release-summary-helpers.js";
 
 /**
@@ -51,11 +50,8 @@ export function isMonorepoForTagging(): boolean {
 	// A package is publishable if it has publish config OR is not private
 	const publishablePackages = allPackages.filter((pkg) => pkg.hasPublishConfig || pkg.targetCount > 0 || !pkg.private);
 
-	debug(`Found ${publishablePackages.length} publishable packages out of ${allPackages.length} total`);
-
 	// Single publishable package → single tag
 	if (publishablePackages.length <= 1) {
-		debug("Single publishable package detected, using single tag strategy");
 		return false;
 	}
 
@@ -67,14 +63,12 @@ export function isMonorepoForTagging(): boolean {
 			// Check if all publishable packages are in this fixed group
 			const allInGroup = [...publishableNames].every((name) => fixedGroup.includes(name));
 			if (allInGroup) {
-				debug(`All publishable packages are in fixed group: [${fixedGroup.join(", ")}]`);
 				return false;
 			}
 		}
 	}
 
 	// Multiple publishable packages not all in same fixed group → per-package tags
-	debug("Multiple publishable packages with independent/linked versioning, using per-package tags");
 	return true;
 }
 
@@ -98,7 +92,6 @@ export function determineTagStrategy(publishResults: PackagePublishResult[]): Ta
 	);
 
 	if (successfulPackages.length === 0) {
-		info("No packages were published successfully, no tags to create");
 		return {
 			strategy: "single",
 			tags: [],
@@ -121,8 +114,6 @@ export function determineTagStrategy(publishResults: PackagePublishResult[]): Ta
 			const packageNames =
 				successfulPackages.length === 1 ? successfulPackages[0].name : successfulPackages.map((p) => p.name).join(", ");
 
-			info(`Single tag strategy: creating tag ${tag} for ${packageNames}`);
-
 			return {
 				strategy: "single",
 				tags: [
@@ -139,14 +130,12 @@ export function determineTagStrategy(publishResults: PackagePublishResult[]): Ta
 		// Edge case: multiple packages released with different versions but not a monorepo
 		// This shouldn't happen in practice, but handle it by using highest version
 		const highestVersion = [...versions].sort().pop() || successfulPackages[0].version;
-		const tag = highestVersion;
-		warning(`Unexpected: multiple versions in single-tag mode. Using highest version: ${tag}`);
 
 		return {
 			strategy: "single",
 			tags: [
 				{
-					name: tag,
+					name: highestVersion,
 					packageName: successfulPackages.map((p) => p.name).join(", "),
 					version: highestVersion,
 				},
@@ -156,14 +145,10 @@ export function determineTagStrategy(publishResults: PackagePublishResult[]): Ta
 	}
 
 	// Monorepo with independent/linked versioning - create tag per package
-	info(`Per-package tag strategy: creating ${successfulPackages.length} tags`);
-
 	const tags = successfulPackages.map((pkg) => {
 		// Use npm-style tags for scoped packages: @scope/pkg@1.0.0
 		// Use v-prefix for non-scoped: pkg@v1.0.0
 		const tag = pkg.name.startsWith("@") ? `${pkg.name}@${pkg.version}` : `${pkg.name}@v${pkg.version}`;
-
-		info(`  - ${tag}`);
 
 		return {
 			name: tag,

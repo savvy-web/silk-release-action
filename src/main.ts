@@ -213,10 +213,7 @@ const runBranchManagement = Effect.gen(function* () {
 /**
  * Phase 2 validation orchestrator. Runs the migrated Effect steps
  * inline; defers publish / release-notes / SBOM validation to the
- * existing imperative helpers via dynamic import so their @actions/*
- * dependencies stay out of the static bundle graph (which would
- * otherwise drag undici back into main.js — see commit efeb229 for
- * the original incident).
+ * existing imperative helpers.
  */
 const runValidation = Effect.gen(function* () {
 	const logger = yield* ActionLogger;
@@ -626,20 +623,19 @@ export const main = Effect.gen(function* () {
 	const state = yield* ActionState;
 
 	// The installation token provisioned by pre.ts is read back here and
-	// bridged into the `STATE_token` env var so the dynamically-imported
-	// imperative helpers (publish validation, SBOM preview, release-notes
-	// preview) can read it via the `_actions-compat` `getState("token")`
-	// shim. `process.env.GITHUB_TOKEN` is intentionally never set.
+	// bridged into the `STATE_token` env var so the imperative publish helpers
+	// (tokens.ts) can read it via `process.env.STATE_token`.
+	// `process.env.GITHUB_TOKEN` is intentionally never set.
 	const installationToken = yield* GitHubToken.read();
 	process.env.STATE_token = installationToken.token;
 
 	// Bridge the optional workflow-issued `github-token` (saved by pre.ts as
-	// `githubPackagesToken`) into the legacy `STATE_githubToken` env var so
+	// `githubPackagesToken`) into the `STATE_githubToken` env var so
 	// `registry-auth.setupRegistryAuth` can prefer it for GitHub Packages
-	// publishing. Without this bridge, registry-auth's
-	// `getState("githubToken")` reads empty and falls back to the App
-	// installation token — which may not carry org-level `packages:read`
-	// even when the workflow's `secrets.GITHUB_TOKEN` does.
+	// publishing. Without this bridge, tokens.ts's `packagesToken()` reads
+	// empty and falls back to the App installation token — which may not
+	// carry org-level `packages:read` even when the workflow's
+	// `secrets.GITHUB_TOKEN` does.
 	const pkgToken = yield* state.getOptional(STATE_KEYS.githubPackagesToken, GithubPackagesTokenState);
 	if (Option.isSome(pkgToken)) {
 		process.env.STATE_githubToken = pkgToken.value.token;

@@ -5,7 +5,7 @@ import { vi } from "vitest";
  * Suppresses console output during tests.
  *
  * Mocks `process.stdout.write` and `process.stderr.write` to prevent test
- * output noise from code that logs through the `_actions-compat` shim.
+ * output noise.
  *
  * @remarks
  * Call this in `beforeEach()`; the mocks are restored by `vi.restoreAllMocks()`

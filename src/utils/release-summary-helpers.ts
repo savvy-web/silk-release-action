@@ -1,7 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { findWorkspaceRootSync, getWorkspacePackagesSync } from "workspaces-effect";
-import { debug } from "./_actions-compat.js";
 
 /** Minimal raw package.json shape needed to read publishConfig. */
 interface RawPackageJson {
@@ -73,8 +72,8 @@ export function readChangesetConfig(): ChangesetConfig | null {
 			const content = readFileSync(configPath, "utf8");
 			return JSON.parse(content) as ChangesetConfig;
 		}
-	} catch (err) {
-		debug(`Failed to read changeset config: ${err instanceof Error ? err.message : String(err)}`);
+	} catch {
+		// ignore — no config is a valid state
 	}
 
 	return null;
@@ -129,7 +128,6 @@ export function getAllWorkspacePackages(): WorkspacePackageInfo[] {
 	const workspaceRoot = findWorkspaceRootSync(cwd);
 
 	if (!workspaceRoot) {
-		debug("No workspace root found");
 		return [];
 	}
 
@@ -143,8 +141,8 @@ export function getAllWorkspacePackages(): WorkspacePackageInfo[] {
 		let rawPkg: RawPackageJson = {};
 		try {
 			rawPkg = JSON.parse(readFileSync(rawPath, "utf8")) as RawPackageJson;
-		} catch (err) {
-			debug(`Failed to re-read ${rawPath}: ${err instanceof Error ? err.message : String(err)}`);
+		} catch {
+			// ignore — treat as empty publish config
 		}
 
 		const hasPublishConfig = rawPkg.publishConfig?.access !== undefined;

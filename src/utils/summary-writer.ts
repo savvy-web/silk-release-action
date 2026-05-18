@@ -1,3 +1,4 @@
+import { appendFileSync } from "node:fs";
 import type { MarkdownEntryOrPrimitive } from "ts-markdown";
 import { codeblock, h2, h3, h4, table, tsMarkdown, ul } from "ts-markdown";
 
@@ -9,16 +10,12 @@ export const summaryWriter = {
 	/**
 	 * Write a markdown summary to the job summary file.
 	 * Appends trailing newlines to separate from subsequent summaries.
-	 *
-	 * Loads `@actions/core` lazily so static graph analysis can drop the
-	 * dependency for callers that only use the pure helpers below.
 	 */
 	async write(markdown: string): Promise<void> {
-		// Use the local SummaryBuilder shim — @actions/core's barrel pulls
-		// in oidc-utils → http-client → undici, which crashes the bundle.
-		// The shim writes to GITHUB_STEP_SUMMARY directly via node:fs.
-		const { summary } = await import("./_actions-compat.js");
-		await summary.addRaw(`${markdown}\n\n`).write();
+		const path = process.env.GITHUB_STEP_SUMMARY;
+		if (path !== undefined && path !== "") {
+			appendFileSync(path, `${markdown}\n\n`);
+		}
 	},
 
 	/**

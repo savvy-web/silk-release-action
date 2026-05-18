@@ -1,7 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { InferredSBOMMetadata, ResolvedSBOMMetadata, SBOMMetadataConfig } from "../types/sbom-config.js";
-import { debug, info } from "./_actions-compat.js";
 
 /**
  * Extended PackageJson interface with all fields needed for SBOM inference
@@ -128,15 +127,13 @@ export function inferSBOMMetadata(directory: string): InferredSBOMMetadata {
 	const pkgJsonPath = join(directory, "package.json");
 
 	if (!existsSync(pkgJsonPath)) {
-		debug(`No package.json found at ${pkgJsonPath} for SBOM metadata inference`);
 		return {};
 	}
 
 	let pkgJson: PackageJsonForSBOM;
 	try {
 		pkgJson = JSON.parse(readFileSync(pkgJsonPath, "utf-8")) as PackageJsonForSBOM;
-	} catch (error) {
-		debug(`Failed to parse package.json for SBOM metadata: ${error instanceof Error ? error.message : String(error)}`);
+	} catch {
 		return {};
 	}
 
@@ -153,7 +150,6 @@ export function inferSBOMMetadata(directory: string): InferredSBOMMetadata {
 		license: pkgJson.license,
 	};
 
-	debug(`Inferred SBOM metadata from ${directory}: ${JSON.stringify(result)}`);
 	return result;
 }
 
@@ -280,10 +276,6 @@ export function resolveSBOMMetadata(
 
 	// Resolve author
 	result.author = inferred.authorName;
-
-	info(
-		`Resolved SBOM metadata: supplier=${result.supplier?.name || "none"}, publisher=${result.component?.publisher || "none"}`,
-	);
 
 	return result;
 }
