@@ -145,6 +145,29 @@ function inferBumpType(oldVersion: string, newVersion: string): "major" | "minor
 	return "patch";
 }
 
+/**
+ * Report whether a built target directory's `package.json` is marked `private`.
+ *
+ * The build pipeline keeps `private: true` on dev-only build outputs and
+ * rewrites it to `private: false` on real publish targets, so a `private`
+ * target is the canonical "do not publish" signal — npm would otherwise reject
+ * it with `EPRIVATE`. Such targets are skipped before publish. A missing or
+ * unreadable `package.json` is treated as not private (the publish step then
+ * surfaces any genuine error).
+ */
+function isTargetPrivate(targetDir: string): boolean {
+	const pkgJsonPath = join(targetDir, "package.json");
+	if (!existsSync(pkgJsonPath)) {
+		return false;
+	}
+	try {
+		const parsed = JSON.parse(readFileSync(pkgJsonPath, "utf-8")) as { private?: boolean };
+		return parsed.private === true;
+	} catch {
+		return false;
+	}
+}
+
 // ─── Detection helpers ────────────────────────────────────────────────────────
 
 /**
@@ -863,19 +886,39 @@ export const runPublishTargets = (
 				);
 			}
 
-			targetsByPackage.set(rel.name, {
-				version: rel.version,
-				targets: npmTargets.map((t) => ({
+			// Resolve each target's directory to an absolute path, then drop any
+			// whose built `package.json` is `private` — the build pipeline keeps
+			// `private: true` on dev-only outputs as the "never publish" signal.
+			const resolvedTargets: Array<{
+				registry: string;
+				directory: string;
+				access: "public" | "restricted";
+				provenance: boolean;
+			}> = [];
+			let privateSkipped = 0;
+			for (const t of npmTargets) {
+				const directory = isAbsolute(t.directory) ? t.directory : join(wsPkg.path, t.directory);
+				if (isTargetPrivate(directory)) {
+					privateSkipped++;
+					yield* Effect.logInfo(
+						`⏭ ${rel.name} · ${basename(directory)} — package.json is private, not a publish target`,
+					);
+					continue;
+				}
+				resolvedTargets.push({
 					registry: t.registry,
-					directory: isAbsolute(t.directory) ? t.directory : join(wsPkg.path, t.directory),
+					directory,
 					access: t.access,
 					provenance: t.provenance ?? false,
-				})),
-			});
+				});
+			}
+
+			targetsByPackage.set(rel.name, { version: rel.version, targets: resolvedTargets });
 
 			yield* Effect.logDebug(
-				`runPublishTargets: ${rel.name}@${rel.version}: ${npmTargets.length} target(s)` +
-					(jsrTargets.length > 0 ? ` (${jsrTargets.length} JSR skipped)` : ""),
+				`runPublishTargets: ${rel.name}@${rel.version}: ${resolvedTargets.length} target(s)` +
+					(jsrTargets.length > 0 ? ` (${jsrTargets.length} JSR skipped)` : "") +
+					(privateSkipped > 0 ? ` (${privateSkipped} private skipped)` : ""),
 			);
 		}
 
