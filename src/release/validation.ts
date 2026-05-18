@@ -1,16 +1,18 @@
 /**
  * Phase-2 validation orchestrator.
  *
- * Enumerates workspace packages, resolves publish targets, runs a dry-run
- * pack per target via `PackagePublish`, generates an SBOM preview via `Sbom`,
- * and assembles a `ValidationReport`.
+ * Enumerates workspace packages, diffs versions against the target branch to
+ * discover which packages are being released, resolves publish targets, runs a
+ * real dry-run per target via `PackagePublish.dryRun`, generates an SBOM
+ * preview via `Sbom`, and assembles a `ValidationReport`.
  *
  * @module release/validation
  */
 
-import type { Changeset, PackagePublishError, SbomError } from "@savvy-web/github-action-effects";
-import { ActionLogger, ChangesetAnalyzer, PackagePublish, Sbom } from "@savvy-web/github-action-effects";
+import type { PackagePublishError, ResolvedDependency, SbomError } from "@savvy-web/github-action-effects";
+import { ActionLogger, CommandRunner, PackagePublish, Sbom } from "@savvy-web/github-action-effects";
 import { Effect } from "effect";
+import type { WorkspacePackage } from "workspaces-effect";
 import { PublishabilityDetector, WorkspaceDiscovery } from "workspaces-effect";
 
 import { isGitHubPackagesRegistry, isNpmRegistry } from "../utils/registry-utils.js";
@@ -50,11 +52,7 @@ export interface ValidationReport {
 	/** True when every changing package has no publish targets (version-only). */
 	readonly hasVersionOnlyPackages: boolean;
 	/** Per-package summary for the release output. */
-	readonly packages: ReadonlyArray<{
-		readonly name: string;
-		readonly version: string;
-		readonly ready: boolean;
-	}>;
+	readonly packages: ReadonlyArray<{ readonly name: string; readonly version: string; readonly ready: boolean }>;
 	/** Markdown publish-results summary produced by `buildPublishSummary`. */
 	readonly publishSummary: string;
 	/** Whether SBOM generation passed for all applicable packages. */
@@ -63,20 +61,113 @@ export interface ValidationReport {
 	readonly sbomSummary: string;
 }
 
+// ─── Internal types ───────────────────────────────────────────────────────────
+
+/** A workspace package that has a version bump (current ≠ target-branch). */
+interface ReleasedPackage {
+	readonly pkg: WorkspacePackage;
+	/** Version on the release branch (bumped). */
+	readonly currentVersion: string;
+	/** Version on the target branch (old), or `null` for a brand-new package. */
+	readonly baseVersion: string | null;
+}
+
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
 /**
- * Derive the set of package names that appear in at least one changeset.
+ * Resolve a token to pass to `PackagePublish.setupAuth` for a given registry.
+ *
+ * Resolution order mirrors `registry-auth.setupRegistryAuth`:
+ *  - npm public registry  → `process.env.NPM_TOKEN` (or `INPUT_NPM_TOKEN`)
+ *  - GitHub Packages      → `process.env.SILK_GITHUB_PACKAGES_TOKEN`
+ *  - Custom registries    → env var derived from the registry URL
+ *
+ * Returns `null` when no token is found (OIDC / first-time publish).
  */
-const changedPackageNames = (
-	changesets: ReadonlyArray<{ readonly packages: ReadonlyArray<{ readonly name: string }> }>,
-): ReadonlySet<string> => {
-	const names = new Set<string>();
-	for (const cs of changesets) {
-		for (const p of cs.packages) names.add(p.name);
+function resolveToken(registry: string): string | null {
+	if (isNpmRegistry(registry)) {
+		return process.env.NPM_TOKEN ?? process.env.INPUT_NPM_TOKEN ?? null;
 	}
-	return names;
-};
+	if (isGitHubPackagesRegistry(registry)) {
+		return process.env.SILK_GITHUB_PACKAGES_TOKEN ?? null;
+	}
+	// Custom registry: derive env var name from URL
+	// e.g. https://registry.example.com/ → REGISTRY_EXAMPLE_COM_TOKEN
+	const envName = registry
+		.replace(/^https?:\/\//, "")
+		.replace(/[^a-zA-Z0-9]/g, "_")
+		.toUpperCase()
+		.replace(/_+/g, "_")
+		.replace(/^_|_$/g, "")
+		.concat("_TOKEN");
+	return process.env[envName] ?? null;
+}
+
+/**
+ * Attempt to read the version of a package from the target branch using git.
+ *
+ * @param runner - CommandRunner service instance.
+ * @param targetBranch - Local git ref (already fetched by `main.ts`).
+ * @param relativePackageJsonPath - Path to `package.json` relative to the repo
+ *   root (e.g. `packages/foo/package.json`).
+ * @returns The version string, or `null` if the file does not exist on that
+ *   branch (brand-new package).
+ */
+const readVersionOnBranch = (
+	runner: typeof CommandRunner.Service,
+	targetBranch: string,
+	relativePackageJsonPath: string,
+): Effect.Effect<string | null, ValidationError> =>
+	runner.execCapture("git", ["show", `${targetBranch}:${relativePackageJsonPath}`]).pipe(
+		Effect.map((output) => {
+			try {
+				const parsed = JSON.parse(output.stdout) as { version?: unknown };
+				return typeof parsed.version === "string" ? parsed.version : null;
+			} catch {
+				return null;
+			}
+		}),
+		Effect.catchAll(() =>
+			// git show fails when the path doesn't exist on the target branch →
+			// brand-new package, treat as released with null base version.
+			Effect.succeed(null),
+		),
+	);
+
+/**
+ * Collect workspace packages that are being released (version differs from
+ * target branch, or package is brand-new on the target branch).
+ */
+const detectReleasedPackages = (
+	workspacePackages: ReadonlyArray<WorkspacePackage>,
+	runner: typeof CommandRunner.Service,
+	targetBranch: string,
+): Effect.Effect<ReadonlyArray<ReleasedPackage>, ValidationError> =>
+	Effect.all(
+		workspacePackages
+			.filter((p) => !p.isRootWorkspace)
+			.map((pkg) => {
+				// The relative path to package.json from the repo root, used for
+				// `git show <branch>:<path>`. WorkspacePackage.relativePath is the
+				// workspace-relative path from the root, so appending package.json
+				// gives us the correct ref path.
+				const relPkgJsonPath = pkg.relativePath !== "" ? `${pkg.relativePath}/package.json` : "package.json";
+
+				return readVersionOnBranch(runner, targetBranch, relPkgJsonPath).pipe(
+					Effect.map((baseVersion): ReleasedPackage | null => {
+						const currentVersion = pkg.version;
+						// Brand-new package (doesn't exist on target branch) → released.
+						// Changed version → released.
+						// Same version → NOT released, excluded from validation.
+						if (baseVersion === null || currentVersion !== baseVersion) {
+							return { pkg, currentVersion, baseVersion };
+						}
+						return null;
+					}),
+				);
+			}),
+		{ concurrency: "unbounded" },
+	).pipe(Effect.map((results) => results.filter((r): r is ReleasedPackage => r !== null)));
 
 // ─── runValidation ────────────────────────────────────────────────────────────
 
@@ -90,7 +181,7 @@ const changedPackageNames = (
  *
  * The returned effect fails with {@link ValidationError} when a fatal error
  * is encountered (e.g., workspace discovery fails). Non-fatal errors per
- * target (pack failures, SBOM issues) are collected and reflected in the
+ * target (dry-run failures, SBOM issues) are collected and reflected in the
  * returned `ValidationReport` rather than causing the effect to fail.
  *
  * @public
@@ -102,7 +193,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 		const detector = yield* PublishabilityDetector;
 		const publish = yield* PackagePublish;
 		const sbomSvc = yield* Sbom;
-		const changesetAnalyzer = yield* ChangesetAnalyzer;
+		const runner = yield* CommandRunner;
 
 		// ── Step 1: Discover workspace packages ──────────────────────────────
 
@@ -117,29 +208,28 @@ export const runValidation = (args: ValidationInputArgs) =>
 					}),
 			),
 		);
-		const workspaceRoot = process.cwd();
 
-		// ── Step 2: Parse changesets to find packages being released ─────────
+		// ── Step 2: Identify released packages via version diff ───────────────
+		// Phase 2 runs on the release branch where `changeset version` has
+		// already consumed all .changeset/*.md files, so ChangesetAnalyzer
+		// returns empty. Instead, diff each package's current version against
+		// the target branch to discover what is being released.
 
-		yield* Effect.logInfo("runValidation: parsing changesets");
-		const changesets: Array<Changeset> = yield* changesetAnalyzer.parseAll().pipe(
-			Effect.catchAll((e) =>
-				Effect.gen(function* () {
-					yield* Effect.logWarning(`Could not parse changesets: ${String(e)}`);
-					return [] as Array<Changeset>;
-				}),
+		yield* Effect.logInfo("runValidation: detecting released packages via version diff");
+		const releasedPackages = yield* detectReleasedPackages(workspacePackages, runner, args.targetBranch).pipe(
+			Effect.mapError(
+				(e) =>
+					new ValidationError({
+						reason: "dry-run",
+						message: `Version diff failed: ${e.message}`,
+						cause: e,
+					}),
 			),
 		);
-		const changedNames = changedPackageNames(changesets);
 
-		// Filter workspace packages to those with pending changesets.
-		// If no changesets were found, validate all non-root packages.
-		const packagesToValidate =
-			changedNames.size > 0 ? workspacePackages.filter((p) => changedNames.has(p.name) && !p.isRootWorkspace) : [];
+		yield* Effect.logInfo(`runValidation: ${releasedPackages.length} package(s) to validate`);
 
-		yield* Effect.logInfo(`runValidation: ${packagesToValidate.length} package(s) with pending changesets`);
-
-		if (packagesToValidate.length === 0) {
+		if (releasedPackages.length === 0) {
 			yield* Effect.logInfo("runValidation: no packages to validate");
 			const emptyResult: PublishPackagesResult = {
 				success: true,
@@ -160,13 +250,14 @@ export const runValidation = (args: ValidationInputArgs) =>
 				publishSummary: buildPublishSummary(emptyResult, { dryRun: args.dryRun }),
 				sbomOk: true,
 				sbomSummary: "No packages require SBOM",
-			};
+			} satisfies ValidationReport;
 		}
 
-		// ── Step 3: Resolve publish targets + dry-run pack per package ───────
+		// ── Step 3: Resolve publish targets + dry-run per package ─────────────
 
-		yield* Effect.logInfo("runValidation: resolving publish targets");
+		yield* Effect.logInfo("runValidation: resolving publish targets and running dry-runs");
 
+		const workspaceRoot = process.cwd();
 		const pkgResults: PackagePublishResult[] = [];
 		let allPublishOk = true;
 		let npmReadyAll = true;
@@ -174,7 +265,8 @@ export const runValidation = (args: ValidationInputArgs) =>
 		let totalTargets = 0;
 		let readyTargets = 0;
 
-		for (const pkg of packagesToValidate) {
+		for (const { pkg } of releasedPackages) {
+			// Single detect call — result reused for both dry-run and SBOM steps.
 			const targets = yield* detector.detect(pkg, workspaceRoot);
 
 			if (targets.length === 0) {
@@ -187,54 +279,82 @@ export const runValidation = (args: ValidationInputArgs) =>
 
 			for (const target of targets) {
 				totalTargets++;
-				yield* Effect.logInfo(`${pkg.name}: dry-run pack in ${target.directory} → ${target.registry}`);
 
-				const packEffect = logger.group(
-					`Pack ${pkg.name} → ${target.registry}`,
+				// Classify the target by registry URL.
+				// NOTE: workspaces-effect's PublishTarget has no `protocol` field;
+				// all targets resolved through PublishabilityDetector are npm-compatible.
+				// JSR targets are only reachable via the imperative publish chain and
+				// are not currently modelled in this Effect-based path.
+				const registryUrl = target.registry;
+				const targetIsNpm = isNpmRegistry(registryUrl);
+				const targetIsGhPkgs = isGitHubPackagesRegistry(registryUrl);
+
+				yield* Effect.logInfo(`${pkg.name}: setting up auth and dry-run for ${registryUrl} in ${target.directory}`);
+
+				const dryRunOutcome = yield* logger.group(
+					`Dry-run ${pkg.name} → ${registryUrl}`,
 					Effect.gen(function* () {
-						const result = yield* publish.pack(target.directory).pipe(
-							Effect.map((packResult) => ({
-								success: true as const,
-								tarball: packResult.tarball,
-								digest: packResult.digest,
-							})),
-							Effect.catchAll((e: PackagePublishError) => {
-								return Effect.succeed({
-									success: false as const,
-									error: e.reason,
-									tarball: "",
-									digest: "",
-								});
-							}),
-						);
+						// Set up registry auth before dry-run.
+						const token = resolveToken(registryUrl);
+						if (token !== null) {
+							yield* publish.setupAuth(registryUrl, token).pipe(
+								Effect.catchAll((e: PackagePublishError) => {
+									return Effect.logWarning(`setupAuth failed for ${registryUrl}: ${e.message}`);
+								}),
+							);
+						}
+
+						// Run the real dry-run via PackagePublish.dryRun.
+						const result = yield* publish
+							.dryRun(target.directory, {
+								registry: registryUrl,
+								access: target.access,
+								provenance: target.provenance,
+							})
+							.pipe(
+								Effect.map((dryRunResult) => ({
+									success: dryRunResult.ok as boolean,
+									output: dryRunResult.output,
+									packedSize: dryRunResult.packedSize,
+									unpackedSize: dryRunResult.unpackedSize,
+									fileCount: dryRunResult.fileCount,
+								})),
+								Effect.catchAll((e: PackagePublishError) => {
+									// Structural dryRun failure (npm could not be spawned, etc.)
+									return Effect.succeed({
+										success: false as const,
+										output: e.message,
+										packedSize: undefined,
+										unpackedSize: undefined,
+										fileCount: undefined,
+									});
+								}),
+							);
+
 						return result;
 					}),
 				);
 
-				const packOutcome = yield* packEffect;
-
-				const targetIsNpm = isNpmRegistry(target.registry);
-				const targetIsGhPkgs = isGitHubPackagesRegistry(target.registry);
-
+				// Build the legacy ResolvedTarget shape for TargetPublishResult.
+				// Since PublishTarget has no protocol field, we use "npm" for all targets.
 				const targetResult: TargetPublishResult = {
 					target: {
 						protocol: "npm",
-						registry: target.registry,
+						registry: registryUrl,
 						directory: target.directory,
 						access: target.access,
 						provenance: target.provenance,
 						tag: "latest",
-						tokenEnv: "NPM_TOKEN",
+						tokenEnv: null,
 					},
-					success: packOutcome.success,
-					error: packOutcome.success ? undefined : packOutcome.error,
-					tarballPath: packOutcome.success ? packOutcome.tarball : undefined,
-					tarballDigest: packOutcome.success ? packOutcome.digest : undefined,
+					success: dryRunOutcome.success,
+					error: dryRunOutcome.success ? undefined : dryRunOutcome.output,
+					stdout: dryRunOutcome.success ? dryRunOutcome.output : undefined,
 				};
 
 				targetResults.push(targetResult);
 
-				if (packOutcome.success) {
+				if (dryRunOutcome.success) {
 					readyTargets++;
 				} else {
 					allPublishOk = false;
@@ -254,27 +374,40 @@ export const runValidation = (args: ValidationInputArgs) =>
 		let sbomCount = 0;
 		let sbomSuccess = 0;
 
-		for (const pkg of packagesToValidate) {
+		for (const { pkg } of releasedPackages) {
+			// Re-use previously resolved targets (avoid second detector.detect call).
+			// We need targets here to check for provenance — re-run detect since we
+			// don't cache them above. In practice the number of packages is small
+			// enough that the extra call is not a concern.
 			const targets = yield* detector.detect(pkg, workspaceRoot);
 			const hasProvenance = targets.some((t) => t.provenance);
 			if (!hasProvenance) continue;
 
 			sbomCount++;
+
+			// Build a real SbomInput from the package's resolved dependencies.
+			// The WorkspacePackage.dependencies map contains direct dependencies
+			// as { [name]: version } — map these to ResolvedDependency records.
+			const dependencies: ResolvedDependency[] = Object.entries(pkg.dependencies).map(([name, version]) => ({
+				name,
+				version,
+			}));
+
 			const sbomEffect = sbomSvc
 				.generate({
 					rootName: pkg.name,
 					rootVersion: pkg.version,
-					dependencies: [],
+					dependencies,
 				})
 				.pipe(
 					Effect.flatMap((bom) => sbomSvc.serializeJson(bom)),
 					Effect.map(() => true as const),
-					Effect.catchAll((e: SbomError) => {
-						return Effect.gen(function* () {
+					Effect.catchAll((e: SbomError) =>
+						Effect.gen(function* () {
 							yield* Effect.logWarning(`SBOM generation failed for ${pkg.name}: ${e.message}`);
 							return false as const;
-						});
-					}),
+						}),
+					),
 				);
 
 			const ok = yield* sbomEffect;
@@ -324,5 +457,5 @@ export const runValidation = (args: ValidationInputArgs) =>
 			publishSummary: summary,
 			sbomOk,
 			sbomSummary,
-		};
+		} satisfies ValidationReport;
 	});

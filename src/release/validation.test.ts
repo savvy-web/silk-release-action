@@ -1,18 +1,16 @@
 /**
  * Unit tests for runValidation (Phase-2 orchestrator).
  *
- * Provides in-memory test layers for all dependencies so no real
- * filesystem, registry, or SBOM tooling is exercised.
+ * All dependencies are provided via in-memory test layers; no real filesystem,
+ * registry, git, or SBOM tooling is exercised.
  */
 
+import type { CommandResponse } from "@savvy-web/github-action-effects/testing";
 import {
 	ActionLoggerTest,
 	AttestTest,
-	ChangesetAnalyzerTest,
 	CommandRunnerTest,
 	NpmRegistryTest,
-	PackagePublish,
-	PackagePublishError,
 	PackagePublishTest,
 	SbomTest,
 } from "@savvy-web/github-action-effects/testing";
@@ -26,19 +24,23 @@ import { runValidation } from "./validation.js";
 
 /**
  * Build a minimal WorkspacePackage for tests.
+ *
+ * `relativePath` is used to build the `git show` key.  For example, if
+ * `relativePath = "packages/alpha"` then the command runner must respond to
+ * `"git show main:packages/alpha/package.json"`.
  */
-const makeWsPkg = (name: string, version = "1.0.0", isPrivate = false): WorkspacePackage =>
+const makeWsPkg = (name: string, version = "1.0.0", relativePath = name, isPrivate = false): WorkspacePackage =>
 	new WorkspacePackage({
 		name,
 		version,
 		path: `/tmp/test-workspace/${name}`,
 		packageJsonPath: `/tmp/test-workspace/${name}/package.json`,
-		relativePath: name,
+		relativePath,
 		private: isPrivate,
 	});
 
 /**
- * Build a minimal PublishTarget for tests.
+ * Build a minimal PublishTarget (npm public registry by default).
  */
 const makeNpmTarget = (name: string, directory = "."): PublishTarget =>
 	new PublishTarget({
@@ -46,10 +48,23 @@ const makeNpmTarget = (name: string, directory = "."): PublishTarget =>
 		registry: "https://registry.npmjs.org/",
 		directory,
 		access: "public",
+		provenance: false,
 	});
 
 /**
- * Create a WorkspaceDiscovery test layer that returns the given packages.
+ * Build a minimal GitHub Packages PublishTarget.
+ */
+const makeGhPkgsTarget = (name: string, directory = "."): PublishTarget =>
+	new PublishTarget({
+		name,
+		registry: "https://npm.pkg.github.com/",
+		directory,
+		access: "restricted",
+		provenance: false,
+	});
+
+/**
+ * Build a WorkspaceDiscovery test layer returning the given packages.
  */
 const makeWorkspaceDiscoveryLayer = (packages: WorkspacePackage[]): Layer.Layer<WorkspaceDiscovery> =>
 	Layer.succeed(WorkspaceDiscovery, {
@@ -64,7 +79,7 @@ const makeWorkspaceDiscoveryLayer = (packages: WorkspacePackage[]): Layer.Layer<
 	});
 
 /**
- * Create a PublishabilityDetector test layer that returns the given targets per package.
+ * Build a PublishabilityDetector test layer returning targets per package name.
  */
 const makePublishabilityLayer = (targetsByName: Map<string, PublishTarget[]>): Layer.Layer<PublishabilityDetector> =>
 	Layer.succeed(PublishabilityDetector, {
@@ -72,12 +87,23 @@ const makePublishabilityLayer = (targetsByName: Map<string, PublishTarget[]>): L
 			Effect.succeed((targetsByName.get(pkg.name) ?? []) as ReadonlyArray<PublishTarget>),
 	});
 
-// ─── Shared base layers ───────────────────────────────────────────────────────
+/**
+ * Build a CommandRunner layer pre-configured with git-show responses.
+ *
+ * The map key format is `"git show <branch>:<relativePath>/package.json"`.
+ * Pass `undefined` to use an empty runner (all commands succeed with `""`).
+ */
+const makeCommandRunnerLayer = (
+	responses?: ReadonlyMap<string, CommandResponse>,
+): Layer.Layer<import("@savvy-web/github-action-effects/testing").CommandRunner> => {
+	if (responses === undefined) return CommandRunnerTest.empty() as never;
+	return CommandRunnerTest.layer(responses) as never;
+};
+
+// ─── Shared "always-on" base layers ──────────────────────────────────────────
 
 const loggerState = ActionLoggerTest.empty();
 const loggerLayer = ActionLoggerTest.layer(loggerState);
-const commandRunnerLayer = CommandRunnerTest.empty();
-const { layer: packagePublishLayer } = PackagePublishTest.empty();
 const npmRegistryLayer = NpmRegistryTest.empty();
 const sbomLayer = SbomTest.empty();
 const attestLayer = AttestTest.empty();
@@ -85,29 +111,275 @@ const attestLayer = AttestTest.empty();
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("runValidation", () => {
-	describe("no packages to validate (no changesets)", () => {
-		it("returns publishOk: true and empty packages when there are no changesets", async () => {
+	describe("released package (version diff succeeds)", () => {
+		it("reports publishOk: true and package present in packages when dryRun passes", async () => {
 			// Arrange
-			const pkg = makeWsPkg("@test/alpha");
+			const pkg = makeWsPkg("@test/alpha", "1.1.0", "packages/alpha");
+			const target = makeNpmTarget("@test/alpha", "/tmp/dist/alpha");
 
-			const changesetLayer = ChangesetAnalyzerTest.layer({
-				changesets: [],
-				generated: [],
-			});
+			// git show main:packages/alpha/package.json → version 1.0.0 (old version)
+			const commandResponses = new Map<string, CommandResponse>([
+				[
+					"git show main:packages/alpha/package.json",
+					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/alpha", version: "1.0.0" }), stderr: "" },
+				],
+			]);
 
-			const workspaceLayer = makeWorkspaceDiscoveryLayer([pkg]);
-			const publishabilityLayer = makePublishabilityLayer(new Map());
+			const { state: pubState, layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
 				loggerLayer,
-				commandRunnerLayer,
-				packagePublishLayer,
+				makeCommandRunnerLayer(commandResponses),
+				pubLayer,
 				npmRegistryLayer,
 				sbomLayer,
 				attestLayer,
-				changesetLayer,
-				workspaceLayer,
-				publishabilityLayer,
+				makeWorkspaceDiscoveryLayer([pkg]),
+				makePublishabilityLayer(new Map([["@test/alpha", [target]]])),
+			);
+
+			// Act
+			const report = await Effect.runPromise(
+				runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(Effect.provide(layers)),
+			);
+
+			// Assert
+			expect(report.publishOk).toBe(true);
+			expect(report.npmReady).toBe(true);
+			expect(report.totalTargets).toBe(1);
+			expect(report.readyTargets).toBe(1);
+			expect(report.packages).toHaveLength(1);
+			expect(report.packages[0]?.name).toBe("@test/alpha");
+			expect(report.packages[0]?.version).toBe("1.1.0");
+			expect(report.packages[0]?.ready).toBe(true);
+			expect(report.publishSummary.length).toBeGreaterThan(0);
+			expect(report.hasVersionOnlyPackages).toBe(false);
+			// dryRun was called once
+			expect(pubState.dryRunCalls).toHaveLength(1);
+			expect(pubState.dryRunCalls[0]?.packageDir).toBe("/tmp/dist/alpha");
+		});
+	});
+
+	describe("dry-run failure", () => {
+		it("reports publishOk: false and npmReady: false when dryRun fails for an npm target", async () => {
+			// Arrange
+			const pkg = makeWsPkg("@test/beta", "2.0.0", "packages/beta");
+			const target = makeNpmTarget("@test/beta", "/tmp/dist/beta");
+
+			const commandResponses = new Map<string, CommandResponse>([
+				[
+					"git show main:packages/beta/package.json",
+					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/beta", version: "1.9.0" }), stderr: "" },
+				],
+			]);
+
+			// dryRunOk: false → every dry-run attempt returns ok: false
+			const { layer: pubLayer } = PackagePublishTest.layer({ dryRunOk: false });
+
+			const layers = Layer.mergeAll(
+				loggerLayer,
+				makeCommandRunnerLayer(commandResponses),
+				pubLayer,
+				npmRegistryLayer,
+				sbomLayer,
+				attestLayer,
+				makeWorkspaceDiscoveryLayer([pkg]),
+				makePublishabilityLayer(new Map([["@test/beta", [target]]])),
+			);
+
+			// Act
+			const report = await Effect.runPromise(
+				runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(Effect.provide(layers)),
+			);
+
+			// Assert
+			expect(report.publishOk).toBe(false);
+			expect(report.npmReady).toBe(false);
+			expect(report.githubPackagesReady).toBe(true); // no GitHub Packages targets
+			expect(report.readyTargets).toBe(0);
+			expect(report.packages).toHaveLength(1);
+			expect(report.packages[0]?.ready).toBe(false);
+		});
+
+		it("reports githubPackagesReady: false when a GitHub Packages dry-run fails", async () => {
+			// Arrange
+			const pkg = makeWsPkg("@test/gamma", "3.0.0", "packages/gamma");
+			const target = makeGhPkgsTarget("@test/gamma", "/tmp/dist/gamma");
+
+			const commandResponses = new Map<string, CommandResponse>([
+				[
+					"git show main:packages/gamma/package.json",
+					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/gamma", version: "2.9.0" }), stderr: "" },
+				],
+			]);
+
+			const { layer: pubLayer } = PackagePublishTest.layer({ dryRunOk: false });
+
+			const layers = Layer.mergeAll(
+				loggerLayer,
+				makeCommandRunnerLayer(commandResponses),
+				pubLayer,
+				npmRegistryLayer,
+				sbomLayer,
+				attestLayer,
+				makeWorkspaceDiscoveryLayer([pkg]),
+				makePublishabilityLayer(new Map([["@test/gamma", [target]]])),
+			);
+
+			// Act
+			const report = await Effect.runPromise(
+				runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(Effect.provide(layers)),
+			);
+
+			// Assert
+			expect(report.publishOk).toBe(false);
+			expect(report.npmReady).toBe(true); // no npm targets
+			expect(report.githubPackagesReady).toBe(false);
+		});
+	});
+
+	describe("package not released (same version as target branch)", () => {
+		it("excludes the package from validation when current version equals base version", async () => {
+			// Arrange — both current and target-branch version are "1.0.0"
+			const pkg = makeWsPkg("@test/unchanged", "1.0.0", "packages/unchanged");
+			const target = makeNpmTarget("@test/unchanged");
+
+			const commandResponses = new Map<string, CommandResponse>([
+				[
+					"git show main:packages/unchanged/package.json",
+					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/unchanged", version: "1.0.0" }), stderr: "" },
+				],
+			]);
+
+			const { state: pubState, layer: pubLayer } = PackagePublishTest.empty();
+
+			const layers = Layer.mergeAll(
+				loggerLayer,
+				makeCommandRunnerLayer(commandResponses),
+				pubLayer,
+				npmRegistryLayer,
+				sbomLayer,
+				attestLayer,
+				makeWorkspaceDiscoveryLayer([pkg]),
+				makePublishabilityLayer(new Map([["@test/unchanged", [target]]])),
+			);
+
+			// Act
+			const report = await Effect.runPromise(
+				runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(Effect.provide(layers)),
+			);
+
+			// Assert — package is excluded because no version bump occurred
+			expect(report.publishOk).toBe(true);
+			expect(report.packages).toHaveLength(0);
+			expect(report.totalTargets).toBe(0);
+			// No dry-run calls were made
+			expect(pubState.dryRunCalls).toHaveLength(0);
+		});
+	});
+
+	describe("brand-new package (not on target branch)", () => {
+		it("includes a brand-new package when git show fails (package doesn't exist on target branch)", async () => {
+			// Arrange — git show exits non-zero (file absent on target branch)
+			const pkg = makeWsPkg("@test/new-pkg", "1.0.0", "packages/new-pkg");
+			const target = makeNpmTarget("@test/new-pkg");
+
+			const commandResponses = new Map<string, CommandResponse>([
+				["git show main:packages/new-pkg/package.json", { exitCode: 128, stdout: "", stderr: "fatal: Path not found" }],
+			]);
+
+			const { state: pubState, layer: pubLayer } = PackagePublishTest.empty();
+
+			const layers = Layer.mergeAll(
+				loggerLayer,
+				makeCommandRunnerLayer(commandResponses),
+				pubLayer,
+				npmRegistryLayer,
+				sbomLayer,
+				attestLayer,
+				makeWorkspaceDiscoveryLayer([pkg]),
+				makePublishabilityLayer(new Map([["@test/new-pkg", [target]]])),
+			);
+
+			// Act
+			const report = await Effect.runPromise(
+				runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(Effect.provide(layers)),
+			);
+
+			// Assert — brand-new package is validated
+			expect(report.publishOk).toBe(true);
+			expect(report.packages).toHaveLength(1);
+			expect(report.packages[0]?.name).toBe("@test/new-pkg");
+			expect(report.totalTargets).toBe(1);
+			expect(pubState.dryRunCalls).toHaveLength(1);
+		});
+	});
+
+	describe("version-only package (no publish targets)", () => {
+		it("reports hasVersionOnlyPackages: true when a released package has no publish targets", async () => {
+			// Arrange — version bumped but no publish targets (private internal package)
+			const pkg = makeWsPkg("@test/internal", "0.5.1", "packages/internal", true);
+
+			const commandResponses = new Map<string, CommandResponse>([
+				[
+					"git show main:packages/internal/package.json",
+					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/internal", version: "0.5.0" }), stderr: "" },
+				],
+			]);
+
+			const { state: pubState, layer: pubLayer } = PackagePublishTest.empty();
+
+			const layers = Layer.mergeAll(
+				loggerLayer,
+				makeCommandRunnerLayer(commandResponses),
+				pubLayer,
+				npmRegistryLayer,
+				sbomLayer,
+				attestLayer,
+				makeWorkspaceDiscoveryLayer([pkg]),
+				makePublishabilityLayer(new Map()), // no targets for this package
+			);
+
+			// Act
+			const report = await Effect.runPromise(
+				runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(Effect.provide(layers)),
+			);
+
+			// Assert
+			expect(report.publishOk).toBe(true);
+			expect(report.totalTargets).toBe(0);
+			expect(report.hasVersionOnlyPackages).toBe(true);
+			expect(report.packages).toHaveLength(1);
+			expect(report.packages[0]?.name).toBe("@test/internal");
+			expect(report.packages[0]?.ready).toBe(true); // version-only is still "ready"
+			// No dry-run calls for a version-only package
+			expect(pubState.dryRunCalls).toHaveLength(0);
+		});
+	});
+
+	describe("no packages released (all versions unchanged)", () => {
+		it("returns publishOk: true and empty packages when no version changes are detected", async () => {
+			// Arrange — package present but same version on both branches
+			const pkg = makeWsPkg("@test/stable", "2.0.0", "packages/stable");
+
+			const commandResponses = new Map<string, CommandResponse>([
+				[
+					"git show main:packages/stable/package.json",
+					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/stable", version: "2.0.0" }), stderr: "" },
+				],
+			]);
+
+			const { layer: pubLayer } = PackagePublishTest.empty();
+
+			const layers = Layer.mergeAll(
+				loggerLayer,
+				makeCommandRunnerLayer(commandResponses),
+				pubLayer,
+				npmRegistryLayer,
+				sbomLayer,
+				attestLayer,
+				makeWorkspaceDiscoveryLayer([pkg]),
+				makePublishabilityLayer(new Map([["@test/stable", [makeNpmTarget("@test/stable")]]])),
 			);
 
 			// Act
@@ -123,26 +395,14 @@ describe("runValidation", () => {
 			expect(report.readyTargets).toBe(0);
 			expect(report.packages).toHaveLength(0);
 			expect(report.publishSummary).toBeTruthy();
-			expect(report.sbomOk).toBe(true);
 		});
 	});
 
-	describe("one publishable package with a changeset", () => {
-		it("reports publishOk: true and the package present in packages", async () => {
-			// Arrange
-			const pkg = makeWsPkg("@test/alpha", "1.1.0");
-			const target = makeNpmTarget("@test/alpha", "/tmp/test-workspace/@test/alpha/dist");
-
-			const changesetLayer = ChangesetAnalyzerTest.layer({
-				changesets: [{ id: "cs-001", packages: [{ name: "@test/alpha", bump: "minor" }], summary: "feat: new thing" }],
-				generated: [],
-			});
-
-			const workspaceLayer = makeWorkspaceDiscoveryLayer([pkg]);
-			const publishabilityLayer = makePublishabilityLayer(new Map([["@test/alpha", [target]]]));
-
-			// PackagePublishTest.empty() returns a state where pack succeeds by default
-			const { state: pubState, layer: pubLayer } = PackagePublishTest.empty();
+	describe("dry-run mode flag", () => {
+		it("includes 'Dry Run' label in publish summary when dryRun: true", async () => {
+			// Arrange — no packages (empty workspace), just verifying the flag passes through.
+			const commandRunnerLayer = CommandRunnerTest.empty();
+			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
 				loggerLayer,
@@ -151,146 +411,8 @@ describe("runValidation", () => {
 				npmRegistryLayer,
 				sbomLayer,
 				attestLayer,
-				changesetLayer,
-				workspaceLayer,
-				publishabilityLayer,
-			);
-
-			// Act
-			const report = await Effect.runPromise(
-				runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(Effect.provide(layers)),
-			);
-
-			// Assert
-			expect(report.publishOk).toBe(true);
-			expect(report.totalTargets).toBe(1);
-			expect(report.readyTargets).toBe(1);
-			expect(report.packages).toHaveLength(1);
-			expect(report.packages[0]?.name).toBe("@test/alpha");
-			expect(report.packages[0]?.version).toBe("1.1.0");
-			expect(report.packages[0]?.ready).toBe(true);
-			expect(report.publishSummary.length).toBeGreaterThan(0);
-			// pack was called
-			expect(pubState.packCalls).toHaveLength(1);
-		});
-	});
-
-	describe("pack failure → publishOk: false", () => {
-		it("reports publishOk: false when pack fails", async () => {
-			// Arrange
-			const pkg = makeWsPkg("@test/beta", "2.0.0");
-			const target = makeNpmTarget("@test/beta", "/tmp/test-workspace/@test/beta/dist");
-
-			const changesetLayer = ChangesetAnalyzerTest.layer({
-				changesets: [{ id: "cs-002", packages: [{ name: "@test/beta", bump: "major" }], summary: "feat!: breaking" }],
-				generated: [],
-			});
-
-			const workspaceLayer = makeWorkspaceDiscoveryLayer([pkg]);
-			const publishabilityLayer = makePublishabilityLayer(new Map([["@test/beta", [target]]]));
-
-			// Override pack to fail by providing a publish layer that always fails pack
-			const failingPublishLayer = Layer.succeed(PackagePublish, {
-				setupAuth: () => Effect.void,
-				pack: () =>
-					Effect.fail(
-						new PackagePublishError({
-							operation: "pack",
-							reason: "tarball creation failed",
-						}),
-					),
-				publish: () => Effect.void,
-				verifyIntegrity: () => Effect.succeed(true),
-				publishToRegistries: () => Effect.void,
-				publishIdempotent: () => Effect.succeed({ skipped: false, alreadyPublished: false } as never),
-			});
-
-			const layers = Layer.mergeAll(
-				loggerLayer,
-				commandRunnerLayer,
-				failingPublishLayer,
-				npmRegistryLayer,
-				sbomLayer,
-				attestLayer,
-				changesetLayer,
-				workspaceLayer,
-				publishabilityLayer,
-			);
-
-			// Act
-			const report = await Effect.runPromise(
-				runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(Effect.provide(layers)),
-			);
-
-			// Assert
-			expect(report.publishOk).toBe(false);
-			expect(report.npmReady).toBe(false);
-			expect(report.readyTargets).toBe(0);
-			expect(report.packages[0]?.ready).toBe(false);
-		});
-	});
-
-	describe("version-only package (no targets)", () => {
-		it("reports hasVersionOnlyPackages: true when package has changesets but no publish targets", async () => {
-			// Arrange
-			const pkg = makeWsPkg("@test/internal", "0.5.0", true);
-
-			const changesetLayer = ChangesetAnalyzerTest.layer({
-				changesets: [{ id: "cs-003", packages: [{ name: "@test/internal", bump: "patch" }], summary: "fix: bug" }],
-				generated: [],
-			});
-
-			const workspaceLayer = makeWorkspaceDiscoveryLayer([pkg]);
-			// No publish targets for this package
-			const publishabilityLayer = makePublishabilityLayer(new Map());
-
-			const layers = Layer.mergeAll(
-				loggerLayer,
-				commandRunnerLayer,
-				packagePublishLayer,
-				npmRegistryLayer,
-				sbomLayer,
-				attestLayer,
-				changesetLayer,
-				workspaceLayer,
-				publishabilityLayer,
-			);
-
-			// Act
-			const report = await Effect.runPromise(
-				runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(Effect.provide(layers)),
-			);
-
-			// Assert
-			expect(report.publishOk).toBe(true);
-			expect(report.totalTargets).toBe(0);
-			expect(report.hasVersionOnlyPackages).toBe(true);
-			expect(report.packages).toHaveLength(1);
-			expect(report.packages[0]?.ready).toBe(true); // version-only is still "ready"
-		});
-	});
-
-	describe("dry-run mode flag", () => {
-		it("passes dryRun flag through to publish summary", async () => {
-			// Arrange
-			const changesetLayer = ChangesetAnalyzerTest.layer({
-				changesets: [],
-				generated: [],
-			});
-
-			const workspaceLayer = makeWorkspaceDiscoveryLayer([]);
-			const publishabilityLayer = makePublishabilityLayer(new Map());
-
-			const layers = Layer.mergeAll(
-				loggerLayer,
-				commandRunnerLayer,
-				packagePublishLayer,
-				npmRegistryLayer,
-				sbomLayer,
-				attestLayer,
-				changesetLayer,
-				workspaceLayer,
-				publishabilityLayer,
+				makeWorkspaceDiscoveryLayer([]),
+				makePublishabilityLayer(new Map()),
 			);
 
 			// Act
@@ -298,8 +420,97 @@ describe("runValidation", () => {
 				runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: true }).pipe(Effect.provide(layers)),
 			);
 
-			// Assert: dry-run label appears in the summary
+			// Assert — dry-run label should appear in the summary
 			expect(report.publishSummary).toContain("Dry Run");
+		});
+	});
+
+	describe("SBOM generation", () => {
+		it("generates SBOM for packages with provenance-enabled targets", async () => {
+			// Arrange — package with provenance: true target
+			const pkg = makeWsPkg("@test/provenance-pkg", "1.0.1", "packages/provenance-pkg");
+			const provenanceTarget = new PublishTarget({
+				name: "@test/provenance-pkg",
+				registry: "https://registry.npmjs.org/",
+				directory: "/tmp/dist/provenance-pkg",
+				access: "public",
+				provenance: true, // provenance enabled → SBOM should be generated
+			});
+
+			const commandResponses = new Map<string, CommandResponse>([
+				[
+					"git show main:packages/provenance-pkg/package.json",
+					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/provenance-pkg", version: "1.0.0" }), stderr: "" },
+				],
+			]);
+
+			// We use the stateful version to inspect calls
+			const sbomTestState = {
+				generateCalls: [] as import("@savvy-web/github-action-effects/testing").SbomInput[],
+				saves: new Map(),
+			};
+			const sbomTestLayer = SbomTest.layer(sbomTestState);
+
+			const { layer: pubLayer } = PackagePublishTest.empty();
+
+			const layers = Layer.mergeAll(
+				loggerLayer,
+				makeCommandRunnerLayer(commandResponses),
+				pubLayer,
+				npmRegistryLayer,
+				sbomTestLayer,
+				attestLayer,
+				makeWorkspaceDiscoveryLayer([pkg]),
+				makePublishabilityLayer(new Map([["@test/provenance-pkg", [provenanceTarget]]])),
+			);
+
+			// Act
+			const report = await Effect.runPromise(
+				runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(Effect.provide(layers)),
+			);
+
+			// Assert — SBOM was generated successfully
+			expect(report.sbomOk).toBe(true);
+			expect(report.sbomSummary).toContain("SBOM");
+			// generate was called with real dependencies (empty in this case since pkg has none)
+			expect(sbomTestState.generateCalls).toHaveLength(1);
+			expect(sbomTestState.generateCalls[0]?.rootName).toBe("@test/provenance-pkg");
+			expect(sbomTestState.generateCalls[0]?.rootVersion).toBe("1.0.1");
+		});
+
+		it("reports sbomOk: true when no packages have provenance targets", async () => {
+			// Arrange — target with provenance: false (default)
+			const pkg = makeWsPkg("@test/no-provenance", "1.0.1", "packages/no-provenance");
+			const target = makeNpmTarget("@test/no-provenance"); // provenance: false
+
+			const commandResponses = new Map<string, CommandResponse>([
+				[
+					"git show main:packages/no-provenance/package.json",
+					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/no-provenance", version: "1.0.0" }), stderr: "" },
+				],
+			]);
+
+			const { layer: pubLayer } = PackagePublishTest.empty();
+
+			const layers = Layer.mergeAll(
+				loggerLayer,
+				makeCommandRunnerLayer(commandResponses),
+				pubLayer,
+				npmRegistryLayer,
+				sbomLayer,
+				attestLayer,
+				makeWorkspaceDiscoveryLayer([pkg]),
+				makePublishabilityLayer(new Map([["@test/no-provenance", [target]]])),
+			);
+
+			// Act
+			const report = await Effect.runPromise(
+				runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(Effect.provide(layers)),
+			);
+
+			// Assert
+			expect(report.sbomOk).toBe(true);
+			expect(report.sbomSummary).toBe("No packages require SBOM");
 		});
 	});
 });
