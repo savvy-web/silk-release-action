@@ -17,14 +17,9 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import type {
-	ActionLogger,
-	AttestError,
-	GitHubReleaseError,
-	GitTagError,
-	SigstoreSigner,
-} from "@savvy-web/github-action-effects";
+import type { AttestError, GitHubReleaseError, GitTagError, SigstoreSigner } from "@savvy-web/github-action-effects";
 import {
+	ActionLogger,
 	Attest,
 	GitHubClient,
 	GitHubRelease,
@@ -386,7 +381,7 @@ const processOneTag = (
 	GitTag | GitHubRelease | Attest | OidcTokenIssuer | GitHubClient | SigstoreSigner | WorkspaceDiscovery
 > =>
 	Effect.gen(function* () {
-		yield* Effect.logInfo(`runReleases: processing ${tag.name}`);
+		yield* Effect.logDebug(`runReleases: processing ${tag.name}`);
 
 		if (associatedPackages.length === 0) {
 			yield* Effect.logWarning(`runReleases: no packages found for tag ${tag.name}`);
@@ -395,7 +390,7 @@ const processOneTag = (
 
 		// ── Dry-run shortcut ─────────────────────────────────────────────────────
 		if (dryRun) {
-			yield* Effect.logInfo(`runReleases: [DRY RUN] would create tag and release for ${tag.name}`);
+			yield* Effect.logInfo(`✅ [DRY RUN] would create tag and release for ${tag.name}`);
 			return [
 				{
 					tag: tag.name,
@@ -442,7 +437,7 @@ const processOneTag = (
 				),
 			);
 
-		yield* Effect.logInfo(`runReleases: release created — ${releaseData.id}`);
+		yield* Effect.logDebug(`runReleases: release object ready — ${releaseData.id}`);
 
 		// ── Step 4: Upload assets and attest ──────────────────────────────────────
 
@@ -535,12 +530,12 @@ const processOneTag = (
 				let assetSize: number;
 
 				if (existing) {
-					yield* Effect.logInfo(`runReleases: asset ${fileName} already attached — reusing`);
+					yield* Effect.logDebug(`runReleases: asset ${fileName} already attached — reusing`);
 					assetUrl = existing.url;
 					assetSize = existing.size;
 				} else {
 					const fileContent = readFileSync(artifactPath);
-					yield* Effect.logInfo(`runReleases: uploading asset ${fileName}`);
+					yield* Effect.logDebug(`runReleases: uploading asset ${fileName}`);
 
 					const asset = yield* releaseSvc
 						.uploadAsset(releaseData.id, fileName, fileContent, "application/octet-stream")
@@ -555,7 +550,7 @@ const processOneTag = (
 
 					if (asset === null) continue;
 
-					yield* Effect.logInfo(`runReleases: uploaded ${fileName} → ${asset.url}`);
+					yield* Effect.logDebug(`runReleases: uploaded ${fileName} → ${asset.url}`);
 					assetUrl = asset.url;
 					assetSize = asset.size;
 					existingAssetsByName.set(fileName, { url: asset.url, size: asset.size });
@@ -577,7 +572,7 @@ const processOneTag = (
 				if (isGitHubPackagesRegistry(targetResult.target.registry ?? undefined)) {
 					const storageIds = yield* createStorageRecord(pkg.name, pkg.version, digest);
 					if (storageIds && storageIds.length > 0) {
-						yield* Effect.logInfo(
+						yield* Effect.logDebug(
 							`runReleases: storage record created for ${pkg.name}@${pkg.version} (IDs: ${storageIds.join(",")})`,
 						);
 					}
@@ -589,11 +584,11 @@ const processOneTag = (
 					const sbomExisting = existingAssetsByName.get(sbomFileName);
 
 					if (sbomExisting) {
-						yield* Effect.logInfo(`runReleases: SBOM ${sbomFileName} already attached — reusing`);
+						yield* Effect.logDebug(`runReleases: SBOM ${sbomFileName} already attached — reusing`);
 						sbomAssetUrls.set(targetResult.target.directory, sbomExisting.url);
 					} else {
 						const sbomContent = readFileSync(targetResult.sbomPath);
-						yield* Effect.logInfo(`runReleases: uploading SBOM ${sbomFileName}`);
+						yield* Effect.logDebug(`runReleases: uploading SBOM ${sbomFileName}`);
 
 						const sbomAsset = yield* releaseSvc
 							.uploadAsset(releaseData.id, sbomFileName, sbomContent, "application/json")
@@ -607,7 +602,7 @@ const processOneTag = (
 							);
 
 						if (sbomAsset !== null) {
-							yield* Effect.logInfo(`runReleases: uploaded SBOM ${sbomFileName} → ${sbomAsset.url}`);
+							yield* Effect.logDebug(`runReleases: uploaded SBOM ${sbomFileName} → ${sbomAsset.url}`);
 							sbomAssetUrls.set(targetResult.target.directory, sbomAsset.url);
 							existingAssetsByName.set(sbomFileName, { url: sbomAsset.url, size: sbomAsset.size });
 							(releaseInfo.assets as AssetInfo[]).push({
@@ -628,11 +623,11 @@ const processOneTag = (
 					const apiExisting = existingAssetsByName.get(apiDocFileName);
 
 					if (apiExisting) {
-						yield* Effect.logInfo(`runReleases: API doc ${apiDocFileName} already attached — reusing`);
+						yield* Effect.logDebug(`runReleases: API doc ${apiDocFileName} already attached — reusing`);
 						apiDocAssetUrls.set(targetResult.target.directory, apiExisting.url);
 					} else {
 						const apiDocContent = readFileSync(apiDocPath);
-						yield* Effect.logInfo(`runReleases: uploading API doc ${apiDocFileName}`);
+						yield* Effect.logDebug(`runReleases: uploading API doc ${apiDocFileName}`);
 
 						const apiDocAsset = yield* releaseSvc
 							.uploadAsset(releaseData.id, apiDocFileName, apiDocContent, "application/json")
@@ -646,7 +641,7 @@ const processOneTag = (
 							);
 
 						if (apiDocAsset !== null) {
-							yield* Effect.logInfo(`runReleases: uploaded API doc ${apiDocFileName} → ${apiDocAsset.url}`);
+							yield* Effect.logDebug(`runReleases: uploaded API doc ${apiDocFileName} → ${apiDocAsset.url}`);
 							apiDocAssetUrls.set(targetResult.target.directory, apiDocAsset.url);
 							existingAssetsByName.set(apiDocFileName, { url: apiDocAsset.url, size: apiDocAsset.size });
 							(releaseInfo.assets as AssetInfo[]).push({
@@ -707,9 +702,10 @@ const processOneTag = (
 						),
 					),
 				);
-			yield* Effect.logInfo(`runReleases: updated release body with asset links for ${tag.name}`);
+			yield* Effect.logDebug(`runReleases: updated release body with asset links for ${tag.name}`);
 		}
 
+		yield* Effect.logInfo(`✅ release created — ${releaseData.id}`);
 		return [releaseInfo, null] as const;
 	}).pipe(
 		Effect.catchAll((e: unknown) => {
@@ -750,7 +746,7 @@ export const runReleases = (
 > =>
 	Effect.gen(function* () {
 		if (args.tags.length === 0) {
-			yield* Effect.logInfo("runReleases: no tags to process");
+			yield* Effect.logDebug("runReleases: no tags to process");
 			return {
 				success: true,
 				releases: [],
@@ -760,6 +756,7 @@ export const runReleases = (
 
 		// Resolve owner/repo from GitHub client
 		const client = yield* GitHubClient;
+		const logger = yield* ActionLogger;
 		const { owner, repo } = yield* client.repo;
 
 		// Resolve HEAD SHA — used for git tag creation.
@@ -767,7 +764,7 @@ export const runReleases = (
 		// so the Test layer can exercise the code path in tests.
 		const headSha = process.env.GITHUB_SHA ?? "";
 
-		yield* Effect.logInfo(`runReleases: processing ${args.tags.length} tag(s)`);
+		yield* Effect.logDebug(`runReleases: processing ${args.tags.length} tag(s)`);
 
 		const releases: ReleaseInfo[] = [];
 		const errors: string[] = [];
@@ -781,7 +778,10 @@ export const runReleases = (
 				return pkg.name === tag.packageName;
 			});
 
-			const [releaseInfo, error] = yield* processOneTag(tag, associatedPackages, owner, repo, headSha, args.dryRun);
+			const [releaseInfo, error] = yield* logger.group(
+				`Release · ${tag.packageName}@${tag.version}`,
+				processOneTag(tag, associatedPackages, owner, repo, headSha, args.dryRun),
+			);
 
 			if (error !== null) {
 				errors.push(error);
