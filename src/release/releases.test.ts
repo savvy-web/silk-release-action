@@ -12,6 +12,9 @@
  * upload state machines executed the correct calls.
  */
 
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	ActionLoggerTest,
 	AttestTest,
@@ -22,7 +25,7 @@ import {
 	SigstoreSignerTest,
 } from "@savvy-web/github-action-effects/testing";
 import { Effect, Layer } from "effect";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ReleasesInputArgs, ReleasesReport } from "./releases.js";
 import { runReleases } from "./releases.js";
 import type { PackagePublishResult, TagInfo } from "./types.js";
@@ -30,7 +33,12 @@ import type { PackagePublishResult, TagInfo } from "./types.js";
 // ─── Test helpers ─────────────────────────────────────────────────────────────
 
 /** Minimal PackagePublishResult for a successfully-published package. */
-const makePublishResult = (name: string, version: string, tarballPath?: string): PackagePublishResult => ({
+const makePublishResult = (
+	name: string,
+	version: string,
+	tarballPath?: string,
+	sbomPath?: string,
+): PackagePublishResult => ({
 	name,
 	version,
 	targets: [
@@ -47,6 +55,7 @@ const makePublishResult = (name: string, version: string, tarballPath?: string):
 			success: true,
 			tarballPath: tarballPath ?? `/tmp/dist/${name}/pkg.tgz`,
 			tarballDigest: "sha256:abc123",
+			sbomPath,
 		},
 	],
 });
@@ -80,6 +89,10 @@ const makeGhClientLayer = () => {
 		restResponses: new Map([
 			// Storage-record endpoint
 			["orgs.createArtifactStorageRecord", { data: { storage_records: [{ id: 42 }] } }],
+			// Idempotency: no pre-existing assets
+			["repos.listReleaseAssets", { data: [] }],
+			// Post-upload body refresh
+			["repos.updateRelease", { data: {} }],
 		]),
 		graphqlResponses: new Map<string, unknown>(),
 		paginateResponses: new Map<string, Array<unknown[]>>(),
@@ -297,6 +310,93 @@ describe("runReleases", () => {
 			expect(result.releases).toHaveLength(1);
 			expect(result.releases[0]?.tag).toBe("v3.0.0");
 			expect(result.errors).toHaveLength(0);
+		});
+	});
+
+	describe("SBOM and API-doc asset upload", () => {
+		let tmpDir: string;
+
+		beforeEach(() => {
+			tmpDir = mkdtempSync(join(tmpdir(), "releases-test-"));
+		});
+
+		afterEach(() => {
+			rmSync(tmpDir, { recursive: true, force: true });
+		});
+
+		it("uploads SBOM and API-doc assets and includes them in AssetInfo[]", async () => {
+			// Arrange: write real files so existsSync / readFileSync succeed.
+			const tarballPath = join(tmpDir, "pkg.tgz");
+			const sbomPath = join(tmpDir, "pkg.sbom.json");
+			// API Extractor names the file after the unscoped package name.
+			// pkg-d is the unscoped name of @test/pkg-d.
+			const apiDocPath = join(tmpDir, "pkg-d.api.json");
+
+			writeFileSync(tarballPath, Buffer.from("fake tarball"));
+			writeFileSync(sbomPath, JSON.stringify({ bomFormat: "CycloneDX" }));
+			writeFileSync(apiDocPath, JSON.stringify({ metadata: { toolPackage: "@microsoft/api-extractor" } }));
+
+			const { state: tagState, layer: tagLayer } = GitTagTest.empty();
+			const { state: releaseState, layer: releaseLayer } = GitHubReleaseTest.empty();
+			const attestLayer = AttestTest.empty();
+
+			const publishResult = makePublishPackagesResult([
+				makePublishResult("@test/pkg-d", "4.0.0", tarballPath, sbomPath),
+			]);
+
+			// Override the directory so findApiDocFile resolves the .api.json file.
+			const firstTarget = publishResult.packages[0]?.targets[0];
+			if (firstTarget) {
+				firstTarget.target.directory = tmpDir;
+			}
+
+			const tags: TagInfo[] = [makeTag("v4.0.0", "@test/pkg-d", "4.0.0")];
+
+			const args: ReleasesInputArgs = {
+				tags,
+				publishResult,
+				packageManager: "pnpm",
+				dryRun: false,
+			};
+
+			const layers = Layer.mergeAll(
+				loggerLayer,
+				tagLayer,
+				releaseLayer,
+				attestLayer,
+				oidcLayer,
+				sigstoreLayer,
+				makeGhClientLayer(),
+			);
+
+			// Act
+			const result: ReleasesReport = await Effect.runPromise(
+				runReleases(args).pipe(Effect.provide(layers)) as Effect.Effect<ReleasesReport>,
+			);
+
+			// Assert: overall success
+			expect(result.success).toBe(true);
+			expect(result.releases).toHaveLength(1);
+
+			// Assert: tag and release were created
+			expect(tagState.createCalls).toHaveLength(1);
+			expect(releaseState.createCalls).toHaveLength(1);
+
+			// Assert: three assets were uploaded — tarball, SBOM, API doc
+			expect(releaseState.uploadCalls).toHaveLength(3);
+			const uploadedNames = releaseState.uploadCalls.map((c) => c.name);
+			expect(uploadedNames).toContain("pkg.tgz");
+			expect(uploadedNames.some((n) => n.endsWith(".sbom.json"))).toBe(true);
+			expect(uploadedNames.some((n) => n.endsWith(".api.json"))).toBe(true);
+
+			// Assert: result AssetInfo[] contains all three assets
+			const release = result.releases[0];
+			expect(release).toBeDefined();
+			if (!release) return;
+			const assetNames = release.assets.map((a) => a.name);
+			expect(assetNames).toContain("pkg.tgz");
+			expect(assetNames.some((n) => n.endsWith(".sbom.json"))).toBe(true);
+			expect(assetNames.some((n) => n.endsWith(".api.json"))).toBe(true);
 		});
 	});
 });
