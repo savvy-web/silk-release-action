@@ -1,3 +1,4 @@
+import type { PublishPackagesResult } from "../release/types.js";
 import type {
 	AlreadyPublishedReason,
 	PackagePublishValidation,
@@ -5,7 +6,6 @@ import type {
 	ResolvedTarget,
 } from "../types/publish-config.js";
 import { context } from "./_actions-compat.js";
-import type { PublishPackagesResult } from "./publish-packages.js";
 import { getRegistryDisplayName, isCustomRegistry, isGitHubPackagesRegistry, isNpmRegistry } from "./registry-utils.js";
 
 /**

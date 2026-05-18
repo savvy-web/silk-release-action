@@ -12,7 +12,7 @@
  * trusts the `phase` input and falls through to a no-op when absent.
  */
 
-import { FileSystem } from "@effect/platform";
+import { FetchHttpClient, FileSystem } from "@effect/platform";
 import { NodeFileSystem, NodePath } from "@effect/platform-node";
 import {
 	Action,
@@ -21,6 +21,7 @@ import {
 	ActionOutputs,
 	ActionState,
 	ActionStateLive,
+	AttestLive,
 	CheckRunLive,
 	CommandRunner,
 	CommandRunnerLive,
@@ -33,13 +34,18 @@ import {
 	GitHubToken,
 	GitTagLive,
 	NpmRegistryLive,
+	OidcTokenIssuerLive,
 	PackagePublishLive,
 	PullRequestCommentLive,
 	PullRequestLive,
 	SbomLive,
+	SigstoreSignerLive,
 } from "@savvy-web/github-action-effects";
 import { Config, Effect, Layer, Option } from "effect";
 import { ReleaseLive } from "./release/layers.js";
+import { runPublish } from "./release/publish.js";
+import { runReleases } from "./release/releases.js";
+import type { PublishPackagesResult, ReleaseInfo } from "./release/types.js";
 import { runValidation as runValidationEffect } from "./release/validation.js";
 import { toBranchManagementOutput, toPublishingOutput, toValidationOutput } from "./schema/projections.js";
 import { ReleaseOutput } from "./schema/release-output.js";
@@ -47,14 +53,13 @@ import { GithubPackagesTokenState, STATE_KEYS } from "./state.js";
 import { checkReleaseBranch } from "./utils/check-release-branch.js";
 import { cleanupValidationChecks } from "./utils/cleanup-validation-checks.js";
 import { closeLinkedIssues } from "./utils/close-linked-issues.js";
-import type { ReleaseInfo } from "./utils/create-github-releases.js";
 import { createReleaseBranch } from "./utils/create-release-branch.js";
 import { createValidationCheck } from "./utils/create-validation-check.js";
 import type { WorkflowPhase } from "./utils/detect-workflow-phase.js";
 import { detectWorkflowPhase } from "./utils/detect-workflow-phase.js";
 import type { TagInfo } from "./utils/determine-tag-strategy.js";
+import { determineTagStrategy } from "./utils/determine-tag-strategy.js";
 import { linkIssuesFromCommits } from "./utils/link-issues-from-commits.js";
-import type { PublishPackagesResult } from "./utils/publish-packages.js";
 import { summaryWriter } from "./utils/summary-writer.js";
 import { updateReleaseBranch } from "./utils/update-release-branch.js";
 import { updateStickyComment } from "./utils/update-sticky-comment.js";
@@ -445,10 +450,9 @@ const runValidation = Effect.gen(function* () {
 });
 
 /**
- * Phase 3 publishing orchestrator. Like {@link runValidation}, defers
- * the heavy publish/tag/release work to the existing imperative helpers
- * via dynamic import — they go through the _actions-compat shim so
- * their @actions/* graph stays out of the static bundle.
+ * Phase 3 publishing orchestrator. Delegates to the Effect-based
+ * {@link runPublish} and {@link runReleases} programs from
+ * `src/release/publish.ts` and `src/release/releases.ts`.
  */
 const runPublishing = (mergedReleasePRNumber: number | undefined) =>
 	Effect.gen(function* () {
@@ -459,11 +463,6 @@ const runPublishing = (mergedReleasePRNumber: number | undefined) =>
 		const targetBranch = yield* Config.string("target-branch").pipe(Config.withDefault("main"));
 		const dryRun = yield* Config.boolean("dry-run").pipe(Config.withDefault(false));
 		const packageManager = yield* detectPackageManager;
-
-		// The package-detection helpers need the App installation token; read
-		// it straight from the persisted state rather than any env var.
-		const installationToken = yield* GitHubToken.read();
-		const token = installationToken.token;
 
 		yield* logger.group(
 			"Phase 3: Release Publishing",
@@ -489,76 +488,16 @@ const runPublishing = (mergedReleasePRNumber: number | undefined) =>
 				}
 				yield* Effect.either(runner.exec("git", ["fetch", "origin", `${targetBranch}:${targetBranch}`]));
 
-				yield* Effect.logInfo("Step 1: Detect released packages");
-				interface PreDetected {
-					readonly name: string;
-					readonly version: string;
-					readonly path: string;
-				}
-				let preDetectedReleases: PreDetected[] | undefined;
-				if (mergedReleasePRNumber !== undefined) {
-					const detection = yield* Effect.tryPromise({
-						try: async () => {
-							const mod = await import("./utils/detect-released-packages.js");
-							return await mod.detectReleasedPackagesFromPR(token, mergedReleasePRNumber);
-						},
-						catch: (error) => (error instanceof Error ? error : new Error(String(error))),
-					}).pipe(
-						Effect.catchAll((e) =>
-							Effect.gen(function* () {
-								yield* Effect.logWarning(`detectReleasedPackagesFromPR failed: ${String(e)}`);
-								return null;
-							}),
-						),
-					);
-					if (detection?.success === true && detection.packages.length > 0) {
-						preDetectedReleases = detection.packages.map(
-							(p): PreDetected => ({ name: p.name, version: p.version, path: p.path }),
-						);
-						yield* Effect.logInfo(`Detected ${preDetectedReleases.length} package(s) from PR`);
-					}
-				}
-				if (preDetectedReleases === undefined || preDetectedReleases.length === 0) {
-					const detection = yield* Effect.tryPromise({
-						try: async () => {
-							const mod = await import("./utils/detect-released-packages.js");
-							return await mod.detectReleasedPackagesFromCommit(token);
-						},
-						catch: (error) => (error instanceof Error ? error : new Error(String(error))),
-					}).pipe(
-						Effect.catchAll((e) =>
-							Effect.gen(function* () {
-								yield* Effect.logWarning(`detectReleasedPackagesFromCommit failed: ${String(e)}`);
-								return null;
-							}),
-						),
-					);
-					if (detection?.success === true && detection.packages.length > 0) {
-						preDetectedReleases = detection.packages.map(
-							(p): PreDetected => ({ name: p.name, version: p.version, path: p.path }),
-						);
-						yield* Effect.logInfo(`Detected ${preDetectedReleases.length} package(s) from commit`);
-					}
-				}
+				// Steps 1+2: detect released packages and publish via runPublish.
+				yield* Effect.logInfo("Steps 1-2: Detect released packages and publish");
+				const publishResult = yield* runPublish({
+					packageManager,
+					targetBranch,
+					dryRun,
+					mergedReleasePRNumber,
+				});
 
-				yield* Effect.logInfo("Step 2: Publish packages");
-				const publishResult = yield* Effect.tryPromise({
-					try: async () => {
-						const mod = await import("./utils/publish-packages.js");
-						return await mod.publishPackages(packageManager, targetBranch, dryRun, preDetectedReleases);
-					},
-					catch: (error) => (error instanceof Error ? error : new Error(String(error))),
-				}).pipe(
-					Effect.catchAll((e) =>
-						Effect.gen(function* () {
-							const msg = e instanceof Error ? `${e.message}\n${e.stack ?? ""}` : String(e);
-							yield* Effect.logError(`publishPackages failed: ${msg}`);
-							return null;
-						}),
-					),
-				);
 				if (publishResult === null) {
-					// No PublishPackagesResult to project — consumers fall back to step status here.
 					yield* outputs.setFailed("Phase 3 failed during publish");
 					return;
 				}
@@ -570,55 +509,27 @@ const runPublishing = (mergedReleasePRNumber: number | undefined) =>
 					return;
 				}
 
+				// Step 3: determine tag strategy (kept module, static import).
 				yield* Effect.logInfo("Step 3: Determine tag strategy");
-				const tagPlan = yield* Effect.tryPromise({
-					try: async () => {
-						const [tagMod, csMod] = await Promise.all([
-							import("./utils/determine-tag-strategy.js"),
-							import("./utils/get-changeset-status.js"),
-						]);
-						const tagStrategy = tagMod.determineTagStrategy(publishResult.packages);
-						const cs = await csMod.getChangesetStatus(packageManager, targetBranch);
-						const bumpTypes = new Map<string, string>();
-						for (const r of cs.releases) bumpTypes.set(r.name, r.type);
-						const releaseType = tagMod.determineReleaseType(publishResult.packages, bumpTypes);
-						return { tagStrategy, releaseType };
-					},
-					catch: (error) => (error instanceof Error ? error : new Error(String(error))),
-				}).pipe(
-					Effect.catchAll((e) =>
-						Effect.gen(function* () {
-							yield* Effect.logWarning(`Tag strategy step failed: ${String(e)}`);
-							return null;
-						}),
-					),
-				);
-				if (tagPlan === null) {
-					yield* emitPublishing(publishResult, [], [], {});
-					yield* outputs.setFailed("Phase 3 failed during tag strategy");
-					return;
-				}
+				const tagStrategy = determineTagStrategy(publishResult.packages);
 
+				// Step 4: create GitHub releases via runReleases.
 				yield* Effect.logInfo("Step 4: Create GitHub releases");
-				const releasesResult = yield* Effect.tryPromise({
-					try: async () => {
-						const mod = await import("./utils/create-github-releases.js");
-						return await mod.createGitHubReleases(
-							tagPlan.tagStrategy.tags,
-							publishResult.packages,
-							packageManager,
-							dryRun,
-						);
-					},
-					catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+				const releasesResult = yield* runReleases({
+					tags: tagStrategy.tags,
+					publishResult,
+					packageManager,
+					dryRun,
 				}).pipe(
 					Effect.catchAll((e) =>
 						Effect.gen(function* () {
-							yield* Effect.logWarning(`createGitHubReleases failed: ${String(e)}`);
+							yield* Effect.logWarning(`runReleases failed: ${String(e)}`);
 							return { success: false, releases: [] as ReleaseInfo[], errors: [String(e)] };
 						}),
 					),
 				);
+
+				// Step 5: close linked issues.
 				if (mergedReleasePRNumber !== undefined) {
 					yield* Effect.logInfo("Step 5: Close linked issues");
 					yield* closeLinkedIssues(mergedReleasePRNumber, dryRun).pipe(
@@ -632,13 +543,13 @@ const runPublishing = (mergedReleasePRNumber: number | undefined) =>
 				}
 
 				const tagShas: Record<string, string> = {};
-				for (const tag of tagPlan.tagStrategy.tags) {
+				for (const tag of tagStrategy.tags) {
 					const rev = yield* runner
 						.execCapture("git", ["rev-parse", tag.name])
 						.pipe(Effect.catchAll(() => Effect.succeed({ stdout: "", stderr: "", exitCode: 1 })));
 					tagShas[tag.name] = rev.stdout.trim();
 				}
-				yield* emitPublishing(publishResult, tagPlan.tagStrategy.tags, releasesResult.releases, tagShas);
+				yield* emitPublishing(publishResult, tagStrategy.tags, releasesResult.releases, tagShas);
 
 				yield* Effect.logInfo(
 					`Phase 3 complete: ${publishResult.successfulPackages}/${publishResult.totalPackages} package(s) published, ${releasesResult.releases.length} release(s) created`,
@@ -783,6 +694,12 @@ const releaseLive = ReleaseLive.pipe(Layer.provide(Layer.merge(NodeFileSystem.la
 const npmRegistryLive = NpmRegistryLive.pipe(Layer.provide(CommandRunnerLive));
 const packagePublishLive = PackagePublishLive.pipe(Layer.provide(Layer.merge(CommandRunnerLive, npmRegistryLive)));
 
+const oidcTokenIssuerLive = OidcTokenIssuerLive.pipe(Layer.provide(FetchHttpClient.layer));
+const sigstoreSignerLive = SigstoreSignerLive.pipe(Layer.provide(oidcTokenIssuerLive));
+const attestLive = AttestLive.pipe(
+	Layer.provide(Layer.mergeAll(sigstoreSignerLive, oidcTokenIssuerLive, githubClient, SbomLive)),
+);
+
 export const MainLive = Layer.mergeAll(
 	githubClient,
 	githubGraphQL,
@@ -797,8 +714,12 @@ export const MainLive = Layer.mergeAll(
 	CommandRunnerLive,
 	NodeFileSystem.layer,
 	releaseLive,
+	npmRegistryLive,
 	packagePublishLive,
 	SbomLive,
+	oidcTokenIssuerLive,
+	sigstoreSignerLive,
+	attestLive,
 );
 
 /* v8 ignore next 3 -- entry-point guard, only runs in GitHub Actions */

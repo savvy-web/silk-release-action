@@ -2,8 +2,14 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { findWorkspaceRootSync, getWorkspacePackagesSync } from "workspaces-effect";
 import { debug } from "./_actions-compat.js";
-import type { RawPackageJson } from "./silk-publishability.js";
-import { silkDetect } from "./silk-publishability.js";
+
+/** Minimal raw package.json shape needed to read publishConfig. */
+interface RawPackageJson {
+	name?: string;
+	version?: string;
+	private?: boolean;
+	publishConfig?: { access?: "public" | "restricted"; registry?: string; directory?: string };
+}
 
 /**
  * Changeset configuration
@@ -136,7 +142,13 @@ export function getAllWorkspacePackages(): WorkspacePackageInfo[] {
 		}
 
 		const hasPublishConfig = rawPkg.publishConfig?.access !== undefined;
-		const targets = silkDetect(workspace.name, rawPkg);
+		// targetCount: 1 when the package has a publishConfig (i.e. it is
+		// configured for at least one registry), 0 otherwise.  The previous
+		// implementation called silkDetect to enumerate targets; that module
+		// has been removed and the count is approximated here — the only
+		// consumer (`determineTagStrategy`) uses `targetCount > 0` as one of
+		// three OR conditions, so a 0/1 value is sufficient.
+		const targetCount = hasPublishConfig ? 1 : 0;
 
 		packages.push({
 			name: workspace.name,
@@ -145,7 +157,7 @@ export function getAllWorkspacePackages(): WorkspacePackageInfo[] {
 			private: workspace.private === true,
 			hasPublishConfig,
 			access: rawPkg.publishConfig?.access,
-			targetCount: targets.length,
+			targetCount,
 		});
 	}
 
