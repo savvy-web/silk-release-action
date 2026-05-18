@@ -10,7 +10,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import type { AttestError, CommandRunnerError, PackagePublishError } from "@savvy-web/github-action-effects";
 import {
 	Attest,
@@ -680,7 +680,10 @@ export const runPublish = (args: PublishInputArgs) =>
 				version: rel.version,
 				targets: npmTargets.map((t) => ({
 					registry: t.registry,
-					directory: t.directory,
+					// `t.directory` (e.g. "dist/dev") is package-relative; resolve it
+					// to an absolute path so spawn's `cwd` option and fs reads work
+					// correctly regardless of the action's process cwd.
+					directory: isAbsolute(t.directory) ? t.directory : join(wsPkg.path, t.directory),
 					access: t.access,
 					provenance: t.provenance ?? false,
 				})),
