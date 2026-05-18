@@ -19,7 +19,6 @@ import {
 	ActionLoggerTest,
 	ActionStateTest,
 	AttestTest,
-	CommandRunnerTest,
 	GitHubClientTest,
 	NpmRegistryTest,
 	OidcTokenIssuerTest,
@@ -281,12 +280,7 @@ describe("runBuildAndSbom", () => {
 			const pkg = makeWsPkg("@test/build-fail", "1.0.0");
 			const detected: DetectedRelease[] = [makeDetected("@test/build-fail", "1.0.0", pkg.path)];
 
-			const layers = Layer.mergeAll(
-				loggerLayer,
-				failingBuildLayer,
-				sbomLayer,
-				makeWorkspaceDiscoveryLayer([pkg]),
-			);
+			const layers = Layer.mergeAll(loggerLayer, failingBuildLayer, sbomLayer, makeWorkspaceDiscoveryLayer([pkg]));
 
 			const args: PublishInputArgs = {
 				packageManager: "pnpm",
@@ -331,12 +325,7 @@ describe("runBuildAndSbom", () => {
 				makeDetected("@test/sbom-b", "2.0.0", pkgB.path),
 			];
 
-			const layers = Layer.mergeAll(
-				loggerLayer,
-				buildLayer,
-				SbomLive,
-				makeWorkspaceDiscoveryLayer([pkgA, pkgB]),
-			);
+			const layers = Layer.mergeAll(loggerLayer, buildLayer, SbomLive, makeWorkspaceDiscoveryLayer([pkgA, pkgB]));
 
 			const args: PublishInputArgs = {
 				packageManager: "pnpm",
