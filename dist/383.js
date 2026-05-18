@@ -10,7 +10,7 @@ __webpack_require__.d(__webpack_exports__, {
 /* import */ var node_fs__rspack_import_0_default = /*#__PURE__*/__webpack_require__.n(node_fs__rspack_import_0);
 /* import */ var node_path__rspack_import_1 = __webpack_require__(76760);
 /* import */ var node_path__rspack_import_1_default = /*#__PURE__*/__webpack_require__.n(node_path__rspack_import_1);
-/* import */ var _actions_compat_js__rspack_import_2 = __webpack_require__(77279);
+/* import */ var _actions_compat_js__rspack_import_2 = __webpack_require__(50620);
 
 
 

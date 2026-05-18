@@ -1,7 +1,7 @@
 export const __rspack_esm_id = 185;
 export const __rspack_esm_ids = [185];
 export const __webpack_modules__ = {
-46368(__unused_rspack_module, __webpack_exports__, __webpack_require__) {
+23987(__unused_rspack_module, __webpack_exports__, __webpack_require__) {
 __webpack_require__.r(__webpack_exports__);
 __webpack_require__.d(__webpack_exports__, {
   buildStatement: () => (buildStatement),

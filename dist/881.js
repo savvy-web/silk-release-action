@@ -1,6 +1,240 @@
 export const __rspack_esm_id = 881;
 export const __rspack_esm_ids = [881];
 export const __webpack_modules__ = {
+37640(__unused_rspack___webpack_module__, __webpack_exports__, __webpack_require__) {
+__webpack_require__.r(__webpack_exports__);
+__webpack_require__.d(__webpack_exports__, {
+  ConfigProvider: () => (ConfigProvider),
+  ConfigProviderTypeId: () => (ConfigProviderTypeId),
+  FlatConfigProviderTypeId: () => (FlatConfigProviderTypeId),
+  constantCase: () => (constantCase),
+  fromEnv: () => (fromEnv),
+  fromFlat: () => (fromFlat),
+  fromJson: () => (fromJson),
+  fromMap: () => (fromMap),
+  kebabCase: () => (kebabCase),
+  lowerCase: () => (lowerCase),
+  make: () => (make),
+  makeFlat: () => (makeFlat),
+  mapInputPath: () => (mapInputPath),
+  nested: () => (nested),
+  orElse: () => (orElse),
+  snakeCase: () => (snakeCase),
+  unnested: () => (unnested),
+  upperCase: () => (upperCase),
+  within: () => (within)
+});
+/* import */ var _internal_configProvider_js__rspack_import_0 = __webpack_require__(36406);
+
+/**
+ * @since 2.0.0
+ * @category symbols
+ */
+const ConfigProviderTypeId = _internal_configProvider_js__rspack_import_0/* .ConfigProviderTypeId */.tT;
+/**
+ * @since 2.0.0
+ * @category symbols
+ */
+const FlatConfigProviderTypeId = _internal_configProvider_js__rspack_import_0/* .FlatConfigProviderTypeId */.Ww;
+/**
+ * The service tag for `ConfigProvider`.
+ *
+ * @since 2.0.0
+ * @category context
+ */
+const ConfigProvider = _internal_configProvider_js__rspack_import_0/* .configProviderTag */.Am;
+/**
+ * Creates a new config provider.
+ *
+ * @since 2.0.0
+ * @category constructors
+ */
+const make = _internal_configProvider_js__rspack_import_0/* .make */.L8;
+/**
+ * Creates a new flat config provider.
+ *
+ * @since 2.0.0
+ * @category constructors
+ */
+const makeFlat = _internal_configProvider_js__rspack_import_0/* .makeFlat */.iG;
+/**
+ * A config provider that loads configuration from context variables
+ *
+ * **Options**:
+ *
+ * - `pathDelim`: The delimiter for the path segments (default: `"_"`).
+ * - `seqDelim`: The delimiter for the sequence of values (default: `","`).
+ *
+ * @since 2.0.0
+ * @category constructors
+ */
+const fromEnv = _internal_configProvider_js__rspack_import_0/* .fromEnv */.sF;
+/**
+ * Constructs a new `ConfigProvider` from a key/value (flat) provider, where
+ * nesting is embedded into the string keys.
+ *
+ * @since 2.0.0
+ * @category constructors
+ */
+const fromFlat = _internal_configProvider_js__rspack_import_0/* .fromFlat */.kg;
+/**
+ * Constructs a new `ConfigProvider` from a JSON object.
+ *
+ * @since 2.0.0
+ * @category constructors
+ */
+const fromJson = _internal_configProvider_js__rspack_import_0/* .fromJson */.Rf;
+// TODO(4.0): use `_` for nested configs instead of `.` in next major
+/**
+ * Constructs a ConfigProvider using a map and the specified delimiter string,
+ * which determines how to split the keys in the map into path segments.
+ *
+ * @since 2.0.0
+ * @category constructors
+ */
+const fromMap = _internal_configProvider_js__rspack_import_0/* .fromMap */.xY;
+/**
+ * Returns a new config provider that will automatically convert all property
+ * names to constant case. This can be utilized to adapt the names of
+ * configuration properties from the default naming convention of camel case
+ * to the naming convention of a config provider.
+ *
+ * @since 2.0.0
+ * @category combinators
+ */
+const constantCase = _internal_configProvider_js__rspack_import_0/* .constantCase */.FU;
+/**
+ * Returns a new config provider that will automatically tranform all path
+ * configuration names with the specified function. This can be utilized to
+ * adapt the names of configuration properties from one naming convention to
+ * another.
+ *
+ * @since 2.0.0
+ * @category utils
+ */
+const mapInputPath = _internal_configProvider_js__rspack_import_0/* .mapInputPath */.Yf;
+/**
+ * Returns a new config provider that will automatically convert all property
+ * names to kebab case. This can be utilized to adapt the names of
+ * configuration properties from the default naming convention of camel case
+ * to the naming convention of a config provider.
+ *
+ * @since 2.0.0
+ * @category combinators
+ */
+const kebabCase = _internal_configProvider_js__rspack_import_0/* .kebabCase */.kW;
+/**
+ * Returns a new config provider that will automatically convert all property
+ * names to lower case. This can be utilized to adapt the names of
+ * configuration properties from the default naming convention of camel case
+ * to the naming convention of a config provider.
+ *
+ * @since 2.0.0
+ * @category combinators
+ */
+const lowerCase = _internal_configProvider_js__rspack_import_0/* .lowerCase */.gQ;
+/**
+ * Returns a new config provider that will automatically nest all
+ * configuration under the specified property name. This can be utilized to
+ * aggregate separate configuration sources that are all required to load a
+ * single configuration value.
+ *
+ * @since 2.0.0
+ * @category utils
+ */
+const nested = _internal_configProvider_js__rspack_import_0/* .nested */.cY;
+/**
+ * Returns a new config provider that preferentially loads configuration data
+ * from this one, but which will fall back to the specified alternate provider
+ * if there are any issues loading the configuration from this provider.
+ *
+ * @since 2.0.0
+ * @category utils
+ */
+const orElse = _internal_configProvider_js__rspack_import_0/* .orElse */.NW;
+/**
+ * Returns a new config provider that will automatically un-nest all
+ * configuration under the specified property name. This can be utilized to
+ * de-aggregate separate configuration sources that are all required to load a
+ * single configuration value.
+ *
+ * @since 2.0.0
+ * @category utils
+ */
+const unnested = _internal_configProvider_js__rspack_import_0/* .unnested */.lE;
+/**
+ * Returns a new config provider that will automatically convert all property
+ * names to upper case. This can be utilized to adapt the names of
+ * configuration properties from the default naming convention of camel case
+ * to the naming convention of a config provider.
+ *
+ * @since 2.0.0
+ * @category combinators
+ */
+const snakeCase = _internal_configProvider_js__rspack_import_0/* .snakeCase */.LW;
+/**
+ * Returns a new config provider that will automatically convert all property
+ * names to upper case. This can be utilized to adapt the names of
+ * configuration properties from the default naming convention of camel case
+ * to the naming convention of a config provider.
+ *
+ * @since 2.0.0
+ * @category combinators
+ */
+const upperCase = _internal_configProvider_js__rspack_import_0/* .upperCase */.lb;
+/**
+ * Returns a new config provider that transforms the config provider with the
+ * specified function within the specified path.
+ *
+ * @since 2.0.0
+ * @category combinators
+ */
+const within = _internal_configProvider_js__rspack_import_0/* .within */.ux;
+//# sourceMappingURL=ConfigProvider.js.map
+
+},
+31917(__unused_rspack___webpack_module__, __webpack_exports__, __webpack_require__) {
+__webpack_require__.r(__webpack_exports__);
+__webpack_require__.d(__webpack_exports__, {
+  andThen: () => (andThen),
+  empty: () => (empty),
+  mapName: () => (mapName),
+  nested: () => (nested),
+  unnested: () => (unnested)
+});
+/* import */ var _internal_configProvider_pathPatch_js__rspack_import_0 = __webpack_require__(69702);
+/**
+ * @since 2.0.0
+ */
+
+/**
+ * @since 2.0.0
+ * @category constructors
+ */
+const empty = _internal_configProvider_pathPatch_js__rspack_import_0/* .empty */.Ie;
+/**
+ * @since 2.0.0
+ * @category constructors
+ */
+const andThen = _internal_configProvider_pathPatch_js__rspack_import_0/* .andThen */.hg;
+/**
+ * @since 2.0.0
+ * @category constructors
+ */
+const mapName = _internal_configProvider_pathPatch_js__rspack_import_0/* .mapName */._x;
+/**
+ * @since 2.0.0
+ * @category constructors
+ */
+const nested = _internal_configProvider_pathPatch_js__rspack_import_0/* .nested */.cY;
+/**
+ * @since 2.0.0
+ * @category constructors
+ */
+const unnested = _internal_configProvider_pathPatch_js__rspack_import_0/* .unnested */.lE;
+//# sourceMappingURL=ConfigProviderPathPatch.js.map
+
+},
 87046(__unused_rspack___webpack_module__, __webpack_exports__, __webpack_require__) {
 __webpack_require__.r(__webpack_exports__);
 __webpack_require__.d(__webpack_exports__, {
@@ -1074,6 +1308,588 @@ function compactUnion(members) {
   return out;
 }
 //# sourceMappingURL=JSONSchema.js.map
+
+},
+32717(__unused_rspack___webpack_module__, __webpack_exports__, __webpack_require__) {
+// ESM COMPAT FLAG
+__webpack_require__.r(__webpack_exports__);
+
+// EXPORTS
+__webpack_require__.d(__webpack_exports__, {
+  LoggerTypeId: () => (/* binding */ LoggerTypeId),
+  add: () => (/* binding */ add),
+  addEffect: () => (/* binding */ addEffect),
+  addScoped: () => (/* binding */ addScoped),
+  batched: () => (/* binding */ batched),
+  defaultLogger: () => (/* binding */ defaultLogger),
+  filterLogLevel: () => (/* binding */ filterLogLevel),
+  isLogger: () => (/* binding */ isLogger),
+  json: () => (/* binding */ json),
+  jsonLogger: () => (/* binding */ jsonLogger),
+  logFmt: () => (/* binding */ logFmt),
+  logfmtLogger: () => (/* binding */ logfmtLogger),
+  make: () => (/* binding */ make),
+  map: () => (/* binding */ map),
+  mapInput: () => (/* binding */ mapInput),
+  mapInputOptions: () => (/* binding */ mapInputOptions),
+  minimumLogLevel: () => (/* binding */ minimumLogLevel),
+  none: () => (/* binding */ none),
+  pretty: () => (/* binding */ pretty),
+  prettyLogger: () => (/* binding */ prettyLogger),
+  prettyLoggerDefault: () => (/* binding */ prettyLoggerDefault),
+  remove: () => (/* binding */ remove),
+  replace: () => (/* binding */ replace),
+  replaceEffect: () => (/* binding */ replaceEffect),
+  replaceScoped: () => (/* binding */ replaceScoped),
+  simple: () => (/* binding */ simple),
+  stringLogger: () => (/* binding */ stringLogger),
+  structured: () => (/* binding */ structured),
+  structuredLogger: () => (/* binding */ structuredLogger),
+  succeed: () => (/* binding */ succeed),
+  sync: () => (/* binding */ sync),
+  test: () => (/* binding */ Logger_test),
+  tracerLogger: () => (/* binding */ tracerLogger),
+  withConsoleError: () => (/* binding */ withConsoleError),
+  withConsoleLog: () => (/* binding */ withConsoleLog),
+  withLeveledConsole: () => (/* binding */ withLeveledConsole),
+  withMinimumLogLevel: () => (/* binding */ withMinimumLogLevel),
+  withSpanAnnotations: () => (/* binding */ withSpanAnnotations),
+  zip: () => (/* binding */ zip),
+  zipLeft: () => (/* binding */ zipLeft),
+  zipRight: () => (/* binding */ zipRight)
+});
+
+// EXTERNAL MODULE: ./node_modules/.pnpm/effect@3.21.2/node_modules/effect/dist/esm/internal/fiberRuntime.js + 2 modules
+var fiberRuntime = __webpack_require__(55845);
+// EXTERNAL MODULE: ./node_modules/.pnpm/effect@3.21.2/node_modules/effect/dist/esm/internal/layer/circular.js
+var circular = __webpack_require__(58998);
+// EXTERNAL MODULE: ./node_modules/.pnpm/effect@3.21.2/node_modules/effect/dist/esm/Cause.js
+var Cause = __webpack_require__(56560);
+// EXTERNAL MODULE: ./node_modules/.pnpm/effect@3.21.2/node_modules/effect/dist/esm/Function.js
+var Function = __webpack_require__(61279);
+// EXTERNAL MODULE: ./node_modules/.pnpm/effect@3.21.2/node_modules/effect/dist/esm/HashMap.js + 1 modules
+var HashMap = __webpack_require__(3402);
+// EXTERNAL MODULE: ./node_modules/.pnpm/effect@3.21.2/node_modules/effect/dist/esm/List.js
+var List = __webpack_require__(57087);
+// EXTERNAL MODULE: ./node_modules/.pnpm/effect@3.21.2/node_modules/effect/dist/esm/internal/core.js
+var core = __webpack_require__(55294);
+// EXTERNAL MODULE: ./node_modules/.pnpm/effect@3.21.2/node_modules/effect/dist/esm/internal/fiberId.js
+var fiberId = __webpack_require__(78562);
+// EXTERNAL MODULE: ./node_modules/.pnpm/effect@3.21.2/node_modules/effect/dist/esm/internal/fiberRefs.js
+var fiberRefs = __webpack_require__(29537);
+;// CONCATENATED MODULE: ./node_modules/.pnpm/effect@3.21.2/node_modules/effect/dist/esm/internal/logger-circular.js
+
+
+
+
+
+
+
+/** @internal */
+const test = /*#__PURE__*/(0,Function.dual)(2, (self, input) => self.log({
+  fiberId: fiberId/* .none */.dv,
+  logLevel: core/* .logLevelInfo */.VEq,
+  message: input,
+  cause: Cause.empty,
+  context: fiberRefs/* .empty */.Ie(),
+  spans: List.empty(),
+  annotations: HashMap.empty(),
+  date: new Date()
+}));
+//# sourceMappingURL=logger-circular.js.map
+// EXTERNAL MODULE: ./node_modules/.pnpm/effect@3.21.2/node_modules/effect/dist/esm/internal/logger.js
+var logger = __webpack_require__(24153);
+;// CONCATENATED MODULE: ./node_modules/.pnpm/effect@3.21.2/node_modules/effect/dist/esm/Logger.js
+
+
+
+
+/**
+ * @since 2.0.0
+ * @category symbols
+ */
+const LoggerTypeId = logger/* .LoggerTypeId */.y4;
+/**
+ * Creates a custom logger that formats log messages according to the provided
+ * function.
+ *
+ * @example
+ * ```ts
+ * import { Effect, Logger, LogLevel } from "effect"
+ *
+ * const logger = Logger.make(({ logLevel, message }) => {
+ *   globalThis.console.log(`[${logLevel.label}] ${message}`)
+ * })
+ *
+ * const task1 = Effect.logDebug("task1 done")
+ * const task2 = Effect.logDebug("task2 done")
+ *
+ * const program = Effect.gen(function*() {
+ *   yield* Effect.log("start")
+ *   yield* task1
+ *   yield* task2
+ *   yield* Effect.log("done")
+ * }).pipe(
+ *   Logger.withMinimumLogLevel(LogLevel.Debug),
+ *   Effect.provide(Logger.replace(Logger.defaultLogger, logger))
+ * )
+ *
+ * Effect.runFork(program)
+ * // [INFO] start
+ * // [DEBUG] task1 done
+ * // [DEBUG] task2 done
+ * // [INFO] done
+ * ```
+ *
+ * @category constructors
+ * @since 2.0.0
+ */
+const make = logger/* .makeLogger */.rY;
+/**
+ * @since 2.0.0
+ * @category context
+ */
+const add = circular/* .addLogger */.EJ;
+/**
+ * @since 2.0.0
+ * @category context
+ */
+const addEffect = circular/* .addLoggerEffect */.j3;
+/**
+ * @since 2.0.0
+ * @category context
+ */
+const addScoped = circular/* .addLoggerScoped */.GG;
+/**
+ * @since 2.0.0
+ * @category mapping
+ */
+const mapInput = logger/* .mapInput */.zQ;
+/**
+ * @since 2.0.0
+ * @category mapping
+ */
+const mapInputOptions = logger/* .mapInputOptions */.Tc;
+/**
+ * Returns a version of this logger that only logs messages when the log level
+ * satisfies the specified predicate.
+ *
+ * @since 2.0.0
+ * @category filtering
+ */
+const filterLogLevel = logger/* .filterLogLevel */.Li;
+/**
+ * @since 2.0.0
+ * @category mapping
+ */
+const map = logger/* .map */.Tj;
+/**
+ * Creates a batched logger that groups log messages together and processes them
+ * in intervals.
+ *
+ * @example
+ * ```ts
+ * import { Console, Effect, Logger } from "effect"
+ *
+ * const LoggerLive = Logger.replaceScoped(
+ *   Logger.defaultLogger,
+ *   Logger.logfmtLogger.pipe(
+ *     Logger.batched("500 millis", (messages) => Console.log("BATCH", `[\n${messages.join("\n")}\n]`))
+ *   )
+ * )
+ *
+ * const program = Effect.gen(function*() {
+ *   yield* Effect.log("one")
+ *   yield* Effect.log("two")
+ *   yield* Effect.log("three")
+ * }).pipe(Effect.provide(LoggerLive))
+ *
+ * Effect.runFork(program)
+ * // BATCH [
+ * // timestamp=... level=INFO fiber=#0 message=one
+ * // timestamp=... level=INFO fiber=#0 message=two
+ * // timestamp=... level=INFO fiber=#0 message=three
+ * // ]
+ * ```
+ *
+ * @since 2.0.0
+ * @category mapping
+ */
+const batched = fiberRuntime/* .batchedLogger */.sO;
+/**
+ * @since 2.0.0
+ * @category console
+ */
+const withConsoleLog = fiberRuntime/* .loggerWithConsoleLog */.qI;
+/**
+ * Takes a `Logger<M, O>` and returns a logger that calls the respective `Console` method
+ * based on the log level.
+ *
+ * @example
+ * ```ts
+ * import { Logger, Effect } from "effect"
+ *
+ * const loggerLayer = Logger.replace(
+ *   Logger.defaultLogger,
+ *   Logger.withLeveledConsole(Logger.stringLogger),
+ * )
+ *
+ * Effect.gen(function* () {
+ *   yield* Effect.logError("an error")
+ *   yield* Effect.logInfo("an info")
+ * }).pipe(Effect.provide(loggerLayer))
+ * ```
+ *
+ * @since 3.8.0
+ * @category console
+ */
+const withLeveledConsole = fiberRuntime/* .loggerWithLeveledLog */.uF;
+/**
+ * @since 2.0.0
+ * @category console
+ */
+const withConsoleError = fiberRuntime/* .loggerWithConsoleError */.eU;
+/**
+ * A logger that does nothing in response to logging events.
+ *
+ * @since 2.0.0
+ * @category constructors
+ */
+const none = logger/* .none */.dv;
+/**
+ * @since 2.0.0
+ * @category context
+ */
+const remove = circular/* .removeLogger */.vl;
+/**
+ * @since 2.0.0
+ * @category context
+ */
+const replace = circular/* .replaceLogger */.Tg;
+/**
+ * @since 2.0.0
+ * @category context
+ */
+const replaceEffect = circular/* .replaceLoggerEffect */.cm;
+/**
+ * @since 2.0.0
+ * @category context
+ */
+const replaceScoped = circular/* .replaceLoggerScoped */.Pg;
+/**
+ * @since 2.0.0
+ * @category constructors
+ */
+const simple = logger/* .simple */.bQ;
+/**
+ * @since 2.0.0
+ * @category constructors
+ */
+const succeed = logger/* .succeed */.Py;
+/**
+ * @since 2.0.0
+ * @category constructors
+ */
+const sync = logger/* .sync */.OH;
+/**
+ * @since 2.0.0
+ * @category constructors
+ */
+const Logger_test = test;
+/**
+ * Sets the minimum log level for subsequent logging operations, allowing
+ * control over which log messages are displayed based on their severity.
+ *
+ * @example
+ * ```ts
+ * import { Effect, Logger, LogLevel } from "effect"
+ *
+ * const program = Effect.logDebug("message1").pipe(Logger.withMinimumLogLevel(LogLevel.Debug))
+ *
+ * Effect.runFork(program)
+ * // timestamp=... level=DEBUG fiber=#0 message=message1
+ * ```
+ *
+ * @since 2.0.0
+ * @category context
+ */
+const withMinimumLogLevel = circular/* .withMinimumLogLevel */.Z1;
+/**
+ * @since 2.0.0
+ * @category tracing
+ */
+const withSpanAnnotations = fiberRuntime/* .loggerWithSpanAnnotations */.By;
+/**
+ * Combines this logger with the specified logger to produce a new logger that
+ * logs to both this logger and that logger.
+ *
+ * @since 2.0.0
+ * @category zipping
+ */
+const zip = logger/* .zip */.yU;
+/**
+ * @since 2.0.0
+ * @category zipping
+ */
+const zipLeft = logger/* .zipLeft */.pi;
+/**
+ * @since 2.0.0
+ * @category zipping
+ */
+const zipRight = logger/* .zipRight */.aN;
+/**
+ * @since 2.0.0
+ * @category constructors
+ */
+const defaultLogger = fiberRuntime/* .defaultLogger */.Um;
+/**
+ * The `jsonLogger` logger formats log entries as JSON objects, making them easy to
+ * integrate with logging systems that consume JSON data.
+ *
+ * @example
+ * ```ts
+ * import { Effect, Logger } from "effect"
+ *
+ * const program = Effect.log("message1", "message2").pipe(
+ *   Effect.annotateLogs({ key1: "value1", key2: "value2" }),
+ *   Effect.withLogSpan("myspan")
+ * )
+ *
+ * Effect.runFork(program.pipe(Effect.provide(Logger.json)))
+ * // {"message":["message1","message2"],"logLevel":"INFO","timestamp":"...","annotations":{"key2":"value2","key1":"value1"},"spans":{"myspan":0},"fiberId":"#0"}
+ * ```
+ *
+ * @since 2.0.0
+ * @category constructors
+ */
+const jsonLogger = logger/* .jsonLogger */.Rz;
+/**
+ * This logger outputs logs in a human-readable format that is easy to read
+ * during development or in a production console.
+ *
+ * @example
+ * ```ts
+ * import { Effect, Logger } from "effect"
+ *
+ * const program = Effect.log("message1", "message2").pipe(
+ *   Effect.annotateLogs({ key1: "value1", key2: "value2" }),
+ *   Effect.withLogSpan("myspan")
+ * )
+ *
+ * Effect.runFork(program.pipe(Effect.provide(Logger.logFmt)))
+ * // timestamp=... level=INFO fiber=#0 message=message1 message=message2 myspan=0ms key2=value2 key1=value1
+ * ```
+ *
+ * @since 2.0.0
+ * @category constructors
+ */
+const logfmtLogger = logger/* .logfmtLogger */.mE;
+/**
+ * @since 2.0.0
+ * @category constructors
+ */
+const stringLogger = logger/* .stringLogger */.oz;
+/**
+ * The pretty logger utilizes the capabilities of the console API to generate
+ * visually engaging and color-enhanced log outputs. This feature is
+ * particularly useful for improving the readability of log messages during
+ * development and debugging processes.
+ *
+ * @example
+ * ```ts
+ * import { Effect, Logger } from "effect"
+ *
+ * const program = Effect.log("message1", "message2").pipe(
+ *   Effect.annotateLogs({ key1: "value1", key2: "value2" }),
+ *   Effect.withLogSpan("myspan")
+ * )
+ *
+ * Effect.runFork(program.pipe(Effect.provide(Logger.pretty)))
+ * //         green --v                      v-- bold and cyan
+ * // [07:51:54.434] INFO (#0) myspan=1ms: message1
+ * //   message2
+ * //    v-- bold
+ * //   key2: value2
+ * //   key1: value1
+ * ```
+ *
+ * @since 3.5.0
+ * @category constructors
+ */
+const prettyLogger = logger/* .prettyLogger */.xW;
+/**
+ * A default version of the pretty logger.
+ *
+ * @since 3.8.0
+ * @category constructors
+ */
+const prettyLoggerDefault = logger/* .prettyLoggerDefault */.m5;
+/**
+ * The structured logger provides detailed log outputs, structured in a way that
+ * retains comprehensive traceability of the events, suitable for deeper
+ * analysis and troubleshooting.
+ *
+ * @example
+ * ```ts
+ * import { Effect, Logger } from "effect"
+ *
+ * const program = Effect.log("message1", "message2").pipe(
+ *   Effect.annotateLogs({ key1: "value1", key2: "value2" }),
+ *   Effect.withLogSpan("myspan")
+ * )
+ *
+ * Effect.runFork(program.pipe(Effect.provide(Logger.structured)))
+ * // {
+ * //   message: [ 'message1', 'message2' ],
+ * //   logLevel: 'INFO',
+ * //   timestamp: '2024-07-09T14:05:41.623Z',
+ * //   cause: undefined,
+ * //   annotations: { key2: 'value2', key1: 'value1' },
+ * //   spans: { myspan: 0 },
+ * //   fiberId: '#0'
+ * // }
+ * ```
+ *
+ * @since 2.0.0
+ * @category constructors
+ */
+const structuredLogger = logger/* .structuredLogger */.SZ;
+/**
+ * @since 2.0.0
+ * @category constructors
+ */
+const tracerLogger = fiberRuntime/* .tracerLogger */.ek;
+/**
+ * The `json` logger formats log entries as JSON objects, making them easy to
+ * integrate with logging systems that consume JSON data.
+ *
+ * @example
+ * ```ts
+ * import { Effect, Logger } from "effect"
+ *
+ * const program = Effect.log("message1", "message2").pipe(
+ *   Effect.annotateLogs({ key1: "value1", key2: "value2" }),
+ *   Effect.withLogSpan("myspan")
+ * )
+ *
+ * Effect.runFork(program.pipe(Effect.provide(Logger.json)))
+ * // {"message":["message1","message2"],"logLevel":"INFO","timestamp":"...","annotations":{"key2":"value2","key1":"value1"},"spans":{"myspan":0},"fiberId":"#0"}
+ * ```
+ *
+ * @since 2.0.0
+ * @category constructors
+ */
+const json = /*#__PURE__*/replace(fiberRuntime/* .defaultLogger */.Um, fiberRuntime/* .jsonLogger */.Rz);
+/**
+ * This logger outputs logs in a human-readable format that is easy to read
+ * during development or in a production console.
+ *
+ * @example
+ * ```ts
+ * import { Effect, Logger } from "effect"
+ *
+ * const program = Effect.log("message1", "message2").pipe(
+ *   Effect.annotateLogs({ key1: "value1", key2: "value2" }),
+ *   Effect.withLogSpan("myspan")
+ * )
+ *
+ * Effect.runFork(program.pipe(Effect.provide(Logger.logFmt)))
+ * // timestamp=... level=INFO fiber=#0 message=message1 message=message2 myspan=0ms key2=value2 key1=value1
+ * ```
+ *
+ * @since 2.0.0
+ * @category constructors
+ */
+const logFmt = /*#__PURE__*/replace(fiberRuntime/* .defaultLogger */.Um, fiberRuntime/* .logFmtLogger */.S_);
+/**
+ * The pretty logger utilizes the capabilities of the console API to generate
+ * visually engaging and color-enhanced log outputs. This feature is
+ * particularly useful for improving the readability of log messages during
+ * development and debugging processes.
+ *
+ * @example
+ * ```ts
+ * import { Effect, Logger } from "effect"
+ *
+ * const program = Effect.log("message1", "message2").pipe(
+ *   Effect.annotateLogs({ key1: "value1", key2: "value2" }),
+ *   Effect.withLogSpan("myspan")
+ * )
+ *
+ * Effect.runFork(program.pipe(Effect.provide(Logger.pretty)))
+ * //         green --v                      v-- bold and cyan
+ * // [07:51:54.434] INFO (#0) myspan=1ms: message1
+ * //   message2
+ * //    v-- bold
+ * //   key2: value2
+ * //   key1: value1
+ * ```
+ *
+ * @since 3.5.0
+ * @category constructors
+ */
+const pretty = /*#__PURE__*/replace(fiberRuntime/* .defaultLogger */.Um, fiberRuntime/* .prettyLogger */.xW);
+/**
+ * The structured logger provides detailed log outputs, structured in a way that
+ * retains comprehensive traceability of the events, suitable for deeper
+ * analysis and troubleshooting.
+ *
+ * @example
+ * ```ts
+ * import { Effect, Logger } from "effect"
+ *
+ * const program = Effect.log("message1", "message2").pipe(
+ *   Effect.annotateLogs({ key1: "value1", key2: "value2" }),
+ *   Effect.withLogSpan("myspan")
+ * )
+ *
+ * Effect.runFork(program.pipe(Effect.provide(Logger.structured)))
+ * // {
+ * //   message: [ 'message1', 'message2' ],
+ * //   logLevel: 'INFO',
+ * //   timestamp: '2024-07-09T14:05:41.623Z',
+ * //   cause: undefined,
+ * //   annotations: { key2: 'value2', key1: 'value1' },
+ * //   spans: { myspan: 0 },
+ * //   fiberId: '#0'
+ * // }
+ * ```
+ *
+ * @since 2.0.0
+ * @category constructors
+ */
+const structured = /*#__PURE__*/replace(fiberRuntime/* .defaultLogger */.Um, fiberRuntime/* .structuredLogger */.SZ);
+/**
+ * Sets the minimum log level for logging operations, allowing control over
+ * which log messages are displayed based on their severity.
+ *
+ * @example
+ * ```ts
+ * import { Effect, Logger, LogLevel } from "effect"
+ *
+ * const program = Effect.gen(function*() {
+ *   yield* Effect.log("Executing task...")
+ *   yield* Effect.sleep("100 millis")
+ *   console.log("task done")
+ * })
+ *
+ * // Logging disabled using a layer
+ * Effect.runFork(program.pipe(Effect.provide(Logger.minimumLogLevel(LogLevel.None))))
+ * // task done
+ * ```
+ *
+ * @since 2.0.0
+ * @category context
+ */
+const minimumLogLevel = circular/* .minimumLogLevel */.dl;
+/**
+ * Returns `true` if the specified value is a `Logger`, otherwise returns `false`.
+ *
+ * @since 1.0.0
+ * @category guards
+ */
+const isLogger = logger/* .isLogger */.jj;
+//# sourceMappingURL=Logger.js.map
 
 },
 96140(__unused_rspack___webpack_module__, __webpack_exports__, __webpack_require__) {
@@ -9427,7 +10243,7 @@ var LogLevel = __webpack_require__(81911);
 // EXTERNAL MODULE: ./node_modules/.pnpm/effect@3.21.2/node_modules/effect/dist/esm/LogSpan.js
 var LogSpan = __webpack_require__(39109);
 // EXTERNAL MODULE: ./node_modules/.pnpm/effect@3.21.2/node_modules/effect/dist/esm/Logger.js + 1 modules
-var Logger = __webpack_require__(55098);
+var Logger = __webpack_require__(32717);
 // EXTERNAL MODULE: ./node_modules/.pnpm/effect@3.21.2/node_modules/effect/dist/esm/Mailbox.js + 1 modules
 var Mailbox = __webpack_require__(96140);
 // EXTERNAL MODULE: ./node_modules/.pnpm/effect@3.21.2/node_modules/effect/dist/esm/Scheduler.js

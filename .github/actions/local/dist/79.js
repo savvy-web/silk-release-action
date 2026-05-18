@@ -8,7 +8,7 @@ __webpack_require__.d(__webpack_exports__, {
   determineTagStrategy: () => (determineTagStrategy),
   isMonorepoForTagging: () => (isMonorepoForTagging)
 });
-/* import */ var _actions_compat_js__rspack_import_0 = __webpack_require__(77279);
+/* import */ var _actions_compat_js__rspack_import_0 = __webpack_require__(50620);
 /* import */ var _release_summary_helpers_js__rspack_import_1 = __webpack_require__(26950);
 
 
@@ -173,25 +173,20 @@ __webpack_require__.d(__webpack_exports__, {
 
 // EXPORTS
 __webpack_require__.d(__webpack_exports__, {
-  yo: () => (/* binding */ countChangesetsPerPackage),
-  $h: () => (/* binding */ findPackageGroup),
-  $x: () => (/* binding */ formatSkipReason),
   Qu: () => (/* binding */ getAllWorkspacePackages),
-  kQ: () => (/* binding */ getBumpTypeIcon),
-  PC: () => (/* binding */ getGroupIcon),
-  QH: () => (/* binding */ getSkipReason),
-  oK: () => (/* binding */ isFirstRelease),
   fz: () => (/* binding */ readChangesetConfig)
 });
+
+// UNUSED EXPORTS: countChangesetsPerPackage, findPackageGroup, formatSkipReason, getBumpTypeIcon, getGroupIcon, getSkipReason, isFirstRelease
 
 // EXTERNAL MODULE: external "node:fs"
 var external_node_fs_ = __webpack_require__(73024);
 // EXTERNAL MODULE: external "node:path"
 var external_node_path_ = __webpack_require__(76760);
-// EXTERNAL MODULE: ./node_modules/.pnpm/workspaces-effect@1.0.0_@effect+platform@0.96.1_effect@3.21.2__effect@3.21.2/node_modules/workspaces-effect/index.js + 8 modules
-var workspaces_effect = __webpack_require__(31947);
-// EXTERNAL MODULE: ./src/utils/_actions-compat.ts
-var _actions_compat = __webpack_require__(77279);
+// EXTERNAL MODULE: ./node_modules/.pnpm/workspaces-effect@1.0.0_@effect+platform@0.96.1_effect@3.21.2__effect@3.21.2/node_modules/workspaces-effect/index.js + 11 modules
+var workspaces_effect = __webpack_require__(52855);
+// EXTERNAL MODULE: ./src/utils/_actions-compat.ts + 18 modules
+var _actions_compat = __webpack_require__(50620);
 ;// CONCATENATED MODULE: ./src/utils/silk-publishability.ts
 /**
  * Silk-flavored publishability rules.

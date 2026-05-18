@@ -13,7 +13,7 @@
  */
 
 import { FileSystem } from "@effect/platform";
-import { NodeFileSystem } from "@effect/platform-node";
+import { NodeFileSystem, NodePath } from "@effect/platform-node";
 import {
 	Action,
 	ActionEnvironment,
@@ -32,14 +32,18 @@ import {
 	GitHubReleaseLive,
 	GitHubToken,
 	GitTagLive,
+	NpmRegistryLive,
+	PackagePublishLive,
 	PullRequestCommentLive,
 	PullRequestLive,
+	SbomLive,
 } from "@savvy-web/github-action-effects";
 import { Config, Effect, Layer, Option } from "effect";
+import { ReleaseLive } from "./release/layers.js";
+import { runValidation as runValidationEffect } from "./release/validation.js";
 import { toBranchManagementOutput, toPublishingOutput, toValidationOutput } from "./schema/projections.js";
 import { ReleaseOutput } from "./schema/release-output.js";
 import { GithubPackagesTokenState, STATE_KEYS } from "./state.js";
-import type { PackagePublishValidation } from "./types/publish-config.js";
 import { checkReleaseBranch } from "./utils/check-release-branch.js";
 import { cleanupValidationChecks } from "./utils/cleanup-validation-checks.js";
 import { closeLinkedIssues } from "./utils/close-linked-issues.js";
@@ -250,10 +254,7 @@ const runValidation = Effect.gen(function* () {
 					}),
 				),
 			);
-			// Steps 3-5 — publish / release-notes / SBOM validation.
-			// These remain imperative for now; dynamic import keeps their
-			// @actions/* dependencies out of the static module graph so the
-			// main bundle stays clear of undici.
+			// Steps 3-5 — publish / release-notes / SBOM validation via Effect.
 			const publishCheckId = 0;
 			let publishSummary = "";
 			let publishReadyTargets = 0;
@@ -262,83 +263,39 @@ const runValidation = Effect.gen(function* () {
 			let npmReady = false;
 			let githubPackagesReady = false;
 			let hasVersionOnlyPackages = false;
-			// Per-package publish validations — fed to the release-notes and SBOM
-			// preview steps so they reflect the packages actually being released.
-			let publishValidations: PackagePublishValidation[] = [];
+			let reportPackages: ReadonlyArray<{ name: string; version: string; ready: boolean }> = [];
+			let sbomOk = true;
+			let sbomSummary = "SBOM Preview skipped";
 
 			if (buildResult.success) {
-				yield* Effect.logInfo("Step 3: Validate Publishing");
-				const result = yield* Effect.tryPromise({
-					try: async () => {
-						const mod = await import("./utils/validate-publish.js");
-						return await mod.validatePublish(packageManager, targetBranch, dryRun, process.cwd());
-					},
-					catch: (error) => (error instanceof Error ? error : new Error(String(error))),
-				}).pipe(
+				yield* Effect.logInfo("Steps 3-5: Validate Publishing, Release Notes, and SBOM");
+				const report = yield* runValidationEffect({ packageManager, targetBranch, dryRun }).pipe(
 					Effect.catchAll((e) =>
 						Effect.gen(function* () {
-							const message = e instanceof Error ? `${e.message}\n${e.stack ?? ""}` : String(e);
-							yield* Effect.logWarning(`validatePublish failed: ${message}`);
+							const message =
+								e instanceof Error
+									? `${e.message}\n${String((e as Error & { stack?: string }).stack ?? "")}`
+									: String(e);
+							yield* Effect.logWarning(`runValidation failed: ${message}`);
 							return null;
 						}),
 					),
 				);
-				if (result !== null) {
-					publishSummary = result.summary;
-					publishReadyTargets = result.readyTargets;
-					publishTotalTargets = result.totalTargets;
-					publishOk = result.success;
-					npmReady = result.npmReady;
-					githubPackagesReady = result.githubPackagesReady;
-					publishValidations = result.validations;
-					hasVersionOnlyPackages =
-						result.totalTargets === 0 &&
-						result.validations.length > 0 &&
-						result.validations.some((v) => !v.discoveryError);
+				if (report !== null) {
+					publishSummary = report.publishSummary;
+					publishReadyTargets = report.readyTargets;
+					publishTotalTargets = report.totalTargets;
+					publishOk = report.publishOk;
+					npmReady = report.npmReady;
+					githubPackagesReady = report.githubPackagesReady;
+					hasVersionOnlyPackages = report.hasVersionOnlyPackages;
+					reportPackages = report.packages;
+					sbomOk = report.sbomOk;
+					sbomSummary = report.sbomSummary;
 				}
 			} else {
 				yield* Effect.logWarning("Builds failed, skipping publish validation");
 			}
-
-			yield* Effect.logInfo("Step 4: Generate Release Notes Preview");
-			const releaseNotesResult = yield* Effect.tryPromise({
-				try: async () => {
-					const mod = await import("./utils/generate-release-notes-preview.js");
-					return await mod.generateReleaseNotesPreview(packageManager, publishValidations);
-				},
-				catch: (error) => (error instanceof Error ? error : new Error(String(error))),
-			}).pipe(
-				Effect.catchAll((e) =>
-					Effect.gen(function* () {
-						const message = e instanceof Error ? `${e.message}\n${e.stack ?? ""}` : String(e);
-						yield* Effect.logWarning(`generateReleaseNotesPreview failed: ${message}`);
-						return { packages: [] as Array<{ name: string; version: string }>, summaryContent: "" };
-					}),
-				),
-			);
-
-			yield* Effect.logInfo("Step 5: Generate SBOM Preview");
-			const sbomResult = yield* Effect.tryPromise({
-				try: async () => {
-					const mod = await import("./utils/generate-sbom-preview.js");
-					return await mod.generateSBOMPreview(packageManager, publishValidations, process.cwd());
-				},
-				catch: (error) => (error instanceof Error ? error : new Error(String(error))),
-			}).pipe(
-				Effect.catchAll((e) =>
-					Effect.gen(function* () {
-						const message = e instanceof Error ? `${e.message}\n${e.stack ?? ""}` : String(e);
-						yield* Effect.logWarning(`generateSBOMPreview failed: ${message}`);
-						return {
-							success: true,
-							checkTitle: "SBOM Preview skipped",
-							summaryContent: "",
-							hasComplianceWarnings: false,
-							complianceSummary: "",
-						};
-					}),
-				),
-			);
 
 			// Step 6 — unified validation check (migrated).
 			yield* Effect.logInfo("Step 6: Create Unified Validation Check");
@@ -366,13 +323,13 @@ const runValidation = Effect.gen(function* () {
 					name: "Release Notes Preview",
 					success: true,
 					checkId: 0,
-					message: `${releaseNotesResult.packages.length} package(s) ready`,
+					message: `${reportPackages.length} package(s) ready`,
 				},
 				{
 					name: "SBOM Preview",
-					success: sbomResult.success,
+					success: sbomOk,
 					checkId: 0,
-					message: sbomResult.checkTitle,
+					message: sbomSummary,
 				},
 			];
 			const unified = yield* createValidationCheck(checkResults, dryRun);
@@ -457,17 +414,17 @@ const runValidation = Effect.gen(function* () {
 			// Emit structured result output for Phase 2.
 			const validationOutput = toValidationOutput({
 				buildsPassed: buildResult.success,
-				packageCount: releaseNotesResult.packages.length,
+				packageCount: reportPackages.length,
 				npmReady,
 				githubPackagesReady,
 				publishOk,
-				// Per-package ready mirrors the aggregate publishOk — per-package validation detail is not threaded out of the publish dry-run step.
-				packages: releaseNotesResult.packages.map((p) => ({ name: p.name, version: p.version, ready: publishOk })),
+				// Per-package ready comes directly from the ValidationReport.
+				packages: reportPackages.map((p) => ({ name: p.name, version: p.version, ready: p.ready })),
 				checkRun: checkRunResult,
 				dryRun,
 			});
 			yield* emitReleaseOutput(outputs, validationOutput, {
-				packageCount: releaseNotesResult.packages.length,
+				packageCount: reportPackages.length,
 				// Phase 2 runs on a push to the release branch; the release PR number is not
 				// in the event payload and resolving it would need an extra API lookup, so
 				// the release-pr-number scalar is left empty for the validation phase.
@@ -822,6 +779,10 @@ const githubClient = GitHubToken.client().pipe(Layer.provide(actionStateLayer), 
 const githubGraphQL = GitHubGraphQLLive.pipe(Layer.provide(githubClient));
 const githubApiBase = Layer.merge(githubClient, githubGraphQL);
 
+const releaseLive = ReleaseLive.pipe(Layer.provide(Layer.merge(NodeFileSystem.layer, NodePath.layer)), Layer.orDie);
+const npmRegistryLive = NpmRegistryLive.pipe(Layer.provide(CommandRunnerLive));
+const packagePublishLive = PackagePublishLive.pipe(Layer.provide(Layer.merge(CommandRunnerLive, npmRegistryLive)));
+
 export const MainLive = Layer.mergeAll(
 	githubClient,
 	githubGraphQL,
@@ -835,6 +796,9 @@ export const MainLive = Layer.mergeAll(
 	GitCommitLive.pipe(Layer.provide(githubClient)),
 	CommandRunnerLive,
 	NodeFileSystem.layer,
+	releaseLive,
+	packagePublishLive,
+	SbomLive,
 );
 
 /* v8 ignore next 3 -- entry-point guard, only runs in GitHub Actions */

@@ -32,9 +32,9 @@ __webpack_require__.d(__webpack_exports__, {
  */ const runProvenanceAttestation = async (subjectName, sha256, token)=>{
     const [{ FetchHttpClient }, { GitHubClientLive }, { Effect, Layer, Redacted }, { Attest }, { AttestLive }, { OidcTokenIssuer, OidcTokenIssuerLive }, { SigstoreSignerLive }, { buildSLSAProvenancePredicate, decodeJwtClaims }] = await Promise.all([
         __webpack_require__.e(/* import() */ 568).then(__webpack_require__.bind(__webpack_require__, 11115)),
-        Promise.resolve(/* import() */).then(__webpack_require__.bind(__webpack_require__, 459)),
+        Promise.resolve(/* import() */).then(__webpack_require__.bind(__webpack_require__, 65840)),
         __webpack_require__.e(/* import() */ 881).then(__webpack_require__.bind(__webpack_require__, 84176)),
-        __webpack_require__.e(/* import() */ 685).then(__webpack_require__.bind(__webpack_require__, 588)),
+        __webpack_require__.e(/* import() */ 66).then(__webpack_require__.bind(__webpack_require__, 588)),
         __webpack_require__.e(/* import() */ 662).then(__webpack_require__.bind(__webpack_require__, 11901)),
         __webpack_require__.e(/* import() */ 323).then(__webpack_require__.bind(__webpack_require__, 34990)),
         __webpack_require__.e(/* import() */ 418).then(__webpack_require__.bind(__webpack_require__, 41433)),
@@ -77,7 +77,7 @@ __webpack_require__.d(__webpack_exports__, {
  *   `token` authorises the request (needs `packages:write`).
  */ const runCreateStorageRecord = async (input)=>{
     const [{ GitHubClient, GitHubClientLive }, { Effect, Layer }] = await Promise.all([
-        Promise.resolve(/* import() */).then(__webpack_require__.bind(__webpack_require__, 459)),
+        Promise.resolve(/* import() */).then(__webpack_require__.bind(__webpack_require__, 65840)),
         __webpack_require__.e(/* import() */ 881).then(__webpack_require__.bind(__webpack_require__, 84176))
     ]);
     const layer = Layer.mergeAll(GitHubClientLive.fromToken(input.token));
@@ -129,14 +129,14 @@ __webpack_require__.d(__webpack_exports__, {
  */ const runSbomAttestation = async (subjectName, sha256, bom, token)=>{
     const [{ FetchHttpClient }, { GitHubClientLive }, { Effect, Layer }, { Attest }, { AttestLive }, { OidcTokenIssuerLive }, { SigstoreSignerLive }, { CYCLONEDX_BOM }, { subject: makeSubject }] = await Promise.all([
         __webpack_require__.e(/* import() */ 568).then(__webpack_require__.bind(__webpack_require__, 11115)),
-        Promise.resolve(/* import() */).then(__webpack_require__.bind(__webpack_require__, 459)),
+        Promise.resolve(/* import() */).then(__webpack_require__.bind(__webpack_require__, 65840)),
         __webpack_require__.e(/* import() */ 881).then(__webpack_require__.bind(__webpack_require__, 84176)),
-        __webpack_require__.e(/* import() */ 685).then(__webpack_require__.bind(__webpack_require__, 588)),
+        __webpack_require__.e(/* import() */ 66).then(__webpack_require__.bind(__webpack_require__, 588)),
         __webpack_require__.e(/* import() */ 662).then(__webpack_require__.bind(__webpack_require__, 11901)),
         __webpack_require__.e(/* import() */ 323).then(__webpack_require__.bind(__webpack_require__, 34990)),
         __webpack_require__.e(/* import() */ 418).then(__webpack_require__.bind(__webpack_require__, 41433)),
         __webpack_require__.e(/* import() */ 355).then(__webpack_require__.bind(__webpack_require__, 3438)),
-        __webpack_require__.e(/* import() */ 185).then(__webpack_require__.bind(__webpack_require__, 46368))
+        __webpack_require__.e(/* import() */ 185).then(__webpack_require__.bind(__webpack_require__, 23987))
     ]);
     const oidc = Layer.provide(OidcTokenIssuerLive, FetchHttpClient.layer);
     const layer = Layer.mergeAll(AttestLive, SigstoreSignerLive, oidc, GitHubClientLive.fromToken(token));
