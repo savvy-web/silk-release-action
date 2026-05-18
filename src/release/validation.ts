@@ -9,6 +9,7 @@
  * @module release/validation
  */
 
+import { existsSync, readFileSync } from "node:fs";
 import { basename, isAbsolute, join } from "node:path";
 
 import type { PackagePublishError, ResolvedDependency, SbomError } from "@savvy-web/github-action-effects";
@@ -76,6 +77,28 @@ interface ReleasedPackage {
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Report whether a built target directory's `package.json` is marked `private`.
+ *
+ * The build pipeline keeps `private: true` on dev-only build outputs and
+ * rewrites it to `private: false` on real publish targets. Validation only
+ * exercises what will actually be published, so `private` targets are dropped
+ * before the dry-run and SBOM steps. A missing or unreadable `package.json` is
+ * treated as not private.
+ */
+function isTargetPrivate(targetDir: string): boolean {
+	const pkgJsonPath = join(targetDir, "package.json");
+	if (!existsSync(pkgJsonPath)) {
+		return false;
+	}
+	try {
+		const parsed = JSON.parse(readFileSync(pkgJsonPath, "utf-8")) as { private?: boolean };
+		return parsed.private === true;
+	} catch {
+		return false;
+	}
+}
 
 /**
  * Classify a registry URL and return the resolved token for it.
@@ -285,8 +308,11 @@ export const runValidation = (args: ValidationInputArgs) =>
 		let readyTargets = 0;
 
 		for (const { pkg } of releasedPackages) {
-			// Single detect call — result reused for both dry-run and SBOM steps.
-			const targets = yield* detector.detect(pkg, workspaceRoot);
+			// Resolve publish targets, then drop any whose built `package.json` is
+			// `private` — validation only exercises what will actually be published.
+			const targets = (yield* detector.detect(pkg, workspaceRoot)).filter(
+				(t) => !isTargetPrivate(isAbsolute(t.directory) ? t.directory : join(pkg.path, t.directory)),
+			);
 
 			if (targets.length === 0) {
 				yield* Effect.logDebug(`${pkg.name}: no publish targets (version-only)`);
@@ -414,11 +440,11 @@ export const runValidation = (args: ValidationInputArgs) =>
 		let sbomSuccess = 0;
 
 		for (const { pkg } of releasedPackages) {
-			// Re-use previously resolved targets (avoid second detector.detect call).
-			// Re-run detect since targets are not cached from the dry-run loop above.
-			// In practice the number of packages is small enough that the extra call
-			// is not a concern.
-			const targets = yield* detector.detect(pkg, workspaceRoot);
+			// Re-run detect (targets are not cached from the dry-run loop above);
+			// drop `private` targets for the same reason as the dry-run step.
+			const targets = (yield* detector.detect(pkg, workspaceRoot)).filter(
+				(t) => !isTargetPrivate(isAbsolute(t.directory) ? t.directory : join(pkg.path, t.directory)),
+			);
 
 			// Build a real SbomInput from the package's resolved dependencies.
 			// The WorkspacePackage.dependencies map contains direct dependencies
