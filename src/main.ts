@@ -22,6 +22,8 @@ import {
 	ActionState,
 	ActionStateLive,
 	AttestLive,
+	ChangesetAnalyzer,
+	ChangesetAnalyzerLive,
 	CheckRunLive,
 	CommandRunner,
 	CommandRunnerLive,
@@ -139,18 +141,31 @@ const runBranchManagement = Effect.gen(function* () {
 			const branchCheck = yield* checkReleaseBranch(releaseBranch, targetBranch, dryRun);
 
 			// Read changeset bump types before the version command consumes them.
-			const changesetStatus = yield* Effect.tryPromise({
-				try: async () => {
-					const mod = await import("./utils/get-changeset-status.js");
-					return await mod.getChangesetStatus(packageManager, targetBranch);
-				},
-				catch: (error) => (error instanceof Error ? error : new Error(String(error))),
-			}).pipe(Effect.catchAll(() => Effect.succeed({ releases: [], changesets: [] })));
-
-			const changesets = changesetStatus.releases.map((r) => ({
-				name: r.name,
-				bumpType: (r.type === "major" || r.type === "minor" ? r.type : "patch") as "major" | "minor" | "patch",
-			}));
+			// parseAll returns one entry per .changeset/*.md file; aggregate to
+			// one entry per package, taking the highest bump across all changesets.
+			const analyzer = yield* ChangesetAnalyzer;
+			const parsedChangesets = yield* analyzer.parseAll().pipe(
+				Effect.catchAll(() =>
+					Effect.succeed(
+						[] as Array<{
+							id: string;
+							packages: Array<{ name: string; bump: "major" | "minor" | "patch" }>;
+							summary: string;
+						}>,
+					),
+				),
+			);
+			const bumpRank = { patch: 0, minor: 1, major: 2 } as const;
+			const packageBumps = new Map<string, "major" | "minor" | "patch">();
+			for (const cs of parsedChangesets) {
+				for (const pkg of cs.packages) {
+					const current = packageBumps.get(pkg.name);
+					if (current === undefined || bumpRank[pkg.bump] > bumpRank[current]) {
+						packageBumps.set(pkg.name, pkg.bump);
+					}
+				}
+			}
+			const changesets = Array.from(packageBumps.entries()).map(([name, bumpType]) => ({ name, bumpType }));
 
 			let created = false;
 			let updated = false;
@@ -713,6 +728,7 @@ export const MainLive = Layer.mergeAll(
 	GitCommitLive.pipe(Layer.provide(githubClient)),
 	CommandRunnerLive,
 	NodeFileSystem.layer,
+	ChangesetAnalyzerLive.pipe(Layer.provide(NodeFileSystem.layer)),
 	releaseLive,
 	npmRegistryLive,
 	packagePublishLive,
