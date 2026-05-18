@@ -726,7 +726,13 @@ export const runPublish = (args: PublishInputArgs) =>
 
 		yield* Effect.logInfo("runPublish: sorting packages topologically");
 
+		// `sortSubset` returns the transitive-dependency closure of the given
+		// packages, so a workspace dependency of a released package gets pulled
+		// in. Keep only the packages actually being released — a dependency that
+		// was not itself version-bumped must not be treated as a publish target.
+		const detectedNames = new Set(detected.map((r) => r.name));
 		const sortedNames = yield* sorter.sortSubset(detected.map((r) => r.name)).pipe(
+			Effect.map((closure) => closure.filter((name) => detectedNames.has(name))),
 			Effect.catchAll((e: unknown) =>
 				Effect.gen(function* () {
 					yield* Effect.logWarning(`Topological sort failed, using insertion order: ${String(e)}`);
