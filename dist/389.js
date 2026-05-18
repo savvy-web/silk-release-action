@@ -1,3 +1,5 @@
+import {fileURLToPath as __rspack_fileURLToPath} from "node:url";
+import {dirname as __rspack_dirname} from "node:path";
 export const __rspack_esm_id = 389;
 export const __rspack_esm_ids = [389];
 export const __webpack_modules__ = {
@@ -5993,7 +5995,7 @@ function escapeJsonPtr(str) {
 
 
 },
-69794() {
+73828() {
 throw new Error("A module excluded via the build 'ignore' option was loaded at runtime.");
 
 
@@ -6228,7 +6230,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 const promises_1 = __webpack_require__(51455);
 const ajv_1 = __importDefault(__webpack_require__(45378));
 const ajv_formats_1 = __importDefault(__webpack_require__(36279));
-const ajv_formats_draft2019_1 = __importDefault(__webpack_require__(69794));
+const ajv_formats_draft2019_1 = __importDefault(__webpack_require__(73828));
 const ajvOptions = Object.freeze({
     useDefaults: false,
     strict: false,
@@ -6277,7 +6279,7 @@ SPDX-License-Identifier: Apache-2.0
 Copyright (c) OWASP Foundation. All Rights Reserved.
 */
 __webpack_unused_export__ = ({ value: true });
-const xmlbuilder2_1 = __webpack_require__(69794);
+const xmlbuilder2_1 = __webpack_require__(73828);
 if (typeof xmlbuilder2_1.create !== 'function') {
     throw new Error('`create` is not a function');
 }
@@ -6351,7 +6353,7 @@ Copyright (c) OWASP Foundation. All Rights Reserved.
 __webpack_unused_export__ = ({ value: true });
 const promises_1 = __webpack_require__(51455);
 const node_url_1 = __webpack_require__(73136);
-const libxmljs2_1 = __webpack_require__(69794);
+const libxmljs2_1 = __webpack_require__(73828);
 const xmlParseOptions = Object.freeze({
     nonet: true,
     compact: true,
@@ -9819,6 +9821,7 @@ exports.VulnerabilityRepository = VulnerabilityRepository;
 
 },
 9471(__unused_rspack_module, exports, __webpack_require__) {
+var __dirname = __rspack_dirname(__rspack_fileURLToPath(import.meta.url));
 
 /*!
 This file is part of CycloneDX JavaScript Library.
