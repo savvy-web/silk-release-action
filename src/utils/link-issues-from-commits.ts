@@ -666,7 +666,7 @@ export const linkIssuesFromCommits: Effect.Effect<
 		{ heading: "📝 Commits Analyzed", level: 3, content: commitsContent },
 	]);
 
-	const checkId = yield* checks.create(checkTitle, sha);
+	const { id: checkId } = yield* checks.create(checkTitle, sha);
 	yield* checks.complete(checkId, "success", { title: checkSummary, summary: checkDetails });
 	yield* outputs.summary(checkDetails);
 

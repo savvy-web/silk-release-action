@@ -222,7 +222,7 @@ export const createReleaseBranch = (
 			}
 
 			const checkTitle = dryRun ? "🧪 Create Release Branch (Dry Run)" : "Create Release Branch";
-			const noChangesId = yield* checks.create(checkTitle, sha);
+			const { id: noChangesId } = yield* checks.create(checkTitle, sha);
 			yield* checks.complete(noChangesId, "neutral", {
 				title: "No version changes generated",
 				summary: "Changeset version command did not produce any changes. No release branch created.",
@@ -459,7 +459,7 @@ export const createReleaseBranch = (
 		const checkDetails = summaryWriter.build(checkSections);
 
 		const checkTitle = dryRun ? "🧪 Create Release Branch (Dry Run)" : "Create Release Branch";
-		const finalCheckId = yield* checks.create(checkTitle, sha);
+		const { id: finalCheckId } = yield* checks.create(checkTitle, sha);
 		yield* checks.complete(finalCheckId, "success", {
 			title: prNumber ? `Created release PR #${prNumber}` : "Release branch created (dry run)",
 			summary: checkDetails,

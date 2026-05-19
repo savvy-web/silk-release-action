@@ -115,7 +115,7 @@ export const checkReleaseBranch = (
 			{ heading: "Next Steps", level: 3, content: nextSteps },
 		]);
 
-		const checkId = yield* checks.create(checkTitle, sha);
+		const { id: checkId } = yield* checks.create(checkTitle, sha);
 		yield* checks.complete(checkId, "success", { title: checkSummary, summary: checkDetails });
 
 		// 4. Job summary.

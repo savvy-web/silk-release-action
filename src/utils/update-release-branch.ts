@@ -420,7 +420,7 @@ export const updateReleaseBranch = (
 		const checkDetails = summaryWriter.build(checkSections);
 
 		const checkTitle = dryRun ? "🧪 Update Release Branch (Dry Run)" : "Update Release Branch";
-		const checkId = yield* checks.create(checkTitle, sha);
+		const { id: checkId } = yield* checks.create(checkTitle, sha);
 		yield* checks.complete(checkId, "success", {
 			title: hasChanges ? "Release branch recreated from main with version changes" : "Release branch synced with main",
 			summary: checkDetails,

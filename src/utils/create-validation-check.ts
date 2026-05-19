@@ -67,7 +67,7 @@ export const createValidationCheck = (
 		}
 		const checkDetails = summaryWriter.build(sections);
 
-		const checkId = yield* checks.create(checkTitle, sha);
+		const { id: checkId } = yield* checks.create(checkTitle, sha);
 		yield* checks.complete(checkId, success ? "success" : "failure", {
 			title: checkSummary,
 			summary: checkDetails,

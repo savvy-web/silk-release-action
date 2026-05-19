@@ -84,7 +84,7 @@ export const closeLinkedIssues = (
 		const [owner, repo] = repository.split("/");
 
 		const checkName = dryRun ? "🧪 Close Linked Issues (Dry Run)" : "Close Linked Issues";
-		const checkId = yield* checks.create(checkName, sha);
+		const { id: checkId } = yield* checks.create(checkName, sha);
 
 		yield* Effect.logInfo(`Querying linked issues for PR #${prNumber}`);
 
