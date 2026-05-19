@@ -42,6 +42,16 @@ export function isTargetPrivate(targetDir: string): boolean {
  * any whose built `package.json` is `private` — validation/publish only
  * exercise what will actually be published.
  *
+ * @remarks
+ * Each returned `PublishTarget.directory` is passed through unchanged from
+ * `PublishabilityDetector` and may therefore be **package-relative**, not
+ * absolute. The private-build filter resolves the directory internally
+ * (against `pkg.path`) purely for its own `isTargetPrivate` check — the
+ * returned targets are not mutated. A caller that treats `directory` as a
+ * filesystem path must resolve it itself, e.g.
+ * `isAbsolute(t.directory) ? t.directory : join(pkg.path, t.directory)` — this
+ * is what `validation.ts` does for the dry-run `cwd` and SBOM directory.
+ *
  * @param pkg - The workspace package to resolve targets for.
  * @param workspaceRoot - Absolute path to the workspace root.
  * @returns The publishable targets, with `private`-built targets removed.
