@@ -493,10 +493,9 @@ export function buildValidationComment(validation: ValidationPayload, options?: 
 		parts.push(findingsTable);
 	}
 
-	const publishSummary = buildPublishSummary(validation.publish, { dryRun });
-	if (publishSummary !== "") {
-		parts.push(publishSummary);
-	}
+	// `buildPublishSummary` always emits a non-empty section (it always renders
+	// the "What will be released" heading), so it is pushed unconditionally.
+	parts.push(buildPublishSummary(validation.publish, { dryRun }));
 
 	const releaseNotesUrl = options?.releaseNotesUrl;
 	const releaseNotes =

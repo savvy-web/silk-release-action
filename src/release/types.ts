@@ -173,7 +173,7 @@ export interface BuildTargetResult {
  * @public
  */
 export interface PackageBuildResult {
-	/** Build directory (absolute path). */
+	/** Package-relative build directory (e.g. `dist/npm`). */
 	readonly directory: string;
 	/** Packed tarball size in bytes, or `null` when the dry-run did not report it. */
 	readonly packedBytes: number | null;

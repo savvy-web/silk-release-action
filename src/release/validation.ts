@@ -16,7 +16,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { basename, isAbsolute, join } from "node:path";
+import { basename, isAbsolute, join, relative } from "node:path";
 
 import type { PackagePublishError, ResolvedDependency, SbomError, SbomInput } from "@savvy-web/github-action-effects";
 import {
@@ -106,8 +106,17 @@ interface ReleasedPackage {
  * targets that share it.
  */
 interface Build {
-	/** Absolute path to the built target directory. */
+	/**
+	 * Package-relative build directory (e.g. `dist/npm`) — the value carried
+	 * into `PackageBuildResult.directory` and the `ValidationOutput`, and
+	 * rendered verbatim in the comment.
+	 */
 	readonly directory: string;
+	/**
+	 * Resolved absolute path to the build directory — used for filesystem
+	 * operations (the dry-run child process `cwd`, reading `package.json`).
+	 */
+	readonly absoluteDirectory: string;
 	/** The resolved publish targets that publish from this directory. */
 	readonly targets: ReadonlyArray<PublishTarget>;
 }
@@ -155,23 +164,40 @@ function resolveTargetDir(pkg: WorkspacePackage, target: PublishTarget): string 
 }
 
 /**
+ * Reduce a publish target's directory to the package-relative form
+ * (e.g. `dist/npm`) — the value that flows into `ValidationOutput` and the
+ * rendered comment. An already-relative `target.directory` is kept as-is;
+ * an absolute one is relativised against the package root.
+ */
+function packageRelativeTargetDir(pkg: WorkspacePackage, target: PublishTarget): string {
+	return isAbsolute(target.directory) ? relative(pkg.path, target.directory) : target.directory;
+}
+
+/**
  * Group a package's resolved publish targets into builds — one per unique
- * (absolute) target directory.
+ * target directory.
  *
+ * The dedup map is keyed by the resolved **absolute** path (the identity of
+ * the directory on disk); each {@link Build} carries both the package-relative
+ * directory (for the output) and the absolute path (for filesystem ops).
  * Discovery order of the first target seen for each directory is preserved.
  */
 function groupTargetsIntoBuilds(pkg: WorkspacePackage, targets: ReadonlyArray<PublishTarget>): ReadonlyArray<Build> {
-	const byDirectory = new Map<string, PublishTarget[]>();
+	const byDirectory = new Map<string, { directory: string; absoluteDirectory: string; targets: PublishTarget[] }>();
 	for (const target of targets) {
-		const directory = resolveTargetDir(pkg, target);
-		const existing = byDirectory.get(directory);
+		const absoluteDirectory = resolveTargetDir(pkg, target);
+		const existing = byDirectory.get(absoluteDirectory);
 		if (existing === undefined) {
-			byDirectory.set(directory, [target]);
+			byDirectory.set(absoluteDirectory, {
+				directory: packageRelativeTargetDir(pkg, target),
+				absoluteDirectory,
+				targets: [target],
+			});
 		} else {
-			existing.push(target);
+			existing.targets.push(target);
 		}
 	}
-	return Array.from(byDirectory.entries()).map(([directory, dirTargets]) => ({ directory, targets: dirTargets }));
+	return Array.from(byDirectory.values());
 }
 
 /**
@@ -491,7 +517,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 				const dryRunOutcome = yield* logger.group(
 					`Dry-run · ${pkg.name} · ${distDir}`,
 					Effect.gen(function* () {
-						yield* Effect.logDebug(`cwd: ${build.directory}`);
+						yield* Effect.logDebug(`cwd: ${build.absoluteDirectory}`);
 
 						// Set up auth for the sizing target's registry before the dry-run.
 						if (sizingTarget !== undefined) {
@@ -507,10 +533,10 @@ export const runValidation = (args: ValidationInputArgs) =>
 							}
 						}
 
-						yield* Effect.logDebug(`npm publish --dry-run in ${build.directory}`);
+						yield* Effect.logDebug(`npm publish --dry-run in ${build.absoluteDirectory}`);
 
 						return yield* publish
-							.dryRun(build.directory, {
+							.dryRun(build.absoluteDirectory, {
 								registry: sizingTarget?.registry ?? "https://registry.npmjs.org/",
 								access: sizingTarget?.access ?? "public",
 								provenance: sizingTarget?.provenance ?? false,
@@ -588,8 +614,10 @@ export const runValidation = (args: ValidationInputArgs) =>
 				// `Sbom.generate` so the emitted BOM genuinely carries supplier and
 				// author — NTIA then validates the real shipped artifact.
 				sbomCount++;
-				const dependencies = readBuiltDependencies(build.directory);
-				const sbomMetadata = toSbomMetadataInput(resolveSBOMMetadata(inferSBOMMetadata(build.directory), sbomConfig));
+				const dependencies = readBuiltDependencies(build.absoluteDirectory);
+				const sbomMetadata = toSbomMetadataInput(
+					resolveSBOMMetadata(inferSBOMMetadata(build.absoluteDirectory), sbomConfig),
+				);
 
 				const sbomOutcome = yield* logger.group(
 					`SBOM · ${pkg.name} · ${distDir}`,

@@ -856,6 +856,60 @@ describe("runValidation", () => {
 			expect(report.sbomSummary).toBe("2 SBOM(s) generated successfully");
 		});
 
+		it("carries the package-relative build directory (not an absolute path) into the report", async () => {
+			// Arrange — a package whose target publishes from `dist/npm`. The build
+			// directory that reaches `PackageBuildResult.directory` (and from there
+			// `ValidationOutput` and the rendered comment) must be the
+			// package-relative `dist/npm`, never the resolved absolute path. A
+			// relative `target.directory` is carried verbatim; an absolute one is
+			// relativised against the package root.
+			const pkg = makeWsPkg("@test/relative-dir", "1.1.0", "packages/relative-dir");
+			const relativeTarget = makeNpmTarget("@test/relative-dir", "dist/npm");
+			const absoluteTarget = new PublishTarget({
+				name: "@test/relative-dir",
+				registry: "https://npm.pkg.github.com/",
+				// An absolute path under the package root — must relativise to `dist/github`.
+				directory: "/tmp/test-workspace/@test/relative-dir/dist/github",
+				access: "public",
+				provenance: false,
+			});
+
+			const commandResponses = new Map<string, CommandResponse>([
+				[
+					"git show main:packages/relative-dir/package.json",
+					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/relative-dir", version: "1.0.0" }), stderr: "" },
+				],
+			]);
+
+			const { layer: pubLayer } = PackagePublishTest.empty();
+
+			const layers = Layer.mergeAll(
+				loggerLayer,
+				actionStateLayer,
+				makeCommandRunnerLayer(commandResponses),
+				pubLayer,
+				npmRegistryLayer,
+				sbomLayer,
+				attestLayer,
+				makeWorkspaceDiscoveryLayer([pkg]),
+				makePublishabilityLayer(new Map([["@test/relative-dir", [relativeTarget, absoluteTarget]]])),
+			);
+
+			// Act
+			const report = await Effect.runPromise(
+				runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(Effect.provide(layers)),
+			);
+
+			// Assert — both build directories are package-relative, never absolute.
+			const builds = report.validationPackages[0]?.builds ?? [];
+			expect(builds).toHaveLength(2);
+			const directories = builds.map((b) => b.directory).sort();
+			expect(directories).toEqual(["dist/github", "dist/npm"]);
+			for (const build of builds) {
+				expect(build.directory.startsWith("/")).toBe(false);
+			}
+		});
+
 		it("passes sbom-config supplier to Sbom.generate so the real BOM carries it and NTIA passes", async () => {
 			// Arrange — the `sbom-config` supplier must be threaded into the
 			// `Sbom.generate` input (`SbomInput.supplier` / `authors`); the library
