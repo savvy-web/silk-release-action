@@ -428,29 +428,25 @@ const runValidation = Effect.gen(function* () {
 			},
 		];
 
-		const unified = yield* logger.group("Validation check", createValidationCheck(checkResults, dryRun));
-		yield* Effect.logInfo(`✅ Validation check — conclusion: ${unified.success ? "success" : "failure"}`);
-		const checkRunUrl = unified.checkId > 0 ? `https://github.com/${repository}/runs/${unified.checkId}` : null;
-		const checkRunResult: { url: string; conclusion: string } | null =
-			checkRunUrl !== null ? { url: checkRunUrl, conclusion: unified.success ? "success" : "failure" } : null;
-
 		// Derive the 3-state checks-table icon per row from the findings the
 		// check produced: any error → ❌, else any warning → ⚠️, else ✅. The
 		// `hardFailed` flag covers checks whose failure is not also a finding
 		// (e.g. a publish failure when the build itself passed).
-		const unifiedUrl = unified.htmlUrl !== "" ? unified.htmlUrl : undefined;
 		const statusFor = (checkName: string, hardFailed: boolean): "pass" | "warning" | "error" => {
 			const own = findings.filter((f) => f.check === checkName);
 			if (hardFailed || own.some((f) => f.severity === "error")) return "error";
 			if (own.some((f) => f.severity === "warning")) return "warning";
 			return "pass";
 		};
-		const buildUrl = buildResult.htmlUrl !== "" ? buildResult.htmlUrl : unifiedUrl;
+		const buildUrl = buildResult.htmlUrl !== "" ? buildResult.htmlUrl : null;
 
-		// Project the canonical ValidationOutput once so the per-step check
-		// summaries render off the same data the comment will. URLs are filled
-		// in below once the per-step check runs are created; the first projection
-		// passes the unified URL as a placeholder.
+		// Project the canonical ValidationOutput. The unified Release Validation
+		// Summary check is created at the end (after the per-step checks and the
+		// final `validationOutput`) so its body can carry the full structured
+		// `result` JSON in a collapsed block. Until then `checkRun` is `null`
+		// (the unified URL is not yet known); the per-step `validation.checks`
+		// URLs carry each row's real check-run page, which is the consumer-
+		// visible signal.
 		const projectValidation = (
 			checks: ReadonlyArray<ValidationOutput["validation"]["checks"][number]>,
 		): ValidationOutput =>
@@ -464,41 +460,44 @@ const runValidation = Effect.gen(function* () {
 				checks,
 				findings,
 				validationPackages,
-				checkRun: checkRunResult,
+				checkRun: null,
 				dryRun,
 			});
 
+		// Placeholder checks — Link Issues from Commits has no dedicated check
+		// run (`null` URL); Build Validation carries its own; the remaining
+		// three are filled in below once their per-step check runs exist.
 		const placeholderChecks: ReadonlyArray<ValidationOutput["validation"]["checks"][number]> = [
 			{
 				name: "Link Issues from Commits",
 				status: statusFor("Link Issues from Commits", false),
 				outcome: `${issuesResult.linkedIssues.length} issue(s) linked`,
-				url: unifiedUrl ?? null,
+				url: null,
 			},
 			{
 				name: "Build Validation",
 				status: statusFor("Build Validation", !buildResult.success),
 				outcome: buildResult.success ? "Build passed" : "Build failed",
-				url: buildUrl ?? null,
+				url: buildUrl,
 			},
 			{
 				name: "Publish Validation",
 				status: statusFor("Publish Validation", !buildResult.success || !publishOk),
 				outcome:
 					publishTotalTargets === 0 ? "No targets" : `${publishReadyTargets}/${publishTotalTargets} target(s) ready`,
-				url: unifiedUrl ?? null,
+				url: null,
 			},
 			{
 				name: "Release Notes Preview",
 				status: statusFor("Release Notes Preview", false),
 				outcome: `${reportPackages.length} package(s) ready`,
-				url: unifiedUrl ?? null,
+				url: null,
 			},
 			{
 				name: "SBOM Preview",
 				status: statusFor("SBOM Preview", !buildResult.success || !sbomOk),
 				outcome: sbomSummary,
-				url: unifiedUrl ?? null,
+				url: null,
 			},
 		];
 
@@ -551,9 +550,9 @@ const runValidation = Effect.gen(function* () {
 		);
 		const sbomCheckUrl = yield* createPerStepCheck(sbomTitle, conclusionFor("SBOM Preview"), sbomSummaryMd);
 
-		// Replace the unified-fallback URL on Publish / Release Notes / SBOM rows
-		// with each check's real htmlUrl. Build/Link rows keep their existing
-		// per-step URLs.
+		// Fill in the Publish / Release Notes / SBOM rows with each check's
+		// real htmlUrl. Build / Link rows keep their existing values (own
+		// per-step URL or `null`).
 		const urlFor = (placeholder: string | null, real: string): string | null => (real !== "" ? real : placeholder);
 		const checkRows: ReadonlyArray<ValidationOutput["validation"]["checks"][number]> = placeholderChecks.map((row) => {
 			if (row.name === "Publish Validation") return { ...row, url: urlFor(row.url, publishCheckUrl) };
@@ -579,6 +578,25 @@ const runValidation = Effect.gen(function* () {
 		// comment (Step 7) and emitted as `result` — the markdown is provably
 		// a projection of the exact emitted JSON.
 		const validationOutput = projectValidation(checkRows);
+
+		// Build the collapsed JSON block surfacing the full structured `result`
+		// action output inside the unified check-run page — the downstream-
+		// consumer artifact is no longer hidden behind the action's outputs.
+		const jsonBlock = [
+			"",
+			"<details>",
+			"<summary>📦 Full structured output (<code>result</code> action output)</summary>",
+			"",
+			"```json",
+			JSON.stringify(validationOutput, null, 2),
+			"```",
+			"",
+			"</details>",
+		].join("\n");
+
+		const unified = yield* logger.group("Validation check", createValidationCheck(checkResults, dryRun, jsonBlock));
+		yield* Effect.logInfo(`✅ Validation check — conclusion: ${unified.success ? "success" : "failure"}`);
+		const unifiedUrl = unified.htmlUrl !== "" ? unified.htmlUrl : undefined;
 
 		// Step 7 — sticky comment on the release PR (migrated).
 		const prsResult = yield* Effect.either(

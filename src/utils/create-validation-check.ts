@@ -20,11 +20,20 @@ export interface UnifiedValidationResult {
 /**
  * Create the unified validation check.
  *
+ * @param validations - Per-step validation results that drive the checks
+ *   table and overall conclusion.
+ * @param dryRun - Whether this is a dry-run (changes the check-run title).
+ * @param extraBody - Optional markdown appended to the check-run summary
+ *   after the checks-table content. Used to surface the full structured
+ *   `result` JSON in the check-run page; the job-step summary is not
+ *   modified.
+ *
  * @public
  */
 export const createValidationCheck = (
 	validations: ReadonlyArray<ValidationResult>,
 	dryRun: boolean,
+	extraBody?: string,
 ): Effect.Effect<
 	UnifiedValidationResult,
 	ActionEnvironmentError | ActionOutputError | CheckRunError,
@@ -67,7 +76,11 @@ export const createValidationCheck = (
 				content: summaryWriter.list(failedChecks.map((v) => `**${v.name}**: ${v.message ?? "Validation failed"}`)),
 			});
 		}
-		const checkDetails = summaryWriter.build(sections);
+		const baseDetails = summaryWriter.build(sections);
+		// Append the optional `extraBody` after the checks-table content. The
+		// job-step summary is intentionally left without the extra body so the
+		// terse job summary stays focused on the per-step results table.
+		const checkDetails = extraBody !== undefined && extraBody !== "" ? `${baseDetails}\n${extraBody}` : baseDetails;
 
 		const { id: checkId, htmlUrl } = yield* checks.create(checkTitle, sha);
 		yield* checks.complete(checkId, success ? "success" : "failure", {
