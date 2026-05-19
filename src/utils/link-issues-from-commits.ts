@@ -32,6 +32,8 @@ import {
 	CheckRun,
 	GitHubClient,
 	GitHubClientLive,
+	GitHubCommit,
+	GitHubCommitLive,
 	GitHubGraphQLLive,
 	GitHubIssue,
 	GitHubIssueLive,
@@ -97,23 +99,6 @@ const extractPRNumber = (message: string): number | null => {
 	const match = message.match(MERGE_COMMIT_PR_PATTERN);
 	return match ? Number.parseInt(match[1], 10) : null;
 };
-
-/** REST commit entry, narrowed to fields we read. */
-interface CommitRecord {
-	sha: string;
-	commit: { message: string; author?: { name?: string } };
-}
-
-/** REST compareCommits response, narrowed to fields we read. */
-interface CompareResponse {
-	commits: ReadonlyArray<CommitRecord>;
-}
-
-const toCommitInfo = (c: CommitRecord): CommitInfo => ({
-	sha: c.sha,
-	message: c.commit.message,
-	author: c.commit.author?.name ?? "Unknown",
-});
 
 /** A tag entry enriched with its extracted semver version string. @internal */
 interface TagEntry {
@@ -194,51 +179,22 @@ export const getLatestTagSha = Effect.gen(function* () {
  *
  * @internal
  */
-const getAllCommitsOnBranch = (
-	branch: string,
-): Effect.Effect<CommitInfo[], ActionEnvironmentError, ActionEnvironment | GitHubClient> =>
+const getAllCommitsOnBranch = (branch: string): Effect.Effect<CommitInfo[], never, GitHubCommit> =>
 	Effect.gen(function* () {
-		const client = yield* GitHubClient;
-		const env = yield* ActionEnvironment;
-		const { repository } = yield* env.github;
-		const [owner, repo] = repository.split("/");
-
+		const commits = yield* GitHubCommit;
 		yield* Effect.logInfo(`Fetching all commits from ${branch} branch...`);
 
-		const all = yield* client
-			.paginate<CommitRecord>(
-				"listCommits",
-				(octokit, page, perPage) =>
-					(
-						octokit as {
-							rest: {
-								repos: {
-									listCommits: (params: {
-										owner: string;
-										repo: string;
-										sha: string;
-										per_page: number;
-										page: number;
-									}) => Promise<{ data: ReadonlyArray<CommitRecord> }>;
-								};
-							};
-						}
-					).rest.repos.listCommits({ owner, repo, sha: branch, per_page: perPage, page }) as Promise<{
-						data: CommitRecord[];
-					}>,
-				{ perPage: 100 },
-			)
-			.pipe(
-				Effect.catchAll((e) =>
-					Effect.gen(function* () {
-						yield* Effect.logWarning(`Failed to fetch commits: ${e.reason}`);
-						return [] as CommitRecord[];
-					}),
-				),
-			);
+		const all = yield* commits.list(branch).pipe(
+			Effect.catchAll((e) =>
+				Effect.gen(function* () {
+					yield* Effect.logWarning(`Failed to fetch commits: ${e.reason}`);
+					return [] as ReadonlyArray<{ sha: string; message: string; author: string }>;
+				}),
+			),
+		);
 
 		yield* Effect.logInfo(`Fetched total of ${all.length} commit(s) from ${branch}`);
-		return all.map(toCommitInfo);
+		return all.map((c) => ({ sha: c.sha, message: c.message, author: c.author }));
 	});
 
 /** GraphQL response for the closingIssuesReferences query. */
@@ -348,41 +304,21 @@ export const getLinkedIssuesFromCommits = (
 ): Effect.Effect<
 	{ linkedIssues: LinkedIssue[]; commits: CommitInfo[] },
 	ActionEnvironmentError | GitHubIssueError,
-	ActionEnvironment | GitHubClient | GitHubIssue | GitTag
+	ActionEnvironment | GitHubClient | GitHubCommit | GitHubIssue | GitTag
 > =>
 	Effect.gen(function* () {
-		const client = yield* GitHubClient;
-		const env = yield* ActionEnvironment;
-		const { repository } = yield* env.github;
-		const [owner, repo] = repository.split("/");
+		const commitsSvc = yield* GitHubCommit;
 		const latestTagSha = yield* getLatestTagSha;
 
 		let commits: CommitInfo[];
 		if (latestTagSha !== null) {
 			yield* Effect.logInfo(`Comparing ${latestTagSha}...${targetBranch}`);
-			const compareResult = yield* Effect.either(
-				client.rest<CompareResponse>("compareCommits", (octokit) =>
-					(
-						octokit as {
-							rest: {
-								repos: {
-									compareCommits: (params: {
-										owner: string;
-										repo: string;
-										base: string;
-										head: string;
-									}) => Promise<{ data: CompareResponse }>;
-								};
-							};
-						}
-					).rest.repos.compareCommits({ owner, repo, base: latestTagSha, head: targetBranch }),
-				),
-			);
+			const compareResult = yield* Effect.either(commitsSvc.compare(latestTagSha, targetBranch));
 			if (compareResult._tag === "Left") {
 				yield* Effect.logWarning(`Failed to compare commits: ${compareResult.left.reason}`);
 				commits = [];
 			} else {
-				commits = compareResult.right.commits.map(toCommitInfo);
+				commits = compareResult.right.commits.map((c) => ({ sha: c.sha, message: c.message, author: c.author }));
 				yield* Effect.logInfo(`Found ${commits.length} commit(s) since last release`);
 			}
 		} else {
@@ -592,7 +528,7 @@ export const linkIssuesFromCommits: Effect.Effect<
 	| GitHubClientError
 	| GitHubIssueError
 	| PullRequestError,
-	ActionEnvironment | ActionOutputs | CheckRun | GitHubClient | GitHubIssue | GitTag | PullRequest
+	ActionEnvironment | ActionOutputs | CheckRun | GitHubClient | GitHubCommit | GitHubIssue | GitTag | PullRequest
 > = Effect.gen(function* () {
 	const env = yield* ActionEnvironment;
 	const outputs = yield* ActionOutputs;
@@ -664,6 +600,7 @@ export const getLinkedIssuesFromCommitsPromise = (
 				Layer.mergeAll(
 					ActionEnvironmentLive,
 					GitHubClientLive.fromToken(appToken()),
+					GitHubCommitLive.pipe(Layer.provide(GitHubClientLive.fromToken(appToken()))),
 					GitTagLive.pipe(Layer.provide(GitHubClientLive.fromToken(appToken()))),
 					GitHubIssueLive.pipe(Layer.provide(GitHubGraphQLLive), Layer.provide(GitHubClientLive.fromToken(appToken()))),
 				),

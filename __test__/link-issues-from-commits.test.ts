@@ -21,19 +21,21 @@
  *    known set of tags; verifies the full `getLinkedIssuesFromCommits` path.
  *
  * 3. **No tags** — `GitTagTest` is empty. The function falls back to
- *    `getAllCommitsOnBranch` (the `listCommits` paginate path), which is
- *    seeded in `GitHubClientTest`. The returned `commits` array reflects
- *    those paginated commits.
+ *    `getAllCommitsOnBranch` (the `GitHubCommit.list` path), which is seeded
+ *    in `GitHubCommitTest`. The returned `commits` array reflects those
+ *    listed commits.
  */
 
 import type {
 	GitHubClientTestState,
+	GitHubCommitTestState,
 	GitHubIssueTestState,
 	GitTagTestState,
 } from "@savvy-web/github-action-effects/testing";
 import {
 	ActionEnvironmentTest,
 	GitHubClientTest,
+	GitHubCommitTest,
 	GitHubIssueTest,
 	GitTagTest,
 } from "@savvy-web/github-action-effects/testing";
@@ -49,10 +51,11 @@ const OWNER = "owner";
 const REPO = "repo";
 const TARGET_BRANCH = "main";
 
-/** Minimal commit shape that satisfies the `CommitRecord` interface. */
+/** Minimal commit summary that satisfies the `CommitSummary` shape. */
 const makeCommit = (sha: string, message: string, author = "Test Author") => ({
 	sha,
-	commit: { message, author: { name: author } },
+	message,
+	author,
 });
 
 // ---------------------------------------------------------------------------
@@ -62,14 +65,19 @@ const makeCommit = (sha: string, message: string, author = "Test Author") => ({
 interface Fixtures {
 	tagState: GitTagTestState;
 	clientState: GitHubClientTestState;
+	commitState: GitHubCommitTestState;
 	issueState: GitHubIssueTestState;
 }
 
 const makeFixtures = (
 	params: {
 		tags?: Array<{ tag: string; sha: string }>;
-		compareCommitsData?: Array<{ sha: string; commit: { message: string; author?: { name?: string } } }>;
-		listCommitsData?: Array<Array<{ sha: string; commit: { message: string; author?: { name?: string } } }>>;
+		/** Commits seeded for `compare(latestTagSha, TARGET_BRANCH)`. */
+		compareCommitsData?: Array<{ sha: string; message: string; author: string }>;
+		/** SHA used as the `compare` base — must match the seeded tag's SHA. */
+		compareBaseSha?: string;
+		/** Commits seeded for `list(TARGET_BRANCH)` (the no-tag fallback). */
+		listCommitsData?: Array<{ sha: string; message: string; author: string }>;
 		issues?: Array<{ number: number; title: string; state: string; htmlUrl?: string; nodeId?: string }>;
 	} = {},
 ): Fixtures => {
@@ -78,26 +86,25 @@ const makeFixtures = (
 		tagState.tags.set(tag, sha);
 	}
 
-	const restResponses = new Map<string, { data: unknown }>();
-	const paginateResponses = new Map<string, Array<unknown[]>>();
+	const clientState: GitHubClientTestState = {
+		restResponses: new Map(),
+		graphqlResponses: new Map(),
+		paginateResponses: new Map(),
+		repo: { owner: OWNER, repo: REPO },
+	};
 
-	if (params.compareCommitsData !== undefined) {
-		restResponses.set("compareCommits", { data: { commits: params.compareCommitsData } });
+	const commitState: GitHubCommitTestState = GitHubCommitTest.empty();
+
+	if (params.compareCommitsData !== undefined && params.compareBaseSha !== undefined) {
+		commitState.comparisons.set(`${params.compareBaseSha}...${TARGET_BRANCH}`, {
+			commits: params.compareCommitsData,
+			files: [],
+		});
 	}
 
 	if (params.listCommitsData !== undefined) {
-		paginateResponses.set(
-			"listCommits",
-			params.listCommitsData.map((page) => page as unknown[]),
-		);
+		commitState.commitLists.set(TARGET_BRANCH, params.listCommitsData);
 	}
-
-	const clientState: GitHubClientTestState = {
-		restResponses,
-		graphqlResponses: new Map(),
-		paginateResponses,
-		repo: { owner: OWNER, repo: REPO },
-	};
 
 	const issueState = GitHubIssueTest.empty().state;
 	for (const issue of params.issues ?? []) {
@@ -111,7 +118,7 @@ const makeFixtures = (
 		});
 	}
 
-	return { tagState, clientState, issueState };
+	return { tagState, clientState, commitState, issueState };
 };
 
 // ---------------------------------------------------------------------------
@@ -148,6 +155,7 @@ const runStage = (
 		}),
 		GitTagTest.layer(f.tagState),
 		GitHubClientTest.layer(f.clientState),
+		GitHubCommitTest.layer(f.commitState),
 		GitHubIssueTest.layer(f.issueState),
 	);
 	return Effect.runPromise(
@@ -229,7 +237,8 @@ describe("getLinkedIssuesFromCommits", () => {
 			const compareCommit = makeCommit("commit-abc", "feat: add feature");
 			const f = makeFixtures({
 				tags,
-				// compareCommits is called with base=sha-v2; we return one commit.
+				// compare is called with base=sha-v2; we return one commit.
+				compareBaseSha: "sha-v2",
 				compareCommitsData: [compareCommit],
 			});
 
@@ -251,6 +260,7 @@ describe("getLinkedIssuesFromCommits", () => {
 			const commitWithRef = makeCommit("abc0001", "fix: resolve bug\n\nCloses #7");
 			const f = makeFixtures({
 				tags,
+				compareBaseSha: "sha-latest",
 				compareCommitsData: [commitWithRef],
 				// Seed the GitHubIssue.get response so the issue details are backfilled.
 				issues: [
@@ -278,21 +288,21 @@ describe("getLinkedIssuesFromCommits", () => {
 			const commits = [makeCommit("sha-first", "chore: initial commit"), makeCommit("sha-second", "feat: add widget")];
 			const f = makeFixtures({
 				// No tags seeded.
-				// listCommits paginate: one page with two commits.
-				listCommitsData: [commits],
+				// GitHubCommit.list returns these two commits for the branch.
+				listCommitsData: commits,
 			});
 
 			const result = await runStage(f);
 
-			// Both commits returned via the listCommits fallback.
+			// Both commits returned via the list fallback.
 			expect(result.commits).toHaveLength(2);
 			expect(result.commits.map((c) => c.sha)).toEqual(["sha-first", "sha-second"]);
 			expect(result.linkedIssues).toHaveLength(0);
 		});
 
-		it("returns empty commits when both tag lookup and listCommits fail", async () => {
-			// No tags, no listCommits response registered — paginate returns Left,
-			// which getAllCommitsOnBranch catches and returns [].
+		it("returns empty commits when there are no tags and no commits on the branch", async () => {
+			// No tags, no commit list seeded — GitHubCommit.list returns []
+			// (lenient default), so getAllCommitsOnBranch yields [].
 			const f = makeFixtures();
 
 			const result = await runStage(f);

@@ -19,6 +19,7 @@ import type {
 	CommandRunnerError,
 	GitCommitError,
 	GitHubClientError,
+	GitHubCommit,
 	GitHubIssue,
 	GitHubIssueError,
 	GitTag,
@@ -168,6 +169,7 @@ export const createReleaseBranch = (
 	| FileSystem.FileSystem
 	| GitCommit
 	| GitHubClient
+	| GitHubCommit
 	| GitHubIssue
 	| GitTag
 	| PullRequest

@@ -26,6 +26,7 @@ import {
 	CommandRunner,
 	ErrorAccumulator,
 	GitHubClient,
+	GitHubCommit,
 	NpmRegistry,
 	OidcTokenIssuer,
 	PackagePublish,
@@ -245,44 +246,33 @@ const detectFromPR = (
  *
  * Ports `detectReleasedPackagesFromCommit` using `GitHubClient.rest`.
  */
-const detectFromCommit = (): Effect.Effect<ReadonlyArray<DetectedRelease>, never, GitHubClient> =>
+const detectFromCommit = (): Effect.Effect<ReadonlyArray<DetectedRelease>, never, GitHubClient | GitHubCommit> =>
 	Effect.gen(function* () {
 		const client = yield* GitHubClient;
+		const commits = yield* GitHubCommit;
 		const { owner, repo } = yield* client.repo;
 
 		const sha = process.env.GITHUB_SHA ?? "";
 		if (!sha) return [];
 
-		interface CommitData {
-			parents?: Array<{ sha: string }>;
-		}
-		const commitData = yield* client
-			.rest<CommitData>("repos.getCommit", (octokit) => {
-				const ok = octokit as {
-					rest: { repos: { getCommit: (p: Record<string, unknown>) => Promise<{ data: CommitData }> } };
-				};
-				return ok.rest.repos.getCommit({ owner, repo, ref: sha });
-			})
-			.pipe(Effect.catchAll(() => Effect.succeed({} as CommitData)));
+		const commitData = yield* commits
+			.get(sha)
+			.pipe(Effect.catchAll(() => Effect.succeed({ parents: [] as ReadonlyArray<{ sha: string }> })));
 
 		const parents = commitData.parents;
-		if (!parents || parents.length === 0) return [];
+		if (parents.length === 0) return [];
 
 		const baseSha = parents[0]?.sha ?? "";
 
-		interface CompareData {
-			files?: Array<{ filename: string; status: string }>;
-		}
-		const comparison = yield* client
-			.rest<CompareData>("repos.compareCommits", (octokit) => {
-				const ok = octokit as {
-					rest: { repos: { compareCommits: (p: Record<string, unknown>) => Promise<{ data: CompareData }> } };
-				};
-				return ok.rest.repos.compareCommits({ owner, repo, base: baseSha, head: sha });
-			})
-			.pipe(Effect.catchAll(() => Effect.succeed({} as CompareData)));
+		const comparison = yield* commits
+			.compare(baseSha, sha)
+			.pipe(
+				Effect.catchAll(() =>
+					Effect.succeed({ commits: [], files: [] as ReadonlyArray<{ filename: string; status: string }> }),
+				),
+			);
 
-		const modifiedPkgJsonFiles = (comparison.files ?? []).filter(
+		const modifiedPkgJsonFiles = comparison.files.filter(
 			(f) => f.filename.endsWith("package.json") && (f.status === "modified" || f.status === "changed"),
 		);
 
@@ -584,7 +574,7 @@ const publishOneTarget = (
  */
 export const detectReleases = (
 	args: PublishInputArgs,
-): Effect.Effect<ReadonlyArray<DetectedRelease>, never, GitHubClient | PullRequest> =>
+): Effect.Effect<ReadonlyArray<DetectedRelease>, never, GitHubClient | GitHubCommit | PullRequest> =>
 	Effect.gen(function* () {
 		let detected: ReadonlyArray<DetectedRelease>;
 

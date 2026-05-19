@@ -15,12 +15,13 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { GitHubClient } from "@savvy-web/github-action-effects/testing";
+import type { GitHubClient, GitHubCommit, GitHubCommitTestState } from "@savvy-web/github-action-effects/testing";
 import {
 	ActionLoggerTest,
 	ActionStateTest,
 	AttestTest,
 	GitHubClientTest,
+	GitHubCommitTest,
 	NpmRegistryTest,
 	OidcTokenIssuerTest,
 	PackagePublishTest,
@@ -137,7 +138,7 @@ const makeGitHubClientLayerForPR = (
 	prNumber: number,
 	packages: Array<{ name: string; newVersion: string; oldVersion: string; filename: string }>,
 ): {
-	layer: Layer.Layer<GitHubClient | import("@savvy-web/github-action-effects").PullRequest>;
+	layer: Layer.Layer<GitHubClient | GitHubCommit | import("@savvy-web/github-action-effects").PullRequest>;
 	tmpCwd: string;
 } => {
 	// Create a temp directory structure that mirrors the repo on disk
@@ -192,7 +193,13 @@ const makeGitHubClientLayerForPR = (
 	};
 
 	return {
-		layer: Layer.merge(GitHubClientTest.layer(clientState), PullRequestTest.layer(prState)) as never,
+		layer: Layer.mergeAll(
+			GitHubClientTest.layer(clientState),
+			PullRequestTest.layer(prState),
+			// `detectReleases` requires `GitHubCommit`; the PR-detection path here
+			// never reaches `detectFromCommit`, so an empty commit layer suffices.
+			GitHubCommitTest.layer(GitHubCommitTest.empty()),
+		) as never,
 		tmpCwd,
 	};
 };
@@ -211,7 +218,104 @@ const configProviderLayer = Layer.setConfigProvider(ConfigProvider.fromMap(new M
 
 // ─── detectReleases ─────────────────────────────────────────────────────────
 
+/**
+ * Build test layers that simulate `detectFromCommit` responses.
+ *
+ * - `GitHubCommitTest` seeds the `get(sha)` commit (with its parent SHA) and
+ *   the `compare(baseSha, sha)` comparison whose `files` drive detection.
+ * - `GitHubClientTest` seeds `repos.getContent` (still a raw call — B7) so the
+ *   base-branch version resolves.
+ *
+ * Writes the "current" `package.json` to a temp `cwd` so `detectFromCommit`'s
+ * `readFileSync` resolves.
+ */
+const makeLayerForCommit = (
+	sha: string,
+	baseSha: string,
+	pkg: { name: string; newVersion: string; oldVersion: string; filename: string },
+): {
+	layer: Layer.Layer<GitHubClient | GitHubCommit | import("@savvy-web/github-action-effects").PullRequest>;
+	tmpCwd: string;
+} => {
+	const tmpCwd = join(tmpdir(), `silk-publish-commit-test-${sha}-${Date.now()}`);
+	const dir = join(tmpCwd, ...pkg.filename.split("/").slice(0, -1));
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(join(tmpCwd, pkg.filename), JSON.stringify({ name: pkg.name, version: pkg.newVersion }));
+
+	const oldContent = Buffer.from(JSON.stringify({ name: pkg.name, version: pkg.oldVersion })).toString("base64");
+
+	const commitState: GitHubCommitTestState = GitHubCommitTest.empty();
+	commitState.commits.set(sha, {
+		sha,
+		message: "chore: release",
+		author: "Test Author",
+		parents: [{ sha: baseSha }],
+	});
+	commitState.comparisons.set(`${baseSha}...${sha}`, {
+		commits: [],
+		files: [{ filename: pkg.filename, status: "modified" }],
+	});
+
+	const clientState = {
+		restResponses: new Map([["repos.getContent", { data: { content: oldContent } }]]),
+		graphqlResponses: new Map<string, unknown>(),
+		paginateResponses: new Map<string, Array<unknown[]>>(),
+		repo: { owner: "test-owner", repo: "test-repo" },
+	};
+
+	return {
+		layer: Layer.mergeAll(
+			GitHubClientTest.layer(clientState),
+			GitHubCommitTest.layer(commitState),
+			// `detectReleases` requires `PullRequest`; the commit-detection path
+			// here passes `mergedReleasePRNumber: undefined`, so `detectFromPR`
+			// is never invoked and an empty PR layer suffices.
+			PullRequestTest.layer(PullRequestTest.empty()),
+		) as never,
+		tmpCwd,
+	};
+};
+
 describe("detectReleases", () => {
+	describe("detection via GitHubCommitTest (detectFromCommit)", () => {
+		it("detects packages from the commit comparison's modified package.json files", async () => {
+			// Arrange: seed a commit + comparison whose files drive the detection.
+			const sha = "headsha-commit";
+			const baseSha = "parentsha-commit";
+			const { layer: ghLayer, tmpCwd } = makeLayerForCommit(sha, baseSha, {
+				name: "@test/commit-pkg",
+				newVersion: "3.0.0",
+				oldVersion: "2.0.0",
+				filename: "packages/commit-pkg/package.json",
+			});
+
+			const args: PublishInputArgs = {
+				packageManager: "pnpm",
+				targetBranch: "main",
+				dryRun: false,
+				mergedReleasePRNumber: undefined,
+			};
+
+			const savedSha = process.env.GITHUB_SHA;
+			process.env.GITHUB_SHA = sha;
+
+			// Act
+			let detected: ReadonlyArray<DetectedRelease>;
+			try {
+				detected = await runInCwd(tmpCwd, () => Effect.runPromise(detectReleases(args).pipe(Effect.provide(ghLayer))));
+			} finally {
+				if (savedSha === undefined) delete process.env.GITHUB_SHA;
+				else process.env.GITHUB_SHA = savedSha;
+			}
+
+			// Assert: the seeded comparison files drove the detected release.
+			expect(detected).toHaveLength(1);
+			expect(detected[0]?.name).toBe("@test/commit-pkg");
+			expect(detected[0]?.version).toBe("3.0.0");
+			expect(detected[0]?.path.endsWith(join("packages", "commit-pkg"))).toBe(true);
+		});
+	});
+
 	describe("detection via GitHubClientTest (detectFromPR)", () => {
 		it("detects packages from a merged PR", async () => {
 			// Arrange: write a real package.json on disk so detectFromPR can read it
