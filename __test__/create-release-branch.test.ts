@@ -79,8 +79,7 @@ const makeFixtures = (
 			reviewers: [],
 			teamReviewers: [],
 			autoMerge: undefined,
-			// biome-ignore lint/suspicious/noExplicitAny: minimal PullRequestRecord fixture
-		} as any);
+		});
 		prState.nextNumber = prNumber + 1;
 	}
 
