@@ -7,57 +7,53 @@
  * 2. Load explicit config from .github/silk-release.json
  * 3. Merge config over inferred values (config wins)
  *
+ * The input-config types (`SBOMContact`, `SBOMSupplierConfig`,
+ * `SBOMCopyrightConfig`, `SBOMMetadataConfig`, `ReleaseConfig`) are derived
+ * from the Effect Schema in `src/schema/silk-release-config.ts` — the schema
+ * is the single source of truth and is also the source of the generated
+ * `silk-release-action.input.schema.json`. The CycloneDX-wire and
+ * NTIA-result types below stay hand-rolled because they model external
+ * shapes the action only consumes, not config it parses.
+ *
  * @see https://www.ntia.gov/files/ntia/publications/sbom_minimum_elements_report.pdf
  */
 
+import type {
+	SbomConfig,
+	SbomContact,
+	SbomCopyright,
+	SbomSupplier,
+	SilkReleaseConfig,
+} from "../schema/silk-release-config.js";
+
 /**
  * Contact information for supplier or security
+ *
+ * @remarks
+ * Re-exported alias of {@link SbomContact} — the Schema-derived type.
  */
-export interface SBOMContact {
-	/** Contact name (inferred from package.json author) */
-	name?: string | undefined;
-	/** Contact email (inferred from package.json author or security contact) */
-	email?: string | undefined;
-	/** Contact phone */
-	phone?: string | undefined;
-}
+export type SBOMContact = SbomContact;
 
 /**
  * Supplier configuration for SBOM metadata
  *
  * @remarks
- * The supplier field is required for NTIA minimum elements compliance.
- * This information identifies who supplies/distributes the software.
+ * Re-exported alias of {@link SbomSupplier} — the Schema-derived type. The
+ * supplier `name` is required for NTIA minimum-elements compliance; `url`
+ * accepts a string or string array and `contact` accepts an object or array.
  */
-export interface SBOMSupplierConfig {
-	/** Organization or company name (required for NTIA compliance) */
-	name: string;
-	/** Organization website URLs */
-	url?: string | string[] | undefined;
-	/** Contact information (security contact recommended) */
-	contact?: SBOMContact | SBOMContact[] | undefined;
-}
+export type SBOMSupplierConfig = SbomSupplier;
 
 /**
  * Copyright configuration for SBOM metadata
+ *
+ * @remarks
+ * Re-exported alias of {@link SbomCopyright} — the Schema-derived type.
+ * Most users should NOT set `startYear`; it is auto-detected from the npm
+ * registry's first-publication date. Override only when registry lookup is
+ * unreliable or the copyright predates first npm publication.
  */
-export interface SBOMCopyrightConfig {
-	/** Copyright holder name (defaults to supplier.name) */
-	holder?: string;
-	/**
-	 * Override for copyright start year
-	 *
-	 * @remarks
-	 * **Most users should NOT set this.** The start year is auto-detected from the
-	 * npm registry (first publication date). For new packages, the current year is used.
-	 *
-	 * Only use this override if:
-	 * - The package was published elsewhere before npm
-	 * - The copyright predates the first npm publication
-	 * - The registry lookup fails or returns incorrect data
-	 */
-	startYear?: number;
-}
+export type SBOMCopyrightConfig = SbomCopyright;
 
 /**
  * External reference types in CycloneDX format
@@ -122,9 +118,9 @@ export interface SBOMExternalReference {
  * Complete SBOM metadata configuration
  *
  * @remarks
- * This configuration is loaded from .github/silk-release.json and merged
- * with auto-inferred values from package.json. Explicit config values take
- * precedence over inferred values.
+ * Re-exported alias of {@link SbomConfig} — the Schema-derived type. Merged
+ * with auto-inferred values from `package.json` by `resolveSBOMMetadata`;
+ * explicit config values take precedence over inferred values.
  *
  * @example
  * ```json
@@ -144,35 +140,17 @@ export interface SBOMExternalReference {
  * }
  * ```
  */
-export interface SBOMMetadataConfig {
-	/** Supplier information (required for NTIA compliance) */
-	supplier?: SBOMSupplierConfig;
-	/** Copyright configuration */
-	copyright?: SBOMCopyrightConfig;
-	/**
-	 * Publisher name for component metadata
-	 *
-	 * @remarks
-	 * If not specified, defaults to supplier.name or author name from package.json
-	 */
-	publisher?: string;
-	/**
-	 * Documentation URL (overrides homepage from package.json)
-	 */
-	documentationUrl?: string;
-}
+export type SBOMMetadataConfig = SbomConfig;
 
 /**
  * Release configuration file structure
  *
  * @remarks
- * This is the structure of .github/silk-release.json which configures
- * release-related settings including SBOM metadata.
+ * Re-exported alias of {@link SilkReleaseConfig} — the Schema-derived top-level
+ * type for `.github/silk-release.json`, the `sbom-config` action input, and
+ * the `SILK_RELEASE_SBOM_TEMPLATE` environment variable.
  */
-export interface ReleaseConfig {
-	/** SBOM metadata configuration */
-	sbom?: SBOMMetadataConfig;
-}
+export type ReleaseConfig = SilkReleaseConfig;
 
 /**
  * Inferred SBOM metadata from package.json

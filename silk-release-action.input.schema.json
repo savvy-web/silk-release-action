@@ -1,0 +1,114 @@
+{
+	"$schema": "http://json-schema.org/draft-07/schema#",
+	"$id": "https://json.schemastore.org/silk-release-action.input.schema.json",
+	"type": "object",
+	"properties": {
+		"$schema": {
+			"type": "string"
+		},
+		"sbom": {
+			"type": "object",
+			"properties": {
+				"supplier": {
+					"type": "object",
+					"required": ["name"],
+					"properties": {
+						"name": {
+							"type": "string"
+						},
+						"url": {
+							"anyOf": [
+								{
+									"type": "string"
+								},
+								{
+									"type": "array",
+									"items": {
+										"type": "string"
+									}
+								}
+							]
+						},
+						"contact": {
+							"anyOf": [
+								{
+									"type": "object",
+									"properties": {
+										"name": {
+											"type": "string"
+										},
+										"email": {
+											"type": "string"
+										},
+										"phone": {
+											"type": "string"
+										}
+									},
+									"additionalProperties": false
+								},
+								{
+									"type": "array",
+									"items": {
+										"type": "object",
+										"properties": {
+											"name": {
+												"type": "string"
+											},
+											"email": {
+												"type": "string"
+											},
+											"phone": {
+												"type": "string"
+											}
+										},
+										"additionalProperties": false
+									}
+								}
+							]
+						}
+					},
+					"additionalProperties": false
+				},
+				"authors": {
+					"type": "array",
+					"items": {
+						"type": "object",
+						"properties": {
+							"name": {
+								"type": "string"
+							},
+							"email": {
+								"type": "string"
+							},
+							"phone": {
+								"type": "string"
+							}
+						},
+						"additionalProperties": false
+					}
+				},
+				"publisher": {
+					"type": "string"
+				},
+				"copyright": {
+					"type": "object",
+					"properties": {
+						"holder": {
+							"type": "string"
+						},
+						"startYear": {
+							"type": "number"
+						}
+					},
+					"additionalProperties": false
+				},
+				"documentationUrl": {
+					"type": "string"
+				}
+			},
+			"additionalProperties": false
+		}
+	},
+	"additionalProperties": false,
+	"title": "Silk Release Action input config"
+}

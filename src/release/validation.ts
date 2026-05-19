@@ -394,17 +394,34 @@ export const runValidation = (args: ValidationInputArgs) =>
 		// `loadSBOMConfig` looks up `.github/silk-release.json`, then the
 		// `sbom-config` action input (read via `INPUT_SBOM_CONFIG`, the same env
 		// var `Config.string("sbom-config")` reads), then the
-		// `SILK_RELEASE_SBOM_TEMPLATE` variable. The resolved template is applied
-		// to every build's BOM so a supplied supplier/author silences false NTIA
-		// warnings. `infer-sbom-metadata.ts`, previously dead in Phase 2, is the
-		// resolver. Any failure degrades to "no template" (NTIA may then warn).
-		const sbomConfig = yield* Effect.sync<SBOMMetadataConfig | undefined>(() => {
+		// `SILK_RELEASE_SBOM_TEMPLATE` variable. Each candidate is decoded
+		// through the `SilkReleaseConfig` Effect Schema; a decode failure
+		// returns `{ ok: false, error }` so the SBOM step can record a warning
+		// finding and proceed with an empty resolved metadata (preserving the
+		// "continue on bad template" behaviour of the prior cast).
+		const sbomConfigResult = yield* Effect.sync(() => {
 			try {
 				return loadSBOMConfig();
-			} catch {
-				return undefined;
+			} catch (e) {
+				const message = e instanceof Error ? e.message : String(e);
+				return { ok: false as const, error: message, source: { source: "none" as const } };
 			}
 		});
+
+		let sbomConfig: SBOMMetadataConfig | undefined;
+		const sbomConfigFindings: ValidationFinding[] = [];
+		if (sbomConfigResult.ok) {
+			sbomConfig = sbomConfigResult.config;
+		} else {
+			sbomConfig = undefined;
+			sbomConfigFindings.push({
+				severity: "warning",
+				check: "SBOM Preview",
+				scope: null,
+				message: `Failed to parse sbom-config: ${sbomConfigResult.error}`,
+			});
+			yield* Effect.logWarning(`sbom-config decode failed: ${sbomConfigResult.error}`);
+		}
 
 		// ── Step 1: Discover workspace packages ──────────────────────────────
 
@@ -453,14 +470,16 @@ export const runValidation = (args: ValidationInputArgs) =>
 				validationPackages: [],
 				sbomOk: true,
 				sbomSummary: "No packages require SBOM",
-				findings: [],
+				findings: sbomConfigFindings,
 			} satisfies ValidationReport;
 		}
 
 		// Structured findings accumulated across the publish dry-run and SBOM
 		// steps. Errors fail their check; warnings are advisory. Discovery order
 		// is preserved (the comment renderer reorders errors-before-warnings).
-		const findings: ValidationFinding[] = [];
+		// Seeded with any sbom-config decode warning so the SBOM Preview check
+		// surfaces a malformed template up-front.
+		const findings: ValidationFinding[] = [...sbomConfigFindings];
 
 		// ── Step 3: Resolve targets, group into builds, dry-run + SBOM ────────
 

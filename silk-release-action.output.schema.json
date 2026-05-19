@@ -1,0 +1,670 @@
+{
+	"$schema": "http://json-schema.org/draft-07/schema#",
+	"$id": "https://json.schemastore.org/silk-release-action.output.schema.json",
+	"anyOf": [
+		{
+			"type": "object",
+			"required": [
+				"$schema",
+				"schemaVersion",
+				"phase",
+				"status",
+				"noop",
+				"succeeded",
+				"hasFailures",
+				"dryRun",
+				"branchManagement"
+			],
+			"properties": {
+				"$schema": {
+					"type": "string",
+					"enum": ["https://json.schemastore.org/silk-release-action.output.schema.json"]
+				},
+				"schemaVersion": {
+					"type": "string",
+					"enum": ["1"]
+				},
+				"phase": {
+					"type": "string",
+					"enum": ["branch-management"]
+				},
+				"status": {
+					"type": "string",
+					"enum": ["no-op", "success", "partial", "failed"]
+				},
+				"noop": {
+					"type": "boolean"
+				},
+				"succeeded": {
+					"type": "boolean"
+				},
+				"hasFailures": {
+					"type": "boolean"
+				},
+				"dryRun": {
+					"type": "boolean"
+				},
+				"branchManagement": {
+					"type": "object",
+					"required": ["releaseBranch", "releasePr", "changesets"],
+					"properties": {
+						"releaseBranch": {
+							"type": "object",
+							"required": ["name", "existed", "created", "updated", "hasConflicts"],
+							"properties": {
+								"name": {
+									"type": "string"
+								},
+								"existed": {
+									"type": "boolean"
+								},
+								"created": {
+									"type": "boolean"
+								},
+								"updated": {
+									"type": "boolean"
+								},
+								"hasConflicts": {
+									"type": "boolean"
+								}
+							},
+							"additionalProperties": false
+						},
+						"releasePr": {
+							"anyOf": [
+								{
+									"type": "object",
+									"required": ["number", "url", "action"],
+									"properties": {
+										"number": {
+											"type": "number"
+										},
+										"url": {
+											"type": "string"
+										},
+										"action": {
+											"type": "string",
+											"enum": ["created", "updated"]
+										}
+									},
+									"additionalProperties": false
+								},
+								{
+									"type": "null"
+								}
+							]
+						},
+						"changesets": {
+							"type": "object",
+							"required": ["count", "packages"],
+							"properties": {
+								"count": {
+									"type": "number"
+								},
+								"packages": {
+									"type": "array",
+									"items": {
+										"type": "object",
+										"required": ["name", "bumpType"],
+										"properties": {
+											"name": {
+												"type": "string"
+											},
+											"bumpType": {
+												"type": "string",
+												"enum": ["major", "minor", "patch"]
+											}
+										},
+										"additionalProperties": false
+									}
+								}
+							},
+							"additionalProperties": false
+						}
+					},
+					"additionalProperties": false
+				}
+			},
+			"additionalProperties": false
+		},
+		{
+			"type": "object",
+			"required": [
+				"$schema",
+				"schemaVersion",
+				"phase",
+				"status",
+				"noop",
+				"succeeded",
+				"hasFailures",
+				"dryRun",
+				"validation"
+			],
+			"properties": {
+				"$schema": {
+					"type": "string",
+					"enum": ["https://json.schemastore.org/silk-release-action.output.schema.json"]
+				},
+				"schemaVersion": {
+					"type": "string",
+					"enum": ["1"]
+				},
+				"phase": {
+					"type": "string",
+					"enum": ["validation"]
+				},
+				"status": {
+					"type": "string",
+					"enum": ["no-op", "success", "partial", "failed"]
+				},
+				"noop": {
+					"type": "boolean"
+				},
+				"succeeded": {
+					"type": "boolean"
+				},
+				"hasFailures": {
+					"type": "boolean"
+				},
+				"dryRun": {
+					"type": "boolean"
+				},
+				"validation": {
+					"type": "object",
+					"required": ["buildValidation", "checks", "findings", "publish", "checkRun"],
+					"properties": {
+						"buildValidation": {
+							"type": "object",
+							"required": ["passed", "packageCount"],
+							"properties": {
+								"passed": {
+									"type": "boolean"
+								},
+								"packageCount": {
+									"type": "number"
+								}
+							},
+							"additionalProperties": false
+						},
+						"checks": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"required": ["name", "status", "outcome", "url"],
+								"properties": {
+									"name": {
+										"type": "string"
+									},
+									"status": {
+										"type": "string",
+										"enum": ["pass", "warning", "error"]
+									},
+									"outcome": {
+										"type": "string"
+									},
+									"url": {
+										"anyOf": [
+											{
+												"type": "string"
+											},
+											{
+												"type": "null"
+											}
+										]
+									}
+								},
+								"additionalProperties": false
+							}
+						},
+						"findings": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"required": ["severity", "check", "scope", "message"],
+								"properties": {
+									"severity": {
+										"type": "string",
+										"enum": ["error", "warning"]
+									},
+									"check": {
+										"type": "string"
+									},
+									"scope": {
+										"anyOf": [
+											{
+												"type": "object",
+												"required": ["package", "directory"],
+												"properties": {
+													"package": {
+														"anyOf": [
+															{
+																"type": "string"
+															},
+															{
+																"type": "null"
+															}
+														]
+													},
+													"directory": {
+														"anyOf": [
+															{
+																"type": "string"
+															},
+															{
+																"type": "null"
+															}
+														]
+													}
+												},
+												"additionalProperties": false
+											},
+											{
+												"type": "null"
+											}
+										]
+									},
+									"message": {
+										"type": "string"
+									}
+								},
+								"additionalProperties": false
+							}
+						},
+						"publish": {
+							"type": "object",
+							"required": ["npmReady", "githubPackagesReady", "totalTargets", "readyTargets", "packages"],
+							"properties": {
+								"npmReady": {
+									"type": "boolean"
+								},
+								"githubPackagesReady": {
+									"type": "boolean"
+								},
+								"totalTargets": {
+									"type": "number"
+								},
+								"readyTargets": {
+									"type": "number"
+								},
+								"packages": {
+									"type": "array",
+									"items": {
+										"type": "object",
+										"required": [
+											"name",
+											"version",
+											"baseVersion",
+											"bumpType",
+											"changesetCount",
+											"ready",
+											"versionOnly",
+											"builds"
+										],
+										"properties": {
+											"name": {
+												"type": "string"
+											},
+											"version": {
+												"type": "string"
+											},
+											"baseVersion": {
+												"anyOf": [
+													{
+														"type": "string"
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"bumpType": {
+												"type": "string",
+												"enum": ["major", "minor", "patch", "new", "unknown"]
+											},
+											"changesetCount": {
+												"anyOf": [
+													{
+														"type": "number"
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"ready": {
+												"type": "boolean"
+											},
+											"versionOnly": {
+												"type": "boolean"
+											},
+											"builds": {
+												"type": "array",
+												"items": {
+													"type": "object",
+													"required": ["directory", "packedBytes", "unpackedBytes", "fileCount", "sbom", "targets"],
+													"properties": {
+														"directory": {
+															"type": "string"
+														},
+														"packedBytes": {
+															"anyOf": [
+																{
+																	"type": "number"
+																},
+																{
+																	"type": "null"
+																}
+															]
+														},
+														"unpackedBytes": {
+															"anyOf": [
+																{
+																	"type": "number"
+																},
+																{
+																	"type": "null"
+																}
+															]
+														},
+														"fileCount": {
+															"anyOf": [
+																{
+																	"type": "number"
+																},
+																{
+																	"type": "null"
+																}
+															]
+														},
+														"sbom": {
+															"anyOf": [
+																{
+																	"type": "object",
+																	"required": ["componentCount", "ntiaCompliant", "missingNtiaFields"],
+																	"properties": {
+																		"componentCount": {
+																			"type": "number"
+																		},
+																		"ntiaCompliant": {
+																			"type": "boolean"
+																		},
+																		"missingNtiaFields": {
+																			"type": "array",
+																			"items": {
+																				"type": "string"
+																			}
+																		}
+																	},
+																	"additionalProperties": false
+																},
+																{
+																	"type": "null"
+																}
+															]
+														},
+														"targets": {
+															"type": "array",
+															"items": {
+																"type": "object",
+																"required": ["registry", "status", "access", "provenance"],
+																"properties": {
+																	"registry": {
+																		"type": "string"
+																	},
+																	"status": {
+																		"type": "string",
+																		"enum": ["ready", "skipped", "failed"]
+																	},
+																	"access": {
+																		"type": "string",
+																		"enum": ["public", "restricted"]
+																	},
+																	"provenance": {
+																		"type": "boolean"
+																	}
+																},
+																"additionalProperties": false
+															}
+														}
+													},
+													"additionalProperties": false
+												}
+											}
+										},
+										"additionalProperties": false
+									}
+								}
+							},
+							"additionalProperties": false
+						},
+						"checkRun": {
+							"anyOf": [
+								{
+									"type": "object",
+									"required": ["url", "conclusion"],
+									"properties": {
+										"url": {
+											"type": "string"
+										},
+										"conclusion": {
+											"type": "string"
+										}
+									},
+									"additionalProperties": false
+								},
+								{
+									"type": "null"
+								}
+							]
+						}
+					},
+					"additionalProperties": false
+				}
+			},
+			"additionalProperties": false
+		},
+		{
+			"type": "object",
+			"required": [
+				"$schema",
+				"schemaVersion",
+				"phase",
+				"status",
+				"noop",
+				"succeeded",
+				"hasFailures",
+				"dryRun",
+				"publishing"
+			],
+			"properties": {
+				"$schema": {
+					"type": "string",
+					"enum": ["https://json.schemastore.org/silk-release-action.output.schema.json"]
+				},
+				"schemaVersion": {
+					"type": "string",
+					"enum": ["1"]
+				},
+				"phase": {
+					"type": "string",
+					"enum": ["publishing"]
+				},
+				"status": {
+					"type": "string",
+					"enum": ["no-op", "success", "partial", "failed"]
+				},
+				"noop": {
+					"type": "boolean"
+				},
+				"succeeded": {
+					"type": "boolean"
+				},
+				"hasFailures": {
+					"type": "boolean"
+				},
+				"dryRun": {
+					"type": "boolean"
+				},
+				"publishing": {
+					"type": "object",
+					"required": ["packages", "tags", "releases"],
+					"properties": {
+						"packages": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"required": ["name", "version", "status", "skipReason", "targets", "attestations", "tarballDigest"],
+								"properties": {
+									"name": {
+										"type": "string"
+									},
+									"version": {
+										"type": "string"
+									},
+									"status": {
+										"type": "string",
+										"enum": ["published", "skipped", "failed"]
+									},
+									"skipReason": {
+										"anyOf": [
+											{
+												"type": "string",
+												"enum": ["already-published-identical", "already-published-unknown"]
+											},
+											{
+												"type": "null"
+											}
+										]
+									},
+									"targets": {
+										"type": "array",
+										"items": {
+											"type": "object",
+											"required": ["registry", "status", "registryUrl", "error"],
+											"properties": {
+												"registry": {
+													"type": "string"
+												},
+												"status": {
+													"type": "string",
+													"enum": ["published", "skipped", "failed"]
+												},
+												"registryUrl": {
+													"anyOf": [
+														{
+															"type": "string"
+														},
+														{
+															"type": "null"
+														}
+													]
+												},
+												"error": {
+													"anyOf": [
+														{
+															"type": "string"
+														},
+														{
+															"type": "null"
+														}
+													]
+												}
+											},
+											"additionalProperties": false
+										}
+									},
+									"attestations": {
+										"type": "object",
+										"required": ["provenanceUrl", "sbomUrl", "githubAttestationUrl"],
+										"properties": {
+											"provenanceUrl": {
+												"anyOf": [
+													{
+														"type": "string"
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"sbomUrl": {
+												"anyOf": [
+													{
+														"type": "string"
+													},
+													{
+														"type": "null"
+													}
+												]
+											},
+											"githubAttestationUrl": {
+												"anyOf": [
+													{
+														"type": "string"
+													},
+													{
+														"type": "null"
+													}
+												]
+											}
+										},
+										"additionalProperties": false
+									},
+									"tarballDigest": {
+										"anyOf": [
+											{
+												"type": "string"
+											},
+											{
+												"type": "null"
+											}
+										]
+									}
+								},
+								"additionalProperties": false
+							}
+						},
+						"tags": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"required": ["name", "sha"],
+								"properties": {
+									"name": {
+										"type": "string"
+									},
+									"sha": {
+										"type": "string"
+									}
+								},
+								"additionalProperties": false
+							}
+						},
+						"releases": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"required": ["tag", "url", "id"],
+								"properties": {
+									"tag": {
+										"type": "string"
+									},
+									"url": {
+										"type": "string"
+									},
+									"id": {
+										"type": "number"
+									}
+								},
+								"additionalProperties": false
+							}
+						}
+					},
+					"additionalProperties": false
+				}
+			},
+			"additionalProperties": false
+		}
+	],
+	"title": "Silk Release Action output"
+}
