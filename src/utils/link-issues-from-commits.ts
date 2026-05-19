@@ -593,17 +593,19 @@ export const linkIssuesFromCommits: Effect.Effect<
  */
 export const getLinkedIssuesFromCommitsPromise = (
 	targetBranch: string,
-): Promise<{ linkedIssues: LinkedIssue[]; commits: CommitInfo[] }> =>
-	Effect.runPromise(
+): Promise<{ linkedIssues: LinkedIssue[]; commits: CommitInfo[] }> => {
+	const client = GitHubClientLive.fromToken(appToken());
+	return Effect.runPromise(
 		getLinkedIssuesFromCommits(targetBranch).pipe(
 			Effect.provide(
 				Layer.mergeAll(
 					ActionEnvironmentLive,
-					GitHubClientLive.fromToken(appToken()),
-					GitHubCommitLive.pipe(Layer.provide(GitHubClientLive.fromToken(appToken()))),
-					GitTagLive.pipe(Layer.provide(GitHubClientLive.fromToken(appToken()))),
-					GitHubIssueLive.pipe(Layer.provide(GitHubGraphQLLive), Layer.provide(GitHubClientLive.fromToken(appToken()))),
+					client,
+					GitHubCommitLive.pipe(Layer.provide(client)),
+					GitTagLive.pipe(Layer.provide(client)),
+					GitHubIssueLive.pipe(Layer.provide(GitHubGraphQLLive), Layer.provide(client)),
 				),
 			),
 		),
 	);
+};
