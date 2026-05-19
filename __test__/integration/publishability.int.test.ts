@@ -14,15 +14,13 @@
  * guards shorthand-string expansion.
  */
 
-import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 import { WorkspacePackage } from "workspaces-effect";
 import { ChangesetConfig, ChangesetConfigLive } from "../../src/release/changeset-config.js";
 import { SilkPublishabilityDetectorLive } from "../../src/release/publishability.js";
 import { resolvePublishableTargets } from "../../src/release/resolve-targets.js";
-
-const FIXTURES = join(__dirname, "fixtures");
 
 /**
  * Resolve `{ publishTargets, versionable }` for a fixture-workspace directory.
@@ -34,12 +32,12 @@ const FIXTURES = join(__dirname, "fixtures");
  */
 const resolveFixture = (name: string) =>
 	Effect.gen(function* () {
-		const dir = join(FIXTURES, name);
+		const dir = fileURLToPath(new URL(`fixtures/${name}`, import.meta.url));
 		const pkg = new WorkspacePackage({
 			name: `@fixture/${name}`,
 			version: "1.0.0",
 			path: dir,
-			packageJsonPath: join(dir, "package.json"),
+			packageJsonPath: fileURLToPath(new URL(`fixtures/${name}/package.json`, import.meta.url)),
 			relativePath: ".",
 		});
 		const config = yield* ChangesetConfig;
@@ -49,7 +47,7 @@ const resolveFixture = (name: string) =>
 	}).pipe(Effect.provide(Layer.mergeAll(SilkPublishabilityDetectorLive, ChangesetConfigLive)));
 
 describe("publishability fixture harness", () => {
-	it("public-package → 1 target from package root, versionable", async () => {
+	it("should resolve one public target from the package root when the package is not private (public-package fixture)", async () => {
 		const { publishTargets, versionable } = await Effect.runPromise(resolveFixture("public-package"));
 		expect(publishTargets).toHaveLength(1);
 		expect(publishTargets[0].registry).toBe("https://registry.npmjs.org/");
@@ -59,19 +57,19 @@ describe("publishability fixture harness", () => {
 		expect(versionable).toBe(true);
 	});
 
-	it("private-fully-private → no targets, not versionable", async () => {
+	it("should resolve no targets and be non-versionable when the package is private with no publishConfig (private-fully-private fixture)", async () => {
 		const { publishTargets, versionable } = await Effect.runPromise(resolveFixture("private-fully-private"));
 		expect(publishTargets).toHaveLength(0);
 		expect(versionable).toBe(false);
 	});
 
-	it("private-versiononly → no targets, versionable via privatePackages.version", async () => {
+	it("should resolve no targets but stay versionable when privatePackages.version is enabled (private-versiononly fixture)", async () => {
 		const { publishTargets, versionable } = await Effect.runPromise(resolveFixture("private-versiononly"));
 		expect(publishTargets).toHaveLength(0);
 		expect(versionable).toBe(true);
 	});
 
-	it("private-access-public → 1 public target resolved to dist/npm, versionable", async () => {
+	it("should resolve one public target at dist/npm when a private package declares publishConfig.access public (private-access-public fixture)", async () => {
 		const { publishTargets, versionable } = await Effect.runPromise(resolveFixture("private-access-public"));
 		expect(publishTargets).toHaveLength(1);
 		expect(publishTargets[0].registry).toBe("https://registry.npmjs.org/");
@@ -81,7 +79,7 @@ describe("publishability fixture harness", () => {
 		expect(versionable).toBe(true);
 	});
 
-	it("private-access-restricted → 1 restricted target resolved to dist/npm, versionable", async () => {
+	it("should resolve one restricted target at dist/npm when a private package declares publishConfig.access restricted (private-access-restricted fixture)", async () => {
 		const { publishTargets, versionable } = await Effect.runPromise(resolveFixture("private-access-restricted"));
 		expect(publishTargets).toHaveLength(1);
 		expect(publishTargets[0].registry).toBe("https://registry.npmjs.org/");
@@ -90,23 +88,23 @@ describe("publishability fixture harness", () => {
 		expect(versionable).toBe(true);
 	});
 
-	it("private-access-no-build → silkDetect says publishable, filter drops it (private root), versionable via privatePackages.version", async () => {
+	it("should drop the detected target and stay versionable via privatePackages.version when publishConfig.access has no directory (private-access-no-build fixture)", async () => {
 		const { publishTargets, versionable } = await Effect.runPromise(resolveFixture("private-access-no-build"));
 		expect(publishTargets).toHaveLength(0);
 		expect(versionable).toBe(true);
 	});
 
-	it("private-target-with-directory → 1 target resolved to dist/npm with provenance (42cc7e2 regression guard)", async () => {
+	it("should resolve one target to the per-target dist/npm directory with provenance when a private package declares a target directory (private-target-with-directory fixture, 42cc7e2 regression guard)", async () => {
 		const { publishTargets, versionable } = await Effect.runPromise(resolveFixture("private-target-with-directory"));
 		expect(publishTargets).toHaveLength(1);
-		expect(publishTargets[0].directory).toMatch(/dist\/npm$/);
+		expect(publishTargets[0].directory).toBe("dist/npm");
 		expect(publishTargets[0].registry).toBe("https://npm.pkg.github.com/");
 		expect(publishTargets[0].access).toBe("public");
 		expect(publishTargets[0].provenance).toBe(true);
 		expect(versionable).toBe(true);
 	});
 
-	it("private-multi-target → 2 targets (npm + GitHub Packages), versionable", async () => {
+	it("should resolve two targets for npm and GitHub Packages when a private package declares multiple object targets (private-multi-target fixture)", async () => {
 		const { publishTargets, versionable } = await Effect.runPromise(resolveFixture("private-multi-target"));
 		expect(publishTargets).toHaveLength(2);
 		const registries = publishTargets.map((t) => t.registry).sort();
@@ -118,7 +116,7 @@ describe("publishability fixture harness", () => {
 		expect(versionable).toBe(true);
 	});
 
-	it("private-shorthand-targets → 2 targets with expanded registries (shorthand-expansion guard)", async () => {
+	it("should expand shorthand string targets to their canonical registries when a private package uses target shorthands (private-shorthand-targets fixture, shorthand-expansion guard)", async () => {
 		const { publishTargets, versionable } = await Effect.runPromise(resolveFixture("private-shorthand-targets"));
 		expect(publishTargets).toHaveLength(2);
 		const registries = publishTargets.map((t) => t.registry).sort();
@@ -130,15 +128,16 @@ describe("publishability fixture harness", () => {
 		expect(versionable).toBe(true);
 	});
 
-	it("private-mixed-access → 1 target (access-less one skipped), versionable", async () => {
+	it("should skip the access-less target and default the surviving target's registry when a private package mixes target access (private-mixed-access fixture)", async () => {
 		const { publishTargets, versionable } = await Effect.runPromise(resolveFixture("private-mixed-access"));
 		expect(publishTargets).toHaveLength(1);
+		expect(publishTargets[0].registry).toBe("https://registry.npmjs.org/");
 		expect(publishTargets[0].directory).toBe("dist/npm");
 		expect(publishTargets[0].access).toBe("public");
 		expect(versionable).toBe(true);
 	});
 
-	it("private-target-built-private → target resolved then dropped by the private filter, not versionable", async () => {
+	it("should drop the detected target and be non-versionable when the built target package.json is private (private-target-built-private fixture)", async () => {
 		const { publishTargets, versionable } = await Effect.runPromise(resolveFixture("private-target-built-private"));
 		expect(publishTargets).toHaveLength(0);
 		expect(versionable).toBe(false);
