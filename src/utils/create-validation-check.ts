@@ -13,6 +13,8 @@ export interface UnifiedValidationResult {
 	success: boolean;
 	validations: ValidationResult[];
 	checkId: number;
+	/** Web URL of the unified validation check run, for the checks-table links. */
+	htmlUrl: string;
 }
 
 /**
@@ -67,7 +69,7 @@ export const createValidationCheck = (
 		}
 		const checkDetails = summaryWriter.build(sections);
 
-		const { id: checkId } = yield* checks.create(checkTitle, sha);
+		const { id: checkId, htmlUrl } = yield* checks.create(checkTitle, sha);
 		yield* checks.complete(checkId, success ? "success" : "failure", {
 			title: checkSummary,
 			summary: checkDetails,
@@ -86,5 +88,5 @@ export const createValidationCheck = (
 		}
 		yield* outputs.summary(summaryWriter.build(jobSections));
 
-		return { success, validations: [...validations], checkId };
+		return { success, validations: [...validations], checkId, htmlUrl };
 	});

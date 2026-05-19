@@ -50,7 +50,9 @@ import { Config, Effect, Layer, Option } from "effect";
 import { ReleaseLive } from "./release/layers.js";
 import { detectReleases, runBuildAndSbom, runPublishTargets } from "./release/publish.js";
 import { runReleases } from "./release/releases.js";
-import type { PublishPackagesResult, ReleaseInfo } from "./release/types.js";
+import type { ChecksTableRow } from "./release/report.js";
+import { buildValidationComment } from "./release/report.js";
+import type { PublishPackagesResult, ReleaseInfo, ValidationFinding } from "./release/types.js";
 import { runValidation as runValidationEffect } from "./release/validation.js";
 import { toBranchManagementOutput, toPublishingOutput, toValidationOutput } from "./schema/projections.js";
 import { ReleaseOutput } from "./schema/release-output.js";
@@ -65,7 +67,6 @@ import { detectWorkflowPhase } from "./utils/detect-workflow-phase.js";
 import type { TagInfo } from "./utils/determine-tag-strategy.js";
 import { determineTagStrategy } from "./utils/determine-tag-strategy.js";
 import { linkIssuesFromCommits } from "./utils/link-issues-from-commits.js";
-import { summaryWriter } from "./utils/summary-writer.js";
 import { updateReleaseBranch } from "./utils/update-release-branch.js";
 import { updateStickyComment } from "./utils/update-sticky-comment.js";
 import { validateBuilds } from "./utils/validate-builds.js";
@@ -273,7 +274,7 @@ const runValidation = Effect.gen(function* () {
 				Effect.catchAll((e) =>
 					Effect.gen(function* () {
 						yield* Effect.logError(`validateBuilds failed: ${String(e)}`);
-						return { success: false, errors: String(e), checkId: 0 };
+						return { success: false, errors: String(e), checkId: 0, htmlUrl: "" };
 					}),
 				),
 			),
@@ -288,10 +289,12 @@ const runValidation = Effect.gen(function* () {
 		let publishOk = true;
 		let npmReady = false;
 		let githubPackagesReady = false;
-		let hasVersionOnlyPackages = false;
 		let reportPackages: ReadonlyArray<{ name: string; version: string; ready: boolean }> = [];
 		let sbomOk = true;
 		let sbomSummary = "SBOM Preview skipped";
+		// Structured findings produced by the publish dry-run + SBOM/NTIA checks
+		// inside `runValidationEffect`; the build finding is appended below.
+		let reportFindings: ReadonlyArray<ValidationFinding> = [];
 
 		if (buildResult.success) {
 			yield* Effect.logInfo("Validate publishing");
@@ -312,10 +315,10 @@ const runValidation = Effect.gen(function* () {
 				publishOk = report.publishOk;
 				npmReady = report.npmReady;
 				githubPackagesReady = report.githubPackagesReady;
-				hasVersionOnlyPackages = report.hasVersionOnlyPackages;
 				reportPackages = report.packages;
 				sbomOk = report.sbomOk;
 				sbomSummary = report.sbomSummary;
+				reportFindings = report.findings;
 			}
 			yield* Effect.logInfo(
 				publishOk
@@ -329,6 +332,25 @@ const runValidation = Effect.gen(function* () {
 		}
 
 		// Step 6 — unified validation check (migrated).
+		// Aggregate the structured findings across every Phase-2 check. The
+		// publish dry-run + SBOM/NTIA findings come from `runValidationEffect`;
+		// the build finding is derived here from `buildResult`.
+		//
+		// Honesty note: Link-Issues and Release-Notes contribute no findings.
+		// `LinkIssuesResult` exposes no failure signal (the step always
+		// completes its check as `success` and `main.ts` degrades any thrown
+		// error to an empty result), and there is no rich release-notes module
+		// on `dev` — no missing-CHANGELOG / notes-extraction signal exists.
+		const findings: ValidationFinding[] = [];
+		if (!buildResult.success) {
+			findings.push({
+				severity: "error",
+				check: "Build Validation",
+				message: buildResult.errors.trim() || "Build failed",
+			});
+		}
+		findings.push(...reportFindings);
+
 		const checkResults = [
 			{
 				name: "Link Issues from Commits",
@@ -369,6 +391,54 @@ const runValidation = Effect.gen(function* () {
 		const checkRunResult: { url: string; conclusion: string } | null =
 			checkRunUrl !== null ? { url: checkRunUrl, conclusion: unified.success ? "success" : "failure" } : null;
 
+		// Derive the 3-state checks-table icon per row from the findings the
+		// check produced: any error → ❌, else any warning → ⚠️, else ✅. The
+		// `hardFailed` flag covers checks whose failure is not also a finding
+		// (e.g. a publish failure when the build itself passed).
+		const unifiedUrl = unified.htmlUrl !== "" ? unified.htmlUrl : undefined;
+		const iconFor = (checkName: string, hardFailed: boolean): "✅" | "⚠️" | "❌" => {
+			const own = findings.filter((f) => f.check === checkName);
+			if (hardFailed || own.some((f) => f.severity === "error")) return "❌";
+			if (own.some((f) => f.severity === "warning")) return "⚠️";
+			return "✅";
+		};
+		// Publish/Release-Notes/SBOM rows have no own check run — they link to
+		// the unified validation check. Build links to its own check run.
+		const buildUrl = buildResult.htmlUrl !== "" ? buildResult.htmlUrl : unifiedUrl;
+		const checkRows: ReadonlyArray<ChecksTableRow> = [
+			{
+				icon: iconFor("Link Issues from Commits", false),
+				name: "Link Issues from Commits",
+				outcome: `${issuesResult.linkedIssues.length} issue(s) linked`,
+				...(unifiedUrl !== undefined && { url: unifiedUrl }),
+			},
+			{
+				icon: iconFor("Build Validation", !buildResult.success),
+				name: "Build Validation",
+				outcome: buildResult.success ? "Build passed" : "Build failed",
+				...(buildUrl !== undefined && { url: buildUrl }),
+			},
+			{
+				icon: iconFor("Publish Validation", buildResult.success && !publishOk),
+				name: "Publish Validation",
+				outcome:
+					publishTotalTargets === 0 ? "No targets" : `${publishReadyTargets}/${publishTotalTargets} target(s) ready`,
+				...(unifiedUrl !== undefined && { url: unifiedUrl }),
+			},
+			{
+				icon: iconFor("Release Notes Preview", false),
+				name: "Release Notes Preview",
+				outcome: `${reportPackages.length} package(s) ready`,
+				...(unifiedUrl !== undefined && { url: unifiedUrl }),
+			},
+			{
+				icon: iconFor("SBOM Preview", !sbomOk),
+				name: "SBOM Preview",
+				outcome: sbomSummary,
+				...(unifiedUrl !== undefined && { url: unifiedUrl }),
+			},
+		];
+
 		// Final summary line.
 		const passedCount = checkResults.filter((r) => r.success).length;
 		yield* Effect.logInfo(
@@ -408,39 +478,19 @@ const runValidation = Effect.gen(function* () {
 		);
 		if (prsResult._tag === "Right" && prsResult.right.length > 0) {
 			const pr = prsResult.right[0];
-			const failedChecks = checkResults.filter((r) => !r.success);
-			const allSuccess = failedChecks.length === 0;
-			const validationTable = summaryWriter.table(
-				[" ", "Check", "Outcome"],
-				checkResults.map((r) => [r.success ? "✅" : "❌", r.name, r.message ?? ""]),
-			);
-			const commentSections: Array<{ heading?: string; level?: 2 | 3 | 4; content: string }> = [
-				{
-					heading: `📦 Release Validation ${allSuccess ? "✅" : "❌"}`,
-					level: 2,
-					content: dryRun ? "> 🧪 **DRY RUN MODE** - No actual publishing will occur" : "",
-				},
-				{ content: validationTable },
-			];
-			if (failedChecks.length > 0) {
-				commentSections.push({
-					heading: "❌ Failed Checks",
-					level: 3,
-					content: `${summaryWriter.list(failedChecks.map((c) => `**${c.name}**`))}\n\nPlease resolve the issues above before merging.`,
-				});
-			}
-			if (publishSummary !== "") {
-				commentSections.push({ content: publishSummary });
-			}
-			if (hasVersionOnlyPackages) {
-				commentSections.push({
-					heading: "🏷️ Version-Only Packages",
-					level: 3,
-					content: "These packages will receive GitHub releases only. No registry publishing will occur.",
-				});
-			}
-			commentSections.push({ content: `---\n\n<sub>Updated at ${new Date().toISOString()}</sub>` });
-			const commentBody = summaryWriter.build(commentSections);
+			// Redesigned Phase-2 comment: a worst-state header icon, the 3-state
+			// checks table, the findings table (rendered only when non-empty),
+			// the "What will be released" forecast, and a release-notes link.
+			// The old ad-hoc "Failed Checks" and "Version-Only Packages" sections
+			// are gone — findings replace the former and the summary table's
+			// `🏷️ Version only` cell covers the latter.
+			const commentBody = buildValidationComment({
+				checks: checkRows,
+				findings,
+				publishSummary,
+				...(unifiedUrl !== undefined && { releaseNotesUrl: unifiedUrl }),
+				dryRun,
+			});
 			yield* logger.group(
 				"Update PR comment",
 				updateStickyComment(pr.number, commentBody, "release-validation").pipe(

@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { buildChecksTable, buildFindingsTable, buildPublishSummary, getPackagePageUrl } from "./report.js";
+import type { ChecksTableRow } from "./report.js";
+import {
+	buildChecksTable,
+	buildFindingsTable,
+	buildPublishSummary,
+	buildValidationComment,
+	getPackagePageUrl,
+} from "./report.js";
 import type { PackagePublishResult, PublishPackagesResult, TargetPublishResult, ValidationFinding } from "./types.js";
 
 // Minimal ResolvedTarget stub — only the fields the report module touches.
@@ -390,5 +397,110 @@ describe("buildFindingsTable", () => {
 		]);
 
 		expect(table).toContain("@savvy-web/linked-2");
+	});
+});
+
+describe("buildValidationComment", () => {
+	const passingChecks: ReadonlyArray<ChecksTableRow> = [
+		{ icon: "✅", name: "Build Validation", outcome: "Build passed", url: "https://example.com/runs/1" },
+		{ icon: "✅", name: "Publish Validation", outcome: "1/1 target(s) ready", url: "https://example.com/runs/1" },
+	];
+
+	it("renders a ✅ header icon when there are no findings", () => {
+		const comment = buildValidationComment({ checks: passingChecks, findings: [], publishSummary: "" });
+
+		expect(comment).toContain("## 📦 Release Validation ✅");
+	});
+
+	it("renders a ⚠️ header icon when the worst finding is a warning", () => {
+		const findings: ReadonlyArray<ValidationFinding> = [
+			{ severity: "warning", check: "SBOM Preview", scope: "@org/a", message: "missing NTIA fields" },
+		];
+		const comment = buildValidationComment({ checks: passingChecks, findings, publishSummary: "" });
+
+		expect(comment).toContain("## 📦 Release Validation ⚠️");
+	});
+
+	it("renders a ❌ header icon when any finding is an error", () => {
+		const findings: ReadonlyArray<ValidationFinding> = [
+			{ severity: "warning", check: "SBOM Preview", scope: "@org/a", message: "missing NTIA fields" },
+			{ severity: "error", check: "Build Validation", message: "tsc exited 2" },
+		];
+		const comment = buildValidationComment({ checks: passingChecks, findings, publishSummary: "" });
+
+		expect(comment).toContain("## 📦 Release Validation ❌");
+	});
+
+	it("omits the findings section entirely when there are no findings", () => {
+		const comment = buildValidationComment({ checks: passingChecks, findings: [], publishSummary: "" });
+
+		// The findings-table heading marker must not appear.
+		expect(comment).not.toContain("error");
+		expect(comment).not.toContain("warning");
+	});
+
+	it("includes the findings table when findings are present", () => {
+		const findings: ReadonlyArray<ValidationFinding> = [
+			{ severity: "error", check: "Publish Validation", scope: "@org/b", message: "dry-run failed" },
+		];
+		const comment = buildValidationComment({ checks: passingChecks, findings, publishSummary: "" });
+
+		expect(comment).toContain("### ❌ 1 error");
+		expect(comment).toContain("dry-run failed");
+	});
+
+	it("renders the checks table with linked check names", () => {
+		const comment = buildValidationComment({ checks: passingChecks, findings: [], publishSummary: "" });
+
+		expect(comment).toContain("[Build Validation](https://example.com/runs/1)");
+	});
+
+	it("includes the 'What will be released' publish summary section", () => {
+		const summary = buildPublishSummary(resultOf([]));
+		const comment = buildValidationComment({ checks: passingChecks, findings: [], publishSummary: summary });
+
+		expect(comment).toContain("What will be released");
+	});
+
+	it("links the release-notes section when a check-run url is given", () => {
+		const comment = buildValidationComment({
+			checks: passingChecks,
+			findings: [],
+			publishSummary: "",
+			releaseNotesUrl: "https://example.com/runs/9",
+		});
+
+		expect(comment).toContain("### 📋 Release Notes Preview");
+		expect(comment).toContain("[View detailed release notes →](https://example.com/runs/9)");
+	});
+
+	it("renders a release-notes placeholder when no check-run url is given", () => {
+		const comment = buildValidationComment({ checks: passingChecks, findings: [], publishSummary: "" });
+
+		expect(comment).toContain("### 📋 Release Notes Preview");
+		expect(comment).toContain("Release notes will be generated on merge");
+	});
+
+	it("includes the dry-run banner when dryRun is true", () => {
+		const comment = buildValidationComment({
+			checks: passingChecks,
+			findings: [],
+			publishSummary: "",
+			dryRun: true,
+		});
+
+		expect(comment).toContain("DRY RUN MODE");
+	});
+
+	it("omits the dry-run banner when dryRun is false", () => {
+		const comment = buildValidationComment({ checks: passingChecks, findings: [], publishSummary: "" });
+
+		expect(comment).not.toContain("DRY RUN MODE");
+	});
+
+	it("ends with the updated-at footer", () => {
+		const comment = buildValidationComment({ checks: passingChecks, findings: [], publishSummary: "" });
+
+		expect(comment).toContain("<sub>Updated at ");
 	});
 });

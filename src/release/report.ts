@@ -388,6 +388,74 @@ export function buildFindingsTable(findings: ReadonlyArray<ValidationFinding>): 
 }
 
 /**
+ * Inputs for {@link buildValidationComment}.
+ *
+ * @public
+ */
+export interface ValidationCommentInput {
+	/** The validation checks, in display order. */
+	readonly checks: ReadonlyArray<ChecksTableRow>;
+	/** Aggregated error/warning findings across every check. */
+	readonly findings: ReadonlyArray<ValidationFinding>;
+	/** Pre-rendered "What will be released" section (from `buildPublishSummary`). */
+	readonly publishSummary: string;
+	/** Web URL of the unified validation check run, for the release-notes link. */
+	readonly releaseNotesUrl?: string | undefined;
+	/** Whether this is a dry-run. */
+	readonly dryRun?: boolean | undefined;
+}
+
+/**
+ * Assemble the Phase-2 release-validation sticky-comment body.
+ *
+ * @remarks
+ * Pure function — no I/O. Frames the comment as a forecast of what merging the
+ * release PR will publish. The header icon is the worst state across all
+ * `findings` (`❌` if any error, `⚠️` if any warning, else `✅`). A findings
+ * section is inserted directly after the checks table only when `findings` is
+ * non-empty. The hidden sticky-comment marker is added by `updateStickyComment`,
+ * not here.
+ *
+ * @param input - The assembled comment inputs.
+ * @returns The full markdown comment body.
+ *
+ * @public
+ */
+export function buildValidationComment(input: ValidationCommentInput): string {
+	const hasError = input.findings.some((f) => f.severity === "error");
+	const hasWarning = input.findings.some((f) => f.severity === "warning");
+	const headerIcon = hasError ? "❌" : hasWarning ? "⚠️" : "✅";
+
+	const parts: string[] = [];
+	parts.push(`## \u{1F4E6} Release Validation ${headerIcon}`);
+
+	if (input.dryRun) {
+		parts.push("> \u{1F9EA} **DRY RUN MODE** - No actual publishing will occur");
+	}
+
+	parts.push(buildChecksTable(input.checks));
+
+	const findingsTable = buildFindingsTable(input.findings);
+	if (findingsTable !== "") {
+		parts.push(findingsTable);
+	}
+
+	if (input.publishSummary !== "") {
+		parts.push(input.publishSummary);
+	}
+
+	const releaseNotes =
+		input.releaseNotesUrl !== undefined && input.releaseNotesUrl !== ""
+			? `### \u{1F4CB} Release Notes Preview\n\n${GithubMarkdown.link("View detailed release notes →", input.releaseNotesUrl)}`
+			: "### \u{1F4CB} Release Notes Preview\n\n_Release notes will be generated on merge._";
+	parts.push(releaseNotes);
+
+	parts.push(`---\n\n<sub>Updated at ${new Date().toISOString()}</sub>`);
+
+	return parts.join("\n\n");
+}
+
+/**
  * Get bump type icon for display in release reports.
  *
  * @param type - Bump type string (`major`, `minor`, `patch`).

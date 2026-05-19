@@ -25,6 +25,8 @@ export interface BuildValidationResult {
 	success: boolean;
 	errors: string;
 	checkId: number;
+	/** Web URL of the build-validation check run, for the checks-table link. */
+	htmlUrl: string;
 }
 
 const buildInvocation = (packageManager: string, buildCommand: string): { cmd: string; args: string[] } => {
@@ -201,5 +203,5 @@ export const validateBuilds = (
 		}
 		yield* outputs.summary(summaryWriter.build(jobSections));
 
-		return { success, errors: buildError, checkId: checkRun.id };
+		return { success, errors: buildError, checkId: checkRun.id, htmlUrl: checkRun.htmlUrl };
 	});
