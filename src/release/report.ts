@@ -633,7 +633,7 @@ export function buildReleaseNotesPreviewSummary(validation: ValidationPayload): 
  */
 export function buildSbomPreviewSummary(
 	validation: ValidationPayload,
-	resolvedSbomConfig: ReadonlyMap<string, ResolvedSBOMMetadata | null> | null,
+	resolvedSbomConfig: ReadonlyMap<string, ResolvedSBOMMetadata> | null,
 ): string {
 	const header = `## \u{1F50F} SBOM Preview`;
 	const packages = validation.publish.packages;
@@ -642,12 +642,18 @@ export function buildSbomPreviewSummary(
 		"> _No `sbom-config` resolved — supply via the `sbom-config` action input or `vars.SILK_RELEASE_SBOM_TEMPLATE`._";
 
 	if (packages.length === 0) {
-		return `${header}\n\n_No packages require an SBOM._\n\n${hint}`;
+		// The empty-config hint is only useful when no config was supplied. A
+		// caller that did supply a config (non-null, non-empty map) just sees
+		// the "no packages" line.
+		const hasConfig = resolvedSbomConfig !== null && resolvedSbomConfig.size > 0;
+		return hasConfig
+			? `${header}\n\n_No packages require an SBOM._`
+			: `${header}\n\n_No packages require an SBOM._\n\n${hint}`;
 	}
 
-	// True when no build for any package has a resolved sbom-config entry.
+	// True when at least one build had its sbom-config metadata resolved.
 	const hasAnyResolved =
-		resolvedSbomConfig !== null && Array.from(resolvedSbomConfig.values()).some((v) => v !== null && v !== undefined);
+		resolvedSbomConfig !== null && Array.from(resolvedSbomConfig.values()).some((v) => v !== undefined);
 
 	const sections: string[] = [header];
 
@@ -680,8 +686,8 @@ export function buildSbomPreviewSummary(
 			}
 
 			const key = `${pkg.name}:${buildEntry.directory}`;
-			const resolved = resolvedSbomConfig !== null ? (resolvedSbomConfig.get(key) ?? null) : null;
-			if (resolved !== null) {
+			const resolved = resolvedSbomConfig !== null ? resolvedSbomConfig.get(key) : undefined;
+			if (resolved !== undefined) {
 				sections.push("_Resolved `sbom-config` metadata used:_");
 				sections.push(GithubMarkdown.codeBlock(JSON.stringify(resolved, null, 2), "json"));
 			} else if (resolvedSbomConfig !== null) {

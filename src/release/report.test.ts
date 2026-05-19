@@ -597,6 +597,57 @@ describe("buildPublishValidationSummary", () => {
 		expect(md).toContain("**npm:** ❌");
 		expect(md).toContain("**GitHub Packages:** ❌");
 	});
+
+	it("renders one section per package across multiple packages with distinct builds", () => {
+		const pkgA = pkg({
+			name: "@org/pkg-a",
+			version: "1.2.3",
+			baseVersion: "1.2.2",
+			builds: [
+				build({
+					directory: "dist/npm",
+					packedBytes: 716,
+					unpackedBytes: 2300,
+					fileCount: 5,
+					targets: [npmTarget({ registry: "https://registry.npmjs.org/" })],
+				}),
+			],
+		});
+		const pkgB = pkg({
+			name: "@org/pkg-b",
+			version: "2.0.0",
+			baseVersion: null,
+			bumpType: "new",
+			builds: [
+				build({
+					directory: "dist/github",
+					packedBytes: 800,
+					unpackedBytes: 2500,
+					fileCount: 6,
+					targets: [ghTarget()],
+				}),
+			],
+		});
+
+		const md = buildPublishValidationSummary(validationOf({ publish: publishOf([pkgA, pkgB]) }));
+
+		// Both per-package headers appear, in input order.
+		expect(md).toContain("### ✅ @org/pkg-a@1.2.3");
+		expect(md).toContain("### ✅ @org/pkg-b@2.0.0");
+		expect(md.indexOf("@org/pkg-a@1.2.3")).toBeLessThan(md.indexOf("@org/pkg-b@2.0.0"));
+
+		// Each package's build headline + registry sit under its own header.
+		expect(md).toContain("`dist/npm`");
+		expect(md).toContain("`dist/github`");
+		expect(md).toContain("0.7 kB");
+		expect(md).toContain("0.8 kB");
+		// pkg-a's npm registry table sits between its header and pkg-b's header.
+		const pkgAIdx = md.indexOf("@org/pkg-a@1.2.3");
+		const pkgBIdx = md.indexOf("@org/pkg-b@2.0.0");
+		expect(md.indexOf("`dist/npm`")).toBeGreaterThan(pkgAIdx);
+		expect(md.indexOf("`dist/npm`")).toBeLessThan(pkgBIdx);
+		expect(md.indexOf("`dist/github`")).toBeGreaterThan(pkgBIdx);
+	});
 });
 
 describe("buildReleaseNotesPreviewSummary", () => {
@@ -623,6 +674,55 @@ describe("buildReleaseNotesPreviewSummary", () => {
 		const md = buildReleaseNotesPreviewSummary(validationOf({ publish: publishOf([]) }));
 		expect(md).toContain("## 📋 Release Notes Preview");
 		expect(md).toContain("_No packages are being released._");
+	});
+
+	it("renders distinct Current → Next, bump, and changesetCount per package across multiple packages", () => {
+		const pkgA = pkg({
+			name: "@org/pkg-a",
+			version: "1.2.3",
+			baseVersion: "1.2.2",
+			bumpType: "patch",
+			changesetCount: 2,
+		});
+		const pkgB = pkg({
+			name: "@org/pkg-b",
+			version: "3.0.0",
+			baseVersion: "2.4.1",
+			bumpType: "major",
+			changesetCount: 5,
+		});
+		const pkgC = pkg({
+			name: "@org/pkg-c",
+			version: "0.1.0",
+			baseVersion: null,
+			bumpType: "new",
+			changesetCount: null,
+		});
+
+		const md = buildReleaseNotesPreviewSummary(validationOf({ publish: publishOf([pkgA, pkgB, pkgC]) }));
+
+		expect(md).toContain("**3 package(s) ready for release notes generation on merge.**");
+		// Each package's name, version transition, and bump label appear.
+		expect(md).toContain("@org/pkg-a");
+		expect(md).toContain("@org/pkg-b");
+		expect(md).toContain("@org/pkg-c");
+		expect(md).toContain("1.2.2 → 1.2.3");
+		expect(md).toContain("2.4.1 → 3.0.0");
+		expect(md).toContain("— → 0.1.0");
+		expect(md).toContain("\u{1F7E2} patch");
+		expect(md).toContain("\u{1F534} major");
+		expect(md).toContain("\u{1F195} new");
+		// Per-package changesetCount cells: 2, 5, and '—' (for null).
+		expect(md).toContain("| 2 |");
+		expect(md).toContain("| 5 |");
+		expect(md).toContain("| — |");
+
+		// Rows appear in input order.
+		const aIdx = md.indexOf("@org/pkg-a");
+		const bIdx = md.indexOf("@org/pkg-b");
+		const cIdx = md.indexOf("@org/pkg-c");
+		expect(aIdx).toBeLessThan(bIdx);
+		expect(bIdx).toBeLessThan(cIdx);
 	});
 });
 
@@ -700,6 +800,20 @@ describe("buildSbomPreviewSummary", () => {
 		const md = buildSbomPreviewSummary(validationOf({ publish: publishOf([]) }), new Map());
 		expect(md).toContain("## 🔏 SBOM Preview");
 		expect(md).toContain("_No packages require an SBOM._");
+	});
+
+	it("omits the empty-config hint when packages is empty but a non-empty config map was supplied", () => {
+		// The hint is meant to flag "no config resolved" — when the caller did
+		// supply a config (a non-empty map) but no packages need an SBOM, the
+		// hint is misleading and must not appear.
+		const md = buildSbomPreviewSummary(
+			validationOf({ publish: publishOf([]) }),
+			new Map([["@org/other:dist/npm", sampleResolved]]),
+		);
+		expect(md).toContain("_No packages require an SBOM._");
+		expect(md).not.toContain(
+			"_No `sbom-config` resolved — supply via the `sbom-config` action input or `vars.SILK_RELEASE_SBOM_TEMPLATE`._",
+		);
 	});
 
 	it("renders the version-only sub-section for a package with no builds", () => {

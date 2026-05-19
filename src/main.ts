@@ -376,7 +376,18 @@ const runValidation = Effect.gen(function* () {
 		// `failure` if any error-severity finding scopes to that check;
 		// `neutral` if warning-severity findings exist but no errors;
 		// `success` otherwise.
+		//
+		// Build-failed special case — when Build Validation fails,
+		// `runValidationEffect` is skipped entirely so no Publish / Release
+		// Notes / SBOM findings exist. Reporting `success` for those checks
+		// would lie about steps that never ran. The checks-table icon path
+		// (`statusFor`) already encodes this via `!buildResult.success || …`;
+		// mirror the precedent here so the check-run conclusion agrees with
+		// the icon.
 		const conclusionFor = (checkName: string): "success" | "failure" | "neutral" => {
+			if (!buildResult.success && checkName !== "Build Validation" && checkName !== "Link Issues from Commits") {
+				return "failure";
+			}
 			const own = findings.filter((f) => f.check === checkName);
 			if (own.some((f) => f.severity === "error")) return "failure";
 			if (own.some((f) => f.severity === "warning")) return "neutral";

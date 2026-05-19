@@ -94,9 +94,13 @@ export interface ValidationReport {
 	 * summary so config-or-mapping bugs are immediately visible; intentionally
 	 * NOT exposed on the public `ValidationOutput` schema.
 	 *
-	 * `null` value = a build entry was attempted but no metadata was resolved
-	 * (e.g. the package had no SBOM target at all). An entirely empty map plus
-	 * no `sbomConfig` source signals "no sbom-config supplied".
+	 * Every populated value is a `ResolvedSBOMMetadata` — `resolveSBOMMetadata`
+	 * never returns `null`, and the map only records builds the validation
+	 * loop actually processed. A missing key for a known build means that
+	 * build was filtered out before SBOM generation (e.g. version-only package
+	 * with no publish targets). An entirely empty map signals "no sbom-config
+	 * was resolved at all" (no released packages, or every released package
+	 * was version-only).
 	 */
 	readonly resolvedSbomConfig: ReadonlyMap<string, ResolvedSBOMMetadata>;
 }
