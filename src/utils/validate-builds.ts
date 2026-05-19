@@ -12,17 +12,11 @@
 import type {
 	ActionEnvironmentError,
 	ActionOutputError,
+	CheckRunAnnotation,
 	CheckRunError,
 	CommandRunnerError,
-	GitHubClientError,
 } from "@savvy-web/github-action-effects";
-import {
-	ActionEnvironment,
-	ActionOutputs,
-	CheckRun,
-	CommandRunner,
-	GitHubClient,
-} from "@savvy-web/github-action-effects";
+import { ActionEnvironment, ActionOutputs, CheckRun, CommandRunner } from "@savvy-web/github-action-effects";
 import type { ConfigError } from "effect";
 import { Config, Effect } from "effect";
 import { summaryWriter } from "./summary-writer.js";
@@ -31,14 +25,6 @@ export interface BuildValidationResult {
 	success: boolean;
 	errors: string;
 	checkId: number;
-}
-
-interface BuildAnnotation {
-	path: string;
-	start_line: number;
-	end_line: number;
-	annotation_level: "failure" | "warning";
-	message: string;
 }
 
 const buildInvocation = (packageManager: string, buildCommand: string): { cmd: string; args: string[] } => {
@@ -66,8 +52,8 @@ const buildInvocation = (packageManager: string, buildCommand: string): { cmd: s
 	}
 };
 
-const parseAnnotations = (buildError: string): BuildAnnotation[] => {
-	const out: BuildAnnotation[] = [];
+const parseAnnotations = (buildError: string): CheckRunAnnotation[] => {
+	const out: CheckRunAnnotation[] = [];
 	const tsErrorPattern = /([^\s:]+\.tsx?):(\d+):(\d+)\s+-\s+error\s+TS\d+:\s+(.+)/g;
 	let match: RegExpExecArray | null = tsErrorPattern.exec(buildError);
 	while (match !== null) {
@@ -106,26 +92,19 @@ export const validateBuilds = (
 	packageManager: string,
 ): Effect.Effect<
 	BuildValidationResult,
-	| ActionEnvironmentError
-	| ActionOutputError
-	| CheckRunError
-	| CommandRunnerError
-	| ConfigError.ConfigError
-	| GitHubClientError,
-	ActionEnvironment | ActionOutputs | CheckRun | CommandRunner | GitHubClient
+	ActionEnvironmentError | ActionOutputError | CheckRunError | CommandRunnerError | ConfigError.ConfigError,
+	ActionEnvironment | ActionOutputs | CheckRun | CommandRunner
 > =>
 	Effect.gen(function* () {
 		const env = yield* ActionEnvironment;
 		const outputs = yield* ActionOutputs;
 		const checks = yield* CheckRun;
 		const runner = yield* CommandRunner;
-		const client = yield* GitHubClient;
 
 		const buildCommand = yield* Config.string("build-command").pipe(Config.withDefault(""));
 		const dryRun = yield* Config.boolean("dry-run").pipe(Config.withDefault(false));
 
-		const { sha, repository } = yield* env.github;
-		const [owner, repo] = repository.split("/");
+		const { sha } = yield* env.github;
 
 		const { cmd: buildCmd, args: buildArgs } = buildInvocation(packageManager, buildCommand);
 		yield* Effect.logInfo(`Running build command: ${buildCmd} ${buildArgs.join(" ")}`);
@@ -189,48 +168,13 @@ export const validateBuilds = (
 		}
 		const checkDetails = summaryWriter.build(checkSections);
 
-		// Use GitHubClient.rest directly so we can attach annotations — CheckRun.create
-		// + complete doesn't expose the annotations field.
-		const checkRun = yield* client.rest<{ id: number; html_url: string }>("checks.create.with-annotations", (octokit) =>
-			(
-				octokit as {
-					rest: {
-						checks: {
-							create: (params: {
-								owner: string;
-								repo: string;
-								name: string;
-								head_sha: string;
-								status: "completed";
-								conclusion: "success" | "failure";
-								output: {
-									title: string;
-									summary: string;
-									annotations?: Array<BuildAnnotation>;
-								};
-							}) => Promise<{ data: { id: number; html_url: string } }>;
-						};
-					};
-				}
-			).rest.checks.create({
-				owner,
-				repo,
-				name: checkTitle,
-				head_sha: sha,
-				status: "completed",
-				conclusion: success ? "success" : "failure",
-				output: {
-					title: checkSummary,
-					summary: checkDetails,
-					annotations: annotations.slice(0, 50),
-				},
-			}),
-		);
-		yield* Effect.logInfo(`Created check run: ${checkRun.html_url}`);
-
-		// Touch the CheckRun service so it stays in the requirements set —
-		// downstream callers reuse this layer for the unified validation check.
-		void checks;
+		const checkRun = yield* checks.create(checkTitle, sha);
+		yield* checks.complete(checkRun.id, success ? "success" : "failure", {
+			title: checkSummary,
+			summary: checkDetails,
+			annotations: annotations.slice(0, 50),
+		});
+		yield* Effect.logInfo(`Created check run: ${checkRun.htmlUrl}`);
 
 		for (const ann of annotations.slice(0, 10)) {
 			yield* Effect.logError(`${ann.path}:${ann.start_line}: ${ann.message}`);
