@@ -156,7 +156,7 @@ describe("runValidation", () => {
 			expect(report.packages[0]?.name).toBe("@test/alpha");
 			expect(report.packages[0]?.version).toBe("1.1.0");
 			expect(report.packages[0]?.ready).toBe(true);
-			expect(report.publishSummary.length).toBeGreaterThan(0);
+			expect(report.validationPackages).toHaveLength(1);
 			expect(report.hasVersionOnlyPackages).toBe(false);
 			// dryRun was called once
 			expect(pubState.dryRunCalls).toHaveLength(1);
@@ -404,7 +404,7 @@ describe("runValidation", () => {
 			expect(report.totalTargets).toBe(0);
 			expect(report.readyTargets).toBe(0);
 			expect(report.packages).toHaveLength(0);
-			expect(report.publishSummary).toBeTruthy();
+			expect(report.validationPackages).toHaveLength(0);
 		});
 	});
 
@@ -492,34 +492,6 @@ describe("runValidation", () => {
 			// Assert
 			expect(report.publishOk).toBe(true);
 			expect(report.packages).toHaveLength(1);
-		});
-	});
-
-	describe("dry-run mode flag", () => {
-		it("includes 'Dry Run' label in publish summary when dryRun: true", async () => {
-			// Arrange — no packages (empty workspace), just verifying the flag passes through.
-			const commandRunnerLayer = CommandRunnerTest.empty();
-			const { layer: pubLayer } = PackagePublishTest.empty();
-
-			const layers = Layer.mergeAll(
-				loggerLayer,
-				actionStateLayer,
-				commandRunnerLayer,
-				pubLayer,
-				npmRegistryLayer,
-				sbomLayer,
-				attestLayer,
-				makeWorkspaceDiscoveryLayer([]),
-				makePublishabilityLayer(new Map()),
-			);
-
-			// Act
-			const report = await Effect.runPromise(
-				runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: true }).pipe(Effect.provide(layers)),
-			);
-
-			// Assert — dry-run label should appear in the summary
-			expect(report.publishSummary).toContain("Dry Run");
 		});
 	});
 

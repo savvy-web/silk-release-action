@@ -7,6 +7,11 @@
  * `PackagePublish.dryRun`, generates one SBOM per build directory via `Sbom`
  * (with `sbom-config` metadata applied), and assembles a `ValidationReport`.
  *
+ * The report is build-centric: the per-package `validationPackages` carry the
+ * builds, sizes, SBOMs, and registry targets. `main.ts` projects them into the
+ * canonical `ValidationOutput`, which is both emitted and rendered to the
+ * sticky comment — this module does not render markdown.
+ *
  * @module release/validation
  */
 
@@ -33,15 +38,11 @@ import { inferSBOMMetadata, resolveSBOMMetadata } from "../utils/infer-sbom-meta
 import { loadSBOMConfig } from "../utils/load-release-config.js";
 import { validateNTIACompliance } from "../utils/validate-ntia-compliance.js";
 import { ValidationError } from "./errors.js";
-import { buildPublishSummary } from "./report.js";
 import { resolvePublishableTargets } from "./resolve-targets.js";
 import type {
 	BuildSbom,
 	BuildTargetResult,
 	PackageBuildResult,
-	PackagePublishResult,
-	PublishPackagesResult,
-	TargetPublishResult,
 	ValidationFinding,
 	ValidationPackageResult,
 } from "./types.js";
@@ -81,8 +82,6 @@ export interface ValidationReport {
 	readonly packages: ReadonlyArray<{ readonly name: string; readonly version: string; readonly ready: boolean }>;
 	/** Build-centric per-package validation results (builds → SBOM + targets). */
 	readonly validationPackages: ReadonlyArray<ValidationPackageResult>;
-	/** Markdown publish-results summary produced by `buildPublishSummary`. */
-	readonly publishSummary: string;
 	/** Whether SBOM generation passed for all applicable build directories. */
 	readonly sbomOk: boolean;
 	/** Human-readable SBOM status line. */
@@ -321,46 +320,6 @@ const detectReleasedPackages = (
 		{ concurrency: "unbounded" },
 	).pipe(Effect.map((results) => results.filter((r): r is ReleasedPackage => r !== null)));
 
-/**
- * Project a build-centric {@link ValidationPackageResult} into the legacy
- * {@link PackagePublishResult} shape so `buildPublishSummary` (which the
- * Phase-3 publish path also feeds) can render the Phase-2 forecast unchanged.
- *
- * One {@link TargetPublishResult} is emitted per registry target; the build's
- * shared sizes are repeated across the targets of that build.
- */
-function toPackagePublishResult(pkg: ValidationPackageResult): PackagePublishResult {
-	const targets: TargetPublishResult[] = [];
-	for (const build of pkg.builds) {
-		for (const target of build.targets) {
-			targets.push({
-				target: {
-					protocol: "npm",
-					registry: target.registry,
-					directory: build.directory,
-					access: target.access,
-					provenance: target.provenance,
-					tag: "latest",
-					tokenEnv: null,
-				},
-				success: target.status !== "failed",
-				alreadyPublished: target.status === "skipped" ? true : undefined,
-				error: target.status === "failed" ? target.error : undefined,
-				packedSize: build.packedBytes ?? undefined,
-				unpackedSize: build.unpackedBytes ?? undefined,
-				fileCount: build.fileCount ?? undefined,
-			});
-		}
-	}
-	return {
-		name: pkg.name,
-		version: pkg.version,
-		targets,
-		baseVersion: pkg.baseVersion,
-		changesetCount: pkg.changesetCount ?? undefined,
-	};
-}
-
 // ─── runValidation ────────────────────────────────────────────────────────────
 
 /**
@@ -457,14 +416,6 @@ export const runValidation = (args: ValidationInputArgs) =>
 
 		if (releasedPackages.length === 0) {
 			yield* Effect.logDebug("runValidation: no packages to validate");
-			const emptyResult: PublishPackagesResult = {
-				success: true,
-				packages: [],
-				totalPackages: 0,
-				successfulPackages: 0,
-				totalTargets: 0,
-				successfulTargets: 0,
-			};
 			return {
 				publishOk: true,
 				npmReady: true,
@@ -474,7 +425,6 @@ export const runValidation = (args: ValidationInputArgs) =>
 				hasVersionOnlyPackages: false,
 				packages: [],
 				validationPackages: [],
-				publishSummary: buildPublishSummary(emptyResult, { dryRun: args.dryRun }),
 				sbomOk: true,
 				sbomSummary: "No packages require SBOM",
 				findings: [],
@@ -759,20 +709,12 @@ export const runValidation = (args: ValidationInputArgs) =>
 					: `${sbomSuccess}/${sbomCount} SBOM(s) generated`;
 
 		// ── Step 4: Assemble ValidationReport ────────────────────────────────
+		// The report is build-centric — `validationPackages` carries the builds,
+		// sizes, SBOMs, and registry targets. `main.ts` projects them into the
+		// canonical `ValidationOutput` and renders the comment from that object;
+		// this module no longer pre-renders markdown.
 
 		const hasVersionOnlyPackages = totalTargets === 0 && validationPackages.length > 0;
-
-		const pkgResults = validationPackages.map(toPackagePublishResult);
-		const publishResult: PublishPackagesResult = {
-			success: allPublishOk,
-			packages: pkgResults,
-			totalPackages: pkgResults.length,
-			successfulPackages: pkgResults.filter((p) => p.targets.every((t) => t.success)).length,
-			totalTargets,
-			successfulTargets: readyTargets,
-		};
-
-		const summary = buildPublishSummary(publishResult, { dryRun: args.dryRun });
 
 		const reportPackages = validationPackages.map((p) => ({
 			name: p.name,
@@ -789,7 +731,6 @@ export const runValidation = (args: ValidationInputArgs) =>
 			hasVersionOnlyPackages,
 			packages: reportPackages,
 			validationPackages,
-			publishSummary: summary,
 			sbomOk,
 			sbomSummary,
 			findings,

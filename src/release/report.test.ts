@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ChecksTableRow } from "./report.js";
+import type { ValidationOutput } from "../schema/release-output.js";
 import {
 	buildChecksTable,
 	buildFindingsTable,
@@ -7,45 +7,108 @@ import {
 	buildValidationComment,
 	getPackagePageUrl,
 } from "./report.js";
-import type { PackagePublishResult, PublishPackagesResult, TargetPublishResult, ValidationFinding } from "./types.js";
 
-// Minimal ResolvedTarget stub — only the fields the report module touches.
-const npmTarget = {
-	protocol: "npm" as const,
-	registry: "https://registry.npmjs.org/",
-	directory: "dist/npm",
-	access: "public" as const,
-	provenance: true,
-	tag: "latest",
-	tokenEnv: "NPM_TOKEN",
-};
+// ─── Type aliases for the build-centric ValidationOutput sub-structs ──────────
 
-const ghTarget = {
-	protocol: "npm" as const,
-	registry: "https://npm.pkg.github.com/",
-	directory: "dist/npm",
-	access: "public" as const,
-	provenance: false,
-	tag: "latest",
-	tokenEnv: "NODE_AUTH_TOKEN",
-};
+type ValidationPayload = ValidationOutput["validation"];
+type ValidationPublish = ValidationPayload["publish"];
+type ValidationPublishPackage = ValidationPublish["packages"][number];
+type ValidationBuild = ValidationPublishPackage["builds"][number];
+type ValidationBuildTarget = ValidationBuild["targets"][number];
+type ValidationCheck = ValidationPayload["checks"][number];
+type ValidationFinding = ValidationPayload["findings"][number];
 
-/** Build a PublishPackagesResult around a list of packages. */
-function resultOf(packages: PackagePublishResult[]): PublishPackagesResult {
-	const totalTargets = packages.reduce((n, p) => n + p.targets.length, 0);
-	const successfulTargets = packages.reduce(
-		(n, p) => n + p.targets.filter((t) => t.success || t.alreadyPublished).length,
-		0,
-	);
+// ─── Factories ────────────────────────────────────────────────────────────────
+
+/** A ready npm registry target with provenance enabled. */
+function npmTarget(overrides?: Partial<ValidationBuildTarget>): ValidationBuildTarget {
 	return {
-		success: packages.every((p) => p.targets.every((t) => t.success || t.alreadyPublished)),
-		packages,
-		totalPackages: packages.length,
-		successfulPackages: packages.filter((p) => p.targets.every((t) => t.success || t.alreadyPublished)).length,
-		totalTargets,
-		successfulTargets,
+		registry: "https://registry.npmjs.org/",
+		status: "ready",
+		access: "public",
+		provenance: true,
+		...overrides,
 	};
 }
+
+/** A ready GitHub Packages target with provenance disabled. */
+function ghTarget(overrides?: Partial<ValidationBuildTarget>): ValidationBuildTarget {
+	return {
+		registry: "https://npm.pkg.github.com/",
+		status: "ready",
+		access: "public",
+		provenance: false,
+		...overrides,
+	};
+}
+
+/** A build directory with sizes, SBOM, and registry targets. */
+function build(overrides?: Partial<ValidationBuild>): ValidationBuild {
+	return {
+		directory: "dist/npm",
+		packedBytes: 716,
+		unpackedBytes: 2300,
+		fileCount: 5,
+		sbom: { componentCount: 3, ntiaCompliant: true, missingNtiaFields: [] },
+		targets: [npmTarget()],
+		...overrides,
+	};
+}
+
+/** A released package with one build. */
+function pkg(overrides?: Partial<ValidationPublishPackage>): ValidationPublishPackage {
+	return {
+		name: "@savvy-web/linked-1",
+		version: "5.0.13",
+		baseVersion: "5.0.12",
+		bumpType: "patch",
+		changesetCount: 1,
+		ready: true,
+		versionOnly: false,
+		builds: [build()],
+		...overrides,
+	};
+}
+
+/** A publish payload around a list of packages. */
+function publishOf(packages: ReadonlyArray<ValidationPublishPackage>): ValidationPublish {
+	let totalTargets = 0;
+	let readyTargets = 0;
+	for (const p of packages) {
+		for (const b of p.builds) {
+			for (const t of b.targets) {
+				totalTargets++;
+				if (t.status !== "failed") readyTargets++;
+			}
+		}
+	}
+	return {
+		npmReady: true,
+		githubPackagesReady: true,
+		totalTargets,
+		readyTargets,
+		packages,
+	};
+}
+
+/** A validation payload around a publish payload + checks/findings. */
+function validationOf(overrides?: Partial<ValidationPayload>): ValidationPayload {
+	return {
+		buildValidation: { passed: true, packageCount: 0 },
+		checks: [],
+		findings: [],
+		publish: publishOf([]),
+		checkRun: null,
+		...overrides,
+	};
+}
+
+const passingChecks: ReadonlyArray<ValidationCheck> = [
+	{ name: "Build Validation", status: "pass", outcome: "Build passed", url: "https://example.com/runs/1" },
+	{ name: "Publish Validation", status: "pass", outcome: "1/1 target(s) ready", url: "https://example.com/runs/1" },
+];
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("getPackagePageUrl", () => {
 	it("returns npmjs.com URL for npm registry", () => {
@@ -71,7 +134,7 @@ describe("getPackagePageUrl", () => {
 
 describe("buildPublishSummary", () => {
 	it("frames the report as 'What will be released', never 'Published'", () => {
-		const markdown = buildPublishSummary(resultOf([]));
+		const markdown = buildPublishSummary(publishOf([]));
 		expect(markdown).toContain("What will be released");
 		expect(markdown).not.toContain("Publish Results");
 		expect(markdown).not.toContain("Published");
@@ -79,140 +142,133 @@ describe("buildPublishSummary", () => {
 	});
 
 	it("includes the dry-run indicator in the header when dryRun is true", () => {
-		const markdown = buildPublishSummary(resultOf([]), { dryRun: true });
+		const markdown = buildPublishSummary(publishOf([]), { dryRun: true });
 		expect(markdown).toContain("Dry Run");
 	});
 
 	it("renders the current → next version transition for a bumped package", () => {
-		const pkg: PackagePublishResult = {
-			name: "@savvy-web/linked-1",
-			version: "5.0.13",
-			baseVersion: "5.0.12",
-			changesetCount: 1,
-			targets: [{ target: npmTarget, success: true, packedSize: 716, unpackedSize: 2300, fileCount: 5 }],
-		};
-
-		const markdown = buildPublishSummary(resultOf([pkg]));
-
+		const markdown = buildPublishSummary(publishOf([pkg()]));
 		expect(markdown).toContain("5.0.12 → 5.0.13");
 	});
 
-	it("renders a patch bump emoji and label", () => {
-		const pkg: PackagePublishResult = {
-			name: "@org/pkg-a",
-			version: "1.0.1",
-			baseVersion: "1.0.0",
-			changesetCount: 1,
-			targets: [{ target: npmTarget, success: true }],
-		};
-
-		const markdown = buildPublishSummary(resultOf([pkg]));
-
+	it("renders a patch bump emoji and label from the precomputed bumpType", () => {
+		const markdown = buildPublishSummary(publishOf([pkg({ bumpType: "patch" })]));
 		expect(markdown).toContain("\u{1F7E2} patch");
 	});
 
-	it("renders a minor bump emoji and label", () => {
-		const pkg: PackagePublishResult = {
-			name: "@org/pkg-a",
-			version: "1.1.0",
-			baseVersion: "1.0.0",
-			changesetCount: 2,
-			targets: [{ target: npmTarget, success: true }],
-		};
-
-		const markdown = buildPublishSummary(resultOf([pkg]));
-
+	it("renders a minor bump emoji and label from the precomputed bumpType", () => {
+		const markdown = buildPublishSummary(publishOf([pkg({ bumpType: "minor" })]));
 		expect(markdown).toContain("\u{1F7E1} minor");
 	});
 
-	it("renders a major bump emoji and label", () => {
-		const pkg: PackagePublishResult = {
-			name: "@org/pkg-a",
-			version: "2.0.0",
-			baseVersion: "1.5.3",
-			changesetCount: 1,
-			targets: [{ target: npmTarget, success: true }],
-		};
-
-		const markdown = buildPublishSummary(resultOf([pkg]));
-
+	it("renders a major bump emoji and label from the precomputed bumpType", () => {
+		const markdown = buildPublishSummary(publishOf([pkg({ bumpType: "major" })]));
 		expect(markdown).toContain("\u{1F534} major");
 	});
 
 	it("renders a brand-new package (null baseVersion) as '— → version' with a 🆕 new bump", () => {
-		const pkg: PackagePublishResult = {
-			name: "@org/brand-new",
-			version: "1.0.0",
-			baseVersion: null,
-			changesetCount: 1,
-			targets: [{ target: npmTarget, success: true }],
-		};
-
-		const markdown = buildPublishSummary(resultOf([pkg]));
-
+		const markdown = buildPublishSummary(
+			publishOf([pkg({ name: "@org/brand-new", version: "1.0.0", baseVersion: null, bumpType: "new" })]),
+		);
 		expect(markdown).toContain("— → 1.0.0");
 		expect(markdown).toContain("\u{1F195} new");
 	});
 
-	it("renders the changeset count, and '—' when it is absent", () => {
-		const withCount: PackagePublishResult = {
-			name: "@org/with-count",
-			version: "1.0.1",
-			baseVersion: "1.0.0",
-			changesetCount: 3,
-			targets: [{ target: npmTarget, success: true }],
-		};
-		const noCount: PackagePublishResult = {
-			name: "@org/no-count",
-			version: "1.0.1",
-			baseVersion: "1.0.0",
-			targets: [{ target: npmTarget, success: true }],
-		};
-
-		const withCountMd = buildPublishSummary(resultOf([withCount]));
-		const noCountMd = buildPublishSummary(resultOf([noCount]));
-
-		// The summary table row carries the changeset count cell.
+	it("renders the changeset count, and '—' when it is null", () => {
+		const withCountMd = buildPublishSummary(publishOf([pkg({ name: "@org/with-count", changesetCount: 3 })]));
+		const noCountMd = buildPublishSummary(publishOf([pkg({ name: "@org/no-count", changesetCount: null })]));
 		expect(withCountMd).toContain("| 3 |");
 		expect(noCountMd).toContain("| — |");
 	});
 
-	it("renders per-target packed and unpacked sizes in the Details table", () => {
-		const pkg: PackagePublishResult = {
-			name: "@org/sized",
-			version: "1.0.1",
-			baseVersion: "1.0.0",
-			changesetCount: 1,
-			targets: [{ target: npmTarget, success: true, packedSize: 716, unpackedSize: 2300, fileCount: 5 }],
-		};
-
-		const markdown = buildPublishSummary(resultOf([pkg]));
-
+	it("renders the build directory, sizes, and SBOM line in the Details block", () => {
+		const markdown = buildPublishSummary(publishOf([pkg()]));
+		expect(markdown).toContain("<details>");
+		expect(markdown).toContain("`dist/npm`");
 		expect(markdown).toContain("0.7 kB");
 		expect(markdown).toContain("2.3 kB");
-		// File count appears in the Details table.
-		expect(markdown).toContain("| 5 |");
+		expect(markdown).toContain("5 files");
+		expect(markdown).toContain("SBOM: 3 components · NTIA ✅");
 	});
 
-	it("renders a Totals line summing packed/unpacked sizes and file counts", () => {
-		const pkgA: PackagePublishResult = {
+	it("renders the SBOM NTIA ⚠️ marker when the build is not NTIA-compliant", () => {
+		const nonCompliant = build({
+			sbom: { componentCount: 3, ntiaCompliant: false, missingNtiaFields: ["Supplier"] },
+		});
+		const markdown = buildPublishSummary(publishOf([pkg({ builds: [nonCompliant] })]));
+		expect(markdown).toContain("NTIA ⚠️");
+	});
+
+	it("omits the SBOM line when a build has no SBOM", () => {
+		const noSbom = build({ sbom: null });
+		const markdown = buildPublishSummary(publishOf([pkg({ builds: [noSbom] })]));
+		expect(markdown).not.toContain("SBOM:");
+	});
+
+	it("renders '—' for a build whose sizes were not reported", () => {
+		const noSizes = build({ packedBytes: null, unpackedBytes: null, fileCount: null });
+		const markdown = buildPublishSummary(publishOf([pkg({ builds: [noSizes] })]));
+		expect(markdown).toContain("📦 —");
+		expect(markdown).toContain("📂 —");
+		expect(markdown).toContain("📄 — files");
+	});
+
+	it("renders one section per build directory for a multi-build package", () => {
+		const npmBuild = build({
+			directory: "dist/npm",
+			packedBytes: 716,
+			unpackedBytes: 2300,
+			fileCount: 5,
+			sbom: { componentCount: 3, ntiaCompliant: true, missingNtiaFields: [] },
+			targets: [
+				npmTarget({ registry: "https://registry.one.com/" }),
+				npmTarget({ registry: "https://registry.two.com/" }),
+			],
+		});
+		const githubBuild = build({
+			directory: "dist/github",
+			packedBytes: 800,
+			unpackedBytes: 2500,
+			fileCount: 6,
+			sbom: { componentCount: 3, ntiaCompliant: false, missingNtiaFields: ["Supplier"] },
+			targets: [ghTarget()],
+		});
+
+		const markdown = buildPublishSummary(publishOf([pkg({ builds: [npmBuild, githubBuild] })]));
+
+		// Both build directories appear, each with its own headline.
+		expect(markdown).toContain("`dist/npm`");
+		expect(markdown).toContain("`dist/github`");
+		// The npm build's two registries both render under it.
+		expect(markdown).toContain("registry.one.com");
+		expect(markdown).toContain("registry.two.com");
+		// Per-build sizes are distinct.
+		expect(markdown).toContain("0.7 kB");
+		expect(markdown).toContain("0.8 kB");
+		// Per-build SBOM lines are distinct.
+		expect(markdown).toContain("SBOM: 3 components · NTIA ✅");
+		expect(markdown).toContain("SBOM: 3 components · NTIA ⚠️");
+		// The dist/npm headline precedes the dist/github headline.
+		expect(markdown.indexOf("`dist/npm`")).toBeLessThan(markdown.indexOf("`dist/github`"));
+	});
+
+	it("renders a Totals line summing per-build sizes and file counts", () => {
+		const pkgA = pkg({
 			name: "@org/pkg-a",
-			version: "1.0.1",
-			baseVersion: "1.0.0",
-			changesetCount: 1,
-			targets: [{ target: npmTarget, success: true, packedSize: 716, unpackedSize: 2300, fileCount: 5 }],
-		};
-		const pkgB: PackagePublishResult = {
+			builds: [build({ packedBytes: 716, unpackedBytes: 2300, fileCount: 5 })],
+		});
+		const pkgB = pkg({
 			name: "@org/pkg-b",
 			version: "2.0.1",
 			baseVersion: "2.0.0",
-			changesetCount: 1,
-			targets: [{ target: ghTarget, success: true, packedSize: 284, unpackedSize: 700, fileCount: 3 }],
-		};
+			builds: [
+				build({ directory: "dist/b", packedBytes: 284, unpackedBytes: 700, fileCount: 3, targets: [ghTarget()] }),
+			],
+		});
 
-		const markdown = buildPublishSummary(resultOf([pkgA, pkgB]));
+		const markdown = buildPublishSummary(publishOf([pkgA, pkgB]));
 
-		// 716 + 284 = 1000 bytes → 1.0 kB; 2300 + 700 = 3000 → 3.0 kB; 5 + 3 = 8 files.
+		// 716 + 284 = 1000 → 1.0 kB; 2300 + 700 = 3000 → 3.0 kB; 5 + 3 = 8 files.
 		expect(markdown).toContain("**Totals:**");
 		expect(markdown).toContain("1.0 kB packed");
 		expect(markdown).toContain("3.0 kB unpacked");
@@ -221,116 +277,72 @@ describe("buildPublishSummary", () => {
 	});
 
 	it("omits an absent size from the Totals sum", () => {
-		const pkg: PackagePublishResult = {
+		const partial = pkg({
 			name: "@org/partial-sizes",
-			version: "1.0.1",
-			baseVersion: "1.0.0",
-			changesetCount: 1,
-			// packedSize present, unpackedSize/fileCount absent.
-			targets: [{ target: npmTarget, success: true, packedSize: 500 }],
-		};
-
-		const markdown = buildPublishSummary(resultOf([pkg]));
-
+			builds: [build({ packedBytes: 500, unpackedBytes: null, fileCount: null })],
+		});
+		const markdown = buildPublishSummary(publishOf([partial]));
 		expect(markdown).toContain("0.5 kB packed");
 		expect(markdown).toContain("0 B unpacked");
 		expect(markdown).toContain("0 files");
 	});
 
-	it("renders a version-only package (no targets) with the 'Version only' targets cell", () => {
-		const pkg: PackagePublishResult = {
-			name: "@org/version-only",
-			version: "1.0.1",
-			baseVersion: "1.0.0",
-			changesetCount: 1,
-			targets: [],
-		};
-
-		const markdown = buildPublishSummary(resultOf([pkg]));
-
+	it("renders a version-only package (no builds) with the 'Version only' targets cell", () => {
+		const versionOnly = pkg({ name: "@org/version-only", versionOnly: true, builds: [] });
+		const markdown = buildPublishSummary(publishOf([versionOnly]));
 		expect(markdown).toContain("Version only");
 		expect(markdown).toContain("@org/version-only");
-		// A version-only package has no publish targets, so it must not produce
-		// a `<details>` block — that would wrap a header-only, zero-row table.
+		// A version-only package has no builds, so it must not produce a
+		// `<details>` block — that would wrap a header-only output.
 		expect(markdown).not.toContain("<details>");
 	});
 
 	it("includes the Legend line", () => {
-		const pkg: PackagePublishResult = {
-			name: "@org/pkg-a",
-			version: "1.0.1",
-			baseVersion: "1.0.0",
-			changesetCount: 1,
-			targets: [{ target: npmTarget, success: true }],
-		};
-
-		const markdown = buildPublishSummary(resultOf([pkg]));
-
+		const markdown = buildPublishSummary(publishOf([pkg()]));
 		expect(markdown).toContain("**Legend:**");
 		expect(markdown).toContain("🔴 major");
 	});
 
 	it("renders provenance ✅ for a configured target and 🚫 for an unconfigured one", () => {
-		const provPkg: PackagePublishResult = {
-			name: "@org/prov",
-			version: "1.0.1",
-			baseVersion: "1.0.0",
-			changesetCount: 1,
-			targets: [{ target: npmTarget, success: true }],
-		};
-		const noProvPkg: PackagePublishResult = {
-			name: "@org/no-prov",
-			version: "1.0.1",
-			baseVersion: "1.0.0",
-			changesetCount: 1,
-			targets: [{ target: ghTarget, success: true }],
-		};
-
-		const provMd = buildPublishSummary(resultOf([provPkg]));
-		const noProvMd = buildPublishSummary(resultOf([noProvPkg]));
-
+		const provMd = buildPublishSummary(publishOf([pkg({ builds: [build({ targets: [npmTarget()] })] })]));
+		const noProvMd = buildPublishSummary(publishOf([pkg({ builds: [build({ targets: [ghTarget()] })] })]));
 		expect(provMd).toContain("✅");
 		expect(noProvMd).toContain("\u{1F6AB}");
 	});
 
-	it("does not render a 'Package URL' column in the Details table", () => {
-		const pkg: PackagePublishResult = {
-			name: "@org/pkg-a",
-			version: "1.0.1",
-			baseVersion: "1.0.0",
-			changesetCount: 1,
-			targets: [{ target: npmTarget, success: true }],
-		};
+	it("renders a failed target with a ❌ status and a degraded package summary", () => {
+		const failedBuild = build({ targets: [npmTarget({ status: "failed" })] });
+		const markdown = buildPublishSummary(publishOf([pkg({ ready: false, builds: [failedBuild] })]));
+		expect(markdown).toContain("❌ Failed");
+	});
 
-		const markdown = buildPublishSummary(resultOf([pkg]));
-
-		expect(markdown).not.toContain("Package URL");
+	it("renders a skipped target with a ⏭️ status", () => {
+		const skippedBuild = build({ targets: [npmTarget({ status: "skipped" })] });
+		const markdown = buildPublishSummary(publishOf([pkg({ builds: [skippedBuild] })]));
+		expect(markdown).toContain("⏭️ Skipped");
 	});
 });
 
 describe("buildChecksTable", () => {
 	it("renders a linked Check cell when a row carries a url", () => {
 		const table = buildChecksTable([
-			{ icon: "✅", name: "Build Validation", outcome: "Build passed", url: "https://example.com/runs/1" },
+			{ name: "Build Validation", status: "pass", outcome: "Build passed", url: "https://example.com/runs/1" },
 		]);
-
 		expect(table).toContain("[Build Validation](https://example.com/runs/1)");
 	});
 
-	it("renders a plain Check name when a row has no url", () => {
-		const table = buildChecksTable([{ icon: "✅", name: "Build Validation", outcome: "Build passed" }]);
-
+	it("renders a plain Check name when a row has a null url", () => {
+		const table = buildChecksTable([{ name: "Build Validation", status: "pass", outcome: "Build passed", url: null }]);
 		expect(table).toContain("Build Validation");
 		expect(table).not.toContain("](");
 	});
 
-	it("renders all three status icons", () => {
+	it("renders all three status icons from the status literal", () => {
 		const table = buildChecksTable([
-			{ icon: "✅", name: "Build Validation", outcome: "Build passed" },
-			{ icon: "⚠️", name: "SBOM Preview", outcome: "1 NTIA warning" },
-			{ icon: "❌", name: "Publish Validation", outcome: "1 failed" },
+			{ name: "Build Validation", status: "pass", outcome: "Build passed", url: null },
+			{ name: "SBOM Preview", status: "warning", outcome: "1 NTIA warning", url: null },
+			{ name: "Publish Validation", status: "error", outcome: "1 failed", url: null },
 		]);
-
 		expect(table).toContain("✅");
 		expect(table).toContain("⚠️");
 		expect(table).toContain("❌");
@@ -376,7 +388,6 @@ describe("buildFindingsTable", () => {
 				message: "missing NTIA fields",
 			},
 		]);
-
 		expect(table).toContain("### ⚠️ 1 warning");
 		expect(table).not.toContain("error");
 	});
@@ -385,7 +396,6 @@ describe("buildFindingsTable", () => {
 		const table = buildFindingsTable([
 			{ severity: "error", check: "Build Validation", scope: null, message: "tsc exited 2" },
 		]);
-
 		expect(table).toContain("### ❌ 1 error");
 		expect(table).not.toContain("warning");
 	});
@@ -397,7 +407,6 @@ describe("buildFindingsTable", () => {
 			{ severity: "warning", check: "SBOM Preview", scope: null, message: "c" },
 			{ severity: "warning", check: "SBOM Preview", scope: null, message: "d" },
 		]);
-
 		expect(table).toContain("❌ 2 errors");
 		expect(table).toContain("⚠️ 2 warnings");
 	});
@@ -406,11 +415,10 @@ describe("buildFindingsTable", () => {
 		const table = buildFindingsTable([
 			{ severity: "error", check: "Build Validation", scope: null, message: "tsc exited 2" },
 		]);
-
 		expect(table).toContain("| — |");
 	});
 
-	it("renders the scope in the Package column for a package-scoped finding", () => {
+	it("renders the package in the Package column for a package-scoped finding", () => {
 		const table = buildFindingsTable([
 			{
 				severity: "error",
@@ -419,20 +427,25 @@ describe("buildFindingsTable", () => {
 				message: "dry-run failed",
 			},
 		]);
-
 		expect(table).toContain("@savvy-web/linked-2");
+	});
+
+	it("renders the package and directory for a build-scoped finding", () => {
+		const table = buildFindingsTable([
+			{
+				severity: "warning",
+				check: "SBOM Preview",
+				scope: { package: "@savvy-web/linked-2", directory: "dist/npm" },
+				message: "missing NTIA fields",
+			},
+		]);
+		expect(table).toContain("@savvy-web/linked-2 · dist/npm");
 	});
 });
 
 describe("buildValidationComment", () => {
-	const passingChecks: ReadonlyArray<ChecksTableRow> = [
-		{ icon: "✅", name: "Build Validation", outcome: "Build passed", url: "https://example.com/runs/1" },
-		{ icon: "✅", name: "Publish Validation", outcome: "1/1 target(s) ready", url: "https://example.com/runs/1" },
-	];
-
 	it("renders a ✅ header icon when there are no findings", () => {
-		const comment = buildValidationComment({ checks: passingChecks, findings: [], publishSummary: "" });
-
+		const comment = buildValidationComment(validationOf({ checks: passingChecks }));
 		expect(comment).toContain("## 📦 Release Validation ✅");
 	});
 
@@ -445,8 +458,7 @@ describe("buildValidationComment", () => {
 				message: "missing NTIA fields",
 			},
 		];
-		const comment = buildValidationComment({ checks: passingChecks, findings, publishSummary: "" });
-
+		const comment = buildValidationComment(validationOf({ checks: passingChecks, findings }));
 		expect(comment).toContain("## 📦 Release Validation ⚠️");
 	});
 
@@ -460,17 +472,15 @@ describe("buildValidationComment", () => {
 			},
 			{ severity: "error", check: "Build Validation", scope: null, message: "tsc exited 2" },
 		];
-		const comment = buildValidationComment({ checks: passingChecks, findings, publishSummary: "" });
-
+		const comment = buildValidationComment(validationOf({ checks: passingChecks, findings }));
 		expect(comment).toContain("## 📦 Release Validation ❌");
 	});
 
 	it("omits the findings section entirely when there are no findings", () => {
-		const comment = buildValidationComment({ checks: passingChecks, findings: [], publishSummary: "" });
-
+		const comment = buildValidationComment(validationOf({ checks: passingChecks }));
 		// The findings-table heading marker must not appear.
-		expect(comment).not.toContain("error");
-		expect(comment).not.toContain("warning");
+		expect(comment).not.toContain("### ❌");
+		expect(comment).not.toContain("### ⚠️");
 	});
 
 	it("includes the findings table when findings are present", () => {
@@ -482,65 +492,61 @@ describe("buildValidationComment", () => {
 				message: "dry-run failed",
 			},
 		];
-		const comment = buildValidationComment({ checks: passingChecks, findings, publishSummary: "" });
-
+		const comment = buildValidationComment(validationOf({ checks: passingChecks, findings }));
 		expect(comment).toContain("### ❌ 1 error");
 		expect(comment).toContain("dry-run failed");
 	});
 
 	it("renders the checks table with linked check names", () => {
-		const comment = buildValidationComment({ checks: passingChecks, findings: [], publishSummary: "" });
-
+		const comment = buildValidationComment(validationOf({ checks: passingChecks }));
 		expect(comment).toContain("[Build Validation](https://example.com/runs/1)");
 	});
 
-	it("includes the 'What will be released' publish summary section", () => {
-		const summary = buildPublishSummary(resultOf([]));
-		const comment = buildValidationComment({ checks: passingChecks, findings: [], publishSummary: summary });
-
+	it("includes the build-centric 'What will be released' publish summary", () => {
+		const comment = buildValidationComment(validationOf({ checks: passingChecks, publish: publishOf([pkg()]) }));
 		expect(comment).toContain("What will be released");
+		expect(comment).toContain("`dist/npm`");
+	});
+
+	it("renders the build-grouped Details block for a multi-build package", () => {
+		const multiBuild = pkg({
+			builds: [
+				build({ directory: "dist/npm", targets: [npmTarget()] }),
+				build({ directory: "dist/github", packedBytes: 800, targets: [ghTarget()] }),
+			],
+		});
+		const comment = buildValidationComment(validationOf({ checks: passingChecks, publish: publishOf([multiBuild]) }));
+		expect(comment).toContain("`dist/npm`");
+		expect(comment).toContain("`dist/github`");
 	});
 
 	it("links the release-notes section when a check-run url is given", () => {
-		const comment = buildValidationComment({
-			checks: passingChecks,
-			findings: [],
-			publishSummary: "",
+		const comment = buildValidationComment(validationOf({ checks: passingChecks }), {
 			releaseNotesUrl: "https://example.com/runs/9",
 		});
-
 		expect(comment).toContain("### 📋 Release Notes Preview");
 		expect(comment).toContain("[View detailed release notes →](https://example.com/runs/9)");
 	});
 
 	it("renders a release-notes placeholder when no check-run url is given", () => {
-		const comment = buildValidationComment({ checks: passingChecks, findings: [], publishSummary: "" });
-
+		const comment = buildValidationComment(validationOf({ checks: passingChecks }));
 		expect(comment).toContain("### 📋 Release Notes Preview");
 		expect(comment).toContain("Release notes will be generated on merge");
 	});
 
 	it("includes the dry-run banner when dryRun is true", () => {
-		const comment = buildValidationComment({
-			checks: passingChecks,
-			findings: [],
-			publishSummary: "",
-			dryRun: true,
-		});
-
+		const comment = buildValidationComment(validationOf({ checks: passingChecks }), { dryRun: true });
 		expect(comment).toContain("DRY RUN MODE");
 	});
 
 	it("omits the dry-run banner when dryRun is false", () => {
-		const comment = buildValidationComment({ checks: passingChecks, findings: [], publishSummary: "" });
-
+		const comment = buildValidationComment(validationOf({ checks: passingChecks }));
 		expect(comment).not.toContain("DRY RUN MODE");
 	});
 
 	it("ends with the updated-at footer rendered from the injected `now`", () => {
 		const now = new Date("2026-05-19T12:34:56.000Z");
-		const comment = buildValidationComment({ checks: passingChecks, findings: [], publishSummary: "", now });
-
+		const comment = buildValidationComment(validationOf({ checks: passingChecks }), { now });
 		expect(comment).toContain("<sub>Updated at 2026-05-19T12:34:56.000Z</sub>");
 	});
 });

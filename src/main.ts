@@ -50,7 +50,6 @@ import { Config, Effect, Layer, Option } from "effect";
 import { ReleaseLive } from "./release/layers.js";
 import { detectReleases, runBuildAndSbom, runPublishTargets } from "./release/publish.js";
 import { runReleases } from "./release/releases.js";
-import type { ChecksTableRow } from "./release/report.js";
 import { buildValidationComment } from "./release/report.js";
 import type {
 	PublishPackagesResult,
@@ -60,6 +59,7 @@ import type {
 } from "./release/types.js";
 import { runValidation as runValidationEffect } from "./release/validation.js";
 import { toBranchManagementOutput, toPublishingOutput, toValidationOutput } from "./schema/projections.js";
+import type { ValidationOutput } from "./schema/release-output.js";
 import { ReleaseOutput } from "./schema/release-output.js";
 import { GithubPackagesTokenState, STATE_KEYS } from "./state.js";
 import { checkReleaseBranch } from "./utils/check-release-branch.js";
@@ -288,7 +288,6 @@ const runValidation = Effect.gen(function* () {
 
 		// Steps 3-5 — publish / release-notes / SBOM validation via Effect.
 		const publishCheckId = 0;
-		let publishSummary = "";
 		let publishReadyTargets = 0;
 		let publishTotalTargets = 0;
 		let publishOk = true;
@@ -317,7 +316,6 @@ const runValidation = Effect.gen(function* () {
 				),
 			);
 			if (report !== null) {
-				publishSummary = report.publishSummary;
 				publishReadyTargets = report.readyTargets;
 				publishTotalTargets = report.totalTargets;
 				publishOk = report.publishOk;
@@ -406,46 +404,48 @@ const runValidation = Effect.gen(function* () {
 		// `hardFailed` flag covers checks whose failure is not also a finding
 		// (e.g. a publish failure when the build itself passed).
 		const unifiedUrl = unified.htmlUrl !== "" ? unified.htmlUrl : undefined;
-		const iconFor = (checkName: string, hardFailed: boolean): "✅" | "⚠️" | "❌" => {
+		const statusFor = (checkName: string, hardFailed: boolean): "pass" | "warning" | "error" => {
 			const own = findings.filter((f) => f.check === checkName);
-			if (hardFailed || own.some((f) => f.severity === "error")) return "❌";
-			if (own.some((f) => f.severity === "warning")) return "⚠️";
-			return "✅";
+			if (hardFailed || own.some((f) => f.severity === "error")) return "error";
+			if (own.some((f) => f.severity === "warning")) return "warning";
+			return "pass";
 		};
 		// Publish/Release-Notes/SBOM rows have no own check run — they link to
 		// the unified validation check. Build links to its own check run.
 		const buildUrl = buildResult.htmlUrl !== "" ? buildResult.htmlUrl : unifiedUrl;
-		const checkRows: ReadonlyArray<ChecksTableRow> = [
+		// The checks-table rows in the canonical ValidationOutput shape — fed
+		// straight into `toValidationOutput` (and from there rendered).
+		const checkRows: ReadonlyArray<ValidationOutput["validation"]["checks"][number]> = [
 			{
-				icon: iconFor("Link Issues from Commits", false),
 				name: "Link Issues from Commits",
+				status: statusFor("Link Issues from Commits", false),
 				outcome: `${issuesResult.linkedIssues.length} issue(s) linked`,
-				...(unifiedUrl !== undefined && { url: unifiedUrl }),
+				url: unifiedUrl ?? null,
 			},
 			{
-				icon: iconFor("Build Validation", !buildResult.success),
 				name: "Build Validation",
+				status: statusFor("Build Validation", !buildResult.success),
 				outcome: buildResult.success ? "Build passed" : "Build failed",
-				...(buildUrl !== undefined && { url: buildUrl }),
+				url: buildUrl ?? null,
 			},
 			{
-				icon: iconFor("Publish Validation", !buildResult.success || !publishOk),
 				name: "Publish Validation",
+				status: statusFor("Publish Validation", !buildResult.success || !publishOk),
 				outcome:
 					publishTotalTargets === 0 ? "No targets" : `${publishReadyTargets}/${publishTotalTargets} target(s) ready`,
-				...(unifiedUrl !== undefined && { url: unifiedUrl }),
+				url: unifiedUrl ?? null,
 			},
 			{
-				icon: iconFor("Release Notes Preview", false),
 				name: "Release Notes Preview",
+				status: statusFor("Release Notes Preview", false),
 				outcome: `${reportPackages.length} package(s) ready`,
-				...(unifiedUrl !== undefined && { url: unifiedUrl }),
+				url: unifiedUrl ?? null,
 			},
 			{
-				icon: iconFor("SBOM Preview", !buildResult.success || !sbomOk),
 				name: "SBOM Preview",
+				status: statusFor("SBOM Preview", !buildResult.success || !sbomOk),
 				outcome: sbomSummary,
-				...(unifiedUrl !== undefined && { url: unifiedUrl }),
+				url: unifiedUrl ?? null,
 			},
 		];
 
@@ -459,6 +459,25 @@ const runValidation = Effect.gen(function* () {
 						.map((r) => r.name)
 						.join(", ")}`,
 		);
+
+		// Build the one canonical ValidationOutput. The build-centric struct
+		// projects the per-package builds, the findings, and the checks table.
+		// This single object is both rendered to the sticky comment (Step 7) and
+		// emitted as `result` — the markdown is provably a projection of the
+		// exact emitted JSON.
+		const validationOutput = toValidationOutput({
+			buildsPassed: buildResult.success,
+			packageCount: reportPackages.length,
+			npmReady,
+			githubPackagesReady,
+			totalTargets: publishTotalTargets,
+			readyTargets: publishReadyTargets,
+			checks: checkRows,
+			findings,
+			validationPackages,
+			checkRun: checkRunResult,
+			dryRun,
+		});
 
 		// Step 7 — sticky comment on the release PR (migrated).
 		const prsResult = yield* Effect.either(
@@ -490,14 +509,10 @@ const runValidation = Effect.gen(function* () {
 			const pr = prsResult.right[0];
 			// Redesigned Phase-2 comment: a worst-state header icon, the 3-state
 			// checks table, the findings table (rendered only when non-empty),
-			// the "What will be released" forecast, and a release-notes link.
-			// The old ad-hoc "Failed Checks" and "Version-Only Packages" sections
-			// are gone — findings replace the former and the summary table's
-			// `🏷️ Version only` cell covers the latter.
-			const commentBody = buildValidationComment({
-				checks: checkRows,
-				findings,
-				publishSummary,
+			// the build-grouped "What will be released" forecast, and a
+			// release-notes link. Rendered straight from the canonical
+			// ValidationOutput's `validation` payload — no parallel comment input.
+			const commentBody = buildValidationComment(validationOutput.validation, {
 				...(unifiedUrl !== undefined && { releaseNotesUrl: unifiedUrl }),
 				dryRun,
 			});
@@ -517,29 +532,7 @@ const runValidation = Effect.gen(function* () {
 			yield* Effect.logInfo("Sticky comment update skipped — no open PR found for release branch");
 		}
 
-		// Emit structured result output for Phase 2. The build-centric
-		// ValidationOutput projects the per-package builds, the findings, and
-		// the checks table; the checks-table icon maps to a status literal.
-		const checkStatus = (icon: "✅" | "⚠️" | "❌"): "pass" | "warning" | "error" =>
-			icon === "❌" ? "error" : icon === "⚠️" ? "warning" : "pass";
-		const validationOutput = toValidationOutput({
-			buildsPassed: buildResult.success,
-			packageCount: reportPackages.length,
-			npmReady,
-			githubPackagesReady,
-			totalTargets: publishTotalTargets,
-			readyTargets: publishReadyTargets,
-			checks: checkRows.map((row) => ({
-				name: row.name,
-				status: checkStatus(row.icon),
-				outcome: row.outcome,
-				url: row.url ?? null,
-			})),
-			findings,
-			validationPackages,
-			checkRun: checkRunResult,
-			dryRun,
-		});
+		// Emit the structured `result` action output for Phase 2.
 		yield* emitReleaseOutput(outputs, validationOutput, {
 			packageCount: reportPackages.length,
 			// Phase 2 runs on a push to the release branch; the release PR number is not
