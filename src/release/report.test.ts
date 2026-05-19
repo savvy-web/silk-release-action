@@ -498,9 +498,10 @@ describe("buildValidationComment", () => {
 		expect(comment).not.toContain("DRY RUN MODE");
 	});
 
-	it("ends with the updated-at footer", () => {
-		const comment = buildValidationComment({ checks: passingChecks, findings: [], publishSummary: "" });
+	it("ends with the updated-at footer rendered from the injected `now`", () => {
+		const now = new Date("2026-05-19T12:34:56.000Z");
+		const comment = buildValidationComment({ checks: passingChecks, findings: [], publishSummary: "", now });
 
-		expect(comment).toContain("<sub>Updated at ");
+		expect(comment).toContain("<sub>Updated at 2026-05-19T12:34:56.000Z</sub>");
 	});
 });

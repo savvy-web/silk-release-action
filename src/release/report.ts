@@ -403,6 +403,9 @@ export interface ValidationCommentInput {
 	readonly releaseNotesUrl?: string | undefined;
 	/** Whether this is a dry-run. */
 	readonly dryRun?: boolean | undefined;
+	/** Timestamp for the footer; defaults to the current time. Inject a fixed
+	 * value to keep the function deterministic (e.g. in tests). */
+	readonly now?: Date | undefined;
 }
 
 /**
@@ -414,7 +417,8 @@ export interface ValidationCommentInput {
  * `findings` (`❌` if any error, `⚠️` if any warning, else `✅`). A findings
  * section is inserted directly after the checks table only when `findings` is
  * non-empty. The hidden sticky-comment marker is added by `updateStickyComment`,
- * not here.
+ * not here. The footer timestamp comes from `input.now` (defaulting to the
+ * current time), so the function is deterministic when `now` is supplied.
  *
  * @param input - The assembled comment inputs.
  * @returns The full markdown comment body.
@@ -450,7 +454,8 @@ export function buildValidationComment(input: ValidationCommentInput): string {
 			: "### \u{1F4CB} Release Notes Preview\n\n_Release notes will be generated on merge._";
 	parts.push(releaseNotes);
 
-	parts.push(`---\n\n<sub>Updated at ${new Date().toISOString()}</sub>`);
+	const now = input.now ?? new Date();
+	parts.push(`---\n\n<sub>Updated at ${now.toISOString()}</sub>`);
 
 	return parts.join("\n\n");
 }

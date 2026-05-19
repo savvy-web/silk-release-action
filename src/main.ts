@@ -419,7 +419,7 @@ const runValidation = Effect.gen(function* () {
 				...(buildUrl !== undefined && { url: buildUrl }),
 			},
 			{
-				icon: iconFor("Publish Validation", buildResult.success && !publishOk),
+				icon: iconFor("Publish Validation", !buildResult.success || !publishOk),
 				name: "Publish Validation",
 				outcome:
 					publishTotalTargets === 0 ? "No targets" : `${publishReadyTargets}/${publishTotalTargets} target(s) ready`,
@@ -432,7 +432,7 @@ const runValidation = Effect.gen(function* () {
 				...(unifiedUrl !== undefined && { url: unifiedUrl }),
 			},
 			{
-				icon: iconFor("SBOM Preview", !sbomOk),
+				icon: iconFor("SBOM Preview", !buildResult.success || !sbomOk),
 				name: "SBOM Preview",
 				outcome: sbomSummary,
 				...(unifiedUrl !== undefined && { url: unifiedUrl }),
