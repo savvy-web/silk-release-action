@@ -408,6 +408,93 @@ describe("runValidation", () => {
 		});
 	});
 
+	describe("changeset counting (target-branch .changeset directory)", () => {
+		it("runs to completion when the target branch carries changeset files", async () => {
+			// Arrange — a released package plus a seeded `.changeset` directory on
+			// the target branch. `countChangesetsPerPackage` reads these via git;
+			// the run must still complete successfully.
+			const pkg = makeWsPkg("@test/counted", "2.1.0", "packages/counted");
+			const target = makeNpmTarget("@test/counted", "/tmp/dist/counted");
+
+			const commandResponses = new Map<string, CommandResponse>([
+				[
+					"git show main:packages/counted/package.json",
+					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/counted", version: "2.0.0" }), stderr: "" },
+				],
+				[
+					"git ls-tree --name-only main .changeset/",
+					{ exitCode: 0, stdout: [".changeset/README.md", ".changeset/one.md"].join("\n"), stderr: "" },
+				],
+				[
+					"git show main:.changeset/one.md",
+					{ exitCode: 0, stdout: ["---", '"@test/counted": minor', "---", "", "A change", ""].join("\n"), stderr: "" },
+				],
+			]);
+
+			const { layer: pubLayer } = PackagePublishTest.empty();
+
+			const layers = Layer.mergeAll(
+				loggerLayer,
+				actionStateLayer,
+				makeCommandRunnerLayer(commandResponses),
+				pubLayer,
+				npmRegistryLayer,
+				sbomLayer,
+				attestLayer,
+				makeWorkspaceDiscoveryLayer([pkg]),
+				makePublishabilityLayer(new Map([["@test/counted", [target]]])),
+			);
+
+			// Act
+			const report = await Effect.runPromise(
+				runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(Effect.provide(layers)),
+			);
+
+			// Assert — the changeset-counting git path does not disrupt the run.
+			expect(report.publishOk).toBe(true);
+			expect(report.packages).toHaveLength(1);
+			expect(report.packages[0]?.name).toBe("@test/counted");
+		});
+
+		it("runs to completion when git ls-tree for changesets fails (best-effort)", async () => {
+			// Arrange — only the version-diff git show is registered; the
+			// changeset `ls-tree` has no response and therefore fails. The
+			// best-effort helper must absorb that without failing the run.
+			const pkg = makeWsPkg("@test/no-changesets", "1.2.0", "packages/no-changesets");
+			const target = makeNpmTarget("@test/no-changesets", "/tmp/dist/no-changesets");
+
+			const commandResponses = new Map<string, CommandResponse>([
+				[
+					"git show main:packages/no-changesets/package.json",
+					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/no-changesets", version: "1.1.0" }), stderr: "" },
+				],
+			]);
+
+			const { layer: pubLayer } = PackagePublishTest.empty();
+
+			const layers = Layer.mergeAll(
+				loggerLayer,
+				actionStateLayer,
+				makeCommandRunnerLayer(commandResponses),
+				pubLayer,
+				npmRegistryLayer,
+				sbomLayer,
+				attestLayer,
+				makeWorkspaceDiscoveryLayer([pkg]),
+				makePublishabilityLayer(new Map([["@test/no-changesets", [target]]])),
+			);
+
+			// Act
+			const report = await Effect.runPromise(
+				runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(Effect.provide(layers)),
+			);
+
+			// Assert
+			expect(report.publishOk).toBe(true);
+			expect(report.packages).toHaveLength(1);
+		});
+	});
+
 	describe("dry-run mode flag", () => {
 		it("includes 'Dry Run' label in publish summary when dryRun: true", async () => {
 			// Arrange — no packages (empty workspace), just verifying the flag passes through.

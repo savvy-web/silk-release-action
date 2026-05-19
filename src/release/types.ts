@@ -41,6 +41,12 @@ export interface TargetPublishResult {
 	sbomPath?: string | undefined;
 	/** URL to SBOM attestation for this target */
 	sbomAttestationUrl?: string | undefined;
+	/** Packed (tarball) size in bytes reported by the publish dry-run */
+	packedSize?: number | undefined;
+	/** Unpacked size in bytes reported by the publish dry-run */
+	unpackedSize?: number | undefined;
+	/** Number of files in the tarball reported by the publish dry-run */
+	fileCount?: number | undefined;
 }
 
 /**
@@ -54,6 +60,10 @@ export interface PackagePublishResult {
 	targets: TargetPublishResult[];
 	/** URL to GitHub attestation (SLSA provenance) */
 	githubAttestationUrl?: string | undefined;
+	/** Version on the target branch; `null` for a brand-new package */
+	baseVersion?: string | null | undefined;
+	/** Number of changesets attributed to this package on the target branch */
+	changesetCount?: number | undefined;
 }
 
 /**

@@ -26,6 +26,7 @@ import type { WorkspacePackage } from "workspaces-effect";
 import { WorkspaceDiscovery } from "workspaces-effect";
 
 import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
+import { countChangesetsPerPackage } from "../utils/count-changesets.js";
 import { ValidationError } from "./errors.js";
 import { buildPublishSummary } from "./report.js";
 import { resolvePublishableTargets } from "./resolve-targets.js";
@@ -283,6 +284,11 @@ export const runValidation = (args: ValidationInputArgs) =>
 
 		yield* Effect.logDebug("runValidation: resolving publish targets and running dry-runs");
 
+		// Per-package changeset counts read from the target branch's `.changeset`
+		// directory (still present there — Phase 1 consumed them only on the
+		// release branch). Best-effort: an empty map on any failure.
+		const changesetCounts = yield* countChangesetsPerPackage(runner, args.targetBranch);
+
 		const workspaceRoot = process.cwd();
 		const pkgResults: PackagePublishResult[] = [];
 		let allPublishOk = true;
@@ -291,14 +297,20 @@ export const runValidation = (args: ValidationInputArgs) =>
 		let totalTargets = 0;
 		let readyTargets = 0;
 
-		for (const { pkg } of releasedPackages) {
+		for (const { pkg, baseVersion } of releasedPackages) {
 			// Resolve publish targets, then drop any whose built `package.json` is
 			// `private` — validation only exercises what will actually be published.
 			const targets = yield* resolvePublishableTargets(pkg, workspaceRoot);
 
 			if (targets.length === 0) {
 				yield* Effect.logDebug(`${pkg.name}: no publish targets (version-only)`);
-				pkgResults.push({ name: pkg.name, version: pkg.version, targets: [] });
+				pkgResults.push({
+					name: pkg.name,
+					version: pkg.version,
+					targets: [],
+					baseVersion,
+					changesetCount: changesetCounts.get(pkg.name),
+				});
 				continue;
 			}
 
@@ -397,6 +409,9 @@ export const runValidation = (args: ValidationInputArgs) =>
 					success: dryRunOutcome.success,
 					error: dryRunOutcome.success ? undefined : dryRunOutcome.output,
 					stdout: dryRunOutcome.success ? dryRunOutcome.output : undefined,
+					packedSize: dryRunOutcome.packedSize,
+					unpackedSize: dryRunOutcome.unpackedSize,
+					fileCount: dryRunOutcome.fileCount,
 				};
 
 				targetResults.push(targetResult);
@@ -410,7 +425,13 @@ export const runValidation = (args: ValidationInputArgs) =>
 				}
 			}
 
-			pkgResults.push({ name: pkg.name, version: pkg.version, targets: targetResults });
+			pkgResults.push({
+				name: pkg.name,
+				version: pkg.version,
+				targets: targetResults,
+				baseVersion,
+				changesetCount: changesetCounts.get(pkg.name),
+			});
 		}
 
 		// ── Step 4: SBOM preview ─────────────────────────────────────────────
