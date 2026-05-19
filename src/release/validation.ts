@@ -9,7 +9,6 @@
  * @module release/validation
  */
 
-import { existsSync, readFileSync } from "node:fs";
 import { basename, isAbsolute, join } from "node:path";
 
 import type { PackagePublishError, ResolvedDependency, SbomError } from "@savvy-web/github-action-effects";
@@ -24,11 +23,12 @@ import {
 } from "@savvy-web/github-action-effects";
 import { Config, Effect, Option } from "effect";
 import type { WorkspacePackage } from "workspaces-effect";
-import { PublishabilityDetector, WorkspaceDiscovery } from "workspaces-effect";
+import { WorkspaceDiscovery } from "workspaces-effect";
 
 import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
 import { ValidationError } from "./errors.js";
 import { buildPublishSummary } from "./report.js";
+import { resolvePublishableTargets } from "./resolve-targets.js";
 import type { PackagePublishResult, PublishPackagesResult, TargetPublishResult } from "./types.js";
 
 // ─── Public interfaces ────────────────────────────────────────────────────────
@@ -84,28 +84,6 @@ interface ReleasedPackage {
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
-
-/**
- * Report whether a built target directory's `package.json` is marked `private`.
- *
- * The build pipeline keeps `private: true` on dev-only build outputs and
- * rewrites it to `private: false` on real publish targets. Validation only
- * exercises what will actually be published, so `private` targets are dropped
- * before the dry-run and SBOM steps. A missing or unreadable `package.json` is
- * treated as not private.
- */
-function isTargetPrivate(targetDir: string): boolean {
-	const pkgJsonPath = join(targetDir, "package.json");
-	if (!existsSync(pkgJsonPath)) {
-		return false;
-	}
-	try {
-		const parsed = JSON.parse(readFileSync(pkgJsonPath, "utf-8")) as { private?: boolean };
-		return parsed.private === true;
-	} catch {
-		return false;
-	}
-}
 
 /**
  * Classify a registry URL and return the resolved token for it.
@@ -223,7 +201,6 @@ export const runValidation = (args: ValidationInputArgs) =>
 	Effect.gen(function* () {
 		const logger = yield* ActionLogger;
 		const discovery = yield* WorkspaceDiscovery;
-		const detector = yield* PublishabilityDetector;
 		const publish = yield* PackagePublish;
 		const sbomSvc = yield* Sbom;
 		const runner = yield* CommandRunner;
@@ -317,9 +294,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 		for (const { pkg } of releasedPackages) {
 			// Resolve publish targets, then drop any whose built `package.json` is
 			// `private` — validation only exercises what will actually be published.
-			const targets = (yield* detector.detect(pkg, workspaceRoot)).filter(
-				(t) => !isTargetPrivate(isAbsolute(t.directory) ? t.directory : join(pkg.path, t.directory)),
-			);
+			const targets = yield* resolvePublishableTargets(pkg, workspaceRoot);
 
 			if (targets.length === 0) {
 				yield* Effect.logDebug(`${pkg.name}: no publish targets (version-only)`);
@@ -447,11 +422,9 @@ export const runValidation = (args: ValidationInputArgs) =>
 		let sbomSuccess = 0;
 
 		for (const { pkg } of releasedPackages) {
-			// Re-run detect (targets are not cached from the dry-run loop above);
-			// drop `private` targets for the same reason as the dry-run step.
-			const targets = (yield* detector.detect(pkg, workspaceRoot)).filter(
-				(t) => !isTargetPrivate(isAbsolute(t.directory) ? t.directory : join(pkg.path, t.directory)),
-			);
+			// Re-resolve targets (not cached from the dry-run loop above); the
+			// `private` filter is applied for the same reason as the dry-run step.
+			const targets = yield* resolvePublishableTargets(pkg, workspaceRoot);
 
 			// Build a real SbomInput from the package's resolved dependencies.
 			// The WorkspacePackage.dependencies map contains direct dependencies

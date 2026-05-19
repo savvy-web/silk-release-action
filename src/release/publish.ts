@@ -41,6 +41,7 @@ import { Config, Effect, Option, Redacted } from "effect";
 import { PublishabilityDetector, TopologicalSorter, WorkspaceDiscovery, WorkspacePackage } from "workspaces-effect";
 
 import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
+import { isTargetPrivate } from "./resolve-targets.js";
 import type { PackagePublishResult, PublishPackagesResult, TargetPublishResult } from "./types.js";
 
 // ─── Public interfaces ────────────────────────────────────────────────────────
@@ -118,29 +119,6 @@ function inferBumpType(oldVersion: string, newVersion: string): "major" | "minor
 	if ((newParts[0] ?? 0) > (oldParts[0] ?? 0)) return "major";
 	if (newParts[0] === oldParts[0] && (newParts[1] ?? 0) > (oldParts[1] ?? 0)) return "minor";
 	return "patch";
-}
-
-/**
- * Report whether a built target directory's `package.json` is marked `private`.
- *
- * The build pipeline keeps `private: true` on dev-only build outputs and
- * rewrites it to `private: false` on real publish targets, so a `private`
- * target is the canonical "do not publish" signal — npm would otherwise reject
- * it with `EPRIVATE`. Such targets are skipped before publish. A missing or
- * unreadable `package.json` is treated as not private (the publish step then
- * surfaces any genuine error).
- */
-function isTargetPrivate(targetDir: string): boolean {
-	const pkgJsonPath = join(targetDir, "package.json");
-	if (!existsSync(pkgJsonPath)) {
-		return false;
-	}
-	try {
-		const parsed = JSON.parse(readFileSync(pkgJsonPath, "utf-8")) as { private?: boolean };
-		return parsed.private === true;
-	} catch {
-		return false;
-	}
 }
 
 // ─── Detection helpers ────────────────────────────────────────────────────────
