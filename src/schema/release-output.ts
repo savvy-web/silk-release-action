@@ -753,6 +753,30 @@ export type ValidationOutput = Schema.Schema.Type<typeof ValidationOutput>;
 
 // --- publishing phase ----------------------------------------------------
 
+/**
+ * Per-target digest pair recorded when the orchestrator made a recovery
+ * decision against the target's registry. Carries the local pack digest
+ * and the digest the registry already has so consumers can render
+ * "recovered after partial publish" without re-deriving the state.
+ */
+const PublishTargetRecovery = Schema.Struct({
+	localDigest: Schema.String.annotations({
+		title: "Local digest",
+		description:
+			"Integrity digest of the locally-packed tarball, in npm's `dist.integrity` format (`sha512-<base64>`). Equals what the orchestrator would have uploaded for this target.",
+	}),
+	remoteDigest: Schema.String.annotations({
+		title: "Remote digest",
+		description:
+			"Integrity digest the target registry already has on file for this package version, in npm's `dist.integrity` format (`sha512-<base64>`). Equals `localDigest` on the `skipped` (`already-published-identical`) branch; differs on the `failed` integrity-mismatch branch.",
+	}),
+}).annotations({
+	identifier: "PublishTargetRecovery",
+	title: "Recovery digest pair",
+	description:
+		"Pair of digests recorded when the orchestrator probed the target's registry and made a recovery decision. Present on `skipped` (`skipReason: already-published-identical`) and on `failed` integrity-mismatch outcomes; null when the publish flowed straight through to upload.",
+});
+
 const PublishTarget = Schema.Struct({
 	registry: Schema.String.annotations({
 		title: "Registry URL",
@@ -763,6 +787,19 @@ const PublishTarget = Schema.Struct({
 		title: "Publish status",
 		description:
 			"`published` — the package was successfully published to this target; `skipped` — the publish was intentionally not attempted (e.g. dry-run, no token, already-published); `failed` — the publish call returned an error and the package was not published to this target. A `failed` target means the underlying error is in the per-target `error` field, and the run's overall `hasFailures` flag is set.",
+	}),
+	skipReason: Schema.NullOr(
+		Schema.Literal("already-published-identical").annotations({
+			identifier: "PublishTargetSkipReason",
+			title: "Target skip reason",
+			description:
+				"`already-published-identical` — the version was already on this specific registry and the registry's stored integrity matched the locally-packed digest, so the orchestrator recovered the target rather than re-uploading. Null when the target was not skipped. Finer-grained than the package-level `skipReason`: this fires per target, so a mixed result (one target published, one recovered) records the recovery on the target itself.",
+		}),
+	),
+	recovery: Schema.NullOr(PublishTargetRecovery).annotations({
+		title: "Recovery digests",
+		description:
+			"Digest pair recorded when the orchestrator made a recovery decision against this target's registry — both the recovery-skip (`skipReason: already-published-identical`) and the fatal integrity-mismatch (`status: failed`) outcomes carry it. Null when the publish flowed straight through to upload.",
 	}),
 	registryUrl: Schema.NullOr(
 		Schema.String.annotations({
@@ -969,12 +1006,16 @@ export const PublishingOutput = Schema.Struct({
 							{
 								registry: "https://registry.npmjs.org/",
 								status: "published",
+								skipReason: null,
+								recovery: null,
 								registryUrl: "https://www.npmjs.com/package/@savvy-web/example/v/1.2.0",
 								error: null,
 							},
 							{
 								registry: "https://npm.pkg.github.com/",
 								status: "published",
+								skipReason: null,
+								recovery: null,
 								registryUrl: "https://github.com/savvy-web/example-repo/packages/12345",
 								error: null,
 							},

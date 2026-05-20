@@ -20,6 +20,34 @@ import type { AlreadyPublishedReason, ResolvedTarget } from "../types/publish-co
 export interface TargetPublishResult {
 	target: ResolvedTarget;
 	success: boolean;
+	/**
+	 * Explicit per-target publish status — the canonical three-way decision
+	 * recorded by the orchestrator. `success` (the boolean) is derived from
+	 * this for backwards compatibility: `published` and `skipped` map to
+	 * `success: true`; `failed` maps to `success: false`. New code should
+	 * read `status` directly.
+	 */
+	status?: "published" | "skipped" | "failed" | undefined;
+	/**
+	 * Per-target skip reason. Lifted onto the target level so a fully-
+	 * recovered run can report which targets were recovered (the package-
+	 * level `PublishPackage.skipReason` only fires when every target was
+	 * skipped).
+	 */
+	skipReason?: "already-published-identical" | undefined;
+	/**
+	 * Pair of digests when the orchestrator made a recovery decision — both
+	 * `status: "skipped"` with `skipReason: "already-published-identical"`
+	 * (local matches what the registry already has) and the fatal
+	 * `status: "failed"` integrity-mismatch outcome (local differs from
+	 * what the registry has).
+	 */
+	recovery?:
+		| {
+				readonly localDigest: string;
+				readonly remoteDigest: string;
+		  }
+		| undefined;
 	registryUrl?: string | undefined;
 	attestationUrl?: string | undefined;
 	error?: string | undefined;

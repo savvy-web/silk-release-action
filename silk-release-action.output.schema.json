@@ -1036,12 +1036,16 @@
 									{
 										"registry": "https://registry.npmjs.org/",
 										"status": "published",
+										"skipReason": null,
+										"recovery": null,
 										"registryUrl": "https://www.npmjs.com/package/@savvy-web/example/v/1.2.0",
 										"error": null
 									},
 									{
 										"registry": "https://npm.pkg.github.com/",
 										"status": "published",
+										"skipReason": null,
+										"recovery": null,
 										"registryUrl": "https://github.com/savvy-web/example-repo/packages/12345",
 										"error": null
 									}
@@ -1173,7 +1177,7 @@
 		},
 		"PublishTarget": {
 			"type": "object",
-			"required": ["registry", "status", "registryUrl", "error"],
+			"required": ["registry", "status", "skipReason", "recovery", "registryUrl", "error"],
 			"properties": {
 				"registry": {
 					"type": "string",
@@ -1186,6 +1190,28 @@
 					"enum": ["published", "skipped", "failed"],
 					"description": "`published` — the package was successfully published to this target; `skipped` — the publish was intentionally not attempted (e.g. dry-run, no token, already-published); `failed` — the publish call returned an error and the package was not published to this target. A `failed` target means the underlying error is in the per-target `error` field, and the run's overall `hasFailures` flag is set.",
 					"title": "Publish status"
+				},
+				"skipReason": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/PublishTargetSkipReason"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"recovery": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/PublishTargetRecovery"
+						},
+						{
+							"type": "null"
+						}
+					],
+					"description": "Digest pair recorded when the orchestrator made a recovery decision against this target's registry — both the recovery-skip (`skipReason: already-published-identical`) and the fatal integrity-mismatch (`status: failed`) outcomes carry it. Null when the publish flowed straight through to upload.",
+					"title": "Recovery digests"
 				},
 				"registryUrl": {
 					"anyOf": [
@@ -1215,6 +1241,31 @@
 			"additionalProperties": false,
 			"description": "Per-registry publish outcome — what was attempted, whether it succeeded, and the URL of the published artifact.",
 			"title": "Published target"
+		},
+		"PublishTargetSkipReason": {
+			"type": "string",
+			"enum": ["already-published-identical"],
+			"description": "`already-published-identical` — the version was already on this specific registry and the registry's stored integrity matched the locally-packed digest, so the orchestrator recovered the target rather than re-uploading. Null when the target was not skipped. Finer-grained than the package-level `skipReason`: this fires per target, so a mixed result (one target published, one recovered) records the recovery on the target itself.",
+			"title": "Target skip reason"
+		},
+		"PublishTargetRecovery": {
+			"type": "object",
+			"required": ["localDigest", "remoteDigest"],
+			"properties": {
+				"localDigest": {
+					"type": "string",
+					"description": "Integrity digest of the locally-packed tarball, in npm's `dist.integrity` format (`sha512-<base64>`). Equals what the orchestrator would have uploaded for this target.",
+					"title": "Local digest"
+				},
+				"remoteDigest": {
+					"type": "string",
+					"description": "Integrity digest the target registry already has on file for this package version, in npm's `dist.integrity` format (`sha512-<base64>`). Equals `localDigest` on the `skipped` (`already-published-identical`) branch; differs on the `failed` integrity-mismatch branch.",
+					"title": "Remote digest"
+				}
+			},
+			"additionalProperties": false,
+			"description": "Pair of digests recorded when the orchestrator probed the target's registry and made a recovery decision. Present on `skipped` (`skipReason: already-published-identical`) and on `failed` integrity-mismatch outcomes; null when the publish flowed straight through to upload.",
+			"title": "Recovery digest pair"
 		},
 		"PublishPackageAttestations": {
 			"type": "object",

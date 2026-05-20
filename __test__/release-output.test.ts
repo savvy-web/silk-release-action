@@ -70,7 +70,16 @@ describe("ReleaseOutput schema", () => {
 					version: "1.2.0",
 					status: "published",
 					skipReason: null,
-					targets: [{ registry: "https://npm.pkg.github.com/", status: "published", registryUrl: null, error: null }],
+					targets: [
+						{
+							registry: "https://npm.pkg.github.com/",
+							status: "published",
+							skipReason: null,
+							recovery: null,
+							registryUrl: null,
+							error: null,
+						},
+					],
 					attestations: { provenanceUrl: null, sbomUrl: null, githubAttestationUrl: null },
 					tarballDigest: "sha256:abc",
 				},

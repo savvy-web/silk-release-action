@@ -238,6 +238,8 @@ type TargetStatus = "published" | "skipped" | "failed";
 
 /** Classify one internal target result into the published/skipped/failed enum. */
 const classifyTarget = (t: PackagePublishResult["targets"][number]): TargetStatus => {
+	// Prefer the explicit `status` field when the orchestrator set it.
+	if (t.status !== undefined) return t.status;
 	// Content mismatch is a failure, never a skip (curation rule 1).
 	if (t.alreadyPublished === true && t.alreadyPublishedReason === "different") return "failed";
 	if (t.alreadyPublished === true) return "skipped";
@@ -267,9 +269,24 @@ export const toPublishingOutput = (input: PublishingInput): PublishingOutput => 
 	const packages = input.publishResult.packages.map((pkg) => {
 		const targets = pkg.targets.map((t) => {
 			const status = classifyTarget(t);
+			// Per-target skip reason: only the "already-published-identical"
+			// literal is on the wire today. The orchestrator may set it
+			// directly (`t.skipReason`); legacy results infer it from the
+			// `alreadyPublishedReason: "identical"` field.
+			const skipReason: "already-published-identical" | null =
+				status === "skipped" &&
+				(t.skipReason === "already-published-identical" || t.alreadyPublishedReason === "identical")
+					? "already-published-identical"
+					: null;
+			const recovery =
+				t.recovery !== undefined
+					? { localDigest: t.recovery.localDigest, remoteDigest: t.recovery.remoteDigest }
+					: null;
 			return {
 				registry: t.target.registry ?? "jsr",
 				status,
+				skipReason,
+				recovery,
 				registryUrl: t.registryUrl ?? null,
 				error: status === "failed" ? (t.error ?? null) : null,
 			};
@@ -283,7 +300,9 @@ export const toPublishingOutput = (input: PublishingInput): PublishingOutput => 
 		// identical reason, every other skip reason to "unknown" (curation rules 2/3).
 		const skipReason =
 			status === "skipped"
-				? pkg.targets.some((t) => t.alreadyPublishedReason === "identical")
+				? pkg.targets.some(
+						(t) => t.skipReason === "already-published-identical" || t.alreadyPublishedReason === "identical",
+					)
 					? ("already-published-identical" as const)
 					: ("already-published-unknown" as const)
 				: null;

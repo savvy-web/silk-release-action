@@ -587,149 +587,293 @@ describe("runBuildAndSbom", () => {
 // ─── runPublishTargets ───────────────────────────────────────────────────────
 
 describe("runPublishTargets", () => {
+	const args: PublishInputArgs = {
+		packageManager: "pnpm",
+		targetBranch: "main",
+		dryRun: false,
+		mergedReleasePRNumber: 99,
+	};
+
+	// Pack-result fields the test layer reports via `pack`. Every test seeds
+	// `NpmRegistryTest` with the same `name`/`version` so the orchestrator's
+	// `getPublishedIntegrity(packResult.name, packResult.version, …)` probe
+	// lines up with the seeded registry entry.
+	const PACK_NAME = "@test/pkg";
+	const PACK_VERSION = "1.0.0";
+	const PACK_DIGEST = "sha512-AAAA";
+
+	const makePackResult = (overrides?: { tarballPath?: string }) => ({
+		tarballPath: overrides?.tarballPath ?? `/tmp/${PACK_NAME.replace("/", "-")}-${PACK_VERSION}.tgz`,
+		digest: PACK_DIGEST,
+		name: PACK_NAME,
+		version: PACK_VERSION,
+		packedSize: 1234,
+		unpackedSize: 4321,
+		fileCount: 7,
+	});
+
+	const makeBaseLayers = (
+		pubLayer: Layer.Layer<import("@savvy-web/github-action-effects").PackagePublish>,
+		npmLayer: Layer.Layer<import("@savvy-web/github-action-effects").NpmRegistry>,
+		wsPkg: WorkspacePackage,
+		targets: PublishTarget[],
+	) =>
+		Layer.mergeAll(
+			loggerLayer,
+			actionStateLayer,
+			configProviderLayer,
+			pubLayer,
+			npmLayer,
+			sbomLayer,
+			AttestTest.empty(),
+			oidcTokenIssuerLayer,
+			sigstoreSignerLayer,
+			GitHubClientTest.empty(),
+			makeWorkspaceDiscoveryLayer([wsPkg]),
+			makePublishabilityLayer(new Map([[wsPkg.name, targets]])),
+			makeTopologicalSorterLayer([wsPkg.name]),
+		);
+
 	describe("first-publish path (version absent from registry)", () => {
-		it("publishes and returns status: 'published' when version is not on the registry", async () => {
-			// Arrange: NpmRegistry returns empty versions (package never published)
-			const npmState = { packages: new Map() }; // No versions → getVersions fails with E404
-			const npmLayer = NpmRegistryTest.layer(npmState);
+		it("packs once, probes the target registry, and publishes the tarball to it", async () => {
+			// Arrange — NpmRegistry has no entry for the package; the probe
+			// returns Option.none() and the orchestrator takes the publish branch.
+			const npmLayer = NpmRegistryTest.empty();
+			const { state: pubState, layer: pubLayer } = PackagePublishTest.layer({ packResult: makePackResult() });
 
-			// PackagePublish: pack succeeds, publish succeeds; no versions published yet
-			const { state: pubState, layer: pubLayer } = PackagePublishTest.layer({
-				publishedVersions: [], // version not in registry → first-publish path
-				integrityMatch: false, // irrelevant for first publish
-			});
-
-			const attestState = AttestTest.empty();
-
-			const wsPkg = makeWsPkg("@test/first", "1.0.0", "/tmp/test/first");
-			const target = makeNpmTarget("@test/first", "/tmp/test/first");
-			const detected: DetectedRelease[] = [makeDetected("@test/first", "1.0.0", wsPkg.path)];
-
-			const layers = Layer.mergeAll(
-				loggerLayer,
-				actionStateLayer,
-				configProviderLayer,
-				pubLayer,
-				npmLayer,
-				sbomLayer,
-				attestState,
-				oidcTokenIssuerLayer,
-				sigstoreSignerLayer,
-				// `Attest.provenance` / `Attest.sbom` transitively require `GitHubClient`.
-				GitHubClientTest.empty(),
-				makeWorkspaceDiscoveryLayer([wsPkg]),
-				makePublishabilityLayer(new Map([["@test/first", [target]]])),
-				makeTopologicalSorterLayer(["@test/first"]),
-			);
-
-			const args: PublishInputArgs = {
-				packageManager: "pnpm",
-				targetBranch: "main",
-				dryRun: false,
-				mergedReleasePRNumber: 99,
-			};
+			const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, `/tmp/test/${PACK_NAME}`);
+			const target = makeNpmTarget(PACK_NAME, `/tmp/test/${PACK_NAME}`);
+			const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
 
 			// Act
 			const result: PublishPackagesResult = await Effect.runPromise(
-				runPublishTargets(detected, args).pipe(Effect.provide(layers)),
+				runPublishTargets(detected, args).pipe(Effect.provide(makeBaseLayers(pubLayer, npmLayer, wsPkg, [target]))),
 			);
 
-			// Assert
+			// Assert — one pack, one publishTarball, no legacy publish, no idempotent.
 			expect(result.success).toBe(true);
 			expect(result.packages).toHaveLength(1);
-			expect(result.totalPackages).toBe(1);
-			expect(result.successfulPackages).toBe(1);
-
-			// The first-publish path calls pack then publish (not publishIdempotent)
 			expect(pubState.packCalls).toHaveLength(1);
-			expect(pubState.publishCalls).toHaveLength(1);
-			// publishIdempotent should NOT have been called
+			expect(pubState.publishTarballCalls).toHaveLength(1);
+			expect(pubState.publishCalls).toHaveLength(0);
 			expect(pubState.publishIdempotentCalls).toHaveLength(0);
 
-			const pkg0 = result.packages[0];
-			expect(pkg0?.name).toBe("@test/first");
-			expect(pkg0?.version).toBe("1.0.0");
-			expect(pkg0?.targets).toHaveLength(1);
-			expect(pkg0?.targets[0]?.success).toBe(true);
-			expect(pkg0?.targets[0]?.alreadyPublished).toBeFalsy();
+			// The published-to registry matches the target's registry (not the default).
+			const call = pubState.publishTarballCalls[0];
+			expect(call?.options.registry).toBe(target.registry);
+
+			const targetResult = result.packages[0]?.targets[0];
+			expect(targetResult?.status).toBe("published");
+			expect(targetResult?.success).toBe(true);
+			expect(targetResult?.skipReason).toBeUndefined();
+			expect(targetResult?.recovery).toBeUndefined();
 		});
 	});
 
-	describe("already-published-identical path", () => {
-		it("returns status: 'skipped' with skipReason: 'already-published-identical' when version exists with identical content", async () => {
-			// Arrange: version 1.0.0 is already in the registry with matching integrity
-			const npmState = {
+	describe("skipped-identical recovery", () => {
+		it("records skipReason: 'already-published-identical' and never publishes when the registry has matching integrity", async () => {
+			// Arrange — the registry already has v1.0.0 with the same integrity
+			// the local pack produces. The probe returns Option.some(digest) === local.
+			const npmLayer = NpmRegistryTest.layer({
 				packages: new Map([
 					[
-						"@test/idempotent",
+						PACK_NAME,
 						{
-							versions: ["1.0.0"],
-							latest: "1.0.0",
-							distTags: { latest: "1.0.0" },
+							versions: [PACK_VERSION],
+							latest: PACK_VERSION,
+							distTags: { latest: PACK_VERSION },
+							integrity: PACK_DIGEST,
 						},
 					],
 				]),
-			};
-			const npmLayer = NpmRegistryTest.layer(npmState);
-
-			// PackagePublish: 1.0.0 is already published with identical content
-			const { state: pubState, layer: pubLayer } = PackagePublishTest.layer({
-				publishedVersions: ["1.0.0"],
-				integrityMatch: true, // identical content → skip
 			});
+			const { state: pubState, layer: pubLayer } = PackagePublishTest.layer({ packResult: makePackResult() });
 
-			const attestState = AttestTest.empty();
-
-			const wsPkg = makeWsPkg("@test/idempotent", "1.0.0", "/tmp/test/idempotent");
-			const target = makeNpmTarget("@test/idempotent", "/tmp/test/idempotent");
-			const detected: DetectedRelease[] = [makeDetected("@test/idempotent", "1.0.0", wsPkg.path)];
-
-			const layers = Layer.mergeAll(
-				loggerLayer,
-				actionStateLayer,
-				configProviderLayer,
-				pubLayer,
-				npmLayer,
-				sbomLayer,
-				attestState,
-				oidcTokenIssuerLayer,
-				sigstoreSignerLayer,
-				// `Attest.provenance` / `Attest.sbom` transitively require `GitHubClient`.
-				GitHubClientTest.empty(),
-				makeWorkspaceDiscoveryLayer([wsPkg]),
-				makePublishabilityLayer(new Map([["@test/idempotent", [target]]])),
-				makeTopologicalSorterLayer(["@test/idempotent"]),
-			);
-
-			const args: PublishInputArgs = {
-				packageManager: "pnpm",
-				targetBranch: "main",
-				dryRun: false,
-				mergedReleasePRNumber: 100,
-			};
+			const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, `/tmp/test/${PACK_NAME}`);
+			const target = makeNpmTarget(PACK_NAME, `/tmp/test/${PACK_NAME}`);
+			const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
 
 			// Act
 			const result: PublishPackagesResult = await Effect.runPromise(
-				runPublishTargets(detected, args).pipe(Effect.provide(layers)),
+				runPublishTargets(detected, args).pipe(Effect.provide(makeBaseLayers(pubLayer, npmLayer, wsPkg, [target]))),
 			);
 
-			// Assert
+			// Assert — one pack, zero publishTarball/publish/idempotent.
 			expect(result.success).toBe(true);
-			expect(result.packages).toHaveLength(1);
-			expect(result.packages[0]?.targets).toHaveLength(1);
-			expect(result.packages[0]?.targets[0]?.success).toBe(true);
-			expect(result.packages[0]?.targets[0]?.alreadyPublished).toBe(true);
-			expect(result.packages[0]?.targets[0]?.alreadyPublishedReason).toBe("identical");
-
-			// publishIdempotent was called (existing package path)
-			expect(pubState.publishIdempotentCalls).toHaveLength(1);
-			// publish (first-publish path) was NOT called
+			expect(pubState.packCalls).toHaveLength(1);
+			expect(pubState.publishTarballCalls).toHaveLength(0);
 			expect(pubState.publishCalls).toHaveLength(0);
+			expect(pubState.publishIdempotentCalls).toHaveLength(0);
+
+			const targetResult = result.packages[0]?.targets[0];
+			expect(targetResult?.status).toBe("skipped");
+			expect(targetResult?.success).toBe(true);
+			expect(targetResult?.skipReason).toBe("already-published-identical");
+			expect(targetResult?.recovery).toEqual({ localDigest: PACK_DIGEST, remoteDigest: PACK_DIGEST });
+		});
+	});
+
+	describe("failed-mismatch", () => {
+		it("records status: 'failed' with a recovery digest pair and a 'mismatch' message when integrity differs", async () => {
+			// Arrange — registry has v1.0.0 but with a DIFFERENT integrity.
+			const REMOTE_DIGEST = "sha512-BBBB";
+			const npmLayer = NpmRegistryTest.layer({
+				packages: new Map([
+					[
+						PACK_NAME,
+						{
+							versions: [PACK_VERSION],
+							latest: PACK_VERSION,
+							distTags: { latest: PACK_VERSION },
+							integrity: REMOTE_DIGEST,
+						},
+					],
+				]),
+			});
+			const { state: pubState, layer: pubLayer } = PackagePublishTest.layer({ packResult: makePackResult() });
+
+			const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, `/tmp/test/${PACK_NAME}`);
+			const target = makeNpmTarget(PACK_NAME, `/tmp/test/${PACK_NAME}`);
+			const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
+
+			// Act
+			const result: PublishPackagesResult = await Effect.runPromise(
+				runPublishTargets(detected, args).pipe(Effect.provide(makeBaseLayers(pubLayer, npmLayer, wsPkg, [target]))),
+			);
+
+			// Assert — fatal mismatch; no publish call; recovery field carries both digests.
+			expect(result.success).toBe(false);
+			expect(pubState.packCalls).toHaveLength(1);
+			expect(pubState.publishTarballCalls).toHaveLength(0);
+
+			const targetResult = result.packages[0]?.targets[0];
+			expect(targetResult?.status).toBe("failed");
+			expect(targetResult?.success).toBe(false);
+			expect(targetResult?.recovery).toEqual({ localDigest: PACK_DIGEST, remoteDigest: REMOTE_DIGEST });
+			expect(targetResult?.error).toMatch(/mismatch/i);
+			// The error names both digests for forensic comparison.
+			expect(targetResult?.error).toContain(PACK_DIGEST);
+			expect(targetResult?.error).toContain(REMOTE_DIGEST);
+		});
+	});
+
+	describe("pack-once per directory", () => {
+		it("calls pack exactly once when two targets share the same build directory", async () => {
+			// Arrange — two targets pointing at the same directory, different registries.
+			const SHARED_DIR = `/tmp/test/${PACK_NAME}`;
+			const npmLayer = NpmRegistryTest.empty(); // both registries → publish path
+			const { state: pubState, layer: pubLayer } = PackagePublishTest.layer({ packResult: makePackResult() });
+
+			const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, SHARED_DIR);
+			const targetA = new PublishTarget({
+				name: PACK_NAME,
+				registry: "https://registry.npmjs.org/",
+				directory: SHARED_DIR,
+				access: "public",
+				provenance: false,
+			});
+			const targetB = new PublishTarget({
+				name: PACK_NAME,
+				registry: "https://npm.pkg.github.com/",
+				directory: SHARED_DIR,
+				access: "public",
+				provenance: false,
+			});
+			const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
+
+			// Act
+			const result: PublishPackagesResult = await Effect.runPromise(
+				runPublishTargets(detected, args).pipe(
+					Effect.provide(makeBaseLayers(pubLayer, npmLayer, wsPkg, [targetA, targetB])),
+				),
+			);
+
+			// Assert — ONE pack call even with two targets sharing the directory.
+			expect(pubState.packCalls).toHaveLength(1);
+			expect(pubState.publishTarballCalls).toHaveLength(2);
+			expect(result.packages[0]?.targets).toHaveLength(2);
+		});
+	});
+
+	describe("mixed: one published, one skipped-identical", () => {
+		it("publishes the missing-registry target, recovers the matching one, and counts both as 'Published 2/2'", async () => {
+			// Arrange — two targets at different registries. Registry A has no
+			// entry (publish branch). Registry B is seeded with a matching
+			// integrity (recovery branch). The test layer's `getPublishedIntegrity`
+			// doesn't dispatch by URL, so we set the seeded integrity to the
+			// shared value the matching probe will see; the missing-registry
+			// branch is exercised via a separate package layer below.
+			// Workaround: use ONE registry that is seeded with the matching
+			// digest, and ONE that the test layer's getPublishedIntegrity
+			// will never find (the test layer keys by package name only —
+			// it cannot return different values for different registries on
+			// the same package). To get a true mixed result, we use a custom
+			// NpmRegistry layer that branches on the `registry` option.
+			const SHARED_DIR = `/tmp/test/${PACK_NAME}`;
+			const REGISTRY_PUBLISH = "https://registry.npmjs.org/";
+			const REGISTRY_RECOVER = "https://npm.pkg.github.com/";
+
+			const { NpmRegistry: NpmRegistrySvc } = await import("@savvy-web/github-action-effects");
+			const { Option } = await import("effect");
+			const npmLayer = Layer.succeed(NpmRegistrySvc, {
+				getLatestVersion: () => Effect.die("unused"),
+				getDistTags: () => Effect.die("unused"),
+				getPackageInfo: () => Effect.die("unused"),
+				getVersions: () => Effect.die("unused"),
+				getPublishedIntegrity: (_pkg, _version, opts) =>
+					Effect.succeed(opts.registry === REGISTRY_RECOVER ? Option.some(PACK_DIGEST) : Option.none<string>()),
+			});
+
+			const { state: pubState, layer: pubLayer } = PackagePublishTest.layer({ packResult: makePackResult() });
+
+			const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, SHARED_DIR);
+			const targetA = new PublishTarget({
+				name: PACK_NAME,
+				registry: REGISTRY_PUBLISH,
+				directory: SHARED_DIR,
+				access: "public",
+				provenance: false,
+			});
+			const targetB = new PublishTarget({
+				name: PACK_NAME,
+				registry: REGISTRY_RECOVER,
+				directory: SHARED_DIR,
+				access: "public",
+				provenance: false,
+			});
+			const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
+
+			// Act
+			const result: PublishPackagesResult = await Effect.runPromise(
+				runPublishTargets(detected, args).pipe(
+					Effect.provide(makeBaseLayers(pubLayer, npmLayer, wsPkg, [targetA, targetB])),
+				),
+			);
+
+			// Assert — exactly one publish call (registry A); one recovery skip (registry B).
+			expect(pubState.packCalls).toHaveLength(1);
+			expect(pubState.publishTarballCalls).toHaveLength(1);
+			expect(pubState.publishTarballCalls[0]?.options.registry).toBe(REGISTRY_PUBLISH);
+
+			const targets = result.packages[0]?.targets ?? [];
+			expect(targets).toHaveLength(2);
+
+			const publishedTarget = targets.find((t) => t.target.registry === REGISTRY_PUBLISH);
+			const recoveredTarget = targets.find((t) => t.target.registry === REGISTRY_RECOVER);
+			expect(publishedTarget?.status).toBe("published");
+			expect(recoveredTarget?.status).toBe("skipped");
+			expect(recoveredTarget?.skipReason).toBe("already-published-identical");
+
+			// Abort-check accounting: both targets count as 'successful' so the
+			// "Published X/Y" check passes after a recovery run.
+			expect(result.successfulTargets).toBe(2);
+			expect(result.totalTargets).toBe(2);
+			expect(result.success).toBe(true);
 		});
 	});
 
 	describe("JSR target skipping", () => {
-		it("skips JSR targets with a warning and does not call npm publish for them", async () => {
+		it("skips JSR targets with a warning and does not call npm publish/pack for them", async () => {
 			// Arrange: a package with a JSR-only target (no npm target)
 			const jsrTarget = new PublishTarget({
 				name: "@test/jsr-pkg",
@@ -742,62 +886,32 @@ describe("runPublishTargets", () => {
 			const wsPkg = makeWsPkg("@test/jsr-pkg", "1.0.0", "/tmp/test/jsr-pkg");
 			const detected: DetectedRelease[] = [makeDetected("@test/jsr-pkg", "1.0.0", wsPkg.path)];
 			const npmLayer = NpmRegistryTest.empty();
-			const { state: pubState, layer: pubLayer } = PackagePublishTest.layer({
-				publishedVersions: [],
-				integrityMatch: false,
-			});
-			const attestState = AttestTest.empty();
-
-			const layers = Layer.mergeAll(
-				loggerLayer,
-				actionStateLayer,
-				configProviderLayer,
-				pubLayer,
-				npmLayer,
-				sbomLayer,
-				attestState,
-				oidcTokenIssuerLayer,
-				sigstoreSignerLayer,
-				// `Attest.provenance` / `Attest.sbom` transitively require `GitHubClient`.
-				GitHubClientTest.empty(),
-				makeWorkspaceDiscoveryLayer([wsPkg]),
-				makePublishabilityLayer(new Map([["@test/jsr-pkg", [jsrTarget]]])),
-				makeTopologicalSorterLayer(["@test/jsr-pkg"]),
-			);
-
-			const args: PublishInputArgs = {
-				packageManager: "pnpm",
-				targetBranch: "main",
-				dryRun: false,
-				mergedReleasePRNumber: 101,
-			};
+			const { state: pubState, layer: pubLayer } = PackagePublishTest.layer({ packResult: makePackResult() });
 
 			// Act
 			const result: PublishPackagesResult = await Effect.runPromise(
-				runPublishTargets(detected, args).pipe(Effect.provide(layers)),
+				runPublishTargets(detected, args).pipe(Effect.provide(makeBaseLayers(pubLayer, npmLayer, wsPkg, [jsrTarget]))),
 			);
 
-			// Assert: package was detected but JSR target was skipped → 0 npm targets
-			// The package has no npm targets so it counts as a version-only publish
+			// Assert — JSR target was skipped → no pack call, no publish call.
 			expect(result.packages).toHaveLength(1);
 			expect(result.packages[0]?.name).toBe("@test/jsr-pkg");
-			// No npm pack/publish calls made
 			expect(pubState.packCalls).toHaveLength(0);
+			expect(pubState.publishTarballCalls).toHaveLength(0);
 			expect(pubState.publishCalls).toHaveLength(0);
-			// success is true (version-only packages count as successful)
 			expect(result.success).toBe(true);
 		});
 	});
 
 	describe("batch error resilience", () => {
-		it("does not abort the batch when one package fails to publish", async () => {
-			// Arrange: two packages — the first fails to pack, the second succeeds.
-			// Empty NpmRegistry — both packages are new (no versions)
+		it("does not abort the batch when one package fails to pack", async () => {
+			// Arrange — two packages; pack fails on the first, succeeds on the second.
 			const npmLayer = NpmRegistryTest.empty();
 
-			// Custom PackagePublish layer that causes the first package to fail at pack
-			const { PackagePublishError } = await import("@savvy-web/github-action-effects");
-			const failingPubLayer = Layer.succeed((await import("@savvy-web/github-action-effects")).PackagePublish, {
+			const { PackagePublishError, PackagePublish: PackagePublishSvc } = await import(
+				"@savvy-web/github-action-effects"
+			);
+			const failingPubLayer = Layer.succeed(PackagePublishSvc, {
 				setupAuth: (_registry: string, _token: string) => Effect.succeed(undefined as undefined),
 				pack: (packageDir: string) => {
 					if (packageDir.includes("fail-pkg")) {
@@ -808,18 +922,25 @@ describe("runPublishTargets", () => {
 							}),
 						);
 					}
-					return Effect.succeed({ tarball: `${packageDir}/pkg.tgz`, digest: "sha256:abc123" });
+					return Effect.succeed({
+						tarballPath: `${packageDir}/pkg.tgz`,
+						digest: PACK_DIGEST,
+						name: packageDir.includes("ok-pkg") ? "@test/ok-pkg" : "@test/unknown",
+						version: "1.0.0",
+						packedSize: 1,
+						unpackedSize: 1,
+						fileCount: 1,
+					});
 				},
 				publish: (_packageDir: string) => Effect.succeed(undefined as undefined),
+				publishTarball: (_tarball: string, _options) => Effect.succeed(undefined as undefined),
 				verifyIntegrity: (_name: string, _version: string, _digest: string) => Effect.succeed(false),
-				publishToRegistries: (_packageDir: string, _registries: unknown[]) => Effect.succeed(undefined as undefined),
-				publishIdempotent: (_input: unknown) =>
+				publishToRegistries: (_packageDir: string, _registries) => Effect.succeed(undefined as undefined),
+				publishIdempotent: (_input) =>
 					Effect.succeed({ status: "published" as const, packageName: "x", version: "1.0.0" }),
 				dryRun: (_packageDir: string) =>
 					Effect.succeed({ ok: true, output: "", packedSize: 0, unpackedSize: 0, fileCount: 0 }),
 			});
-
-			const attestState = AttestTest.empty();
 
 			const pkgA = makeWsPkg("@test/fail-pkg", "2.0.0", "/tmp/test/fail-pkg");
 			const pkgB = makeWsPkg("@test/ok-pkg", "1.0.0", "/tmp/test/ok-pkg");
@@ -837,10 +958,9 @@ describe("runPublishTargets", () => {
 				failingPubLayer,
 				npmLayer,
 				sbomLayer,
-				attestState,
+				AttestTest.empty(),
 				oidcTokenIssuerLayer,
 				sigstoreSignerLayer,
-				// `Attest.provenance` / `Attest.sbom` transitively require `GitHubClient`.
 				GitHubClientTest.empty(),
 				makeWorkspaceDiscoveryLayer([pkgA, pkgB]),
 				makePublishabilityLayer(
@@ -852,30 +972,19 @@ describe("runPublishTargets", () => {
 				makeTopologicalSorterLayer(["@test/fail-pkg", "@test/ok-pkg"]),
 			);
 
-			const args: PublishInputArgs = {
-				packageManager: "pnpm",
-				targetBranch: "main",
-				dryRun: false,
-				mergedReleasePRNumber: 102,
-			};
-
 			// Act
 			const result: PublishPackagesResult = await Effect.runPromise(
 				runPublishTargets(detected, args).pipe(Effect.provide(layers)),
 			);
 
-			// Assert: batch completed (no early abort), result has both packages
+			// Assert — batch completed; one package succeeded, one failed.
 			expect(result.packages).toHaveLength(2);
-			// success is false because one package failed
 			expect(result.success).toBe(false);
-			// The ok-pkg succeeded
 			const okPkg = result.packages.find((p) => p.name === "@test/ok-pkg");
-			expect(okPkg).toBeDefined();
 			expect(okPkg?.targets[0]?.success).toBe(true);
-			// The fail-pkg failed
 			const failPkg = result.packages.find((p) => p.name === "@test/fail-pkg");
-			expect(failPkg).toBeDefined();
 			expect(failPkg?.targets[0]?.success).toBe(false);
+			expect(failPkg?.targets[0]?.status).toBe("failed");
 		});
 	});
 });
