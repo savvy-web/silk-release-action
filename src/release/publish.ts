@@ -520,6 +520,26 @@ const publishDirectoryGroup = (
 		for (const t of npmTargets) {
 			yield* Effect.logInfo(`[publish] ${packageName} ${directory} → ${t.registry}`);
 
+			// Set up registry auth BEFORE the integrity probe — `npm view`
+			// against GitHub Packages requires authentication even for reads,
+			// so an anonymous probe returns 401/404 and the orchestrator can
+			// not distinguish "version absent" from "auth required." setupAuth
+			// writes the token to `~/.npmrc`; the probe inherits it. For
+			// registries that allow anonymous reads (npmjs.org) the token is
+			// `null` and setupAuth is skipped — the probe goes anonymous, as
+			// today. The same `.npmrc` entry is then reused by the publish
+			// step below, so we don't pay for the setup twice.
+			const token = pickToken(t.registry, npmToken, ghPkgsToken);
+			if (token !== null) {
+				yield* publishSvc
+					.setupAuth(t.registry, token)
+					.pipe(
+						Effect.catchAll((e: PackagePublishError) =>
+							Effect.logWarning(`setupAuth failed for ${t.registry}: ${e.message}`),
+						),
+					);
+			}
+
 			const probe = yield* registrySvc
 				.getPublishedIntegrity(packResult.name, packResult.version, { registry: t.registry })
 				.pipe(
@@ -549,20 +569,11 @@ const publishDirectoryGroup = (
 
 			if (Option.isNone(probe.value)) {
 				// Not on registry → publish the pre-packed tarball.
+				// Auth was already configured above (before the probe); the
+				// `~/.npmrc` entry is in place if a token was available.
 				yield* Effect.logInfo(
 					`[publish] ${t.registry}: ${packResult.name}@${packResult.version} not on registry; publishing tarball`,
 				);
-
-				const token = pickToken(t.registry, npmToken, ghPkgsToken);
-				if (token !== null) {
-					yield* publishSvc
-						.setupAuth(t.registry, token)
-						.pipe(
-							Effect.catchAll((e: PackagePublishError) =>
-								Effect.logWarning(`setupAuth failed for ${t.registry}: ${e.message}`),
-							),
-						);
-				}
 
 				const publishOutcome = yield* publishSvc
 					.publishTarball(packResult.tarballPath, {
