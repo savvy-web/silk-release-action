@@ -15,6 +15,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { NodeFileSystem } from "@effect/platform-node";
 import type {
 	GitHubCommit,
 	GitHubCommitTestState,
@@ -464,7 +465,13 @@ describe("runBuildAndSbom", () => {
 			const pkg = makeWsPkg("@test/build-fail", "1.0.0");
 			const detected: DetectedRelease[] = [makeDetected("@test/build-fail", "1.0.0", pkg.path)];
 
-			const layers = Layer.mergeAll(loggerLayer, failingBuildLayer, sbomLayer, makeWorkspaceDiscoveryLayer([pkg]));
+			const layers = Layer.mergeAll(
+				loggerLayer,
+				failingBuildLayer,
+				sbomLayer,
+				NodeFileSystem.layer,
+				makeWorkspaceDiscoveryLayer([pkg]),
+			);
 
 			const args: PublishInputArgs = {
 				packageManager: "pnpm",
@@ -500,16 +507,31 @@ describe("runBuildAndSbom", () => {
 
 		it("returns ok: true with no SBOM failures when build and every SBOM succeed", async () => {
 			// Arrange: two packages, build succeeds, all SBOMs generate (SbomLive).
+			// Use a real temp dir so `Sbom.save` succeeds and `sbomPaths` is
+			// populated — runBuildAndSbom writes <unscoped>.sbom.json under each
+			// package path.
 			const buildLayer = await passingBuildLayer();
 
-			const pkgA = makeWsPkg("@test/sbom-a", "1.0.0");
-			const pkgB = makeWsPkg("@test/sbom-b", "2.0.0");
+			const tmpRoot = join(tmpdir(), `silk-sbom-save-test-${Date.now()}`);
+			const pkgAPath = join(tmpRoot, "sbom-a");
+			const pkgBPath = join(tmpRoot, "sbom-b");
+			mkdirSync(pkgAPath, { recursive: true });
+			mkdirSync(pkgBPath, { recursive: true });
+
+			const pkgA = makeWsPkg("@test/sbom-a", "1.0.0", pkgAPath);
+			const pkgB = makeWsPkg("@test/sbom-b", "2.0.0", pkgBPath);
 			const detected: DetectedRelease[] = [
 				makeDetected("@test/sbom-a", "1.0.0", pkgA.path),
 				makeDetected("@test/sbom-b", "2.0.0", pkgB.path),
 			];
 
-			const layers = Layer.mergeAll(loggerLayer, buildLayer, SbomLive, makeWorkspaceDiscoveryLayer([pkgA, pkgB]));
+			const layers = Layer.mergeAll(
+				loggerLayer,
+				buildLayer,
+				SbomLive,
+				NodeFileSystem.layer,
+				makeWorkspaceDiscoveryLayer([pkgA, pkgB]),
+			);
 
 			const args: PublishInputArgs = {
 				packageManager: "pnpm",
@@ -528,6 +550,9 @@ describe("runBuildAndSbom", () => {
 			expect(result.sbomFailures).toHaveLength(0);
 			expect(result.buildError).toBeUndefined();
 			expect(result.packageCount).toBe(detected.length);
+			// And: the saved SBOM paths are populated for each package.
+			expect(result.sbomPaths.get("@test/sbom-a")).toBe(join(pkgAPath, "sbom-a.sbom.json"));
+			expect(result.sbomPaths.get("@test/sbom-b")).toBe(join(pkgBPath, "sbom-b.sbom.json"));
 		});
 
 		it("returns ok: false and lists the failing package when one SBOM generation fails", async () => {
@@ -560,6 +585,7 @@ describe("runBuildAndSbom", () => {
 				loggerLayer,
 				buildLayer,
 				partialSbomLayer,
+				NodeFileSystem.layer,
 				makeWorkspaceDiscoveryLayer([pkgGood, pkgBad]),
 			);
 
@@ -795,6 +821,152 @@ describe("runPublishTargets", () => {
 			expect(pubState.packCalls).toHaveLength(1);
 			expect(pubState.publishTarballCalls).toHaveLength(2);
 			expect(result.packages[0]?.targets).toHaveLength(2);
+		});
+	});
+
+	// ─── Attestation behaviour: one per build, shared across targets ──────────
+	describe("attestation hoisted out of the per-target loop", () => {
+		// Build a base-layer assembly that injects a caller-controlled Attest
+		// test state so each test can inspect how many calls fired.
+		const makeBaseLayersWithAttest = async (
+			pubLayer: Layer.Layer<import("@savvy-web/github-action-effects").PackagePublish>,
+			npmLayer: Layer.Layer<import("@savvy-web/github-action-effects").NpmRegistry>,
+			wsPkg: WorkspacePackage,
+			targets: PublishTarget[],
+			attestState: import("@savvy-web/github-action-effects/testing").AttestTestState,
+		) => {
+			const { AttestTest: AttestTestNs } = await import("@savvy-web/github-action-effects/testing");
+			return Layer.mergeAll(
+				loggerLayer,
+				actionStateLayer,
+				configProviderLayer,
+				pubLayer,
+				npmLayer,
+				sbomLayer,
+				AttestTestNs.layer(attestState),
+				oidcTokenIssuerLayer,
+				sigstoreSignerLayer,
+				GitHubClientTest.empty(),
+				makeWorkspaceDiscoveryLayer([wsPkg]),
+				makePublishabilityLayer(new Map([[wsPkg.name, targets]])),
+				makeTopologicalSorterLayer([wsPkg.name]),
+			);
+		};
+
+		it("fires attestation exactly ONCE per build directory and shares the URL across both targets", async () => {
+			// Arrange — two targets sharing a build directory, both with
+			// provenance: true so the attestation path is enabled.
+			const { makeAttestTestState } = await import("@savvy-web/github-action-effects/testing");
+			const attestState = makeAttestTestState();
+
+			const SHARED_DIR = `/tmp/test/${PACK_NAME}`;
+			const npmLayer = NpmRegistryTest.empty();
+			const { layer: pubLayer } = PackagePublishTest.layer({ packResult: makePackResult() });
+
+			const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, SHARED_DIR);
+			const targetA = new PublishTarget({
+				name: PACK_NAME,
+				registry: "https://registry.npmjs.org/",
+				directory: SHARED_DIR,
+				access: "public",
+				provenance: true,
+			});
+			const targetB = new PublishTarget({
+				name: PACK_NAME,
+				registry: "https://npm.pkg.github.com/",
+				directory: SHARED_DIR,
+				access: "public",
+				provenance: true,
+			});
+			const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
+
+			const layers = await makeBaseLayersWithAttest(pubLayer, npmLayer, wsPkg, [targetA, targetB], attestState);
+
+			// Act
+			const result: PublishPackagesResult = await Effect.runPromise(
+				runPublishTargets(detected, args).pipe(Effect.provide(layers)),
+			);
+
+			// Assert — exactly ONE SBOM attestation regardless of two targets.
+			// (Provenance attestation is gated by a real JWT decode that the
+			// OidcTokenIssuerTest cannot satisfy — the synthetic token decodes
+			// to null and that call is skipped. So we assert on the SBOM-call
+			// count to prove the helper itself ran once, not per target.)
+			expect(attestState.sbomCalls).toHaveLength(1);
+
+			// And: both successful targets carry the SAME attestation URLs
+			// because they shared a single attestation invocation.
+			const targets = result.packages[0]?.targets ?? [];
+			expect(targets).toHaveLength(2);
+			expect(targets[0]?.success).toBe(true);
+			expect(targets[1]?.success).toBe(true);
+			expect(targets[0]?.sbomAttestationUrl).toBe(targets[1]?.sbomAttestationUrl);
+			expect(targets[0]?.sbomAttestationUrl).toBeDefined();
+		});
+
+		it("does NOT call Attest when every target in the group has provenance: false", async () => {
+			// Arrange — two targets sharing a directory, neither requests
+			// provenance. The orchestrator must skip attestation entirely.
+			const { makeAttestTestState } = await import("@savvy-web/github-action-effects/testing");
+			const attestState = makeAttestTestState();
+
+			const SHARED_DIR = `/tmp/test/${PACK_NAME}`;
+			const npmLayer = NpmRegistryTest.empty();
+			const { layer: pubLayer } = PackagePublishTest.layer({ packResult: makePackResult() });
+
+			const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, SHARED_DIR);
+			const targetA = new PublishTarget({
+				name: PACK_NAME,
+				registry: "https://registry.npmjs.org/",
+				directory: SHARED_DIR,
+				access: "public",
+				provenance: false,
+			});
+			const targetB = new PublishTarget({
+				name: PACK_NAME,
+				registry: "https://npm.pkg.github.com/",
+				directory: SHARED_DIR,
+				access: "public",
+				provenance: false,
+			});
+			const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
+
+			const layers = await makeBaseLayersWithAttest(pubLayer, npmLayer, wsPkg, [targetA, targetB], attestState);
+
+			// Act
+			await Effect.runPromise(runPublishTargets(detected, args).pipe(Effect.provide(layers)));
+
+			// Assert — neither SBOM nor provenance attestation fired.
+			expect(attestState.sbomCalls).toHaveLength(0);
+			expect(attestState.provenanceCalls).toHaveLength(0);
+		});
+
+		it("stamps the per-package sbomPath onto every successful target's result", async () => {
+			// Arrange — one target, supply a sbomPaths map keyed by the
+			// package name. The orchestrator threads that through every
+			// successful target's TargetPublishResult so the release step can
+			// upload the SBOM file as an asset.
+			const npmLayer = NpmRegistryTest.empty();
+			const { layer: pubLayer } = PackagePublishTest.layer({ packResult: makePackResult() });
+
+			const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, `/tmp/test/${PACK_NAME}`);
+			const target = makeNpmTarget(PACK_NAME, `/tmp/test/${PACK_NAME}`);
+			const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
+
+			const SBOM_PATH = `/tmp/test/${PACK_NAME}/pkg.sbom.json`;
+			const sbomPaths = new Map<string, string>([[PACK_NAME, SBOM_PATH]]);
+
+			// Act
+			const result: PublishPackagesResult = await Effect.runPromise(
+				runPublishTargets(detected, args, sbomPaths).pipe(
+					Effect.provide(makeBaseLayers(pubLayer, npmLayer, wsPkg, [target])),
+				),
+			);
+
+			// Assert — the sbomPath was attached to the target result.
+			const targetResult = result.packages[0]?.targets[0];
+			expect(targetResult?.success).toBe(true);
+			expect(targetResult?.sbomPath).toBe(SBOM_PATH);
 		});
 	});
 

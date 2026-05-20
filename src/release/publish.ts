@@ -359,9 +359,16 @@ interface AttestationsOutcome {
 }
 
 /**
- * Run provenance + SBOM attestations for a target.
+ * Run provenance + SBOM attestations ONCE for the build directory's tarball.
  *
  * @remarks
+ * The same attestation URLs apply to every target in the group that ended
+ * successfully (published or skipped-identical). Prior to this contract the
+ * orchestrator fired attestation per-target — that produced N provenance +
+ * N SBOM records for a package with N registry targets even though the
+ * tarball is byte-identical across them. Hoisting the call out of the
+ * per-target loop collapses the count to one of each per build directory.
+ *
  * Fires on BOTH the `published` and `skipped-identical` branches. On a
  * recovery skip the original publish from a prior run may have failed
  * BEFORE the attestation step, leaving the package on the registry with no
@@ -373,10 +380,13 @@ interface AttestationsOutcome {
  * `subjectSha256` MUST be the sha256-hex of the tarball (no `sha256:` prefix);
  * the GitHub artifact attestation API rejects npm's `sha512-<base64>`
  * integrity format.
+ *
+ * `provenance` is derived by the caller from the group: any target in the
+ * group with `provenance: true` enables attestation for the whole group.
  */
-const runAttestationsForTarget = (packageName: string, version: string, target: TargetSpec, subjectSha256: string) =>
+const runAttestationsForBuild = (packageName: string, version: string, provenance: boolean, subjectSha256: string) =>
 	Effect.gen(function* () {
-		if (!target.provenance) {
+		if (!provenance) {
 			return { attestationUrl: undefined, sbomAttestationUrl: undefined } satisfies AttestationsOutcome;
 		}
 
@@ -449,9 +459,13 @@ const runAttestationsForTarget = (packageName: string, version: string, target: 
  *     - `Option.some(digest)` differing from local — fatal mismatch.
  *       Record `status: "failed"` with the `recovery` digest pair and a
  *       message that names both digests.
- *  3. **Attest published targets.** Provenance + SBOM attestation runs
- *     only on the `published` branch (skipped-identical recoveries reuse
- *     the original publish's attestation).
+ *  3. **Attest once per build.** Provenance + SBOM attestation runs ONCE
+ *     for the build directory's tarball after every target has been probed.
+ *     The same URLs are then attached to every successful target's result
+ *     (`published` and `skipped-identical` alike); failed-mismatch targets
+ *     do not receive attestation URLs. This collapses what used to be a
+ *     per-target attestation (N provenance + N SBOM for N targets sharing
+ *     a directory) down to a single pair.
  *
  * JSR targets are skipped with a warning — they require a separate publish
  * path that is outside this orchestrator's scope.
@@ -464,6 +478,7 @@ const publishDirectoryGroup = (
 	npmToken: string | null,
 	ghPkgsToken: string | null,
 	packageManager: "npm" | "pnpm" | "yarn" | "bun",
+	sbomPath: string | null,
 ) =>
 	Effect.gen(function* () {
 		const publishSvc = yield* PackagePublish;
@@ -613,18 +628,15 @@ const publishDirectoryGroup = (
 					continue;
 				}
 
-				// Attestation runs on the published branch. `sha256Hex` (bare
-				// hex) is the format the GitHub attestation API expects;
-				// npm's `digest` (sha512-base64) is rejected.
-				const attestations = yield* runAttestationsForTarget(packageName, version, t, packResult.sha256Hex);
-
+				// Attestation is computed ONCE per build directory after the
+				// per-target loop (see runAttestationsForBuild call below). The
+				// tarball is byte-identical across targets in this group, so one
+				// pair of provenance + SBOM records applies to all of them.
 				publishedCount += 1;
 				results.push({
 					target: toLegacyTarget(t),
 					success: true,
 					status: "published",
-					attestationUrl: attestations.attestationUrl,
-					sbomAttestationUrl: attestations.sbomAttestationUrl,
 					tarballPath: packResult.tarballPath,
 					// `sha256:<hex>` matches the prior contract and lets
 					// downstream consumers (releases.ts attestAsset +
@@ -644,14 +656,12 @@ const publishDirectoryGroup = (
 					`[publish] ${t.registry}: ${packResult.name}@${packResult.version} already published with identical integrity (digest=${remoteDigest}); recovery skip`,
 				);
 
-				// Attest on the recovery branch too. A prior run that landed
-				// the publish may have failed BEFORE attestation could write
-				// to GitHub's artifact attestation store; re-running with the
-				// same subject digest is idempotent at the registry, and
-				// without it skipped-identical recoveries would emit a
-				// release with no SBOM/provenance attestation URLs.
-				const attestations = yield* runAttestationsForTarget(packageName, version, t, packResult.sha256Hex);
-
+				// Attestation is computed ONCE per build directory after the
+				// per-target loop. Skipped-identical recoveries still need
+				// attestation URLs in case a prior run landed the publish but
+				// failed before writing to GitHub's artifact attestation store;
+				// they share the same URLs as any other successful target in
+				// this group because the tarball bytes are identical.
 				skippedIdenticalCount += 1;
 				results.push({
 					target: toLegacyTarget(t),
@@ -661,8 +671,6 @@ const publishDirectoryGroup = (
 					alreadyPublished: true,
 					alreadyPublishedReason: "identical",
 					recovery: { localDigest: packResult.digest, remoteDigest },
-					attestationUrl: attestations.attestationUrl,
-					sbomAttestationUrl: attestations.sbomAttestationUrl,
 					tarballPath: packResult.tarballPath,
 					tarballDigest: `sha256:${packResult.sha256Hex}`,
 					packedSize: packResult.packedSize,
@@ -697,7 +705,34 @@ const publishDirectoryGroup = (
 			`[publish] ${packageName}: ${publishedCount} published, ${skippedIdenticalCount} skipped-identical, ${mismatchCount} mismatch`,
 		);
 
-		return results;
+		// ── One attestation per build directory, shared across successful targets.
+		//
+		// The tarball is byte-identical for every target in this group, so a
+		// single provenance + SBOM attestation pair applies to all of them.
+		// Provenance opts in at the package level — if any target in the group
+		// requested provenance the whole group attests; if none did, we skip.
+		// Failed-mismatch results do not receive the URLs.
+		const anySuccess = results.some((r) => r.status === "published" || r.status === "skipped");
+		const groupProvenance = npmTargets.some((t) => t.provenance);
+		let attestations: AttestationsOutcome = { attestationUrl: undefined, sbomAttestationUrl: undefined };
+		if (anySuccess && groupProvenance) {
+			attestations = yield* runAttestationsForBuild(packageName, version, groupProvenance, packResult.sha256Hex);
+		}
+
+		// Attach the shared URLs (and the per-package sbomPath, threaded in from
+		// runBuildAndSbom) to every successful target's result.
+		const enrichedResults = results.map((r) =>
+			r.status === "published" || r.status === "skipped"
+				? {
+						...r,
+						attestationUrl: attestations.attestationUrl,
+						sbomAttestationUrl: attestations.sbomAttestationUrl,
+						...(sbomPath !== null ? { sbomPath } : {}),
+					}
+				: r,
+		);
+
+		return enrichedResults;
 	});
 
 // ─── detectReleases ────────────────────────────────────────────────────────────
@@ -750,6 +785,13 @@ export interface BuildSbomResult {
 	readonly sbomFailures: ReadonlyArray<string>;
 	/** Number of in-scope packages. */
 	readonly packageCount: number;
+	/**
+	 * Per-package on-disk path of the saved CycloneDX SBOM JSON. The release
+	 * step uploads this file as a release asset; `null` entries indicate the
+	 * SBOM was generated but not saved to disk (saving failed non-fatally).
+	 * Keyed by package name.
+	 */
+	readonly sbomPaths: ReadonlyMap<string, string>;
 }
 
 /**
@@ -801,11 +843,13 @@ export const runBuildAndSbom = (detected: ReadonlyArray<DetectedRelease>, args: 
 				buildError: buildResult.error,
 				sbomFailures: [],
 				packageCount: detected.length,
+				sbomPaths: new Map<string, string>(),
 			} satisfies BuildSbomResult;
 		}
 
 		// ── SBOM generation (per package) ──────────────────────────────────────
 		const sbomFailures: string[] = [];
+		const sbomPaths = new Map<string, string>();
 
 		for (const rel of detected) {
 			// Resolve the WorkspacePackage for its dependency map; synthesise a
@@ -829,6 +873,14 @@ export const runBuildAndSbom = (detected: ReadonlyArray<DetectedRelease>, args: 
 				version,
 			}));
 
+			// Save the SBOM under the package's own directory as <unscoped>.sbom.json.
+			// Same naming convention runReleases uploads with (basename is the
+			// release-asset name); per-package because the SBOM describes the
+			// package, not a particular registry target.
+			const unscopedName =
+				rel.name.startsWith("@") && rel.name.includes("/") ? (rel.name.split("/")[1] ?? rel.name) : rel.name;
+			const sbomDestPath = join(wsPkg.path, `${unscopedName}.sbom.json`);
+
 			const ok = yield* logger.group(
 				`SBOM · ${rel.name}`,
 				Effect.gen(function* () {
@@ -838,6 +890,19 @@ export const runBuildAndSbom = (detected: ReadonlyArray<DetectedRelease>, args: 
 							Effect.gen(function* () {
 								const bomJson = yield* sbomSvc.serializeJson(bom);
 								yield* Effect.logDebug(`generated CycloneDX BOM:\n${bomJson}`);
+								// Persist to disk so runReleases can attach the SBOM as a
+								// release asset. Save failures are non-fatal — we still
+								// log a warning and continue, just without an asset to
+								// upload. The "generated" success metric tracks the
+								// in-memory BOM build, not the disk write.
+								yield* sbomSvc.save(bom, sbomDestPath).pipe(
+									Effect.tap(() => Effect.sync(() => sbomPaths.set(rel.name, sbomDestPath))),
+									Effect.catchAll((e: SbomError) =>
+										Effect.logWarning(
+											`SBOM save failed for ${rel.name} at ${sbomDestPath}: ${e.message}; release asset will be skipped`,
+										),
+									),
+								);
 								yield* Effect.logInfo("✅ SBOM generated");
 								return true as const;
 							}),
@@ -859,6 +924,7 @@ export const runBuildAndSbom = (detected: ReadonlyArray<DetectedRelease>, args: 
 			ok: sbomFailures.length === 0,
 			sbomFailures,
 			packageCount: detected.length,
+			sbomPaths,
 		} satisfies BuildSbomResult;
 	});
 
@@ -883,6 +949,12 @@ export const runPublishTargets = (
 	// needs the package-manager value to dispatch `npm publish` through the
 	// right executor (`pnpm dlx npm`, `yarn npm`, `bun x npm`, or bare `npm`).
 	args: PublishInputArgs,
+	// Per-package on-disk path of the saved SBOM JSON. Populated by
+	// `runBuildAndSbom` and threaded through so `publishDirectoryGroup` can
+	// stamp it onto every successful target's result for the release-asset
+	// upload step in `runReleases`. Undefined or absent entries omit the
+	// field — no SBOM means no SBOM asset.
+	sbomPaths: ReadonlyMap<string, string> = new Map(),
 ) =>
 	Effect.gen(function* () {
 		const discovery = yield* WorkspaceDiscovery;
@@ -1057,6 +1129,8 @@ export const runPublishTargets = (
 
 				const targetResults: TargetPublishResult[] = [];
 
+				const sbomPathForPackage = sbomPaths.get(name) ?? null;
+
 				for (const [directory, groupTargets] of groups) {
 					const distDir = basename(directory);
 					const groupResults = yield* logger.group(
@@ -1069,6 +1143,7 @@ export const runPublishTargets = (
 							npmToken,
 							ghPkgsToken,
 							normalizePackageManager(args.packageManager),
+							sbomPathForPackage,
 						),
 					);
 					targetResults.push(...groupResults);

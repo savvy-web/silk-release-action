@@ -25,7 +25,7 @@ import {
 	OidcTokenIssuerTest,
 	SigstoreSignerTest,
 } from "@savvy-web/github-action-effects/testing";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, LogLevel, Logger } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PackageNotFoundError, WorkspaceDiscovery } from "workspaces-effect";
 import type { ReleasesInputArgs, ReleasesReport } from "./releases.js";
@@ -304,6 +304,175 @@ describe("runReleases", () => {
 
 			// Assert: overall success is false due to the error
 			expect(result.success).toBe(false);
+		});
+	});
+
+	describe("idempotent tag recovery on create failure", () => {
+		it("logs info (not warning) when tag.create fails but resolve returns the head SHA", async () => {
+			// Arrange — GitTag.create fails, but GitTag.resolve returns the same
+			// SHA the orchestrator tried to create the tag at. This is the
+			// idempotent path: the tag already points at the right SHA, so the
+			// run proceeds without raising a warning annotation.
+			const { GitTag: GitTagSvc, GitTagError } = await import("@savvy-web/github-action-effects");
+
+			const headSha = "head-sha-deadbeef";
+			const savedSha = process.env.GITHUB_SHA;
+			process.env.GITHUB_SHA = headSha;
+
+			const createCalls: Array<{ tag: string; sha: string }> = [];
+			const resolveCalls: Array<string> = [];
+
+			const idempotentTagLayer = Layer.succeed(GitTagSvc, {
+				create: (tag: string, sha: string) => {
+					createCalls.push({ tag, sha });
+					return Effect.fail(
+						new GitTagError({
+							operation: "create",
+							tag,
+							reason: "Reference already exists",
+						}),
+					);
+				},
+				delete: (_tag: string) => Effect.void,
+				list: () => Effect.succeed([]),
+				resolve: (tag: string) => {
+					resolveCalls.push(tag);
+					// Return the SAME SHA the orchestrator tried to point at —
+					// idempotent case.
+					return Effect.succeed(headSha);
+				},
+			});
+
+			const { state: releaseState, layer: releaseLayer } = GitHubReleaseTest.empty();
+			const attestLayer = AttestTest.empty();
+
+			const tags: TagInfo[] = [makeTag("v7.0.0", "@test/pkg-idem", "7.0.0")];
+			const publishResult = makePublishPackagesResult([makePublishResult("@test/pkg-idem", "7.0.0")]);
+
+			const args: ReleasesInputArgs = {
+				tags,
+				publishResult,
+				packageManager: "pnpm",
+				dryRun: false,
+			};
+
+			const layers = Layer.mergeAll(
+				loggerLayer,
+				idempotentTagLayer,
+				releaseLayer,
+				attestLayer,
+				oidcLayer,
+				sigstoreLayer,
+				makeGhClientLayer(),
+				GitHubArtifactMetadataTest.empty().layer,
+				workspaceDiscoveryLayer,
+			);
+
+			// Act
+			let result: ReleasesReport;
+			try {
+				result = await Effect.runPromise(
+					runReleases(args).pipe(Effect.provide(layers)) as Effect.Effect<ReleasesReport>,
+				);
+			} finally {
+				if (savedSha === undefined) delete process.env.GITHUB_SHA;
+				else process.env.GITHUB_SHA = savedSha;
+			}
+
+			// Assert — create was attempted and resolve was called to confirm
+			// the existing tag's SHA matched. The release was still created.
+			expect(createCalls).toHaveLength(1);
+			expect(resolveCalls).toEqual(["v7.0.0"]);
+			expect(releaseState.createCalls).toHaveLength(1);
+			expect(result.success).toBe(true);
+			expect(result.releases).toHaveLength(1);
+		});
+
+		it("logs a warning with both SHAs when tag.create fails and resolve returns a DIFFERENT SHA", async () => {
+			// Arrange — GitTag.create fails, GitTag.resolve returns a SHA that
+			// does NOT match the head we tried to point at. The orchestrator
+			// must log a warning naming BOTH SHAs so the divergence is
+			// auditable, then proceed.
+			const { GitTag: GitTagSvc, GitTagError } = await import("@savvy-web/github-action-effects");
+
+			const headSha = "head-sha-aaaa";
+			const existingSha = "existing-sha-bbbb";
+			const savedSha = process.env.GITHUB_SHA;
+			process.env.GITHUB_SHA = headSha;
+
+			// Capture every log line via a custom Effect logger so we can
+			// inspect levels and messages.
+			const capturedLogs: Array<{ level: string; message: string }> = [];
+			const captureLogger = Logger.make(({ logLevel, message }) => {
+				capturedLogs.push({
+					level: logLevel.label.toLowerCase(),
+					message: Array.isArray(message) ? message.join(" ") : String(message),
+				});
+			});
+
+			const divergentTagLayer = Layer.succeed(GitTagSvc, {
+				create: (tag: string, _sha: string) =>
+					Effect.fail(
+						new GitTagError({
+							operation: "create",
+							tag,
+							reason: "Reference already exists",
+						}),
+					),
+				delete: (_tag: string) => Effect.void,
+				list: () => Effect.succeed([]),
+				resolve: (_tag: string) => Effect.succeed(existingSha),
+			});
+
+			const { layer: releaseLayer } = GitHubReleaseTest.empty();
+			const attestLayer = AttestTest.empty();
+
+			const tags: TagInfo[] = [makeTag("v8.0.0", "@test/pkg-div", "8.0.0")];
+			const publishResult = makePublishPackagesResult([makePublishResult("@test/pkg-div", "8.0.0")]);
+
+			const args: ReleasesInputArgs = {
+				tags,
+				publishResult,
+				packageManager: "pnpm",
+				dryRun: false,
+			};
+
+			const layers = Layer.mergeAll(
+				loggerLayer,
+				divergentTagLayer,
+				releaseLayer,
+				attestLayer,
+				oidcLayer,
+				sigstoreLayer,
+				makeGhClientLayer(),
+				GitHubArtifactMetadataTest.empty().layer,
+				workspaceDiscoveryLayer,
+			);
+
+			// Act — replace the default logger so logWarning / logInfo land in
+			// `capturedLogs`.
+			let result: ReleasesReport;
+			try {
+				result = await Effect.runPromise(
+					runReleases(args).pipe(
+						Effect.provide(layers),
+						Logger.withMinimumLogLevel(LogLevel.All),
+						Effect.provide(Logger.replace(Logger.defaultLogger, captureLogger)),
+					) as Effect.Effect<ReleasesReport>,
+				);
+			} finally {
+				if (savedSha === undefined) delete process.env.GITHUB_SHA;
+				else process.env.GITHUB_SHA = savedSha;
+			}
+
+			// Assert — the run proceeded and the warning logged both SHAs so
+			// a reader can see what diverged.
+			expect(result.success).toBe(true);
+			const warnings = capturedLogs.filter((l) => l.level === "warn");
+			const divergenceWarning = warnings.find((w) => w.message.includes("v8.0.0"));
+			expect(divergenceWarning).toBeDefined();
+			expect(divergenceWarning?.message).toContain(headSha);
+			expect(divergenceWarning?.message).toContain(existingSha);
 		});
 	});
 

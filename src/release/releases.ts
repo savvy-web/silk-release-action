@@ -412,12 +412,28 @@ const processOneTag = (
 		const gitTagSvc = yield* GitTag;
 
 		yield* gitTagSvc.create(tag.name, headSha).pipe(
-			Effect.catchAll((e: GitTagError) => {
-				// Idempotent: if tag already exists at same SHA, treat as success.
-				// Log a warning and continue; the release step will handle existing
-				// releases via getByTag.
-				return Effect.logWarning(`runReleases: tag ${tag.name} create failed (${e.reason}) — proceeding`);
-			}),
+			Effect.catchAll((createErr: GitTagError) =>
+				// Distinguish the idempotent "tag already exists at the right SHA"
+				// case from a true divergence. Resolve the existing tag's SHA and
+				// compare against the head we tried to point at: equal → info-level
+				// recovery (no GitHub Actions warning annotation), different →
+				// warning that names both SHAs so the divergence is forensically
+				// auditable, resolve-failure → preserve prior best-effort warning.
+				gitTagSvc.resolve(tag.name).pipe(
+					Effect.flatMap((existingSha) =>
+						existingSha === headSha
+							? Effect.logInfo(`runReleases: tag ${tag.name} already at ${headSha} — idempotent recovery, proceeding`)
+							: Effect.logWarning(
+									`runReleases: tag ${tag.name} create failed (${createErr.reason}); existing tag points at ${existingSha} but head is ${headSha} — proceeding`,
+								),
+					),
+					Effect.catchAll((resolveErr: GitTagError) =>
+						Effect.logWarning(
+							`runReleases: tag ${tag.name} create failed (${createErr.reason}) and resolve failed (${resolveErr.reason}) — proceeding`,
+						),
+					),
+				),
+			),
 		);
 
 		// ── Step 2: Build release notes ───────────────────────────────────────────

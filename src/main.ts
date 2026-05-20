@@ -827,7 +827,7 @@ const runPublishing = (mergedReleasePRNumber: number | undefined) =>
 
 		// ── Step 4: Publish to registries ──────────────────────────────────────
 		yield* Effect.logInfo("Publish");
-		const publishResult = yield* runPublishTargets(detected, args);
+		const publishResult = yield* runPublishTargets(detected, args, buildSbom.sbomPaths);
 		if (!publishResult.success) {
 			yield* Effect.logError(
 				`❌ Published ${publishResult.successfulTargets}/${publishResult.totalTargets} target(s) — aborting before releases`,
