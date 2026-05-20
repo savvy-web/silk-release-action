@@ -1,16 +1,22 @@
 {
 	"$schema": "http://json-schema.org/draft-07/schema#",
-	"$id": "https://json.schemastore.org/silk-release-action.input.schema.json",
+	"$id": "https://raw.githubusercontent.com/savvy-web/silk-release-action/main/silk-release-action.input.schema.json",
 	"type": "object",
 	"properties": {
 		"$schema": {
-			"type": "string"
+			"type": "string",
+			"description": "Optional URL of the JSON Schema this config conforms to. Editors and json-schema-aware tools use this for completion and validation; the action itself does not require it.",
+			"title": "JSON Schema reference",
+			"examples": [
+				"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/silk-release-action.input.schema.json"
+			]
 		},
 		"sbom": {
 			"$ref": "#/$defs/SbomConfig"
 		}
 	},
 	"additionalProperties": false,
+	"description": "Input configuration for the Silk Release Action. Sourced (in precedence order) from the `sbom-config` action input, the `.github/silk-release.json` file in the repository, and the `SILK_RELEASE_SBOM_TEMPLATE` environment variable. Only the `sbom` section is consumed by Phase 2 today; the top-level shape leaves room for future release-related sections.",
 	"title": "Silk Release Action input config",
 	"$defs": {
 		"SbomConfig": {
@@ -23,26 +29,39 @@
 					"type": "array",
 					"items": {
 						"$ref": "#/$defs/SbomContact"
-					}
+					},
+					"description": "Author contacts written to the BOM's `metadata.authors`. Used when `package.json` `author`/`contributors` are insufficient or need explicit override.",
+					"title": "Authors"
 				},
 				"publisher": {
-					"type": "string"
+					"type": "string",
+					"description": "Publisher name written to the BOM's `metadata.component.publisher`. Defaults to the supplier name when unset.",
+					"title": "Publisher",
+					"examples": ["Savvy Web"]
 				},
 				"copyright": {
 					"$ref": "#/$defs/SbomCopyright"
 				},
 				"documentationUrl": {
-					"type": "string"
+					"type": "string",
+					"description": "Documentation URL written to the BOM as an external reference of type 'documentation'. Typically the project's docs site or repository docs path.",
+					"title": "Documentation URL",
+					"examples": ["https://savvy-web.github.io/silk", "https://github.com/savvy-web/silk-release-action#readme"]
 				}
 			},
-			"additionalProperties": false
+			"additionalProperties": false,
+			"description": "SBOM metadata applied during the validation phase. Merged over auto-inferred values from each package's `package.json` by `resolveSBOMMetadata` — explicit config wins. Field names match the prior `SBOMMetadataConfig` consumers so the schema is wire-compatible with existing configs.",
+			"title": "SBOM Configuration"
 		},
 		"SbomSupplier": {
 			"type": "object",
 			"required": ["name"],
 			"properties": {
 				"name": {
-					"type": "string"
+					"type": "string",
+					"description": "Supplier display name. Required when a supplier block is provided — this is the NTIA minimum-elements 'Supplier Name' field that compliance checks key on.",
+					"title": "Supplier name",
+					"examples": ["Savvy Web"]
 				},
 				"url": {
 					"anyOf": [
@@ -55,7 +74,10 @@
 								"type": "string"
 							}
 						}
-					]
+					],
+					"description": "One supplier URL or an array of URLs. The scalar-or-array form is normalised by `resolveSBOMMetadata`; both shapes are accepted by Phase 2.",
+					"title": "Supplier URL(s)",
+					"examples": ["https://example.com", ["https://example.com", "https://example.com/security"]]
 				},
 				"contact": {
 					"anyOf": [
@@ -68,42 +90,60 @@
 								"$ref": "#/$defs/SbomContact"
 							}
 						}
-					]
+					],
+					"description": "One contact object or an array of contacts. The scalar-or-array form is normalised by `resolveSBOMMetadata`; both shapes are accepted by Phase 2.",
+					"title": "Supplier contact(s)"
 				}
 			},
-			"additionalProperties": false
+			"additionalProperties": false,
+			"description": "The NTIA minimum-elements 'Supplier Name' entity for the SBOM. Emitted on the BOM's `metadata.supplier` and used to satisfy the supplier-name NTIA compliance check.",
+			"title": "SBOM Supplier"
 		},
 		"SbomContact": {
 			"type": "object",
 			"properties": {
 				"name": {
-					"type": "string"
+					"type": "string",
+					"description": "Display name of the contact person or team.",
+					"title": "Contact name",
+					"examples": ["Security Team", "Jane Doe"]
 				},
 				"email": {
-					"type": "string"
+					"type": "string",
+					"description": "Email address used to reach the contact.",
+					"title": "Contact email",
+					"examples": ["security@example.com"]
 				},
 				"phone": {
-					"type": "string"
+					"type": "string",
+					"description": "Phone number used to reach the contact, in E.164 format when possible.",
+					"title": "Contact phone",
+					"examples": ["+1-555-0100"]
 				}
 			},
-			"additionalProperties": false
+			"additionalProperties": false,
+			"description": "A contact person or team associated with an SBOM supplier, author, or security entry. All fields are optional, but at least one should be set for the contact to be useful.",
+			"title": "SBOM contact"
 		},
 		"SbomCopyright": {
 			"type": "object",
 			"properties": {
 				"holder": {
-					"type": "string"
+					"type": "string",
+					"description": "Copyright holder name. Appears in the BOM's `metadata.component.copyright` formatted as 'Copyright (c) <range> <holder>'.",
+					"title": "Copyright holder",
+					"examples": ["Savvy Web", "Jane Doe"]
 				},
 				"startYear": {
-					"$ref": "#/$defs/Int"
+					"type": "integer",
+					"description": "Year the copyright begins, used to format a year range against the current year. Most users should NOT set this — it is auto-detected from the npm registry's first-publication date. Override only when registry lookup is unreliable or the copyright predates first npm publication.",
+					"title": "Copyright start year",
+					"examples": [2024, 2021]
 				}
 			},
-			"additionalProperties": false
-		},
-		"Int": {
-			"type": "integer",
-			"description": "an integer",
-			"title": "int"
+			"additionalProperties": false,
+			"description": "Copyright metadata applied to every released package's BOM. Merged over auto-inferred defaults — explicit config wins.",
+			"title": "SBOM Copyright"
 		}
 	}
 }

@@ -105,7 +105,8 @@ describe("createValidationCheck", () => {
 	it("appends the supplied extraBody to the check-run summary after the checks-table content", async () => {
 		const f = makeFixtures();
 		const validationOutput = {
-			$schema: "https://json.schemastore.org/silk-release-action.output.schema.json",
+			$schema:
+				"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/silk-release-action.output.schema.json",
 			schemaVersion: "1",
 			phase: "validation",
 		};
