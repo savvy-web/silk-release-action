@@ -68,6 +68,20 @@ inputs:
       Create at: https://www.npmjs.com/settings/tokens
     required: false
     default: ""
+  strict-warnings:
+    description: |
+      When 'true', warning-severity validation findings escalate the per-step
+      and unified check-run conclusions from 'neutral' to 'failure', blocking
+      branch-protection-gated auto-merge. Errors always fail regardless.
+
+      Default 'false' preserves the existing semantics: warnings are advisory
+      (check-run conclusion 'neutral'), errors block.
+
+      Useful for automated release pipelines (e.g., daily runtime-resolver
+      runs) where an LLM or auto-merge bot gates on check status — a strict
+      warning means human intervention is required before merge.
+    required: false
+    default: "false"
   sbom-config:
     description: |
       SBOM metadata configuration (JSON). Provides supplier, copyright, and other

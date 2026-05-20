@@ -74,6 +74,7 @@ import { cleanupValidationChecks } from "./utils/cleanup-validation-checks.js";
 import { closeLinkedIssues } from "./utils/close-linked-issues.js";
 import { createReleaseBranch } from "./utils/create-release-branch.js";
 import { createValidationCheck } from "./utils/create-validation-check.js";
+import { deriveCheckConclusion } from "./utils/derive-check-conclusion.js";
 import type { WorkflowPhase } from "./utils/detect-workflow-phase.js";
 import { detectWorkflowPhase } from "./utils/detect-workflow-phase.js";
 import type { TagInfo } from "./utils/determine-tag-strategy.js";
@@ -241,6 +242,11 @@ const runValidation = Effect.gen(function* () {
 	const releaseBranch = yield* Config.string("release-branch").pipe(Config.withDefault("changeset-release/main"));
 	const targetBranch = yield* Config.string("target-branch").pipe(Config.withDefault("main"));
 	const dryRun = yield* Config.boolean("dry-run").pipe(Config.withDefault(false));
+	// `strict-warnings` escalates warning-severity findings to `failure` on
+	// the per-step AND unified check-run conclusions, letting auto-merge gates
+	// (branch protection, Mergify, …) hold on warnings. Default `false`
+	// preserves the existing advisory-warning semantics.
+	const strictWarnings = yield* Config.boolean("strict-warnings").pipe(Config.withDefault(false));
 	const packageManager = yield* detectPackageManager;
 	const { repository, sha } = yield* env.github;
 	const [owner, repo] = repository.split("/");
@@ -383,32 +389,29 @@ const runValidation = Effect.gen(function* () {
 		}
 		findings.push(...reportFindings);
 
-		// Conclusion-per-check rule used for the three new per-step check runs:
-		// `failure` if any error-severity finding scopes to that check;
-		// `neutral` if warning-severity findings exist but no errors;
-		// `success` otherwise.
+		// Conclusion-per-check rule used for the three new per-step check runs
+		// AND propagated into the unified Release Validation Summary check's
+		// per-row `success` field below — so the unified conclusion and the
+		// per-step conclusions agree on strict-warnings escalation.
 		//
-		// Build-failed special case — when Build Validation fails,
-		// `runValidationEffect` is skipped entirely so no Publish / Release
-		// Notes / SBOM findings exist. Reporting `success` for those checks
-		// would lie about steps that never ran. The checks-table icon path
-		// (`statusFor`) already encodes this via `!buildResult.success || …`;
-		// mirror the precedent here so the check-run conclusion agrees with
-		// the icon.
-		const conclusionFor = (checkName: string): "success" | "failure" | "neutral" => {
-			if (!buildResult.success && checkName !== "Build Validation" && checkName !== "Link Issues from Commits") {
-				return "failure";
-			}
-			const own = findings.filter((f) => f.check === checkName);
-			if (own.some((f) => f.severity === "error")) return "failure";
-			if (own.some((f) => f.severity === "warning")) return "neutral";
-			return "success";
-		};
+		// Build-failed cascade — when Build Validation fails, `runValidation`
+		// is skipped so the downstream Publish / Release Notes / SBOM checks
+		// emit no findings. The helper reports `failure` for those rows so
+		// the conclusion does not lie about steps that never ran.
+		const conclusionFor = (checkName: string): "success" | "failure" | "neutral" =>
+			deriveCheckConclusion(checkName, findings, buildResult.success, strictWarnings);
+
+		// Translate a conclusion into the boolean shape the unified check
+		// run consumes. `neutral` (warning, non-strict) counts as success for
+		// the unified table — preserves the prior "warnings are advisory"
+		// semantics. `failure` (errors, or warnings under strict mode) flips
+		// the row to failed.
+		const successFor = (checkName: string): boolean => conclusionFor(checkName) !== "failure";
 
 		const checkResults = [
 			{
 				name: "Link Issues from Commits",
-				success: true,
+				success: successFor("Link Issues from Commits"),
 				checkId: 0,
 				message: `${issuesResult.linkedIssues.length} issue(s) linked`,
 			},
@@ -420,20 +423,20 @@ const runValidation = Effect.gen(function* () {
 			},
 			{
 				name: "Publish Validation",
-				success: buildResult.success && publishOk,
+				success: buildResult.success && publishOk && successFor("Publish Validation"),
 				checkId: publishCheckId,
 				message:
 					publishTotalTargets === 0 ? "No targets" : `${publishReadyTargets}/${publishTotalTargets} target(s) ready`,
 			},
 			{
 				name: "Release Notes Preview",
-				success: true,
+				success: successFor("Release Notes Preview"),
 				checkId: 0,
 				message: `${reportPackages.length} package(s) ready`,
 			},
 			{
 				name: "SBOM Preview",
-				success: sbomOk,
+				success: sbomOk && successFor("SBOM Preview"),
 				checkId: 0,
 				message: sbomSummary,
 			},
