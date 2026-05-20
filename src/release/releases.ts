@@ -504,6 +504,12 @@ const processOneTag = (
 			const uploadedPaths = new Set<string>();
 
 			// Accumulate SBOM / API-doc URLs so we can replace placeholder cells.
+			// Keyed by package name (NOT directory) because the summary table
+			// has one row per `(package, registry)` pair, and the placeholder
+			// regex anchors on the package name to identify which rows to
+			// rewrite. Two targets of the same package share one SBOM upload
+			// and one API doc, so a single map entry covers every row for
+			// that package.
 			const sbomAssetUrls = new Map<string, string>();
 			const apiDocAssetUrls = new Map<string, string>();
 
@@ -584,7 +590,7 @@ const processOneTag = (
 
 					if (sbomExisting) {
 						yield* Effect.logDebug(`runReleases: SBOM ${sbomFileName} already attached — reusing`);
-						sbomAssetUrls.set(targetResult.target.directory, sbomExisting.url);
+						sbomAssetUrls.set(pkg.name, sbomExisting.url);
 					} else {
 						const sbomContent = readFileSync(targetResult.sbomPath);
 						yield* Effect.logDebug(`runReleases: uploading SBOM ${sbomFileName}`);
@@ -602,7 +608,7 @@ const processOneTag = (
 
 						if (sbomAsset !== null) {
 							yield* Effect.logDebug(`runReleases: uploaded SBOM ${sbomFileName} → ${sbomAsset.url}`);
-							sbomAssetUrls.set(targetResult.target.directory, sbomAsset.url);
+							sbomAssetUrls.set(pkg.name, sbomAsset.url);
 							existingAssetsByName.set(sbomFileName, { url: sbomAsset.url, size: sbomAsset.size });
 							(releaseInfo.assets as AssetInfo[]).push({
 								name: sbomFileName,
@@ -623,7 +629,7 @@ const processOneTag = (
 
 					if (apiExisting) {
 						yield* Effect.logDebug(`runReleases: API doc ${apiDocFileName} already attached — reusing`);
-						apiDocAssetUrls.set(targetResult.target.directory, apiExisting.url);
+						apiDocAssetUrls.set(pkg.name, apiExisting.url);
 					} else {
 						const apiDocContent = readFileSync(apiDocPath);
 						yield* Effect.logDebug(`runReleases: uploading API doc ${apiDocFileName}`);
@@ -641,7 +647,7 @@ const processOneTag = (
 
 						if (apiDocAsset !== null) {
 							yield* Effect.logDebug(`runReleases: uploaded API doc ${apiDocFileName} → ${apiDocAsset.url}`);
-							apiDocAssetUrls.set(targetResult.target.directory, apiDocAsset.url);
+							apiDocAssetUrls.set(pkg.name, apiDocAsset.url);
 							existingAssetsByName.set(apiDocFileName, { url: apiDocAsset.url, size: apiDocAsset.size });
 							(releaseInfo.assets as AssetInfo[]).push({
 								name: apiDocFileName,
@@ -653,19 +659,29 @@ const processOneTag = (
 				}
 			}
 
-			// Replace SBOM placeholder cells with real download links
-			for (const [_dir, sbomUrl] of sbomAssetUrls) {
+			// Replace SBOM and API-doc placeholder cells with real download
+			// links. The maps are keyed by package name; the regex anchors
+			// on the package's row identifier (`@scope/name@version` in the
+			// Package cell) so every row owned by that package — one per
+			// registry — gets the link, and rows owned by a DIFFERENT
+			// package are left alone. The `g` flag is required because a
+			// single package commonly has multiple targets (one row each)
+			// sharing the same SBOM/API doc upload.
+			const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+			for (const [pkgName, sbomUrl] of sbomAssetUrls) {
+				const escapedPkg = escapeRe(pkgName);
 				releaseNotes = releaseNotes.replace(
-					/\| 📦 \| (📄|—) \| (\[Sigstore\]|\[GitHub\]|\[SBOM\]|—)/,
-					`| [📦](${sbomUrl}) | $1 | $2`,
+					new RegExp(`(\\| [^|\\n]+ \\| [^|\\n]*${escapedPkg}@[^|\\n]+ \\|) 📦 \\|`, "g"),
+					`$1 [📦](${sbomUrl}) |`,
 				);
 			}
 
-			// Replace API-doc placeholder cells with real download links
-			for (const [_dir, apiDocUrl] of apiDocAssetUrls) {
+			for (const [pkgName, apiDocUrl] of apiDocAssetUrls) {
+				const escapedPkg = escapeRe(pkgName);
 				releaseNotes = releaseNotes.replace(
-					/\| 📄 \| (\[Sigstore\]|\[GitHub\]|\[SBOM\]|—)/,
-					`| [📄](${apiDocUrl}) | $1`,
+					new RegExp(`(\\| [^|\\n]+ \\| [^|\\n]*${escapedPkg}@[^|\\n]+ \\|(?: [^|\\n]+ \\|)?) 📄 \\|`, "g"),
+					`$1 [📄](${apiDocUrl}) |`,
 				);
 			}
 		}
