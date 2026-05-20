@@ -529,9 +529,9 @@ const publishDirectoryGroup = (
 						yield* Effect.logDebug(
 							`[publish] ${packageName}: packed ${directory} (${r.packedSize} bytes, files=${r.fileCount}, digest=${r.digest})`,
 						);
-						yield* Step.success(
-							`pack ${r.name}@${r.version}: ${humanizeSize(r.packedSize)} · ${r.fileCount} files · ${r.digest.slice(0, 32)}…`,
-						);
+						// The step name already includes `pack <package> <directory>`;
+						// the success line provides only the outcome.
+						yield* Step.success(`${humanizeSize(r.packedSize)} · ${r.fileCount} files · ${r.digest.slice(0, 32)}…`);
 					} else {
 						yield* Effect.logError(`[publish] ${packageName}: pack ${directory} failed — ${outcome.error}`);
 					}
@@ -890,7 +890,7 @@ export const runBuildAndSbom = (detected: ReadonlyArray<DetectedRelease>, args: 
 			);
 
 			if (!buildResult.success) {
-				yield* Step.success(`Build & SBOM: aborted — build failed`);
+				yield* Step.success(`aborted — build failed`);
 				return {
 					ok: false,
 					buildError: buildResult.error,
@@ -956,7 +956,9 @@ export const runBuildAndSbom = (detected: ReadonlyArray<DetectedRelease>, args: 
 											),
 										),
 									);
-									yield* Step.success(`SBOM generated for ${rel.name}`);
+									// Step name is `SBOM · <package>`; the success line
+									// provides only the outcome.
+									yield* Step.success(`generated`);
 									return true as const;
 								}),
 							),
@@ -973,7 +975,7 @@ export const runBuildAndSbom = (detected: ReadonlyArray<DetectedRelease>, args: 
 				if (!ok) sbomFailures.push(rel.name);
 			}
 
-			yield* Step.success(`Build & SBOM: ${detected.length} package(s) ready`);
+			yield* Step.success(`${detected.length} package(s) ready`);
 			return {
 				ok: sbomFailures.length === 0,
 				sbomFailures,

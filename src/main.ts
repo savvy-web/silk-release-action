@@ -799,7 +799,11 @@ const runPublishing = (mergedReleasePRNumber: number | undefined) =>
 			}
 
 			// ── Step 2: Determine tag strategy ─────────────────────────────────────
-			const tagStrategy = yield* logger.group(
+			// `Step.groupStep` wraps the body in BOTH a GitHub Actions group and
+			// a `Step.withStep` envelope, so the step's `Step.success` line lands
+			// inside the group instead of leaving it empty (which produced the
+			// gap-only `Tag strategy` block in the runner UI before).
+			const tagStrategy = yield* Step.groupStep(
 				"Tag strategy",
 				Effect.gen(function* () {
 					// `DetectedRelease` carries no `targets`, and `determineTagStrategy`
@@ -812,11 +816,11 @@ const runPublishing = (mergedReleasePRNumber: number | undefined) =>
 						detected.map((d) => ({ name: d.name, version: d.version, targets: [] })),
 					);
 					yield* Effect.logDebug(`tag strategy: ${strategy.strategy}, ${strategy.tags.length} tag(s)`);
+					const strategyLabel = strategy.strategy === "multiple" ? "per-package tags" : "single shared tag";
+					yield* Step.success(`${strategy.tags.length} tag(s), ${strategyLabel}`);
 					return strategy;
 				}),
 			);
-			const tagStrategyLabel = tagStrategy.strategy === "multiple" ? "per-package tags" : "single shared tag";
-			yield* Effect.logInfo(`✅ ${tagStrategy.tags.length} tag(s) to create — ${tagStrategyLabel}`);
 
 			// ── Step 3: Build & SBOM (fail-fast gate) ──────────────────────────────
 			// `runBuildAndSbom` wraps itself in Step.withStep; its success line emits
