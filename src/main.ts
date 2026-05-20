@@ -96,19 +96,38 @@ import { validateBuilds } from "./utils/validate-builds.js";
  *
  * @internal
  */
+// Detection order mirrors the shell helper the release pipeline used before
+// this migration: prefer the explicit `packageManager` field in
+// `package.json`, then fall back to a lockfile probe (pnpm > yarn > bun),
+// and finally `"npm"`. Defaulting to `"npm"` on a no-signal repo is honest —
+// the prior `"pnpm"` default risked invoking a manager the workspace does
+// not actually use.
 const detectPackageManager = Effect.gen(function* () {
 	const fs = yield* FileSystem.FileSystem;
+
+	// 1. Read `package.json`'s `packageManager` field if present.
 	const readResult = yield* Effect.either(fs.readFileString("package.json"));
-	if (readResult._tag === "Left") return "pnpm" as const;
-	try {
-		const parsed = JSON.parse(readResult.right) as { packageManager?: string };
-		const raw = parsed.packageManager ?? "";
-		const name = raw.split("@")[0];
-		if (name === "npm" || name === "pnpm" || name === "yarn" || name === "bun") return name;
-		return "pnpm" as const;
-	} catch {
-		return "pnpm" as const;
+	if (readResult._tag === "Right") {
+		try {
+			const parsed = JSON.parse(readResult.right) as { packageManager?: string };
+			const raw = parsed.packageManager ?? "";
+			const name = raw.split("@")[0];
+			if (name === "npm" || name === "pnpm" || name === "yarn" || name === "bun") return name;
+		} catch {
+			// fall through to lockfile detection
+		}
 	}
+
+	// 2. Lockfile fallback. Probe in pnpm > yarn > bun order; first hit wins.
+	// `fs.exists` returns `Effect<boolean, PlatformError>`; treat errors as
+	// "doesn't exist" so a transient FS issue cannot flip the chosen manager.
+	const exists = (path: string) => fs.exists(path).pipe(Effect.catchAll(() => Effect.succeed(false)));
+
+	if (yield* exists("pnpm-lock.yaml")) return "pnpm" as const;
+	if (yield* exists("yarn.lock")) return "yarn" as const;
+	if (yield* exists("bun.lock")) return "bun" as const;
+
+	return "npm" as const;
 });
 
 /**

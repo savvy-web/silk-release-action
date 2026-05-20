@@ -44,6 +44,19 @@ import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
 import { isTargetPrivate } from "./resolve-targets.js";
 import type { PackagePublishResult, PublishPackagesResult, TargetPublishResult } from "./types.js";
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Narrow the loosely-typed `packageManager` string from `PublishInputArgs`
+ * into the four-value enum the library's `PackagePublish.publish` accepts.
+ * Anything unrecognised falls back to `"npm"` — matches the lockfile-detection
+ * fallback chain in `detectPackageManager`.
+ */
+const normalizePackageManager = (pm: string): "npm" | "pnpm" | "yarn" | "bun" => {
+	if (pm === "pnpm" || pm === "yarn" || pm === "bun" || pm === "npm") return pm;
+	return "npm";
+};
+
 // ─── Public interfaces ────────────────────────────────────────────────────────
 
 /**
@@ -355,6 +368,7 @@ const publishOneTarget = (
 	target: TargetSpec,
 	npmToken: string | null,
 	ghPkgsToken: string | null,
+	packageManager: "npm" | "pnpm" | "yarn" | "bun",
 ) => {
 	const legacyTarget = {
 		protocol: "npm" as const,
@@ -422,6 +436,10 @@ const publishOneTarget = (
 				registry: target.registry,
 				access: target.access,
 				provenance: target.provenance,
+				// Route through the active package manager's executor — fetches
+				// a fresh npm (≥ 11.5.1) for OIDC trusted publishing. See
+				// PackagePublishLive.getNpmCommand.
+				packageManager,
 			});
 		} else {
 			// Existing package: delegate to publishIdempotent for version/integrity check.
@@ -434,6 +452,7 @@ const publishOneTarget = (
 					registry: target.registry,
 					access: target.access,
 					provenance: target.provenance,
+					packageManager,
 				},
 			});
 
@@ -706,9 +725,10 @@ export const runBuildAndSbom = (detected: ReadonlyArray<DetectedRelease>, args: 
  */
 export const runPublishTargets = (
 	detected: ReadonlyArray<DetectedRelease>,
-	// `_args` is unused today; kept for signature parity with `detectReleases`
-	// and `runBuildAndSbom` and for future dry-run support.
-	_args: PublishInputArgs,
+	// Carries `packageManager` (and, in the future, `dryRun`) — `publishOneTarget`
+	// needs the package-manager value to dispatch `npm publish` through the
+	// right executor (`pnpm dlx npm`, `yarn npm`, `bun x npm`, or bare `npm`).
+	args: PublishInputArgs,
 ) =>
 	Effect.gen(function* () {
 		const discovery = yield* WorkspaceDiscovery;
@@ -877,7 +897,14 @@ export const runPublishTargets = (
 					const distDir = basename(target.directory);
 					const result = yield* logger.group(
 						`Publish · ${name} · ${distDir} · ${target.registry}`,
-						publishOneTarget(name, version, target, npmToken, ghPkgsToken),
+						publishOneTarget(
+							name,
+							version,
+							target,
+							npmToken,
+							ghPkgsToken,
+							normalizePackageManager(args.packageManager),
+						),
 					);
 					targetResults.push(result);
 				}
