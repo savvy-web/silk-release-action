@@ -605,6 +605,9 @@ describe("runPublishTargets", () => {
 	const makePackResult = (overrides?: { tarballPath?: string }) => ({
 		tarballPath: overrides?.tarballPath ?? `/tmp/${PACK_NAME.replace("/", "-")}-${PACK_VERSION}.tgz`,
 		digest: PACK_DIGEST,
+		// Fixture sha256-hex value — 64 hex chars. The orchestrator now plumbs
+		// this as the subject digest for attestation + storage-record calls.
+		sha256Hex: "abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abc1",
 		name: PACK_NAME,
 		version: PACK_VERSION,
 		packedSize: 1234,
@@ -925,6 +928,7 @@ describe("runPublishTargets", () => {
 					return Effect.succeed({
 						tarballPath: `${packageDir}/pkg.tgz`,
 						digest: PACK_DIGEST,
+						sha256Hex: "abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abc1",
 						name: packageDir.includes("ok-pkg") ? "@test/ok-pkg" : "@test/unknown",
 						version: "1.0.0",
 						packedSize: 1,

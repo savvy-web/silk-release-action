@@ -359,12 +359,20 @@ interface AttestationsOutcome {
 }
 
 /**
- * Run provenance + SBOM attestations for a target that was just published.
+ * Run provenance + SBOM attestations for a target.
  *
  * @remarks
- * Pulled out of the per-target publish so the new orchestrator can run it
- * only on the `published` branch — skipped-identical recoveries do not
- * re-attest (the original publish already did).
+ * Fires on BOTH the `published` and `skipped-identical` branches. On a
+ * recovery skip the original publish from a prior run may have failed
+ * BEFORE the attestation step, leaving the package on the registry with no
+ * GitHub artifact attestation. Re-running attestation with the same subject
+ * digest is idempotent at the registry — duplicates either return the
+ * existing URL or no-op cleanly — so it is safe to run on every successful
+ * publish state and dangerous to skip.
+ *
+ * `subjectSha256` MUST be the sha256-hex of the tarball (no `sha256:` prefix);
+ * the GitHub artifact attestation API rejects npm's `sha512-<base64>`
+ * integrity format.
  */
 const runAttestationsForTarget = (packageName: string, version: string, target: TargetSpec, subjectSha256: string) =>
 	Effect.gen(function* () {
@@ -559,7 +567,7 @@ const publishDirectoryGroup = (
 					status: "failed",
 					error: probe.error,
 					tarballPath: packResult.tarballPath,
-					tarballDigest: packResult.digest,
+					tarballDigest: `sha256:${packResult.sha256Hex}`,
 					packedSize: packResult.packedSize,
 					unpackedSize: packResult.unpackedSize,
 					fileCount: packResult.fileCount,
@@ -597,7 +605,7 @@ const publishDirectoryGroup = (
 						status: "failed",
 						error: publishOutcome.error,
 						tarballPath: packResult.tarballPath,
-						tarballDigest: packResult.digest,
+						tarballDigest: `sha256:${packResult.sha256Hex}`,
 						packedSize: packResult.packedSize,
 						unpackedSize: packResult.unpackedSize,
 						fileCount: packResult.fileCount,
@@ -605,13 +613,10 @@ const publishDirectoryGroup = (
 					continue;
 				}
 
-				// Attestation runs only on the published branch.
-				const attestations = yield* runAttestationsForTarget(
-					packageName,
-					version,
-					t,
-					packResult.digest.replace(/^sha512-/i, "").replace(/^sha256:/i, ""),
-				);
+				// Attestation runs on the published branch. `sha256Hex` (bare
+				// hex) is the format the GitHub attestation API expects;
+				// npm's `digest` (sha512-base64) is rejected.
+				const attestations = yield* runAttestationsForTarget(packageName, version, t, packResult.sha256Hex);
 
 				publishedCount += 1;
 				results.push({
@@ -621,7 +626,10 @@ const publishDirectoryGroup = (
 					attestationUrl: attestations.attestationUrl,
 					sbomAttestationUrl: attestations.sbomAttestationUrl,
 					tarballPath: packResult.tarballPath,
-					tarballDigest: packResult.digest,
+					// `sha256:<hex>` matches the prior contract and lets
+					// downstream consumers (releases.ts attestAsset +
+					// createStorageRecord) feed the digest straight through.
+					tarballDigest: `sha256:${packResult.sha256Hex}`,
 					packedSize: packResult.packedSize,
 					unpackedSize: packResult.unpackedSize,
 					fileCount: packResult.fileCount,
@@ -631,10 +639,19 @@ const publishDirectoryGroup = (
 
 			const remoteDigest = probe.value.value;
 			if (remoteDigest === packResult.digest) {
-				// Recovery skip.
+				// Recovery skip — already on registry with identical bytes.
 				yield* Effect.logInfo(
 					`[publish] ${t.registry}: ${packResult.name}@${packResult.version} already published with identical integrity (digest=${remoteDigest}); recovery skip`,
 				);
+
+				// Attest on the recovery branch too. A prior run that landed
+				// the publish may have failed BEFORE attestation could write
+				// to GitHub's artifact attestation store; re-running with the
+				// same subject digest is idempotent at the registry, and
+				// without it skipped-identical recoveries would emit a
+				// release with no SBOM/provenance attestation URLs.
+				const attestations = yield* runAttestationsForTarget(packageName, version, t, packResult.sha256Hex);
+
 				skippedIdenticalCount += 1;
 				results.push({
 					target: toLegacyTarget(t),
@@ -644,8 +661,10 @@ const publishDirectoryGroup = (
 					alreadyPublished: true,
 					alreadyPublishedReason: "identical",
 					recovery: { localDigest: packResult.digest, remoteDigest },
+					attestationUrl: attestations.attestationUrl,
+					sbomAttestationUrl: attestations.sbomAttestationUrl,
 					tarballPath: packResult.tarballPath,
-					tarballDigest: packResult.digest,
+					tarballDigest: `sha256:${packResult.sha256Hex}`,
 					packedSize: packResult.packedSize,
 					unpackedSize: packResult.unpackedSize,
 					fileCount: packResult.fileCount,
@@ -667,7 +686,7 @@ const publishDirectoryGroup = (
 				alreadyPublishedReason: "different",
 				recovery: { localDigest: packResult.digest, remoteDigest },
 				tarballPath: packResult.tarballPath,
-				tarballDigest: packResult.digest,
+				tarballDigest: `sha256:${packResult.sha256Hex}`,
 				packedSize: packResult.packedSize,
 				unpackedSize: packResult.unpackedSize,
 				fileCount: packResult.fileCount,
