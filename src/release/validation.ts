@@ -40,7 +40,7 @@ import type { ConfigSource } from "../utils/load-release-config.js";
 import { loadSBOMConfig } from "../utils/load-release-config.js";
 import { validateNTIACompliance } from "../utils/validate-ntia-compliance.js";
 import { ValidationError } from "./errors.js";
-import { resolvePublishableTargets } from "./resolve-targets.js";
+import { pickToken, resolvePublishableTargets } from "./resolve-targets.js";
 import type {
 	BuildSbom,
 	BuildTargetResult,
@@ -155,35 +155,6 @@ interface Build {
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
-
-/**
- * Classify a registry URL and return the resolved token for it.
- *
- * Resolution:
- *  - npm public registry  → resolved npm token from `Config` (Option)
- *  - GitHub Packages      → resolved GitHub Packages token from `ActionState` (Option)
- *  - Custom registries    → env var derived from the registry URL (unchanged)
- *
- * Returns `null` when no token is found (OIDC / first-time publish).
- */
-function pickToken(registry: string, npmToken: string | null, ghPkgsToken: string | null): string | null {
-	if (isNpmRegistry(registry)) {
-		return npmToken;
-	}
-	if (isGitHubPackagesRegistry(registry)) {
-		return ghPkgsToken;
-	}
-	// Custom registry: derive env var name from URL
-	// e.g. https://registry.example.com/ → REGISTRY_EXAMPLE_COM_TOKEN
-	const envName = registry
-		.replace(/^https?:\/\//, "")
-		.replace(/[^a-zA-Z0-9]/g, "_")
-		.toUpperCase()
-		.replace(/_+/g, "_")
-		.replace(/^_|_$/g, "")
-		.concat("_TOKEN");
-	return process.env[envName] ?? null;
-}
 
 /**
  * Resolve a publish target's directory to an absolute filesystem path.

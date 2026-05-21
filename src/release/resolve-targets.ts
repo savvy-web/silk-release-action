@@ -10,6 +10,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import { isGitHubPackagesRegistry, isNpmRegistry } from "@savvy-web/github-action-effects";
 import { Effect } from "effect";
 import type { PublishTarget, WorkspacePackage } from "workspaces-effect";
 import { PublishabilityDetector } from "workspaces-effect";
@@ -65,3 +66,40 @@ export const resolvePublishableTargets = (
 		const targets = yield* detector.detect(pkg, workspaceRoot);
 		return targets.filter((t) => !isTargetPrivate(isAbsolute(t.directory) ? t.directory : join(pkg.path, t.directory)));
 	});
+
+/**
+ * Resolve the auth token for a publish-target registry.
+ *
+ * Resolution:
+ *  - npm public registry  → the resolved npm token (from `Config` via caller)
+ *  - GitHub Packages      → the resolved GitHub Packages token (from `ActionState` via caller)
+ *  - Custom registries    → an env var derived from the registry URL
+ *
+ * Returns `null` when no token is found (OIDC / first-time publish).
+ *
+ * Shared by `publish.ts` and `validation.ts` so the token-selection rules stay
+ * in one place.
+ *
+ * @param registry - The target registry URL.
+ * @param npmToken - The resolved npm token, or `null`.
+ * @param ghPkgsToken - The resolved GitHub Packages token, or `null`.
+ * @returns The token for the registry, or `null` when none applies.
+ */
+export function pickToken(registry: string, npmToken: string | null, ghPkgsToken: string | null): string | null {
+	if (isNpmRegistry(registry)) {
+		return npmToken;
+	}
+	if (isGitHubPackagesRegistry(registry)) {
+		return ghPkgsToken;
+	}
+	// Custom registry: derive env var name from URL
+	// e.g. https://registry.example.com/ → REGISTRY_EXAMPLE_COM_TOKEN
+	const envName = registry
+		.replace(/^https?:\/\//, "")
+		.replace(/[^a-zA-Z0-9]/g, "_")
+		.toUpperCase()
+		.replace(/_+/g, "_")
+		.replace(/^_|_$/g, "")
+		.concat("_TOKEN");
+	return process.env[envName] ?? null;
+}

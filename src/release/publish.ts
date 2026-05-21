@@ -28,22 +28,19 @@ import {
 	GitHubCommit,
 	GitHubContent,
 	NpmRegistry,
-	OidcTokenIssuer,
 	PackagePublish,
 	PullRequest,
 	Sbom,
 	Step,
-	buildSLSAProvenancePredicate,
-	decodeJwtClaims,
-	isGitHubPackagesRegistry,
-	isNpmRegistry,
+	isJsrRegistry,
 } from "@savvy-web/github-action-effects";
-import { Config, Effect, Option, Redacted } from "effect";
+import { Config, Effect, Option } from "effect";
 import { PublishabilityDetector, TopologicalSorter, WorkspaceDiscovery, WorkspacePackage } from "workspaces-effect";
 
 import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
+import { buildProvenancePredicate } from "./attest-helpers.js";
 import { humanizeSize } from "./report.js";
-import { isTargetPrivate } from "./resolve-targets.js";
+import { isTargetPrivate, pickToken } from "./resolve-targets.js";
 import type { PackagePublishResult, PublishPackagesResult, TargetPublishResult } from "./types.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -96,35 +93,6 @@ interface TargetSpec {
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
-
-/**
- * Classify a registry URL and return the resolved token for it.
- *
- * Resolution:
- *  - npm public registry  → resolved npm token (from `Config` via caller)
- *  - GitHub Packages      → resolved GitHub Packages token (from `ActionState` via caller)
- *  - Custom registries    → env var derived from the registry URL (unchanged)
- *
- * Returns `null` when no token is found (OIDC / first-time publish).
- */
-function pickToken(registry: string, npmToken: string | null, ghPkgsToken: string | null): string | null {
-	if (isNpmRegistry(registry)) {
-		return npmToken;
-	}
-	if (isGitHubPackagesRegistry(registry)) {
-		return ghPkgsToken;
-	}
-	// Custom registry: derive env var name from URL
-	// e.g. https://registry.example.com/ → REGISTRY_EXAMPLE_COM_TOKEN
-	const envName = registry
-		.replace(/^https?:\/\//, "")
-		.replace(/[^a-zA-Z0-9]/g, "_")
-		.toUpperCase()
-		.replace(/_+/g, "_")
-		.replace(/^_|_$/g, "")
-		.concat("_TOKEN");
-	return process.env[envName] ?? null;
-}
 
 /**
  * Infer the semver bump type from old/new version strings.
@@ -314,34 +282,6 @@ const detectFromCommit = (): Effect.Effect<ReadonlyArray<DetectedRelease>, never
 	}).pipe(Effect.catchAll(() => Effect.succeed([] as ReadonlyArray<DetectedRelease>)));
 
 // ─── Per-target publish ───────────────────────────────────────────────────────
-
-/**
- * Build a SLSA provenance predicate from the GitHub Actions OIDC token.
- *
- * Ports the `runProvenanceAttestation` predicate construction from
- * `attest-runner.ts`: obtains an OIDC token, decodes the JWT claims, and
- * builds the SLSA predicate from those claims.
- *
- * Failures are caught and yield `null`; the caller falls back to logging a
- * warning so attestation failures remain non-fatal.
- */
-const buildProvenancePredicate = (): Effect.Effect<Record<string, unknown> | null, never, OidcTokenIssuer> =>
-	Effect.gen(function* () {
-		const issuer = yield* OidcTokenIssuer;
-		const oidcToken = yield* issuer.getToken("sigstore");
-		const claims = yield* decodeJwtClaims(Redacted.value(oidcToken));
-		const predicate = yield* buildSLSAProvenancePredicate(claims);
-		return predicate;
-	}).pipe(
-		Effect.catchAll((e: unknown) =>
-			Effect.gen(function* () {
-				yield* Effect.logWarning(
-					`Failed to build SLSA provenance predicate: ${e instanceof Error ? e.message : String(e)}`,
-				);
-				return null;
-			}),
-		),
-	);
 
 /** Build the legacy `ResolvedTarget` shape we carry on every `TargetPublishResult`. */
 const toLegacyTarget = (target: TargetSpec, protocol: "npm" | "jsr" = "npm") => ({
@@ -624,7 +564,7 @@ const publishDirectoryGroup = (
 			const jsrTargets: TargetSpec[] = [];
 			const npmTargets: TargetSpec[] = [];
 			for (const t of targetsInGroup) {
-				const isJsr = t.registry.toLowerCase().includes("jsr.io") || t.registry.toLowerCase().includes("jsr:");
+				const isJsr = isJsrRegistry(t.registry);
 				(isJsr ? jsrTargets : npmTargets).push(t);
 			}
 
@@ -1260,12 +1200,8 @@ export const runPublishTargets = (
 				),
 			);
 
-			const jsrTargets = publishTargets.filter(
-				(t) => t.registry.toLowerCase().includes("jsr.io") || t.registry.toLowerCase().includes("jsr:"),
-			);
-			const npmTargets = publishTargets.filter(
-				(t) => !t.registry.toLowerCase().includes("jsr.io") && !t.registry.toLowerCase().includes("jsr:"),
-			);
+			const jsrTargets = publishTargets.filter((t) => isJsrRegistry(t.registry));
+			const npmTargets = publishTargets.filter((t) => !isJsrRegistry(t.registry));
 
 			for (const t of jsrTargets) {
 				yield* Effect.logWarning(

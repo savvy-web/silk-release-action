@@ -23,6 +23,7 @@ import type {
 	GitHubClientError,
 	GitHubReleaseError,
 	GitTagError,
+	OidcTokenIssuer,
 	SigstoreSigner,
 } from "@savvy-web/github-action-effects";
 import {
@@ -32,16 +33,14 @@ import {
 	GitHubClient,
 	GitHubRelease,
 	GitTag,
-	OidcTokenIssuer,
 	Step,
-	buildSLSAProvenancePredicate,
-	decodeJwtClaims,
 	getRegistryDisplayName,
 	isGitHubPackagesRegistry,
 } from "@savvy-web/github-action-effects";
-import { Effect, Redacted } from "effect";
+import { Effect } from "effect";
 
 import { WorkspaceDiscovery } from "workspaces-effect";
+import { buildProvenancePredicate } from "./attest-helpers.js";
 import { ReleasesError } from "./errors.js";
 import { getPackagePageUrl } from "./report.js";
 import type { AssetInfo, PackagePublishResult, PublishPackagesResult, ReleaseInfo, TagInfo } from "./types.js";
@@ -169,11 +168,7 @@ function findApiDocFile(directory: string | undefined, packageName: string): str
  * path so CHANGELOG.md can be located.  Falls back to `process.cwd()` if
  * discovery fails (e.g. a deleted monorepo member).
  */
-const buildReleaseNotes = (
-	packages: PackagePublishResult[],
-	owner: string,
-	repo: string,
-): Effect.Effect<string, never, WorkspaceDiscovery> =>
+const buildReleaseNotes = (packages: PackagePublishResult[]): Effect.Effect<string, never, WorkspaceDiscovery> =>
 	Effect.gen(function* () {
 		const discovery = yield* WorkspaceDiscovery;
 		let notes = "";
@@ -236,37 +231,8 @@ const buildReleaseNotes = (
 			notes += `| ${registryName} | ${packageCell} | ${sbomCell} | ${apiCell} | ${provenanceCell} |\n`;
 		}
 
-		// Suppress unused-parameter lint warning for owner/repo — kept for future
-		// release-URL construction if the table format evolves.
-		void owner;
-		void repo;
-
 		return notes;
 	});
-
-/**
- * Build a SLSA Provenance v1 predicate from the runner's OIDC token.
- *
- * Returns `null` on failure so the caller can log and skip attestation rather
- * than fail the whole batch (mirrors the same helper in `publish.ts`).
- */
-const buildProvenancePredicate = (): Effect.Effect<Record<string, unknown> | null, never, OidcTokenIssuer> =>
-	Effect.gen(function* () {
-		const issuer = yield* OidcTokenIssuer;
-		const oidcToken = yield* issuer.getToken("sigstore");
-		const claims = yield* decodeJwtClaims(Redacted.value(oidcToken));
-		const predicate = yield* buildSLSAProvenancePredicate(claims);
-		return predicate;
-	}).pipe(
-		Effect.catchAll((e: unknown) =>
-			Effect.gen(function* () {
-				yield* Effect.logWarning(
-					`runReleases: failed to build SLSA provenance predicate: ${e instanceof Error ? e.message : String(e)}`,
-				);
-				return null;
-			}),
-		),
-	);
 
 /**
  * Create the artifact-metadata storage record that links an attestation to a
@@ -453,7 +419,7 @@ const processOneTag = (
 		);
 
 		// ── Step 2: Build release notes ───────────────────────────────────────────
-		const notes = yield* buildReleaseNotes(associatedPackages, owner, repo);
+		const notes = yield* buildReleaseNotes(associatedPackages);
 
 		// ── Step 3: Create GitHub release ─────────────────────────────────────────
 		const releaseSvc = yield* GitHubRelease;
@@ -495,11 +461,12 @@ const processOneTag = (
 			),
 		);
 
+		const assets: AssetInfo[] = [];
 		const releaseInfo: ReleaseInfo = {
 			tag: tag.name,
 			url: `https://github.com/${owner}/${repo}/releases/tag/${tag.name}`,
 			id: releaseData.id,
-			assets: [],
+			assets,
 		};
 
 		// Mutable release-notes string; updated after asset uploads to replace
@@ -581,7 +548,7 @@ const processOneTag = (
 				const digest = targetResult.tarballDigest ?? `sha256:${fileName}`;
 				const attestationUrl = yield* attestAsset(artifactPath, pkg.name, pkg.version, digest);
 
-				(releaseInfo.assets as AssetInfo[]).push({
+				assets.push({
 					name: fileName,
 					downloadUrl: assetUrl,
 					size: assetSize,
@@ -626,7 +593,7 @@ const processOneTag = (
 							yield* Effect.logDebug(`runReleases: uploaded SBOM ${sbomFileName} → ${sbomAsset.url}`);
 							sbomAssetUrls.set(pkg.name, sbomAsset.url);
 							existingAssetsByName.set(sbomFileName, { url: sbomAsset.url, size: sbomAsset.size });
-							(releaseInfo.assets as AssetInfo[]).push({
+							assets.push({
 								name: sbomFileName,
 								downloadUrl: sbomAsset.url,
 								size: sbomAsset.size,
@@ -665,7 +632,7 @@ const processOneTag = (
 							yield* Effect.logDebug(`runReleases: uploaded API doc ${apiDocFileName} → ${apiDocAsset.url}`);
 							apiDocAssetUrls.set(pkg.name, apiDocAsset.url);
 							existingAssetsByName.set(apiDocFileName, { url: apiDocAsset.url, size: apiDocAsset.size });
-							(releaseInfo.assets as AssetInfo[]).push({
+							assets.push({
 								name: apiDocFileName,
 								downloadUrl: apiDocAsset.url,
 								size: apiDocAsset.size,
@@ -805,10 +772,7 @@ export const runReleases = (
 
 				const [releaseInfo, error] = yield* logger.group(
 					`Release · ${tag.packageName}@${tag.version}`,
-					Step.withStep(
-						`Release · ${tag.packageName}@${tag.version}`,
-						processOneTag(tag, associatedPackages, owner, repo, headSha, args.dryRun),
-					),
+					processOneTag(tag, associatedPackages, owner, repo, headSha, args.dryRun),
 				);
 
 				if (error !== null) {

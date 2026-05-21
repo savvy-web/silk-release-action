@@ -75,6 +75,24 @@ inputs:
     required: false
     default: ""
 
+  strict-warnings:
+    description: |
+      When 'true', warning-severity validation findings escalate the per-step
+      and unified check-run conclusions from 'neutral' to 'failure', blocking
+      branch-protection-gated auto-merge. Errors always fail regardless.
+
+      Default 'false' preserves the existing semantics: warnings are advisory
+      (check-run conclusion 'neutral'), errors block.
+    required: false
+    default: "false"
+  sbom-config:
+    description: |
+      SBOM metadata configuration (JSON) for NTIA-compliant SBOM generation:
+      supplier, copyright, and related metadata under an "sbom" key. See the
+      root action.yml for the full schema. Can also be passed via the
+      SILK_RELEASE_SBOM_TEMPLATE environment variable; the input takes precedence.
+    required: false
+    default: ""
   # Custom registry authentication
   # NOTE: JSR uses OIDC trusted publishing - no tokens needed
   # NOTE: GitHub Packages uses the GitHub App token automatically

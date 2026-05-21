@@ -45,19 +45,10 @@ export class GithubPackagesTokenState extends Schema.Class<GithubPackagesTokenSt
 }) {}
 
 /**
- * Detected package manager (used by every command-running phase).
- * Written by `main.ts` Phase-0 boot.
- */
-export class PackageManagerState extends Schema.Class<PackageManagerState>("PackageManagerState")({
-	name: Schema.Literal("npm", "pnpm", "yarn", "bun"),
-}) {}
-
-/**
  * String constants for the keys used with `ActionState.save/get`. Centralised
  * here so a typo in one phase doesn't silently miss state from another.
  */
 export const STATE_KEYS = {
 	startTime: "startTime",
 	githubPackagesToken: "githubPackagesToken",
-	packageManager: "packageManager",
 } as const;
