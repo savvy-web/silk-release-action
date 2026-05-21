@@ -526,7 +526,10 @@ describe("buildValidationComment", () => {
 	});
 
 	it("links the release-notes section when a check-run url is given", () => {
-		const comment = buildValidationComment(validationOf({ checks: passingChecks }), {
+		// Release-notes preview renders only when the build passed AND there is
+		// at least one released package — supply one so we exercise the normal
+		// (non-degraded) path.
+		const comment = buildValidationComment(validationOf({ checks: passingChecks, publish: publishOf([pkg()]) }), {
 			releaseNotesUrl: "https://example.com/runs/9",
 		});
 		expect(comment).toContain("### 📋 Release Notes Preview");
@@ -534,9 +537,34 @@ describe("buildValidationComment", () => {
 	});
 
 	it("renders a release-notes placeholder when no check-run url is given", () => {
-		const comment = buildValidationComment(validationOf({ checks: passingChecks }));
+		const comment = buildValidationComment(validationOf({ checks: passingChecks, publish: publishOf([pkg()]) }));
 		expect(comment).toContain("### 📋 Release Notes Preview");
 		expect(comment).toContain("Release notes will be generated on merge");
+	});
+
+	it("replaces the publish summary with a build-failed notice when the build did not pass", () => {
+		const comment = buildValidationComment(
+			validationOf({
+				buildValidation: { passed: false, packageCount: 0 },
+				findings: [
+					{ severity: "error", check: "Build Validation", scope: null, message: "Command exited with code 1" },
+				],
+			}),
+		);
+		expect(comment).toContain("Build validation failed");
+		expect(comment).toContain("no release preview is available");
+		// The empty summary table + zero-byte totals must NOT appear.
+		expect(comment).not.toContain("On merge, these packages publish:");
+		expect(comment).not.toContain("0 B packed");
+		// The meaningless release-notes link is suppressed too.
+		expect(comment).not.toContain("📋 Release Notes Preview");
+	});
+
+	it("replaces the publish summary with a no-version-diffs notice when zero packages are released", () => {
+		const comment = buildValidationComment(validationOf({ checks: passingChecks, publish: publishOf([]) }));
+		expect(comment).toContain("No packages have version differences");
+		expect(comment).not.toContain("On merge, these packages publish:");
+		expect(comment).not.toContain("📋 Release Notes Preview");
 	});
 
 	it("includes the dry-run banner when dryRun is true", () => {

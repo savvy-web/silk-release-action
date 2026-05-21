@@ -495,16 +495,36 @@ export function buildValidationComment(validation: ValidationPayload, options?: 
 		parts.push(findingsTable);
 	}
 
-	// `buildPublishSummary` always emits a non-empty section (it always renders
-	// the "What will be released" heading), so it is pushed unconditionally.
-	parts.push(buildPublishSummary(validation.publish, { dryRun }));
+	// "What will be released" — degrade to a single explanatory line when
+	// there is nothing to preview. An empty summary table with 0-byte totals
+	// and a release-notes link reads like a successful-but-empty release,
+	// which is misleading in the two cases where validation produced no
+	// publishable packages: a failed build (validation aborted before it
+	// could resolve targets) or a release branch with no version diffs.
+	const publishTitle = `## \u{1F680} What will be released${dryRun ? " \u{1F9EA} (Dry Run)" : ""}`;
+	if (!validation.buildValidation.passed) {
+		parts.push(
+			`${publishTitle}\n\n` +
+				"⚠️ **Build validation failed** — no release preview is available. " +
+				"Fix the build errors flagged above; the preview regenerates once the build passes.",
+		);
+	} else if (validation.publish.packages.length === 0) {
+		parts.push(
+			`${publishTitle}\n\n` +
+				"_No packages have version differences against the target branch — nothing will be published or released on merge._",
+		);
+	} else {
+		parts.push(buildPublishSummary(validation.publish, { dryRun }));
 
-	const releaseNotesUrl = options?.releaseNotesUrl;
-	const releaseNotes =
-		releaseNotesUrl !== undefined && releaseNotesUrl !== ""
-			? `### \u{1F4CB} Release Notes Preview\n\n${GithubMarkdown.link("View detailed release notes →", releaseNotesUrl)}`
-			: "### \u{1F4CB} Release Notes Preview\n\n_Release notes will be generated on merge._";
-	parts.push(releaseNotes);
+		// Release-notes preview is only meaningful when something is being
+		// released; suppressed alongside the degraded states above.
+		const releaseNotesUrl = options?.releaseNotesUrl;
+		const releaseNotes =
+			releaseNotesUrl !== undefined && releaseNotesUrl !== ""
+				? `### \u{1F4CB} Release Notes Preview\n\n${GithubMarkdown.link("View detailed release notes →", releaseNotesUrl)}`
+				: "### \u{1F4CB} Release Notes Preview\n\n_Release notes will be generated on merge._";
+		parts.push(releaseNotes);
+	}
 
 	const now = options?.now ?? new Date();
 	parts.push(`---\n\n<sub>Updated at ${now.toISOString()}</sub>`);
