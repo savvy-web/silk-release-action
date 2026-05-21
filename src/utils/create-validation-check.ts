@@ -1,128 +1,105 @@
-import { endGroup, getState, info, startGroup } from "@actions/core";
-import { context, getOctokit } from "@actions/github";
+/**
+ * Phase 2 utility: aggregate per-step validation results into a single
+ * unified Check Run.
+ */
+
+import type { ActionEnvironmentError, ActionOutputError, CheckRunError } from "@savvy-web/github-action-effects";
+import { ActionEnvironment, ActionOutputs, CheckRun } from "@savvy-web/github-action-effects";
+import { Effect } from "effect";
 import type { ValidationResult } from "../types/shared-types.js";
 import { summaryWriter } from "./summary-writer.js";
 
-/**
- * Unified validation check result
- */
-interface UnifiedValidationResult {
-	/** Whether all validations passed */
+export interface UnifiedValidationResult {
 	success: boolean;
-	/** Individual validation results */
 	validations: ValidationResult[];
-	/** GitHub check run ID */
 	checkId: number;
+	/** Web URL of the unified validation check run, for the checks-table links. */
+	htmlUrl: string;
 }
 
 /**
- * Creates a unified validation check that aggregates multiple validation results
+ * Create the unified validation check.
  *
- * @param validations - Array of validation results to aggregate
- * @param dryRun - Whether this is a dry-run
- * @returns Unified validation result
+ * @param validations - Per-step validation results that drive the checks
+ *   table and overall conclusion.
+ * @param dryRun - Whether this is a dry-run (changes the check-run title).
+ * @param extraBody - Optional markdown appended to the check-run summary
+ *   after the checks-table content. Used to surface the full structured
+ *   `result` JSON in the check-run page; the job-step summary is not
+ *   modified.
  *
- * @remarks
- * This function:
- * 1. Aggregates results from multiple validation checks
- * 2. Creates a single unified check run with all results
- * 3. Determines overall success (all checks must pass)
- * 4. Generates a comprehensive summary table
- * 5. Returns unified result with check ID
+ * @public
  */
-export async function createValidationCheck(
-	validations: ValidationResult[],
+export const createValidationCheck = (
+	validations: ReadonlyArray<ValidationResult>,
 	dryRun: boolean,
-): Promise<UnifiedValidationResult> {
-	const token = getState("token");
-	if (!token) {
-		throw new Error("No token available from state - ensure pre.ts ran successfully");
-	}
-	const github = getOctokit(token);
-	startGroup("Creating unified validation check");
+	extraBody?: string,
+): Effect.Effect<
+	UnifiedValidationResult,
+	ActionEnvironmentError | ActionOutputError | CheckRunError,
+	ActionEnvironment | ActionOutputs | CheckRun
+> =>
+	Effect.gen(function* () {
+		const env = yield* ActionEnvironment;
+		const outputs = yield* ActionOutputs;
+		const checks = yield* CheckRun;
 
-	// Determine overall success
-	const success = validations.every((v) => v.success);
-	const failedChecks = validations.filter((v) => !v.success);
+		const { sha } = yield* env.github;
 
-	info(`Processed ${validations.length} validation check(s)`);
-	info(`Passed: ${validations.length - failedChecks.length}, Failed: ${failedChecks.length}`);
+		const success = validations.every((v) => v.success);
+		const failedChecks = validations.filter((v) => !v.success);
 
-	endGroup();
+		yield* Effect.logInfo(`Processed ${validations.length} validation check(s)`);
+		yield* Effect.logInfo(`Passed: ${validations.length - failedChecks.length}, Failed: ${failedChecks.length}`);
 
-	// Create GitHub check run
-	const checkTitle = dryRun ? "🧪 Release Validation Summary (Dry Run)" : "Release Validation Summary";
-	const checkSummary = success
-		? `All ${validations.length} validation(s) passed`
-		: `${failedChecks.length} of ${validations.length} validation(s) failed`;
+		const checkTitle = dryRun ? "🧪 Release Validation Summary (Dry Run)" : "Release Validation Summary";
+		const checkSummary = success
+			? `All ${validations.length} validation(s) passed`
+			: `${failedChecks.length} of ${validations.length} validation(s) failed`;
 
-	// Build check details using summaryWriter (markdown, not HTML)
-	const resultsTable = summaryWriter.table(
-		["Check", "Status", "Details"],
-		validations.map((v) => {
-			const status = v.success ? "✅ Passed" : "❌ Failed";
-			const details = v.message || (v.success ? "All checks passed" : "Validation failed");
-			return [v.name, status, details];
-		}),
-	);
+		const resultsTable = summaryWriter.table(
+			["Check", "Status", "Details"],
+			validations.map((v) => {
+				const status = v.success ? "✅ Passed" : "❌ Failed";
+				const details = v.message ?? (v.success ? "All checks passed" : "Validation failed");
+				return [v.name, status, details];
+			}),
+		);
 
-	const checkSections: Array<{ heading?: string; level?: 2 | 3; content: string }> = [
-		{ heading: "Validation Results", content: resultsTable },
-	];
+		const sections: Array<{ heading?: string; level?: 2 | 3; content: string }> = [
+			{ heading: "Validation Results", content: resultsTable },
+		];
+		if (failedChecks.length > 0) {
+			sections.push({
+				heading: "Failed Validations",
+				level: 3,
+				content: summaryWriter.list(failedChecks.map((v) => `**${v.name}**: ${v.message ?? "Validation failed"}`)),
+			});
+		}
+		const baseDetails = summaryWriter.build(sections);
+		// Append the optional `extraBody` after the checks-table content. The
+		// job-step summary is intentionally left without the extra body so the
+		// terse job summary stays focused on the per-step results table.
+		const checkDetails = extraBody !== undefined && extraBody !== "" ? `${baseDetails}\n${extraBody}` : baseDetails;
 
-	if (failedChecks.length > 0) {
-		checkSections.push({
-			heading: "Failed Validations",
-			level: 3,
-			content: summaryWriter.list(failedChecks.map((v) => `**${v.name}**: ${v.message || "Validation failed"}`)),
-		});
-	}
-
-	const checkDetails = summaryWriter.build(checkSections);
-
-	const { data: checkRun } = await github.rest.checks.create({
-		owner: context.repo.owner,
-		repo: context.repo.repo,
-		name: checkTitle,
-		head_sha: context.sha,
-		status: "completed",
-		conclusion: success ? "success" : "failure",
-		output: {
+		const { id: checkId, htmlUrl } = yield* checks.create(checkTitle, sha);
+		yield* checks.complete(checkId, success ? "success" : "failure", {
 			title: checkSummary,
 			summary: checkDetails,
-		},
-	});
-
-	info(`Created unified check run: ${checkRun.html_url}`);
-
-	// Write job summary using summaryWriter (markdown, not HTML)
-	const jobResultsTable = summaryWriter.table(
-		["Check", "Status", "Details"],
-		validations.map((v) => {
-			const status = v.success ? "✅ Passed" : "❌ Failed";
-			const details = v.message || (v.success ? "All checks passed" : "Validation failed");
-			return [v.name, status, details];
-		}),
-	);
-
-	const jobSections: Array<{ heading?: string; level?: 2 | 3; content: string }> = [
-		{ heading: checkTitle, content: checkSummary },
-		{ heading: "Validation Results", level: 3, content: jobResultsTable },
-	];
-
-	if (failedChecks.length > 0) {
-		jobSections.push({
-			heading: "Failed Validations",
-			level: 3,
-			content: summaryWriter.list(failedChecks.map((v) => `**${v.name}**: ${v.message || "Validation failed"}`)),
 		});
-	}
 
-	await summaryWriter.write(summaryWriter.build(jobSections));
+		const jobSections: Array<{ heading?: string; level?: 2 | 3; content: string }> = [
+			{ heading: checkTitle, content: checkSummary },
+			{ heading: "Validation Results", level: 3, content: resultsTable },
+		];
+		if (failedChecks.length > 0) {
+			jobSections.push({
+				heading: "Failed Validations",
+				level: 3,
+				content: summaryWriter.list(failedChecks.map((v) => `**${v.name}**: ${v.message ?? "Validation failed"}`)),
+			});
+		}
+		yield* outputs.summary(summaryWriter.build(jobSections));
 
-	return {
-		success,
-		validations,
-		checkId: checkRun.id,
-	};
-}
+		return { success, validations: [...validations], checkId, htmlUrl };
+	});

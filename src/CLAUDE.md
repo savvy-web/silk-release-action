@@ -2,9 +2,9 @@
 
 Source code architecture and coding patterns for workflow-release-action.
 
-**See also:** [Root CLAUDE.md](../CLAUDE.md) | [**tests**/CLAUDE.md](../__tests__/CLAUDE.md)
+**See also:** [Root CLAUDE.md](../CLAUDE.md) | [**test**/CLAUDE.md](../__test__/CLAUDE.md)
 
-**For full architecture documentation:** `@../.claude/design/release-action/architecture.md` -- covers all entry points, phase detection, module dependency graph, and shared infrastructure (45 source files documented).
+**For full architecture documentation:** `@../.claude/design/release-action/architecture.md` -- covers all entry points, phase detection, module dependency graph, shared infrastructure, Attest service, Schema layer, and token plumbing.
 
 **For integration/publishing details:** `@../.claude/design/release-action/integration.md` -- covers registry infrastructure, SBOM generation, and publish summaries.
 
@@ -12,9 +12,12 @@ Source code architecture and coding patterns for workflow-release-action.
 
 TypeScript action implementing a three-phase release workflow using changesets:
 
-- **Entry points** -- `main.ts` (phase routing, 1,043L), `pre.ts` (token setup, 79L), `post.ts` (cleanup, 50L)
+- **Entry points** -- `main.ts` (phase routing), `pre.ts` (App token provisioning via `GitHubToken.provision()`), `post.ts` (cleanup/revocation via `GitHubToken.dispose()`), `state.ts` (shared action state)
+- **Release module** -- `release/` (phase orchestration): `publish.ts` (Phase-3 publish chain), `releases.ts` (GitHub releases), `validation.ts` (Phase-2 validation), `report.ts` (comment/summary renderers), `publishability.ts` (silkDetect logic), `changeset-config.ts` (ChangesetConfig service), `types.ts`, `layers.ts`, `errors.ts`, `resolve-targets.ts`; co-located `*.test.ts` for each module
+- **Schema** -- `schema/release-output.ts` (`ReleaseOutput` union), `schema/projections.ts` (scalar output projections), `schema/silk-release-config.ts` (`SilkReleaseConfig` for sbom-config input); JSON Schema artifacts at repo root
 - **Utility modules** -- `utils/*.ts` for individual operations
 - **Type definitions** -- `types/*.ts` for shared interfaces
+- **Attest/Sbom services** -- moved to `@savvy-web/github-action-effects@^1.2.0`; no longer in this repo
 
 ## Coding Standards
 
@@ -33,15 +36,7 @@ TypeScript action implementing a three-phase release workflow using changesets:
 
 ### GitHub API
 
-Get Octokit from `@actions/github`:
-
-```typescript
-const token = core.getInput("token", { required: true });
-const github = getOctokit(token);
-const { owner, repo } = context.repo;
-```
-
-Use check runs for CI feedback, `core.summary` for rich output.
+Obtain the Octokit client via `GitHubToken.client()` (from `@savvy-web/github-action-effects`) in the Effect layer — do not call `core.getInput("token")` directly. Use `context.repo` for `owner`/`repo`. Use check runs for CI feedback, `core.summary` for rich output.
 
 ### Exec Patterns
 

@@ -1,8 +1,8 @@
 # workflow-release-action
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: MIT](https://img.shields.io/badge/License-MIT-4caf50.svg)](https://opensource.org/licenses/MIT)
 
-Automated release management for GitHub repositories using changesets. Handles the full release lifecycle -- detecting changes, creating release PRs, validating builds, publishing to multiple registries, and creating GitHub releases -- in a single action.
+Automated release management for GitHub repositories using changesets. Handles the full release lifecycle — detecting changes, creating release PRs, validating builds, publishing to multiple registries, and creating GitHub releases — in a single action.
 
 ## Features
 
@@ -12,16 +12,16 @@ Automated release management for GitHub repositories using changesets. Handles t
 - Build validation and dry-run publish checks before releasing
 - SBOM generation and artifact attestation for supply chain security
 
-## Installation
+## Install
 
 ```yaml
 - uses: savvy-web/workflow-release-action@main
   with:
-    app-id: ${{ secrets.APP_ID }}
-    private-key: ${{ secrets.APP_PRIVATE_KEY }}
+    app-client-id: ${{ vars.APP_CLIENT_ID }}
+    app-private-key: ${{ secrets.APP_PRIVATE_KEY }}
 ```
 
-## Quick Start
+## Quick start
 
 ```yaml
 name: Release
@@ -46,14 +46,17 @@ jobs:
     steps:
       - uses: savvy-web/workflow-release-action@main
         with:
-          app-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          app-client-id: ${{ vars.APP_CLIENT_ID }}
+          app-private-key: ${{ secrets.APP_PRIVATE_KEY }}
 ```
 
 ## Documentation
 
-For detailed configuration, inputs/outputs reference, authentication setup, examples, and advanced usage, see [docs/](./docs/).
+- [Getting started](./docs/01-getting-started.md) — Installation, prerequisites, and first workflow setup
+- [How it works](./docs/02-how-it-works.md) — The three-phase release lifecycle explained
+- [Configuration reference](./docs/03-configuration.md) — All inputs, outputs, and authentication options
+- [Troubleshooting](./docs/04-troubleshooting.md) — Common issues and solutions
 
 ## License
 
-MIT
+[MIT](LICENSE)

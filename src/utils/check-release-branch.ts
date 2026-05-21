@@ -1,158 +1,135 @@
-import { getState, info, warning } from "@actions/core";
-import { context, getOctokit } from "@actions/github";
+/**
+ * Check whether the release branch exists and has an open PR.
+ *
+ * @remarks
+ * Uses `GitBranch.exists` and `PullRequest.list` to gather the two facts
+ * Phase 1 needs to decide between creating or updating the release branch.
+ * Emits a Check Run for PR feedback.
+ */
+
+import type {
+	ActionEnvironmentError,
+	ActionOutputError,
+	CheckRunError,
+	GitBranchError,
+	PullRequestError,
+} from "@savvy-web/github-action-effects";
+import { ActionEnvironment, ActionOutputs, CheckRun, GitBranch, PullRequest } from "@savvy-web/github-action-effects";
+import { Effect } from "effect";
 import { summaryWriter } from "./summary-writer.js";
 
-/**
- * Release branch check result
- */
-interface ReleaseBranchCheckResult {
-	/** Whether the release branch exists */
+/** Result of checking the release branch state. */
+export interface ReleaseBranchCheckResult {
 	exists: boolean;
-	/** Whether there's an open PR to main */
 	hasOpenPr: boolean;
-	/** PR number if open PR exists */
 	prNumber: number | null;
-	/** GitHub check run ID */
 	checkId: number;
 }
 
 /**
- * Checks if the release branch exists and has an open PR
+ * Check the release-branch state and report it.
  *
- * @param releaseBranch - Release branch name (default: changeset-release/main)
- * @param targetBranch - Target branch for PR (default: main)
- * @param dryRun - Whether this is a dry-run
- * @returns Release branch check result
- *
- * @remarks
- * This function:
- * 1. Checks if the release branch exists in the repository
- * 2. Searches for an open PR from release branch to target branch
- * 3. Creates a GitHub check run to report findings
- * 4. Returns branch status and PR information
+ * @param releaseBranch - Release branch name (e.g. `changeset-release/main`)
+ * @param targetBranch - Target branch the release PR targets (e.g. `main`)
+ * @param dryRun - When true, prefixes the Check Run title with `🧪 Dry Run`
  */
-export async function checkReleaseBranch(
+export const checkReleaseBranch = (
 	releaseBranch: string,
 	targetBranch: string,
 	dryRun: boolean,
-): Promise<ReleaseBranchCheckResult> {
-	// Check if branch exists
-	let branchExists = false;
+): Effect.Effect<
+	ReleaseBranchCheckResult,
+	ActionEnvironmentError | ActionOutputError | CheckRunError | GitBranchError | PullRequestError,
+	ActionEnvironment | ActionOutputs | CheckRun | GitBranch | PullRequest
+> =>
+	Effect.gen(function* () {
+		const env = yield* ActionEnvironment;
+		const outputs = yield* ActionOutputs;
+		const checks = yield* CheckRun;
+		const branches = yield* GitBranch;
+		const prs = yield* PullRequest;
 
-	const token = getState("token");
-	if (!token) {
-		throw new Error("No token available from state - ensure pre.ts ran successfully");
-	}
-	const github = getOctokit(token);
+		const { sha, repository } = yield* env.github;
+		const [owner] = repository.split("/");
 
-	try {
-		await github.rest.repos.getBranch({
-			owner: context.repo.owner,
-			repo: context.repo.repo,
-			branch: releaseBranch,
-		});
-		branchExists = true;
-		info(`✓ Release branch '${releaseBranch}' exists`);
-	} catch (error) {
-		if ((error as { status?: number }).status === 404) {
-			info(`Release branch '${releaseBranch}' does not exist`);
+		// 1. Does the branch exist?
+		const branchExists = yield* branches.exists(releaseBranch).pipe(
+			Effect.catchAll((e) =>
+				Effect.gen(function* () {
+					yield* Effect.logWarning(`Failed to check if branch '${releaseBranch}' exists: ${e.reason}`);
+					return false;
+				}),
+			),
+		);
+
+		if (branchExists) {
+			yield* Effect.logInfo(`✓ Release branch '${releaseBranch}' exists`);
 		} else {
-			warning(
-				`Failed to check if branch '${releaseBranch}' exists: ${error instanceof Error ? error.message : String(error)}`,
+			yield* Effect.logInfo(`Release branch '${releaseBranch}' does not exist`);
+		}
+
+		// 2. Is there an open PR?
+		let hasOpenPr = false;
+		let prNumber: number | null = null;
+		if (branchExists) {
+			const found = yield* prs.list({ state: "open", head: `${owner}:${releaseBranch}`, base: targetBranch }).pipe(
+				Effect.catchAll((e) =>
+					Effect.gen(function* () {
+						yield* Effect.logWarning(`Failed to check for open PRs: ${e.reason}`);
+						return [] as ReadonlyArray<{ number: number; url: string }>;
+					}),
+				),
 			);
-		}
-	}
-
-	// Check for open PR
-	let hasOpenPr = false;
-	let prNumber: number | null = null;
-
-	if (branchExists) {
-		try {
-			const { data: prs } = await github.rest.pulls.list({
-				owner: context.repo.owner,
-				repo: context.repo.repo,
-				state: "open",
-				head: `${context.repo.owner}:${releaseBranch}`,
-				base: targetBranch,
-			});
-
-			if (prs.length > 0) {
+			if (found.length > 0) {
 				hasOpenPr = true;
-				prNumber = prs[0].number;
-				info(`✓ Open PR found: #${prNumber} (${prs[0].html_url})`);
+				prNumber = found[0].number;
+				yield* Effect.logInfo(`✓ Open PR found: #${prNumber} (${found[0].url})`);
 			} else {
-				info(`No open PR found from '${releaseBranch}' to '${targetBranch}'`);
+				yield* Effect.logInfo(`No open PR found from '${releaseBranch}' to '${targetBranch}'`);
 			}
-		} catch (error) {
-			warning(`Failed to check for open PRs: ${error instanceof Error ? error.message : String(error)}`);
 		}
-	}
 
-	// Create GitHub check run
-	const checkTitle = dryRun ? "🧪 Check Release Branch (Dry Run)" : "Check Release Branch";
-	const checkSummary = branchExists
-		? hasOpenPr
-			? `Release branch exists with open PR #${prNumber}`
-			: `Release branch exists without open PR`
-		: `Release branch does not exist`;
+		// 3. Build summary content.
+		const checkTitle = dryRun ? "🧪 Check Release Branch (Dry Run)" : "Check Release Branch";
+		const checkSummary = branchExists
+			? hasOpenPr
+				? `Release branch exists with open PR #${prNumber}`
+				: "Release branch exists without open PR"
+			: "Release branch does not exist";
 
-	// Build check details using summaryWriter (markdown, not HTML)
-	const statusTable = summaryWriter.keyValueTable([
-		{ key: "Branch", value: `\`${releaseBranch}\`` },
-		{ key: "Target", value: `\`${targetBranch}\`` },
-		{ key: "Exists", value: branchExists ? "✅ Yes" : "❌ No" },
-		{ key: "Open PR", value: hasOpenPr ? `✅ Yes (#${prNumber})` : "❌ No" },
-	]);
+		const statusTable = summaryWriter.keyValueTable([
+			{ key: "Branch", value: `\`${releaseBranch}\`` },
+			{ key: "Target", value: `\`${targetBranch}\`` },
+			{ key: "Exists", value: branchExists ? "✅ Yes" : "❌ No" },
+			{ key: "Open PR", value: hasOpenPr ? `✅ Yes (#${prNumber})` : "❌ No" },
+		]);
 
-	let nextSteps: string;
-	if (hasOpenPr) {
-		nextSteps = `An open release PR already exists. The workflow will update it with the latest changes from \`${targetBranch}\`.`;
-	} else if (branchExists) {
-		nextSteps = "The release branch exists but has no open PR. A new PR will be created.";
-	} else {
-		nextSteps = "No release branch exists. A new branch and PR will be created.";
-	}
+		const nextSteps = hasOpenPr
+			? `An open release PR already exists. The workflow will update it with the latest changes from \`${targetBranch}\`.`
+			: branchExists
+				? "The release branch exists but has no open PR. A new PR will be created."
+				: "No release branch exists. A new branch and PR will be created.";
 
-	const checkDetails = summaryWriter.build([
-		{ heading: "Release Branch Status", content: statusTable },
-		{ heading: "Next Steps", level: 3, content: nextSteps },
-	]);
+		const checkDetails = summaryWriter.build([
+			{ heading: "Release Branch Status", content: statusTable },
+			{ heading: "Next Steps", level: 3, content: nextSteps },
+		]);
 
-	const { data: checkRun } = await github.rest.checks.create({
-		owner: context.repo.owner,
-		repo: context.repo.repo,
-		name: checkTitle,
-		head_sha: context.sha,
-		status: "completed",
-		conclusion: "success",
-		output: {
-			title: checkSummary,
-			summary: checkDetails,
-		},
+		const { id: checkId } = yield* checks.create(checkTitle, sha);
+		yield* checks.complete(checkId, "success", { title: checkSummary, summary: checkDetails });
+
+		// 4. Job summary.
+		yield* outputs.summary(
+			summaryWriter.build([
+				{ heading: checkTitle, content: checkSummary },
+				{ heading: "Release Branch Status", level: 3, content: statusTable },
+			]),
+		);
+
+		return {
+			exists: branchExists,
+			hasOpenPr,
+			prNumber,
+			checkId,
+		} satisfies ReleaseBranchCheckResult;
 	});
-
-	info(`Created check run: ${checkRun.html_url}`);
-
-	// Write job summary using summaryWriter (markdown, not HTML)
-	const jobStatusTable = summaryWriter.keyValueTable([
-		{ key: "Branch", value: `\`${releaseBranch}\`` },
-		{ key: "Target", value: `\`${targetBranch}\`` },
-		{ key: "Exists", value: branchExists ? "✅ Yes" : "❌ No" },
-		{ key: "Open PR", value: hasOpenPr ? `✅ Yes (#${prNumber})` : "❌ No" },
-	]);
-
-	const jobSummary = summaryWriter.build([
-		{ heading: checkTitle, content: checkSummary },
-		{ heading: "Release Branch Status", level: 3, content: jobStatusTable },
-	]);
-
-	await summaryWriter.write(jobSummary);
-
-	return {
-		exists: branchExists,
-		hasOpenPr,
-		prNumber,
-		checkId: checkRun.id,
-	};
-}

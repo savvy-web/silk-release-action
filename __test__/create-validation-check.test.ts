@@ -1,152 +1,176 @@
-import * as core from "@actions/core";
-import { context, getOctokit } from "@actions/github";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+/**
+ * Fixture tests for the `createValidationCheck` utility.
+ *
+ * @remarks
+ * Drives `createValidationCheck` against the library's
+ * `ActionEnvironmentTest` / `ActionOutputsTest` / `CheckRunTest` layers and
+ * asserts on the recorded check-run output. The optional `extraBody`
+ * parameter is the focus: when supplied (e.g. the full structured
+ * `result` JSON for the unified Release Validation Summary), the
+ * check-run summary content must contain the provided block verbatim,
+ * but the job-step summary must not.
+ */
+
+import type { ActionOutputsTestState, CheckRunTestState } from "@savvy-web/github-action-effects/testing";
+import { ActionEnvironmentTest, ActionOutputsTest, CheckRunTest } from "@savvy-web/github-action-effects/testing";
+import { Effect, Layer, Logger } from "effect";
+import { describe, expect, it } from "vitest";
 import type { ValidationResult } from "../src/types/shared-types.js";
+import type { UnifiedValidationResult } from "../src/utils/create-validation-check.js";
 import { createValidationCheck } from "../src/utils/create-validation-check.js";
-import { cleanupTestEnvironment, createMockOctokit, setupTestEnvironment } from "./utils/github-mocks.js";
-import type { MockOctokit } from "./utils/test-types.js";
 
-// Mock modules
-vi.mock("@actions/core");
-vi.mock("@actions/github");
+interface Fixtures {
+	outputsState: ActionOutputsTestState;
+	checkRunState: CheckRunTestState;
+}
 
-describe("create-validation-check", () => {
-	let mockOctokit: MockOctokit;
+const makeFixtures = (): Fixtures => ({
+	outputsState: ActionOutputsTest.empty(),
+	checkRunState: CheckRunTest.empty(),
+});
 
-	beforeEach(() => {
-		setupTestEnvironment({ suppressOutput: true });
+const runStage = (
+	validations: ReadonlyArray<ValidationResult>,
+	dryRun: boolean,
+	f: Fixtures,
+	extraBody?: string,
+): Promise<UnifiedValidationResult> => {
+	const layer = Layer.mergeAll(
+		ActionEnvironmentTest.layer({
+			GITHUB_SHA: "abc123",
+			GITHUB_REF: "refs/heads/main",
+			GITHUB_REPOSITORY: "owner/repo",
+			GITHUB_REPOSITORY_OWNER: "owner",
+			GITHUB_WORKSPACE: "/workspace",
+			GITHUB_EVENT_NAME: "push",
+			GITHUB_EVENT_PATH: "/dev/null",
+			GITHUB_RUN_ID: "1",
+			GITHUB_RUN_NUMBER: "1",
+			GITHUB_ACTOR: "test",
+			GITHUB_SERVER_URL: "https://github.com",
+			GITHUB_API_URL: "https://api.github.com",
+		}),
+		ActionOutputsTest.layer(f.outputsState),
+		CheckRunTest.layer(f.checkRunState),
+	);
+	return Effect.runPromise(
+		createValidationCheck(validations, dryRun, extraBody).pipe(
+			Effect.provide(layer),
+			Effect.provide(Logger.replace(Logger.defaultLogger, Logger.none)),
+		),
+	);
+};
 
-		// Setup core.getState to return token
-		vi.mocked(core.getState).mockReturnValue("test-token");
+const passingValidations: ReadonlyArray<ValidationResult> = [
+	{ name: "Link Issues from Commits", success: true, checkId: 0, message: "0 issue(s) linked" },
+	{ name: "Build Validation", success: true, checkId: 0, message: "Build passed" },
+];
 
-		vi.mocked(core.getInput).mockImplementation((name: string) => {
-			if (name === "token") return "test-token";
-			return "";
-		});
+const mixedValidations: ReadonlyArray<ValidationResult> = [
+	{ name: "Build Validation", success: true, checkId: 0, message: "Build passed" },
+	{ name: "Publish Validation", success: false, checkId: 0, message: "Registry probe failed" },
+];
 
-		// Mock core.summary
-		const mockSummary = {
-			addHeading: vi.fn().mockReturnThis(),
-			addEOL: vi.fn().mockReturnThis(),
-			addTable: vi.fn().mockReturnThis(),
-			addRaw: vi.fn().mockReturnThis(),
-			write: vi.fn().mockResolvedValue(undefined),
-			stringify: vi.fn().mockReturnValue(""),
+describe("createValidationCheck", () => {
+	it("creates a completed check run with the per-step results table when no extraBody is supplied", async () => {
+		const f = makeFixtures();
+
+		const result = await runStage(passingValidations, false, f);
+
+		expect(result.success).toBe(true);
+		expect(f.checkRunState.runs).toHaveLength(1);
+		const run = f.checkRunState.runs[0];
+		expect(run.name).toBe("Release Validation Summary");
+		expect(run.status).toBe("completed");
+		expect(run.conclusion).toBe("success");
+		expect(run.outputs).toHaveLength(1);
+		const summary = run.outputs[0].summary;
+		// The default body carries the results-table heading rendered by
+		// `summaryWriter.build` and contains each validation's name.
+		expect(summary).toContain("Validation Results");
+		expect(summary).toContain("Link Issues from Commits");
+		expect(summary).toContain("Build Validation");
+		// No `<details>` collapsed block when extraBody is omitted.
+		expect(summary).not.toContain("<details>");
+	});
+
+	it("uses the dry-run title when dryRun=true", async () => {
+		const f = makeFixtures();
+
+		await runStage(passingValidations, true, f);
+
+		expect(f.checkRunState.runs[0].name).toBe("🧪 Release Validation Summary (Dry Run)");
+	});
+
+	it("appends the supplied extraBody to the check-run summary after the checks-table content", async () => {
+		const f = makeFixtures();
+		const validationOutput = {
+			$schema:
+				"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/silk-release-action.output.schema.json",
+			schemaVersion: "1",
+			phase: "validation",
 		};
-		Object.defineProperty(core, "summary", { value: mockSummary, writable: true });
+		const jsonBlock = [
+			"",
+			"<details>",
+			"<summary>📦 Full structured output (<code>result</code> action output)</summary>",
+			"",
+			"```json",
+			JSON.stringify(validationOutput, null, 2),
+			"```",
+			"",
+			"</details>",
+		].join("\n");
 
-		mockOctokit = createMockOctokit();
-		vi.mocked(getOctokit).mockReturnValue(mockOctokit as unknown as ReturnType<typeof getOctokit>);
-		Object.defineProperty(vi.mocked(context), "repo", {
-			value: { owner: "test-owner", repo: "test-repo" },
-			writable: true,
-		});
-		Object.defineProperty(vi.mocked(context), "sha", { value: "abc123", writable: true });
+		await runStage(passingValidations, false, f, jsonBlock);
+
+		const run = f.checkRunState.runs[0];
+		const summary = run.outputs[0].summary;
+		// The supplied extra body appears verbatim in the check-run summary.
+		expect(summary).toContain(jsonBlock);
+		// The collapsed block follows (not precedes) the checks-table content
+		// the function builds — locate the indices to verify ordering.
+		const tableIndex = summary.indexOf("Validation Results");
+		const detailsIndex = summary.indexOf("<details>");
+		expect(tableIndex).toBeGreaterThanOrEqual(0);
+		expect(detailsIndex).toBeGreaterThan(tableIndex);
+		// The JSON payload's literal content survives the round-trip.
+		expect(summary).toContain(JSON.stringify(validationOutput, null, 2));
 	});
 
-	afterEach(() => {
-		cleanupTestEnvironment();
+	it("omits extraBody from the job-step summary even when it is supplied to the check run", async () => {
+		const f = makeFixtures();
+		const jsonBlock = "<details>\n<summary>📦</summary>\n\nUNIQUE_SENTINEL_STRING\n</details>";
+
+		await runStage(passingValidations, false, f, jsonBlock);
+
+		// The job-step summary (collected by `outputs.summary`) keeps its
+		// terse per-step table without the extra body.
+		const jobSummaries = f.outputsState.summaries;
+		expect(jobSummaries.length).toBeGreaterThan(0);
+		const joined = jobSummaries.join("\n");
+		expect(joined).not.toContain("UNIQUE_SENTINEL_STRING");
 	});
 
-	it("should report success when all validations pass", async () => {
-		const validations: ValidationResult[] = [
-			{ name: "Build Validation", success: true, checkId: 1, message: "All builds passed" },
-			{ name: "NPM Validation", success: true, checkId: 2, message: "Ready for publish" },
-		];
+	it("treats an empty-string extraBody as no extra body", async () => {
+		const f = makeFixtures();
 
-		const result = await createValidationCheck(validations, false);
+		await runStage(passingValidations, false, f, "");
 
-		expect(result.success).toBe(true);
-		expect(result.validations).toEqual(validations);
-		expect(result.checkId).toBe(12345);
-		expect(mockOctokit.rest.checks.create).toHaveBeenCalledWith(
-			expect.objectContaining({
-				conclusion: "success",
-			}),
-		);
+		const summary = f.checkRunState.runs[0].outputs[0].summary;
+		expect(summary).not.toContain("<details>");
 	});
 
-	it("should report failure when any validation fails", async () => {
-		const validations: ValidationResult[] = [
-			{ name: "Build Validation", success: true, checkId: 1, message: "All builds passed" },
-			{ name: "NPM Validation", success: false, checkId: 2, message: "Version conflict" },
-		];
+	it("records a failure conclusion when any validation failed", async () => {
+		const f = makeFixtures();
 
-		const result = await createValidationCheck(validations, false);
+		const result = await runStage(mixedValidations, false, f);
 
 		expect(result.success).toBe(false);
-		expect(mockOctokit.rest.checks.create).toHaveBeenCalledWith(
-			expect.objectContaining({
-				conclusion: "failure",
-			}),
-		);
-	});
-
-	it("should handle all validations failing", async () => {
-		const validations: ValidationResult[] = [
-			{ name: "Build Validation", success: false, checkId: 1, message: "Build failed" },
-			{ name: "NPM Validation", success: false, checkId: 2, message: "Auth error" },
-		];
-
-		const result = await createValidationCheck(validations, false);
-
-		expect(result.success).toBe(false);
-		expect(core.info).toHaveBeenCalledWith(expect.stringContaining("Failed: 2"));
-	});
-
-	it("should handle empty validations array", async () => {
-		const result = await createValidationCheck([], false);
-
-		expect(result.success).toBe(true);
-		expect(result.validations).toEqual([]);
-	});
-
-	it("should include dry-run mode in check name", async () => {
-		const validations: ValidationResult[] = [{ name: "Build Validation", success: true, checkId: 1 }];
-
-		await createValidationCheck(validations, true);
-
-		expect(mockOctokit.rest.checks.create).toHaveBeenCalledWith(
-			expect.objectContaining({
-				name: expect.stringContaining("Dry Run"),
-			}),
-		);
-	});
-
-	it("should include validation messages in output", async () => {
-		const validations: ValidationResult[] = [
-			{ name: "Build", success: false, checkId: 1, message: "TypeScript error in index.ts" },
-		];
-
-		await createValidationCheck(validations, false);
-
-		const createCall = mockOctokit.rest.checks.create.mock.calls[0][0];
-		expect(createCall.output.title).toContain("1 of 1 validation(s) failed");
-	});
-
-	it("should report correct counts for mixed results", async () => {
-		const validations: ValidationResult[] = [
-			{ name: "Check 1", success: true, checkId: 1 },
-			{ name: "Check 2", success: false, checkId: 2 },
-			{ name: "Check 3", success: true, checkId: 3 },
-			{ name: "Check 4", success: false, checkId: 4 },
-		];
-
-		const result = await createValidationCheck(validations, false);
-
-		expect(result.success).toBe(false);
-		expect(core.info).toHaveBeenCalledWith(expect.stringContaining("Passed: 2"));
-		expect(core.info).toHaveBeenCalledWith(expect.stringContaining("Failed: 2"));
-	});
-
-	it("should provide default message when validation message is missing", async () => {
-		const validations: ValidationResult[] = [
-			{ name: "Build", success: true, checkId: 1 }, // No message
-		];
-
-		await createValidationCheck(validations, false);
-
-		// Check that summary was built with default message (summaryWriter uses addRaw)
-		expect(core.summary.addRaw).toHaveBeenCalled();
+		const run = f.checkRunState.runs[0];
+		expect(run.conclusion).toBe("failure");
+		const summary = run.outputs[0].summary;
+		expect(summary).toContain("Failed Validations");
+		expect(summary).toContain("Publish Validation");
 	});
 });

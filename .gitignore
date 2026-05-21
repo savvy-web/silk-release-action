@@ -13,6 +13,9 @@ coverage/
 pnpm-publish-summary.json
 pnpm-release.json
 .changeset/status.json
+# Temp files written by changeset CLI when called from tests
+.changeset-status-*.json
+.changeset-mergebase-*.json
 # Environment files (keep .example files committed)
 .env
 .env.local
@@ -33,3 +36,5 @@ pnpm-release.json
 CLAUDE.local.md
 **/coverage-debug
 .claude/plugins-debug.log
+# Superpowers working docs (specs, plans) — kept local, not tracked
+docs/superpowers/

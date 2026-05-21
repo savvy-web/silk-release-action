@@ -1,7 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { debug, getInput, info, warning } from "@actions/core";
+import type { ParseResult } from "effect";
+import { Config, Effect, Either, Schema } from "effect";
+import { ArrayFormatter } from "effect/ParseResult";
 import { parse as parseJsonc } from "jsonc-parser";
+import { SilkReleaseConfig } from "../schema/silk-release-config.js";
 import type { ReleaseConfig, SBOMMetadataConfig } from "../types/sbom-config.js";
 
 /**
@@ -20,85 +23,17 @@ const CONFIG_ENV_VAR = "SILK_RELEASE_SBOM_TEMPLATE";
 const CONFIG_INPUT_NAME = "sbom-config";
 
 /**
- * Validate SBOM metadata configuration
- *
- * @remarks
- * Performs basic validation of the SBOM metadata configuration structure.
- * Does not enforce required fields since the config is merged with inferred values.
- *
- * @param config - Configuration to validate
- * @returns Array of validation error messages (empty if valid)
- */
-function validateSBOMConfig(config: unknown): string[] {
-	const errors: string[] = [];
-
-	if (config === null || config === undefined) {
-		return errors; // Empty config is valid
-	}
-
-	if (typeof config !== "object") {
-		errors.push(`sbom config must be an object, got ${typeof config}`);
-		return errors;
-	}
-
-	const sbomConfig = config as Record<string, unknown>;
-
-	// Validate supplier
-	if (sbomConfig.supplier !== undefined) {
-		if (typeof sbomConfig.supplier !== "object" || sbomConfig.supplier === null) {
-			errors.push("sbom.supplier must be an object");
-		} else {
-			const supplier = sbomConfig.supplier as Record<string, unknown>;
-			if (supplier.name !== undefined && typeof supplier.name !== "string") {
-				errors.push("sbom.supplier.name must be a string");
-			}
-			if (supplier.url !== undefined) {
-				if (typeof supplier.url !== "string" && !Array.isArray(supplier.url)) {
-					errors.push("sbom.supplier.url must be a string or array of strings");
-				}
-			}
-		}
-	}
-
-	// Validate copyright
-	if (sbomConfig.copyright !== undefined) {
-		if (typeof sbomConfig.copyright !== "object" || sbomConfig.copyright === null) {
-			errors.push("sbom.copyright must be an object");
-		} else {
-			const copyright = sbomConfig.copyright as Record<string, unknown>;
-			if (copyright.holder !== undefined && typeof copyright.holder !== "string") {
-				errors.push("sbom.copyright.holder must be a string");
-			}
-			if (copyright.startYear !== undefined && typeof copyright.startYear !== "number") {
-				errors.push("sbom.copyright.startYear must be a number");
-			}
-		}
-	}
-
-	// Validate publisher
-	if (sbomConfig.publisher !== undefined && typeof sbomConfig.publisher !== "string") {
-		errors.push("sbom.publisher must be a string");
-	}
-
-	// Validate documentationUrl
-	if (sbomConfig.documentationUrl !== undefined && typeof sbomConfig.documentationUrl !== "string") {
-		errors.push("sbom.documentationUrl must be a string");
-	}
-
-	return errors;
-}
-
-/**
  * SBOM config fields that indicate an unwrapped configuration
  */
-const SBOM_CONFIG_FIELDS = ["supplier", "copyright", "publisher", "documentationUrl"] as const;
+const SBOM_CONFIG_FIELDS = ["supplier", "copyright", "publisher", "documentationUrl", "authors"] as const;
 
 /**
  * Check if a parsed config appears to be an unwrapped SBOMMetadataConfig
  *
  * @remarks
  * Detects if the config contains SBOM fields at the root level rather than
- * being wrapped in an `sbom` key. This is used to provide helpful error messages.
+ * being wrapped in an `sbom` key. This is used to surface a structured error
+ * rather than silently dropping the config.
  *
  * @param config - Parsed configuration object
  * @returns Array of SBOM field names found at root level, empty if none
@@ -108,86 +43,131 @@ function detectUnwrappedSBOMFields(config: Record<string, unknown>): string[] {
 }
 
 /**
- * Parse and validate configuration content
+ * Format a Schema decode error as a human-readable, multi-path message.
+ *
+ * @remarks
+ * `ArrayFormatter` walks the parse error and emits one entry per failing
+ * path; we join the path, message, and tag into a compact form so the
+ * finding consumer sees exactly which key was wrong.
+ */
+function formatDecodeError(error: ParseResult.ParseError): string {
+	const issues = ArrayFormatter.formatErrorSync(error);
+	if (issues.length === 0) {
+		return error.message;
+	}
+	return issues
+		.map((issue) => {
+			const path = issue.path.length > 0 ? issue.path.join(".") : "(root)";
+			return `${path}: ${issue.message}`;
+		})
+		.join("; ");
+}
+
+const decodeSilkReleaseConfig = Schema.decodeUnknownEither(SilkReleaseConfig);
+
+/**
+ * Parse and decode a raw config string into a typed {@link ReleaseConfig}.
+ *
+ * @remarks
+ * Two failure modes surface as `Left`:
+ * 1. The string is not valid JSON/JSONC.
+ * 2. The parsed shape does not match {@link SilkReleaseConfig} — the message
+ *    contains the path of the failing field (e.g. `sbom.supplier.name: …`).
+ *
+ * Configs that put SBOM fields at the root rather than under `sbom` produce
+ * a dedicated error message naming the misplaced fields — that mistake would
+ * otherwise just decode to an empty config and silently drop everything.
  *
  * @param content - Raw JSON/JSONC content
  * @param source - Source description for error messages
- * @returns Parsed configuration or undefined if invalid
+ * @returns `Right(config)` on success, `Left(error)` on parse or decode failure
  */
-function parseConfigContent(content: string, source: string): ReleaseConfig | undefined {
+function parseConfigContent(content: string, source: string): Either.Either<ReleaseConfig, string> {
+	const jsonErrors: Array<{ error: number; offset: number; length: number }> = [];
+	let parsed: unknown;
 	try {
-		const errors: Array<{ error: number; offset: number; length: number }> = [];
-		const parsed = parseJsonc(content, errors) as Record<string, unknown>;
-
-		if (errors.length > 0) {
-			warning(`Failed to parse config from ${source}: JSON syntax error at offset ${errors[0].offset}`);
-			return undefined;
-		}
-
-		// Check for unwrapped SBOM config (common mistake)
-		const unwrappedFields = detectUnwrappedSBOMFields(parsed);
-		if (unwrappedFields.length > 0 && parsed.sbom === undefined) {
-			warning(
-				`Invalid config structure from ${source}: Found SBOM fields (${unwrappedFields.join(", ")}) at root level.\n` +
-					`  The configuration must be wrapped in an "sbom" key.\n` +
-					`  Expected: { "sbom": { "supplier": {...}, ... } }\n` +
-					`  Found:    { "supplier": {...}, ... }\n` +
-					`  See schema: https://raw.githubusercontent.com/savvy-web/workflow-release-action/main/.github/silk-release.schema.json`,
-			);
-			return undefined;
-		}
-
-		// Validate the sbom section if present
-		const releaseConfig = parsed as ReleaseConfig;
-		if (releaseConfig.sbom !== undefined) {
-			const validationErrors = validateSBOMConfig(releaseConfig.sbom);
-			if (validationErrors.length > 0) {
-				warning(`Invalid SBOM config from ${source}:\n${validationErrors.map((e) => `  - ${e}`).join("\n")}`);
-				return undefined;
-			}
-		}
-
-		return releaseConfig;
-	} catch (error) {
-		warning(`Failed to parse config from ${source}: ${error instanceof Error ? error.message : String(error)}`);
-		return undefined;
+		parsed = parseJsonc(content, jsonErrors);
+	} catch (e) {
+		// jsonc-parser populates the `jsonErrors` array for syntax errors and
+		// does not throw — the `errors.length > 0` check below handles the
+		// expected failure mode. This catch only fires on an extraordinary
+		// runtime failure (e.g. a host-environment defect) and is here so the
+		// loader cannot tear down the validation phase.
+		const message = e instanceof Error ? e.message : String(e);
+		return Either.left(`failed to parse ${source} as JSON: ${message}`);
 	}
+
+	if (jsonErrors.length > 0) {
+		return Either.left(`failed to parse ${source} as JSON (${jsonErrors.length} syntax error(s))`);
+	}
+
+	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+		return Either.left(`${source} must be a JSON object`);
+	}
+
+	const unwrappedFields = detectUnwrappedSBOMFields(parsed as Record<string, unknown>);
+	if (unwrappedFields.length > 0 && (parsed as Record<string, unknown>).sbom === undefined) {
+		return Either.left(
+			`${source} has SBOM fields at the root (${unwrappedFields.join(", ")}); wrap them in an "sbom" key`,
+		);
+	}
+
+	const decoded = decodeSilkReleaseConfig(parsed);
+	if (Either.isLeft(decoded)) {
+		return Either.left(`${source}: ${formatDecodeError(decoded.left)}`);
+	}
+
+	return Either.right(decoded.right);
 }
+
+/**
+ * Outcome of a local-repo config lookup that carries the matched path on
+ * both the success and failure branches — so the caller's `source.location`
+ * agrees with the file the error refers to.
+ */
+type LocalRepoLookup =
+	| { readonly kind: "found"; readonly config: ReleaseConfig; readonly path: string }
+	| { readonly kind: "error"; readonly error: string; readonly path: string }
+	| { readonly kind: "absent" };
 
 /**
  * Load release configuration from a local file
  *
  * @param configPath - Path to the configuration file
- * @returns Parsed configuration or undefined if file doesn't exist or is invalid
+ * @returns Discriminated `LocalRepoLookup` carrying the matched path on both
+ *   `found` and `error` branches; `absent` when the file does not exist.
  */
-function loadConfigFromFile(configPath: string): ReleaseConfig | undefined {
+function loadConfigFromFile(configPath: string): LocalRepoLookup {
 	if (!existsSync(configPath)) {
-		return undefined;
+		return { kind: "absent" };
 	}
 
 	const content = readFileSync(configPath, "utf-8");
-	return parseConfigContent(content, configPath);
+	const parsed = parseConfigContent(content, configPath);
+	if (Either.isLeft(parsed)) {
+		return { kind: "error", error: parsed.left, path: configPath };
+	}
+	return { kind: "found", config: parsed.right, path: configPath };
 }
 
 /**
  * Load configuration from local repository
  *
  * @param rootDir - Repository root directory
- * @returns Configuration or undefined if not found
+ * @returns First config file found (with the matched path), the matched path
+ *   on a decode failure (so the caller can report the specific `.json` /
+ *   `.jsonc` file), or `absent` when neither file exists.
  */
-function loadConfigFromLocalRepo(rootDir: string): ReleaseConfig | undefined {
+function loadConfigFromLocalRepo(rootDir: string): LocalRepoLookup {
 	for (const fileName of CONFIG_FILE_NAMES) {
 		const configPath = join(rootDir, ".github", fileName);
-		const config = loadConfigFromFile(configPath);
-
-		if (config !== undefined) {
-			info(`Loaded Silk release config from .github/${fileName}`);
-			debug(`Release config: ${JSON.stringify(config)}`);
-			return config;
+		const result = loadConfigFromFile(configPath);
+		if (result.kind !== "absent") {
+			return result;
 		}
 	}
 
-	return undefined;
+	return { kind: "absent" };
 }
 
 /**
@@ -210,71 +190,49 @@ function loadConfigFromLocalRepo(rootDir: string): ReleaseConfig | undefined {
  * The variable must contain a valid ReleaseConfig with the SBOM config
  * wrapped in an `sbom` key: `{ "sbom": { "supplier": {...} } }`
  *
- * @returns Configuration or undefined if not set or invalid
+ * @returns `Right(config)` when set and valid, `Right(undefined)` when unset,
+ *   `Left(error)` when set but malformed.
  */
-function loadConfigFromEnvVar(): ReleaseConfig | undefined {
+function loadConfigFromEnvVar(): Either.Either<ReleaseConfig | undefined, string> {
 	const envValue = process.env[CONFIG_ENV_VAR];
 
 	if (!envValue) {
-		debug(`${CONFIG_ENV_VAR} environment variable not set`);
-		return undefined;
+		return Either.right(undefined);
 	}
 
-	info(`Found ${CONFIG_ENV_VAR} environment variable (${envValue.length} chars)`);
-
-	const config = parseConfigContent(envValue, `${CONFIG_ENV_VAR} variable`);
-
-	if (config !== undefined) {
-		info(`Loaded Silk release config from ${CONFIG_ENV_VAR} variable`);
-		if (config.sbom?.supplier?.name) {
-			info(`  Supplier: ${config.sbom.supplier.name}`);
-		}
-		debug(`Release config: ${JSON.stringify(config)}`);
-		return config;
-	}
-
-	return undefined;
+	return parseConfigContent(envValue, `${CONFIG_ENV_VAR} variable`);
 }
 
 /**
- * Load configuration from sbom-config action input
+ * Load configuration from the `sbom-config` action input.
  *
  * @remarks
- * This allows the SBOM configuration to be passed directly as an action input,
- * which is useful for reusable workflows where environment variables don't
- * propagate through the workflow_call chain.
+ * Reads via `Config.string` so the ambient `ActionsConfigProvider`
+ * (`main.ts`'s default provider) handles the GitHub Actions env-var
+ * convention — `core.getInput("sbom-config")` reads `INPUT_SBOM-CONFIG`,
+ * with **hyphens preserved** (only spaces are mapped to underscores). The
+ * prior direct `process.env["INPUT_SBOM_CONFIG"]` read silently missed the
+ * input because the actual env-var name is `INPUT_SBOM-CONFIG` — a
+ * single-character bug that produced exactly the "no template supplied"
+ * symptom this loader was meant to handle.
  *
- * @returns Configuration or undefined if not set or invalid
+ * @returns Effect yielding `Right(config)` when set and valid,
+ *   `Right(undefined)` when unset, `Left(error)` when set but malformed.
  */
-function loadConfigFromInput(): ReleaseConfig | undefined {
-	let inputValue: string;
-	try {
-		inputValue = getInput(CONFIG_INPUT_NAME);
-	} catch {
-		// getInput may throw if we're not in an action context
-		return undefined;
-	}
+// `Config.withDefault` covers the `MissingData` case; any other `ConfigError`
+// (e.g. an unparseable primitive — impossible for a free-form string) is
+// surfaced as a defect via `Effect.orDie` so the loader's success type stays
+// pure and `loadReleaseConfig`'s caller does not have to thread `ConfigError`
+// through its error channel.
+const loadConfigFromInput: Effect.Effect<Either.Either<ReleaseConfig | undefined, string>> = Effect.gen(function* () {
+	const inputValue = (yield* Config.string(CONFIG_INPUT_NAME).pipe(Config.withDefault(""))).trim();
 
 	if (!inputValue) {
-		debug(`${CONFIG_INPUT_NAME} action input not set`);
-		return undefined;
+		return Either.right(undefined);
 	}
 
-	info(`Found ${CONFIG_INPUT_NAME} action input (${inputValue.length} chars)`);
-
-	const config = parseConfigContent(inputValue, `${CONFIG_INPUT_NAME} input`);
-
-	if (config !== undefined) {
-		info(`Loaded Silk release config from ${CONFIG_INPUT_NAME} input`);
-		if (config.sbom?.supplier?.name) {
-			info(`  Supplier: ${config.sbom.supplier.name}`);
-		}
-		debug(`Release config: ${JSON.stringify(config)}`);
-		return config;
-	}
-
-	return undefined;
-}
+	return parseConfigContent(inputValue, `${CONFIG_INPUT_NAME} input`);
+}).pipe(Effect.orDie);
 
 /**
  * Configuration source information
@@ -287,14 +245,36 @@ export interface ConfigSource {
 }
 
 /**
- * Result of loading release configuration
+ * Successful result of loading release configuration.
+ *
+ * @remarks
+ * `config` is `undefined` when no config source supplied one — every
+ * `LoadReleaseConfigOk` is "no decode error happened", but only those with a
+ * defined `config` actually fed metadata into the validation phase.
  */
-export interface LoadReleaseConfigResult {
-	/** The loaded configuration (undefined if not found) */
-	config: ReleaseConfig | undefined;
-	/** Source information */
-	source: ConfigSource;
+export interface LoadReleaseConfigOk {
+	readonly ok: true;
+	readonly config: ReleaseConfig | undefined;
+	readonly source: ConfigSource;
 }
+
+/**
+ * Failure result of loading release configuration.
+ *
+ * @remarks
+ * `error` is a human-readable description suitable for a validation finding
+ * message; `source` indicates which loader produced the failure.
+ */
+export interface LoadReleaseConfigError {
+	readonly ok: false;
+	readonly error: string;
+	readonly source: ConfigSource;
+}
+
+/**
+ * Result of loading release configuration.
+ */
+export type LoadReleaseConfigResult = LoadReleaseConfigOk | LoadReleaseConfigError;
 
 /**
  * Load release configuration with fallback lookup
@@ -309,69 +289,97 @@ export interface LoadReleaseConfigResult {
  *
  * 3. **Environment variable**: `SILK_RELEASE_SBOM_TEMPLATE` environment variable
  *
- * The first configuration found is used. This allows:
- * - Repository-specific config in the repo itself
- * - Organization-wide defaults via action input or environment variable
+ * The first configuration source that yields a value is used. A present-but-
+ * malformed config short-circuits the search with a structured error rather
+ * than silently falling through — a typo'd local file should not be masked by
+ * a global env var, since the caller needs to know the local config did not
+ * apply. The reported `source.location` for the local-repo path is the
+ * specific file that matched (e.g. `.../silk-release.jsonc`) so the error and
+ * the source line up.
  *
  * @param rootDir - Repository root directory (defaults to process.cwd())
- * @returns Release configuration with source information
- *
- * @example
- * ```typescript
- * const result = loadReleaseConfig();
- * if (result.config) {
- *   console.log(`Config loaded from: ${result.source.source}`);
- * }
- * ```
+ * @returns Discriminated result the caller can branch on.
  */
-export function loadReleaseConfig(rootDir?: string): LoadReleaseConfigResult {
-	const root = rootDir || process.cwd();
+export function loadReleaseConfig(rootDir?: string): Effect.Effect<LoadReleaseConfigResult> {
+	return Effect.gen(function* () {
+		const root = rootDir || process.cwd();
 
-	// 1. Check local repository
-	const localConfig = loadConfigFromLocalRepo(root);
-	if (localConfig !== undefined) {
-		return {
-			config: localConfig,
-			source: { source: "local", location: ".github/silk-release.json" },
-		};
-	}
+		const local = loadConfigFromLocalRepo(root);
+		if (local.kind === "error") {
+			// `local.path` is the specific file that matched (`.json` or `.jsonc`),
+			// so the reported `source.location` always agrees with the file the
+			// parse error refers to.
+			return { ok: false, error: local.error, source: { source: "local", location: local.path } } as const;
+		}
+		if (local.kind === "found") {
+			return {
+				ok: true,
+				config: local.config,
+				source: { source: "local", location: local.path },
+			} as const;
+		}
 
-	// 2. Check action input (preferred for reusable workflows)
-	const inputConfig = loadConfigFromInput();
-	if (inputConfig !== undefined) {
-		return {
-			config: inputConfig,
-			source: { source: "input", location: CONFIG_INPUT_NAME },
-		};
-	}
+		const input = yield* loadConfigFromInput;
+		if (Either.isLeft(input)) {
+			return { ok: false, error: input.left, source: { source: "input", location: CONFIG_INPUT_NAME } } as const;
+		}
+		if (input.right !== undefined) {
+			return { ok: true, config: input.right, source: { source: "input", location: CONFIG_INPUT_NAME } } as const;
+		}
 
-	// 3. Check environment variable
-	const envConfig = loadConfigFromEnvVar();
-	if (envConfig !== undefined) {
-		return {
-			config: envConfig,
-			source: { source: "variable", location: CONFIG_ENV_VAR },
-		};
-	}
+		const env = loadConfigFromEnvVar();
+		if (Either.isLeft(env)) {
+			return { ok: false, error: env.left, source: { source: "variable", location: CONFIG_ENV_VAR } } as const;
+		}
+		if (env.right !== undefined) {
+			return { ok: true, config: env.right, source: { source: "variable", location: CONFIG_ENV_VAR } } as const;
+		}
 
-	debug("No Silk release configuration found");
-	return {
-		config: undefined,
-		source: { source: "none" },
-	};
+		return { ok: true, config: undefined, source: { source: "none" } } as const;
+	});
 }
+
+/**
+ * Successful result of {@link loadSBOMConfig}.
+ */
+export interface LoadSBOMConfigOk {
+	readonly ok: true;
+	readonly config: SBOMMetadataConfig | undefined;
+	readonly source: ConfigSource;
+}
+
+/**
+ * Failure result of {@link loadSBOMConfig} — a present config did not decode.
+ */
+export interface LoadSBOMConfigError {
+	readonly ok: false;
+	readonly error: string;
+	readonly source: ConfigSource;
+}
+
+/**
+ * Discriminated result of {@link loadSBOMConfig}.
+ */
+export type LoadSBOMConfigResult = LoadSBOMConfigOk | LoadSBOMConfigError;
 
 /**
  * Load SBOM metadata configuration
  *
  * @remarks
- * Convenience function to load just the SBOM section of the release configuration.
- * Uses fallback lookup: local repo → environment variable.
+ * Convenience wrapper around {@link loadReleaseConfig} that surfaces only the
+ * `sbom` sub-section. The result is discriminated so callers can render parse
+ * failures as warning findings rather than silently dropping the supplier /
+ * author metadata — the failure mode the prior untyped cast exhibited.
  *
  * @param rootDir - Repository root directory (defaults to process.cwd())
- * @returns SBOM metadata configuration or undefined if not found
+ * @returns Discriminated result; on success, `config` is the SBOM sub-section
+ *   or `undefined` when no source supplied one.
  */
-export function loadSBOMConfig(rootDir?: string): SBOMMetadataConfig | undefined {
-	const result = loadReleaseConfig(rootDir);
-	return result.config?.sbom;
+export function loadSBOMConfig(rootDir?: string): Effect.Effect<LoadSBOMConfigResult> {
+	return Effect.map(loadReleaseConfig(rootDir), (result) => {
+		if (!result.ok) {
+			return result;
+		}
+		return { ok: true, config: result.config?.sbom, source: result.source } as const;
+	});
 }

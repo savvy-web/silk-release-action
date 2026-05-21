@@ -1,7 +1,19 @@
 import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import type { WorkspaceInfos } from "workspace-tools";
-import { getWorkspaceInfos } from "workspace-tools";
+import type { WorkspacePackage } from "workspaces-effect";
+import { findWorkspaceRootSync, getWorkspacePackagesSync } from "workspaces-effect";
+
+/**
+ * Discover workspace packages from `cwd` using `workspaces-effect`'s sync API.
+ *
+ * @returns Array of workspace packages (root + children), or `[]` if the cwd
+ *   is not inside a project.
+ */
+function listWorkspacePackages(): ReadonlyArray<WorkspacePackage> {
+	const root = findWorkspaceRootSync(process.cwd());
+	if (!root) return [];
+	return getWorkspacePackagesSync(root);
+}
 
 /**
  * Supported package managers for repository detection
@@ -140,7 +152,7 @@ function isIgnoredPackage(packageName: string, ignorePatterns: string[]): boolea
  */
 export function isSinglePackage(): boolean {
 	try {
-		const workspaces = getWorkspaceInfos(process.cwd()) ?? [];
+		const workspaces = listWorkspacePackages();
 
 		// 0 or 1 workspace = definitely single package
 		if (workspaces.length <= 1) {
@@ -166,7 +178,7 @@ export function isSinglePackage(): boolean {
 		}
 
 		// Count non-ignored, non-root packages
-		const publishablePackages = workspaces.filter((ws: WorkspaceInfos[number]) => {
+		const publishablePackages = workspaces.filter((ws) => {
 			const name = ws.name;
 			// Root package is always publishable (if versioned)
 			if (name === rootPackageName) {
@@ -187,26 +199,22 @@ export function isSinglePackage(): boolean {
 /**
  * Checks if the repository has workspace packages (is a monorepo)
  *
- * @param workspaceTools - workspace-tools module for workspace detection
  * @returns True if workspace packages are detected (more than 1 workspace), false otherwise
  *
  * @remarks
- * Uses `workspace-tools` library to detect workspaces across all package managers.
- * This provides a unified, package-manager-agnostic approach that works with:
- * - **pnpm**: Reads pnpm-workspace.yaml
- * - **npm**: Reads package.json workspaces field
- * - **yarn**: Reads package.json workspaces field
- * - **bun**: Reads package.json workspaces field
+ * Uses `workspaces-effect`'s sync API to detect workspaces across all package
+ * managers. This provides a unified, package-manager-agnostic approach that
+ * works with pnpm (`pnpm-workspace.yaml`) and npm/yarn/bun (`package.json`
+ * `workspaces` field).
  *
- * A repository is considered to have workspaces if there are more than 1 workspace
- * entries (root package + workspace packages = monorepo).
- *
- * Returns false if workspace detection fails or only the root package exists.
+ * A repository is considered to have workspaces if there is more than one
+ * workspace entry (root package + workspace packages = monorepo). Returns
+ * `false` if workspace detection fails or only the root package exists.
  */
 function hasWorkspacePackages(): boolean {
 	try {
-		const workspaces = getWorkspaceInfos(process.cwd()) ?? [];
-		return Object.keys(workspaces).length > 1;
+		const workspaces = listWorkspacePackages();
+		return workspaces.length > 1;
 	} catch {
 		return false;
 	}

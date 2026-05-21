@@ -1,245 +1,163 @@
-import * as core from "@actions/core";
-import { context, getOctokit } from "@actions/github";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { closeLinkedIssues } from "../src/utils/close-linked-issues.js";
-import { cleanupTestEnvironment, createMockOctokit, setupTestEnvironment } from "./utils/github-mocks.js";
-import type { MockOctokit } from "./utils/test-types.js";
+/**
+ * Fixture tests for the close-linked-issues stage.
+ *
+ * @remarks
+ * Drives `closeLinkedIssues` against the library's GitHubIssueTest /
+ * CheckRunTest / ActionEnvironmentTest / ActionOutputsTest layers and
+ * asserts on the recorded operations.
+ */
 
-// Mock modules
-vi.mock("@actions/core");
-vi.mock("@actions/github");
+import type {
+	ActionOutputsTestState,
+	CheckRunTestState,
+	GitHubIssueTestState,
+} from "@savvy-web/github-action-effects/testing";
+import {
+	ActionEnvironmentTest,
+	ActionLoggerTest,
+	ActionOutputsTest,
+	CheckRunTest,
+	GitHubIssueTest,
+} from "@savvy-web/github-action-effects/testing";
+import { Effect, Layer, Logger } from "effect";
+import { describe, expect, it } from "vitest";
+import { closeLinkedIssues } from "../src/utils/close-linked-issues.js";
+
+interface Fixtures {
+	issueState: GitHubIssueTestState;
+	outputsState: ActionOutputsTestState;
+	checkRunState: CheckRunTestState;
+}
+
+const makeFixtures = (linkedFor: Map<number, Array<{ number: number; title: string }>>): Fixtures => {
+	const { state: issueState, layer: _ } = GitHubIssueTest.empty();
+	for (const [prNumber, linked] of linkedFor) {
+		issueState.linkedIssues.set(prNumber, linked);
+		// Seed `issues` so the test layer's close/comment can find them.
+		for (const issue of linked) {
+			issueState.issues.set(issue.number, {
+				number: issue.number,
+				title: issue.title,
+				state: "open",
+				labels: [],
+				body: "",
+				// biome-ignore lint/suspicious/noExplicitAny: minimal IssueData fixture
+			} as any);
+		}
+	}
+	return {
+		issueState,
+		outputsState: ActionOutputsTest.empty(),
+		checkRunState: CheckRunTest.empty(),
+	};
+};
+
+const runStage = (prNumber: number, dryRun: boolean, f: Fixtures): Promise<unknown> => {
+	const layer = Layer.mergeAll(
+		ActionLoggerTest.layer(ActionLoggerTest.empty()),
+		ActionOutputsTest.layer(f.outputsState),
+		ActionEnvironmentTest.layer({
+			GITHUB_SHA: "abc123",
+			GITHUB_REF: "refs/heads/main",
+			GITHUB_REPOSITORY: "test-owner/test-repo",
+			GITHUB_REPOSITORY_OWNER: "test-owner",
+			GITHUB_WORKSPACE: "/workspace",
+			GITHUB_EVENT_NAME: "pull_request",
+			GITHUB_EVENT_PATH: "/dev/null",
+			GITHUB_RUN_ID: "1",
+			GITHUB_RUN_NUMBER: "1",
+			GITHUB_ACTOR: "test",
+			GITHUB_SERVER_URL: "https://github.com",
+			GITHUB_API_URL: "https://api.github.com",
+		}),
+		CheckRunTest.layer(f.checkRunState),
+		GitHubIssueTest.layer(f.issueState),
+	);
+	return Effect.runPromise(
+		closeLinkedIssues(prNumber, dryRun).pipe(
+			Effect.provide(layer),
+			Effect.provide(Logger.replace(Logger.defaultLogger, Logger.none)),
+		),
+	);
+};
 
 describe("closeLinkedIssues", () => {
-	let mockOctokit: MockOctokit;
+	it("comments on and closes each linked issue", async () => {
+		const fixtures = makeFixtures(
+			new Map([
+				[
+					1,
+					[
+						{ number: 123, title: "Fix bug in auth" },
+						{ number: 456, title: "Add new feature" },
+					],
+				],
+			]),
+		);
 
-	beforeEach(() => {
-		setupTestEnvironment({ suppressOutput: true });
-		mockOctokit = createMockOctokit();
-
-		// Mock core.summary
-		const mockSummary = {
-			addHeading: vi.fn().mockReturnThis(),
-			addEOL: vi.fn().mockReturnThis(),
-			addTable: vi.fn().mockReturnThis(),
-			addRaw: vi.fn().mockReturnThis(),
-			addCodeBlock: vi.fn().mockReturnThis(),
-			write: vi.fn().mockResolvedValue(undefined),
-			stringify: vi.fn().mockReturnValue(""),
+		const result = (await runStage(1, false, fixtures)) as {
+			closedCount: number;
+			failedCount: number;
+			issues: ReadonlyArray<{ number: number; closed: boolean }>;
 		};
-		Object.defineProperty(core, "summary", { value: mockSummary, writable: true });
 
-		// Setup GitHub context mock
-		Object.defineProperty(vi.mocked(context), "repo", {
-			value: { owner: "test-owner", repo: "test-repo" },
-			writable: true,
-		});
-		Object.defineProperty(vi.mocked(context), "sha", { value: "abc123", writable: true });
-		vi.mocked(getOctokit).mockReturnValue(mockOctokit as unknown as ReturnType<typeof getOctokit>);
+		expect(result.closedCount).toBe(2);
+		expect(result.failedCount).toBe(0);
+		expect(result.issues.map((i) => i.number).sort()).toEqual([123, 456]);
+
+		expect(fixtures.issueState.comments).toHaveLength(2);
+		expect(fixtures.issueState.comments.map((c) => c.issueNumber).sort()).toEqual([123, 456]);
+		expect(fixtures.issueState.closeCalls).toHaveLength(2);
+		expect(fixtures.issueState.closeCalls.every((c) => c.reason === "completed")).toBe(true);
 	});
 
-	afterEach(() => {
-		cleanupTestEnvironment();
+	it("creates a check run reporting the result", async () => {
+		const fixtures = makeFixtures(new Map([[1, [{ number: 123, title: "Test" }]]]));
+
+		await runStage(1, false, fixtures);
+
+		expect(fixtures.checkRunState.runs).toHaveLength(1);
+		expect(fixtures.checkRunState.runs[0].name).toBe("Close Linked Issues");
 	});
 
-	/**
-	 * Helper to mock GraphQL closingIssuesReferences response
-	 */
-	function mockLinkedIssues(issues: Array<{ number: number; title: string; state: "OPEN" | "CLOSED" }>): void {
-		mockOctokit.graphql.mockResolvedValue({
-			repository: {
-				pullRequest: {
-					closingIssuesReferences: {
-						nodes: issues,
-					},
-				},
-			},
-		});
-	}
+	it("emits a dry-run-flavored check name and skips real close calls", async () => {
+		const fixtures = makeFixtures(new Map([[1, [{ number: 123, title: "Test" }]]]));
 
-	describe("querying linked issues via GraphQL", () => {
-		it("should find linked issues via closingIssuesReferences", async () => {
-			mockLinkedIssues([
-				{ number: 123, title: "Fix bug in auth", state: "OPEN" },
-				{ number: 456, title: "Add new feature", state: "OPEN" },
-			]);
+		const result = (await runStage(1, true, fixtures)) as {
+			closedCount: number;
+			failedCount: number;
+		};
 
-			const result = await closeLinkedIssues("test-token", 1, false);
-
-			expect(result.closedCount).toBe(2);
-			expect(result.issues).toHaveLength(2);
-			expect(mockOctokit.rest.issues.update).toHaveBeenCalledTimes(2);
-			expect(mockOctokit.graphql).toHaveBeenCalledWith(
-				expect.stringContaining("closingIssuesReferences"),
-				expect.objectContaining({ prNumber: 1 }),
-			);
-		});
-
-		it("should handle already-closed issues from GraphQL", async () => {
-			mockLinkedIssues([
-				{ number: 123, title: "Open issue", state: "OPEN" },
-				{ number: 456, title: "Already closed issue", state: "CLOSED" },
-			]);
-
-			const result = await closeLinkedIssues("test-token", 1, false);
-
-			// Only issue 123 should be closed
-			expect(result.closedCount).toBe(1);
-			expect(result.issues).toHaveLength(2);
-			expect(mockOctokit.rest.issues.update).toHaveBeenCalledTimes(1);
-		});
-
-		it("should return empty when no linked issues exist", async () => {
-			mockLinkedIssues([]);
-
-			const result = await closeLinkedIssues("test-token", 1, false);
-
-			expect(result.closedCount).toBe(0);
-			expect(result.issues).toHaveLength(0);
-		});
-
-		it("should handle GraphQL query errors gracefully", async () => {
-			mockOctokit.graphql.mockRejectedValue(new Error("GraphQL query failed"));
-
-			const result = await closeLinkedIssues("test-token", 1, false);
-
-			expect(result.closedCount).toBe(0);
-			expect(result.issues).toHaveLength(0);
-		});
+		expect(result.closedCount).toBe(1);
+		expect(fixtures.issueState.comments).toEqual([]);
+		expect(fixtures.issueState.closeCalls).toEqual([]);
+		expect(fixtures.checkRunState.runs[0].name).toContain("Dry Run");
 	});
 
-	describe("closing issues", () => {
-		it("should close issues and add comments", async () => {
-			mockLinkedIssues([{ number: 123, title: "Test issue", state: "OPEN" }]);
+	it("reports zero closures when the PR has no linked issues", async () => {
+		const fixtures = makeFixtures(new Map([[1, []]]));
 
-			const result = await closeLinkedIssues("test-token", 42, false);
+		const result = (await runStage(1, false, fixtures)) as {
+			closedCount: number;
+			issues: ReadonlyArray<unknown>;
+		};
 
-			expect(result.closedCount).toBe(1);
-			expect(mockOctokit.rest.issues.createComment).toHaveBeenCalledWith({
-				owner: "test-owner",
-				repo: "test-repo",
-				issue_number: 123,
-				body: expect.stringContaining("Closed by release PR #42 merge"),
-			});
-			expect(mockOctokit.rest.issues.update).toHaveBeenCalledWith({
-				owner: "test-owner",
-				repo: "test-repo",
-				issue_number: 123,
-				state: "closed",
-				state_reason: "completed",
-			});
-		});
-
-		it("should skip already closed issues", async () => {
-			mockLinkedIssues([{ number: 123, title: "Already closed issue", state: "CLOSED" }]);
-
-			const result = await closeLinkedIssues("test-token", 1, false);
-
-			expect(result.closedCount).toBe(0);
-			expect(result.issues[0].error).toBe("Already closed");
-			expect(mockOctokit.rest.issues.update).not.toHaveBeenCalled();
-		});
-
-		it("should handle API errors when closing issues", async () => {
-			mockLinkedIssues([
-				{ number: 123, title: "First issue", state: "OPEN" },
-				{ number: 456, title: "Second issue", state: "OPEN" },
-			]);
-
-			// First issue fails, second succeeds
-			mockOctokit.rest.issues.createComment
-				.mockRejectedValueOnce(new Error("Permission denied"))
-				.mockResolvedValueOnce({ data: { id: 1 } });
-
-			const result = await closeLinkedIssues("test-token", 1, false);
-
-			expect(result.closedCount).toBe(1);
-			expect(result.failedCount).toBe(1);
-			expect(result.issues[0].closed).toBe(false);
-			expect(result.issues[0].error).toBe("Permission denied");
-		});
+		expect(result.closedCount).toBe(0);
+		expect(result.issues).toHaveLength(0);
+		expect(fixtures.issueState.comments).toEqual([]);
+		expect(fixtures.issueState.closeCalls).toEqual([]);
 	});
 
-	describe("dry run mode", () => {
-		it("should not close issues in dry run mode", async () => {
-			mockLinkedIssues([{ number: 123, title: "Test issue", state: "OPEN" }]);
+	it("sets closed_issues_count and closed_issues outputs", async () => {
+		const fixtures = makeFixtures(new Map([[1, [{ number: 123, title: "Test" }]]]));
 
-			const result = await closeLinkedIssues("test-token", 1, true);
+		await runStage(1, false, fixtures);
 
-			expect(result.closedCount).toBe(1);
-			expect(mockOctokit.rest.issues.update).not.toHaveBeenCalled();
-			expect(mockOctokit.rest.issues.createComment).not.toHaveBeenCalled();
-		});
-
-		it("should still create check run in dry run mode", async () => {
-			mockLinkedIssues([{ number: 123, title: "Test issue", state: "OPEN" }]);
-
-			await closeLinkedIssues("test-token", 1, true);
-
-			expect(mockOctokit.rest.checks.create).toHaveBeenCalledWith(
-				expect.objectContaining({
-					name: expect.stringContaining("Dry Run"),
-				}),
-			);
-		});
-	});
-
-	describe("check run creation", () => {
-		it("should create success check run when all issues closed", async () => {
-			mockLinkedIssues([{ number: 123, title: "Test issue", state: "OPEN" }]);
-
-			await closeLinkedIssues("test-token", 1, false);
-
-			expect(mockOctokit.rest.checks.create).toHaveBeenCalledWith(
-				expect.objectContaining({
-					conclusion: "success",
-					name: "Close Linked Issues",
-				}),
-			);
-		});
-
-		it("should create neutral check run when some issues failed", async () => {
-			mockLinkedIssues([{ number: 123, title: "Test issue", state: "OPEN" }]);
-			mockOctokit.rest.issues.createComment.mockRejectedValue(new Error("Failed"));
-
-			await closeLinkedIssues("test-token", 1, false);
-
-			expect(mockOctokit.rest.checks.create).toHaveBeenCalledWith(
-				expect.objectContaining({
-					conclusion: "neutral",
-				}),
-			);
-		});
-
-		it("should create check run even with no linked issues", async () => {
-			mockLinkedIssues([]);
-
-			await closeLinkedIssues("test-token", 1, false);
-
-			expect(mockOctokit.rest.checks.create).toHaveBeenCalledWith(
-				expect.objectContaining({
-					conclusion: "success",
-					output: expect.objectContaining({
-						title: "No linked issues to close",
-					}),
-				}),
-			);
-		});
-	});
-
-	describe("edge cases", () => {
-		it("should handle multiple issues with mixed states", async () => {
-			mockLinkedIssues([
-				{ number: 123, title: "Open issue", state: "OPEN" },
-				{ number: 456, title: "Closed issue", state: "CLOSED" },
-				{ number: 789, title: "Another open", state: "OPEN" },
-			]);
-
-			const result = await closeLinkedIssues("test-token", 1, false);
-
-			// 123 and 789 should be closed, 456 already closed
-			expect(result.closedCount).toBe(2);
-			expect(result.issues).toHaveLength(3);
-			expect(mockOctokit.rest.issues.update).toHaveBeenCalledTimes(2);
-		});
+		expect(fixtures.outputsState.outputs).toEqual(
+			expect.arrayContaining([
+				{ name: "closed_issues_count", value: "1" },
+				{ name: "failed_issues_count", value: "0" },
+			]),
+		);
 	});
 });

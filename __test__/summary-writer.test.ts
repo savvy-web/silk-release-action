@@ -1,20 +1,12 @@
-import * as core from "@actions/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { summaryWriter } from "../src/utils/summary-writer.js";
 import { cleanupTestEnvironment, setupTestEnvironment } from "./utils/github-mocks.js";
 
-vi.mock("@actions/core");
+vi.mock("node:fs");
 
 describe("summary-writer", () => {
 	beforeEach(() => {
 		setupTestEnvironment({ suppressOutput: true });
-
-		// Mock core.summary
-		const mockSummary = {
-			addRaw: vi.fn().mockReturnThis(),
-			write: vi.fn().mockResolvedValue(undefined),
-		};
-		Object.defineProperty(core, "summary", { value: mockSummary, writable: true });
 	});
 
 	afterEach(() => {
@@ -23,11 +15,23 @@ describe("summary-writer", () => {
 
 	describe("write", () => {
 		it("should write markdown to job summary with trailing newlines", async () => {
+			const { appendFileSync } = await import("node:fs");
+			process.env.GITHUB_STEP_SUMMARY = "/tmp/summary.md";
+
 			await summaryWriter.write("# Test");
 
-			// Appends trailing newlines to separate from subsequent summaries
-			expect(core.summary.addRaw).toHaveBeenCalledWith("# Test\n\n");
-			expect(core.summary.write).toHaveBeenCalled();
+			expect(appendFileSync).toHaveBeenCalledWith("/tmp/summary.md", "# Test\n\n");
+
+			delete process.env.GITHUB_STEP_SUMMARY;
+		});
+
+		it("should not write when GITHUB_STEP_SUMMARY is not set", async () => {
+			const { appendFileSync } = await import("node:fs");
+			delete process.env.GITHUB_STEP_SUMMARY;
+
+			await summaryWriter.write("# Test");
+
+			expect(appendFileSync).not.toHaveBeenCalled();
 		});
 	});
 

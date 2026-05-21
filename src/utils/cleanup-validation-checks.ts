@@ -1,151 +1,96 @@
-import { endGroup, getState, info, startGroup, warning } from "@actions/core";
-import { context, getOctokit } from "@actions/github";
+/**
+ * Phase 2 utility: mark incomplete validation check runs as cancelled
+ * when the workflow fails or is interrupted.
+ */
+
+import type { ActionOutputError } from "@savvy-web/github-action-effects";
+import { ActionOutputs, CheckRun } from "@savvy-web/github-action-effects";
+import { Effect } from "effect";
 import { summaryWriter } from "./summary-writer.js";
 
-/**
- * Cleanup result
- */
-interface CleanupResult {
-	/** Number of checks cleaned up */
+export interface CleanupResult {
 	cleanedUp: number;
-	/** Number of checks that failed to clean up */
 	failed: number;
-	/** Error messages for failed cleanups */
 	errors: string[];
 }
 
 /**
- * Retry wrapper with exponential backoff
+ * Cancel any incomplete validation Check Runs.
  *
- * @param operation - Async operation to retry
- * @param maxRetries - Maximum number of retries (default: 3)
- * @param baseDelay - Base delay in ms (default: 1000)
- * @returns Promise resolving to operation result
+ * @public
  */
-async function withRetry<T>(operation: () => Promise<T>, maxRetries: number = 3, baseDelay: number = 1000): Promise<T> {
-	let lastError: Error | undefined;
-
-	for (let attempt = 0; attempt <= maxRetries; attempt++) {
-		try {
-			return await operation();
-		} catch (error) {
-			/* v8 ignore next -- @preserve - Defensive: handles non-Error throws (extremely rare) */
-			lastError = error instanceof Error ? error : new Error(String(error));
-
-			if (attempt === maxRetries) {
-				break;
-			}
-
-			// Exponential backoff with jitter
-			const delay = Math.min(baseDelay * 2 ** attempt + Math.random() * 1000, 10000);
-
-			await new Promise((resolve) => setTimeout(resolve, delay));
-		}
-	}
-
-	throw lastError;
-}
-
-/**
- * Cleans up incomplete validation checks by marking them as cancelled
- *
- * @param reason - Reason for cleanup (e.g., "Workflow cancelled", "Workflow failed")
- * @param dryRun - Whether this is a dry-run
- * @returns Cleanup result
- */
-export async function cleanupValidationChecks(
-	checkIds: number[],
+export const cleanupValidationChecks = (
+	checkIds: ReadonlyArray<number>,
 	reason: string,
 	dryRun: boolean,
-): Promise<CleanupResult> {
-	startGroup(`Cleaning up ${checkIds.length} validation check(s)`);
+): Effect.Effect<CleanupResult, ActionOutputError, ActionOutputs | CheckRun> =>
+	Effect.gen(function* () {
+		const outputs = yield* ActionOutputs;
+		const checks = yield* CheckRun;
 
-	const result: CleanupResult = {
-		cleanedUp: 0,
-		failed: 0,
-		errors: [],
-	};
+		yield* Effect.logInfo(`Cleaning up ${checkIds.length} validation check(s)`);
 
-	const token = getState("token");
-	if (!token) {
-		throw new Error("No token available from state - ensure pre.ts ran successfully");
-	}
+		const result: CleanupResult = { cleanedUp: 0, failed: 0, errors: [] };
 
-	for (const checkId of checkIds) {
-		const github = getOctokit(token);
-
-		try {
-			info(`Cleaning up check ID: ${checkId}`);
-
+		for (const checkId of checkIds) {
+			yield* Effect.logInfo(`Cleaning up check ID: ${checkId}`);
 			if (dryRun) {
-				info(`🧪 [Dry Run] Would mark check ${checkId} as cancelled`);
+				yield* Effect.logInfo(`🧪 [Dry Run] Would mark check ${checkId} as cancelled`);
 				result.cleanedUp++;
 				continue;
 			}
 
-			// Get current check run status first
-			const { data: currentCheck } = await withRetry(async () => {
-				return await github.rest.checks.get({
-					owner: context.repo.owner,
-					repo: context.repo.repo,
-					check_run_id: checkId,
-				});
-			});
+			const current = yield* Effect.either(checks.get(checkId));
 
-			// Only update if the check is not already completed
-			if (currentCheck.status !== "completed") {
-				await withRetry(async () => {
-					await github.rest.checks.update({
-						owner: context.repo.owner,
-						repo: context.repo.repo,
-						check_run_id: checkId,
-						status: "completed",
-						conclusion: "cancelled",
-						output: {
-							title: "Workflow Cancelled",
-							summary: `This check was cancelled due to workflow interruption.\n\n**Reason**: ${reason}`,
-						},
-					});
-				});
+			if (current._tag === "Left") {
+				yield* Effect.logWarning(`Failed to fetch check ${checkId}: ${current.left.reason}`);
+				result.failed++;
+				result.errors.push(`Check ${checkId}: ${current.left.reason}`);
+				continue;
+			}
 
-				info(`✓ Marked check ${checkId} (${currentCheck.name}) as cancelled`);
+			if (current.right.status === "completed") {
+				yield* Effect.logInfo(
+					`⏭️ Skipped check ${checkId} (${current.right.name}) - already ${current.right.conclusion}`,
+				);
+				continue;
+			}
+
+			const update = yield* Effect.either(
+				checks.complete(checkId, "cancelled", {
+					title: "Workflow Cancelled",
+					summary: `This check was cancelled due to workflow interruption.\n\n**Reason**: ${reason}`,
+				}),
+			);
+
+			if (update._tag === "Right") {
+				yield* Effect.logInfo(`✓ Marked check ${checkId} (${current.right.name}) as cancelled`);
 				result.cleanedUp++;
 			} else {
-				info(`⏭️ Skipped check ${checkId} (${currentCheck.name}) - already ${currentCheck.conclusion}`);
+				yield* Effect.logWarning(`Failed to cleanup check ${checkId}: ${update.left.reason}`);
+				result.failed++;
+				result.errors.push(`Check ${checkId}: ${update.left.reason}`);
 			}
-		} catch (error) {
-			/* v8 ignore next -- @preserve - Defensive: handles non-Error throws (extremely rare) */
-			const errorMsg = error instanceof Error ? error.message : String(error);
-			warning(`Failed to cleanup check ${checkId}: ${errorMsg}`);
-			result.failed++;
-			result.errors.push(`Check ${checkId}: ${errorMsg}`);
 		}
-	}
 
-	endGroup();
+		const resultsTable = summaryWriter.table(
+			["Status", "Count"],
+			[
+				["Cleaned Up", result.cleanedUp.toString()],
+				["Failed", result.failed.toString()],
+				["Total", checkIds.length.toString()],
+			],
+		);
 
-	// Write job summary using summaryWriter (markdown, not HTML)
-	const resultsTable = summaryWriter.table(
-		["Status", "Count"],
-		[
-			["Cleaned Up", result.cleanedUp.toString()],
-			["Failed", result.failed.toString()],
-			["Total", checkIds.length.toString()],
-		],
-	);
+		const sections: Array<{ heading?: string; level?: 2 | 3; content: string }> = [
+			{ heading: "Validation Check Cleanup", content: "" },
+			{ content: `**Reason**: ${reason}` },
+			{ heading: "Results", level: 3, content: resultsTable },
+		];
+		if (result.errors.length > 0) {
+			sections.push({ heading: "Errors", level: 3, content: summaryWriter.list(result.errors) });
+		}
+		yield* outputs.summary(summaryWriter.build(sections));
 
-	const sections: Array<{ heading?: string; level?: 2 | 3; content: string }> = [
-		{ heading: "Validation Check Cleanup", content: "" },
-	];
-
-	sections.push({ content: `**Reason**: ${reason}` });
-	sections.push({ heading: "Results", level: 3, content: resultsTable });
-
-	if (result.errors.length > 0) {
-		sections.push({ heading: "Errors", level: 3, content: summaryWriter.list(result.errors) });
-	}
-
-	await summaryWriter.write(summaryWriter.build(sections));
-
-	return result;
-}
+		return result;
+	});

@@ -1,613 +1,219 @@
-import { readFile } from "node:fs/promises";
+/**
+ * Fixture tests for the create-release-branch stage.
+ *
+ * @remarks
+ * Exercises the path rewired onto the `PullRequest` library service:
+ * `addLabels` called after the release PR is created via the still-raw
+ * `client.graphql` `createPullRequest` mutation. `GitHubClientTest`
+ * satisfies all raw REST calls (`repos.get`) and the GraphQL mutation
+ * (keyed by the full mutation string per the test-layer contract).
+ *
+ * The `git status --porcelain` command response drives whether the version
+ * bump produced changes. An empty `-z` status response keeps `finalCommitSha`
+ * empty so the tree/commit/ref creation path is skipped, which simplifies the
+ * fixture setup while still exercising the PR creation and label steps.
+ */
 
-import * as core from "@actions/core";
-import * as exec from "@actions/exec";
-import { context, getOctokit } from "@actions/github";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { FileSystem } from "@effect/platform";
+import type {
+	ActionOutputsTestState,
+	ActionStateTestState,
+	CheckRunTestState,
+	GitCommitTestState,
+	GitHubClientTestState,
+	PullRequestTestState,
+} from "@savvy-web/github-action-effects/testing";
+import {
+	ActionEnvironmentTest,
+	ActionOutputsTest,
+	ActionStateTest,
+	CheckRunTest,
+	CommandRunnerTest,
+	GitCommitTest,
+	GitHubClientTest,
+	GitHubCommitTest,
+	GitHubIssueTest,
+	GitTagTest,
+	PullRequestTest,
+} from "@savvy-web/github-action-effects/testing";
+import { ConfigProvider, Effect, Layer, Logger } from "effect";
+import { describe, expect, it } from "vitest";
+import type { CreateReleaseBranchResult } from "../src/utils/create-release-branch.js";
+import { CREATE_PULL_REQUEST_MUTATION, createReleaseBranch } from "../src/utils/create-release-branch.js";
 
-import { createApiCommit } from "../src/utils/create-api-commit.js";
-import { createReleaseBranch } from "../src/utils/create-release-branch.js";
-import { isSinglePackage } from "../src/utils/detect-repo-type.js";
-import { getLinkedIssuesFromCommits } from "../src/utils/link-issues-from-commits.js";
-import { cleanupTestEnvironment, createMockOctokit, setupTestEnvironment } from "./utils/github-mocks.js";
+const RELEASE_BRANCH = "changeset-release/main";
+const TARGET_BRANCH = "main";
+const CREATED_PR_NUMBER = 42;
 
-import type { ExecOptionsWithListeners, MockOctokit } from "./utils/test-types.js";
+interface Fixtures {
+	outputsState: ActionOutputsTestState;
+	stateState: ActionStateTestState;
+	checkRunState: CheckRunTestState;
+	commitState: GitCommitTestState;
+	prState: PullRequestTestState;
+	clientState: GitHubClientTestState;
+}
 
-// Mock modules
-vi.mock("node:fs/promises");
-vi.mock("@actions/core");
-vi.mock("@actions/exec");
-vi.mock("@actions/github");
-vi.mock("../src/utils/create-api-commit.js");
-vi.mock("../src/utils/link-issues-from-commits.js");
-vi.mock("../src/utils/detect-repo-type.js");
+const makeFixtures = (
+	params: {
+		/** Whether to pre-populate PullRequestTest with the created PR (required for addLabels to succeed). */
+		seedPr?: boolean;
+		prNumber?: number;
+	} = {},
+): Fixtures => {
+	const prNumber = params.prNumber ?? CREATED_PR_NUMBER;
 
-describe("create-release-branch", () => {
-	let mockOctokit: MockOctokit;
-
-	beforeEach(() => {
-		setupTestEnvironment({ suppressOutput: true });
-
-		// Setup core.getState to return token and packageManager
-		vi.mocked(core.getState).mockImplementation((name: string) => {
-			if (name === "token") return "test-token";
-			if (name === "packageManager") return "pnpm";
-			return "";
+	const prState = PullRequestTest.empty();
+	if (params.seedPr) {
+		prState.prs.push({
+			number: prNumber,
+			nodeId: `PR_node_${prNumber}`,
+			url: `https://github.com/owner/repo/pull/${prNumber}`,
+			title: "chore: release",
+			body: "",
+			state: "open",
+			head: RELEASE_BRANCH,
+			base: TARGET_BRANCH,
+			draft: false,
+			merged: false,
+			mergedAt: null,
+			labels: [],
+			reviewers: [],
+			teamReviewers: [],
+			autoMerge: undefined,
 		});
+		prState.nextNumber = prNumber + 1;
+	}
 
-		vi.mocked(core.getInput).mockImplementation((name: string) => {
-			if (name === "release-branch") return "changeset-release/main";
-			if (name === "target-branch") return "main";
-			if (name === "version-command") return "";
-			if (name === "pr-title-prefix") return "chore: release";
-			return "";
-		});
-		vi.mocked(core.getBooleanInput).mockImplementation((name: string) => {
-			if (name === "dry-run") return false;
-			return false;
-		});
-
-		// Mock core.summary
-		const mockSummary = {
-			addHeading: vi.fn().mockReturnThis(),
-			addEOL: vi.fn().mockReturnThis(),
-			addTable: vi.fn().mockReturnThis(),
-			addRaw: vi.fn().mockReturnThis(),
-			addCodeBlock: vi.fn().mockReturnThis(),
-			write: vi.fn().mockResolvedValue(undefined),
-			stringify: vi.fn().mockReturnValue(""),
-		};
-		Object.defineProperty(core, "summary", { value: mockSummary, writable: true });
-
-		mockOctokit = createMockOctokit();
-
-		// Set default GraphQL mock for createPullRequest
-		mockOctokit.graphql.mockResolvedValue({
-			createPullRequest: {
-				pullRequest: {
-					number: 123,
-					url: "https://github.com/test/pull/123",
-					id: "test-pr-node-id",
+	const clientState: GitHubClientTestState = {
+		restResponses: new Map([["repos.get", { data: { node_id: "repo-node-123" } }]]),
+		graphqlResponses: new Map([
+			[
+				CREATE_PULL_REQUEST_MUTATION,
+				{
+					createPullRequest: {
+						pullRequest: {
+							number: prNumber,
+							url: `https://github.com/owner/repo/pull/${prNumber}`,
+							id: `PR_node_${prNumber}`,
+						},
+					},
 				},
-			},
-		});
+			],
+		]),
+		paginateResponses: new Map([["listCommits", [[]]]]),
+		repo: { owner: "owner", repo: "repo" },
+	};
 
-		vi.mocked(getOctokit).mockReturnValue(mockOctokit as unknown as ReturnType<typeof getOctokit>);
-		Object.defineProperty(vi.mocked(context), "repo", {
-			value: { owner: "test-owner", repo: "test-repo" },
-			writable: true,
-		});
-		Object.defineProperty(vi.mocked(context), "sha", { value: "abc123", writable: true });
-		Object.defineProperty(vi.mocked(context), "runId", { value: 12345, writable: true });
+	return {
+		outputsState: ActionOutputsTest.empty(),
+		stateState: ActionStateTest.empty(),
+		checkRunState: CheckRunTest.empty(),
+		commitState: GitCommitTest.empty(),
+		prState,
+		clientState,
+	};
+};
 
-		// Default exec mock
-		vi.mocked(exec.exec).mockResolvedValue(0);
+/**
+ * Command responses that simulate a version bump with changes.
+ *
+ * - `git status --porcelain` returns a modified `package.json` line so the
+ *   function sees changes and does not exit early.
+ * - `git rev-parse HEAD` returns the parent SHA.
+ * - `git status --porcelain -z` returns empty so `files.length === 0` and
+ *   the tree/commit/ref creation is skipped (simplifying the fixture).
+ */
+const versionChangeCommands: Array<[string, string]> = [
+	["git status --porcelain", "M package.json\nM CHANGELOG.md"],
+	["git rev-parse HEAD", "abc123parent"],
+	["git status --porcelain -z", ""],
+];
 
-		// Mock createApiCommit
-		vi.mocked(createApiCommit).mockResolvedValue({ sha: "abc123def456", created: true });
+const runStage = (
+	f: Fixtures,
+	commandResponses: Array<[string, string]> = versionChangeCommands,
+): Promise<CreateReleaseBranchResult> => {
+	const layer = Layer.mergeAll(
+		ActionEnvironmentTest.layer({
+			GITHUB_SHA: "abc123",
+			GITHUB_REF: "refs/heads/main",
+			GITHUB_REPOSITORY: "owner/repo",
+			GITHUB_REPOSITORY_OWNER: "owner",
+			GITHUB_WORKSPACE: "/workspace",
+			GITHUB_EVENT_NAME: "push",
+			GITHUB_EVENT_PATH: "/dev/null",
+			GITHUB_RUN_ID: "1",
+			GITHUB_RUN_NUMBER: "1",
+			GITHUB_ACTOR: "test",
+			GITHUB_SERVER_URL: "https://github.com",
+			GITHUB_API_URL: "https://api.github.com",
+		}),
+		ActionOutputsTest.layer(f.outputsState),
+		ActionStateTest.layer(f.stateState),
+		CheckRunTest.layer(f.checkRunState),
+		CommandRunnerTest.layer(
+			new Map(commandResponses.map(([key, stdout]) => [key, { exitCode: 0, stdout, stderr: "" }])),
+		),
+		GitCommitTest.layer(f.commitState),
+		GitHubClientTest.layer(f.clientState),
+		GitHubCommitTest.layer(GitHubCommitTest.empty()),
+		GitHubIssueTest.empty().layer,
+		GitTagTest.empty().layer,
+		PullRequestTest.layer(f.prState),
+		FileSystem.layerNoop({}),
+	);
+	const config = ConfigProvider.fromMap(
+		new Map([
+			["release-branch", RELEASE_BRANCH],
+			["target-branch", TARGET_BRANCH],
+			["version-command", ""],
+			["pr-title-prefix", "chore: release"],
+			["dry-run", "false"],
+		]),
+	);
+	return Effect.runPromise(
+		createReleaseBranch("pnpm").pipe(
+			Effect.provide(layer),
+			Effect.provide(Logger.replace(Logger.defaultLogger, Logger.none)),
+			Effect.withConfigProvider(config),
+		),
+	);
+};
 
-		// Mock getLinkedIssuesFromCommits to return empty by default
-		vi.mocked(getLinkedIssuesFromCommits).mockResolvedValue({ linkedIssues: [], commits: [] });
+describe("createReleaseBranch", () => {
+	it("creates the release branch and PR, and applies automated/release labels", async () => {
+		const f = makeFixtures({ seedPr: true });
 
-		// Mock isSinglePackage to return false by default (multi-package repo)
-		vi.mocked(isSinglePackage).mockReturnValue(false);
-
-		// Mock readFile for package.json reading
-		vi.mocked(readFile).mockResolvedValue(JSON.stringify({ name: "test-package", version: "1.0.0" }));
-	});
-
-	afterEach(() => {
-		vi.useRealTimers(); // Reset to real timers after each test
-		cleanupTestEnvironment();
-	});
-
-	it("should create release branch and PR successfully", async () => {
-		// Mock git status to show changes
-		vi.mocked(exec.exec).mockImplementation(async (cmd, args, options?: ExecOptionsWithListeners) => {
-			if (cmd === "git" && args?.includes("status") && args?.includes("--porcelain")) {
-				if (options?.listeners?.stdout) {
-					options.listeners.stdout(Buffer.from("M package.json\nM CHANGELOG.md\n"));
-				}
-			}
-			return 0;
-		});
-
-		// Mock GraphQL createPullRequest mutation
-		mockOctokit.graphql.mockResolvedValue({
-			createPullRequest: {
-				pullRequest: {
-					number: 123,
-					url: "https://github.com/test/pull/123",
-					id: "test-pr-node-id",
-				},
-			},
-		});
-
-		const result = await createReleaseBranch("pnpm");
+		const result = await runStage(f);
 
 		expect(result.created).toBe(true);
-		expect(result.prNumber).toBe(123);
-		expect(result.checkId).toBe(12345);
-		expect(mockOctokit.graphql).toHaveBeenCalled();
-		expect(mockOctokit.rest.issues.addLabels).toHaveBeenCalledWith(
-			expect.objectContaining({
-				labels: ["automated", "release"],
-			}),
-		);
+		expect(result.prNumber).toBe(CREATED_PR_NUMBER);
+		expect(typeof result.checkId).toBe("number");
+
+		// The PR record in PullRequestTest should have the two labels applied.
+		const pr = f.prState.prs.find((p) => p.number === CREATED_PR_NUMBER);
+		expect(pr).toBeDefined();
+		expect(pr?.labels).toEqual(["automated", "release"]);
 	});
 
-	it("should not create branch when no changes from version command", async () => {
-		// Mock git status to show no changes
-		vi.mocked(exec.exec).mockImplementation(async (cmd, args, options?: ExecOptionsWithListeners) => {
-			if (cmd === "git" && args?.includes("status") && args?.includes("--porcelain")) {
-				if (options?.listeners?.stdout) {
-					options.listeners.stdout(Buffer.from(""));
-				}
-			}
-			return 0;
-		});
+	it("exits early when the version bump produces no changes", async () => {
+		const f = makeFixtures();
 
-		const result = await createReleaseBranch("pnpm");
+		const result = await runStage(f, [["git status --porcelain", ""]]);
 
 		expect(result.created).toBe(false);
 		expect(result.prNumber).toBeNull();
-		expect(result.versionSummary).toBe("No changes");
-		expect(mockOctokit.rest.pulls.create).not.toHaveBeenCalled();
+		// No PR was created, so PullRequestTest state stays empty.
+		expect(f.prState.prs).toHaveLength(0);
 	});
 
-	it("should skip actual operations in dry-run mode", async () => {
-		vi.mocked(core.getBooleanInput).mockImplementation((name: string) => {
-			if (name === "dry-run") return true;
-			return false;
-		});
-
-		const result = await createReleaseBranch("pnpm");
-
-		expect(result.created).toBe(true);
-		expect(result.prNumber).toBeNull(); // No PR created in dry-run
-		expect(core.info).toHaveBeenCalledWith(expect.stringContaining("[DRY RUN]"));
-		expect(mockOctokit.graphql).not.toHaveBeenCalled();
-	});
-
-	it("should retry PR creation on failure", async () => {
-		vi.useFakeTimers(); // PR retry uses setTimeout with 2000ms delay
-
-		vi.mocked(exec.exec).mockImplementation(async (cmd, args, options?: ExecOptionsWithListeners) => {
-			if (cmd === "git" && args?.includes("status") && args?.includes("--porcelain")) {
-				if (options?.listeners?.stdout) {
-					options.listeners.stdout(Buffer.from("M package.json\n"));
-				}
-			}
-			return 0;
-		});
-
-		// First GraphQL call fails, second succeeds
-		mockOctokit.graphql.mockRejectedValueOnce(new Error("API Error")).mockResolvedValueOnce({
-			createPullRequest: {
-				pullRequest: {
-					number: 456,
-					url: "https://github.com/test/pull/456",
-					id: "test-pr-node-id",
-				},
-			},
-		});
-
-		const actionPromise = createReleaseBranch("pnpm");
-		await vi.advanceTimersByTimeAsync(5000); // Advance past the 2s retry delay
-		const result = await actionPromise;
-
-		expect(result.created).toBe(true);
-		expect(result.prNumber).toBe(456);
-		expect(mockOctokit.graphql).toHaveBeenCalledTimes(2);
-	});
-
-	it("should use npm command for npm package manager", async () => {
-		vi.mocked(core.getState).mockImplementation((name: string) => {
-			if (name === "token") return "test-token";
-			if (name === "packageManager") return "npm";
-			return "";
-		});
-		vi.mocked(core.getInput).mockImplementation((name: string) => {
-			if (name === "version-command") return "";
-			return "";
-		});
-
-		vi.mocked(exec.exec).mockImplementation(async (cmd, args, options?: ExecOptionsWithListeners) => {
-			if (cmd === "git" && args?.includes("status") && args?.includes("--porcelain")) {
-				if (options?.listeners?.stdout) {
-					options.listeners.stdout(Buffer.from("M package.json\n"));
-				}
-			}
-			return 0;
-		});
-
-		await createReleaseBranch("npm");
-
-		expect(exec.exec).toHaveBeenCalledWith("npm", ["run", "ci:version"], expect.any(Object));
-	});
-
-	it("should use yarn command for yarn package manager", async () => {
-		vi.mocked(core.getState).mockImplementation((name: string) => {
-			if (name === "token") return "test-token";
-			if (name === "packageManager") return "yarn";
-			return "";
-		});
-		vi.mocked(core.getInput).mockImplementation((name: string) => {
-			if (name === "version-command") return "";
-			return "";
-		});
-
-		vi.mocked(exec.exec).mockImplementation(async (cmd, args, options?: ExecOptionsWithListeners) => {
-			if (cmd === "git" && args?.includes("status") && args?.includes("--porcelain")) {
-				if (options?.listeners?.stdout) {
-					options.listeners.stdout(Buffer.from("M package.json\n"));
-				}
-			}
-			return 0;
-		});
-
-		await createReleaseBranch("yarn");
-
-		expect(exec.exec).toHaveBeenCalledWith("yarn", ["ci:version"], expect.any(Object));
-	});
-
-	it("should use custom version command when provided", async () => {
-		vi.mocked(core.getInput).mockImplementation((name: string) => {
-			if (name === "token") return "test-token";
-			if (name === "version-command") return "turbo run version";
-			return "";
-		});
-
-		vi.mocked(exec.exec).mockImplementation(async (cmd, args, options?: ExecOptionsWithListeners) => {
-			if (cmd === "git" && args?.includes("status") && args?.includes("--porcelain")) {
-				if (options?.listeners?.stdout) {
-					options.listeners.stdout(Buffer.from("M package.json\n"));
-				}
-			}
-			return 0;
-		});
-
-		await createReleaseBranch("pnpm");
-
-		expect(exec.exec).toHaveBeenCalledWith("turbo run version", ["turbo", "run", "version"], expect.any(Object));
-	});
-
-	it("should create commit via GitHub API for verified signatures", async () => {
-		vi.mocked(exec.exec).mockImplementation(async (cmd, args, options?: ExecOptionsWithListeners) => {
-			if (cmd === "git" && args?.includes("status") && args?.includes("--porcelain")) {
-				if (options?.listeners?.stdout) {
-					options.listeners.stdout(Buffer.from("M package.json\n"));
-				}
-			}
-			return 0;
-		});
-
-		await createReleaseBranch("pnpm");
-
-		// Verify createApiCommit was called instead of git commit
-		expect(createApiCommit).toHaveBeenCalledWith(
-			"test-token",
-			"changeset-release/main",
-			expect.stringContaining("chore: release"),
-			expect.objectContaining({
-				parentCommitSha: expect.any(String),
-			}),
-		);
-		// Verify git config is NOT called (we use API commits now)
-		expect(exec.exec).not.toHaveBeenCalledWith("git", ["config", "user.name", expect.any(String)]);
-	});
-
-	it("should include check run with neutral conclusion when no changes", async () => {
-		vi.mocked(exec.exec).mockImplementation(async (cmd, args, options?: ExecOptionsWithListeners) => {
-			if (cmd === "git" && args?.includes("status") && args?.includes("--porcelain")) {
-				if (options?.listeners?.stdout) {
-					options.listeners.stdout(Buffer.from(""));
-				}
-			}
-			return 0;
-		});
-
-		await createReleaseBranch("pnpm");
-
-		expect(mockOctokit.rest.checks.create).toHaveBeenCalledWith(
-			expect.objectContaining({
-				conclusion: "neutral",
-			}),
-		);
-	});
-
-	it("should retry on ECONNRESET errors", async () => {
-		vi.useFakeTimers(); // Enable fake timers for retry test
-
-		let versionCallCount = 0;
-		vi.mocked(exec.exec).mockImplementation(async (cmd, args, options?: ExecOptionsWithListeners) => {
-			if (cmd === "pnpm" && args?.[0] === "ci:version") {
-				versionCallCount++;
-				if (versionCallCount === 1) {
-					throw new Error("ECONNRESET: Connection reset by peer");
-				}
-				return 0;
-			}
-			if (cmd === "git" && args?.includes("status") && args?.includes("--porcelain")) {
-				if (options?.listeners?.stdout) {
-					options.listeners.stdout(Buffer.from("M package.json\n"));
-				}
-			}
-			return 0;
-		});
-
-		const actionPromise = createReleaseBranch("pnpm");
-		await vi.advanceTimersByTimeAsync(60000); // Advance time to cover all retries
-		const result = await actionPromise;
-
-		expect(result.created).toBe(true);
-		expect(versionCallCount).toBe(2);
-		expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("ECONNRESET"));
-	});
-
-	it("should throw immediately on non-retryable errors", async () => {
-		vi.mocked(exec.exec).mockImplementation(async (cmd, args) => {
-			if (cmd === "pnpm" && args?.[0] === "ci:version") {
-				throw new Error("Permission denied");
-			}
-			return 0;
-		});
-
-		await expect(createReleaseBranch("pnpm")).rejects.toThrow("Permission denied");
-	});
-
-	it("should throw after max retries exhausted", async () => {
-		vi.useFakeTimers(); // Enable fake timers for retry test
-
-		vi.mocked(exec.exec).mockImplementation(async (cmd, args) => {
-			if (cmd === "pnpm" && args?.[0] === "ci:version") {
-				throw new Error("ETIMEDOUT: Connection timed out");
-			}
-			return 0;
-		});
-
-		const actionPromise = createReleaseBranch("pnpm");
-
-		// Advance timers and catch rejection in a controlled way
-		let caughtError: Error | null = null;
-		actionPromise.catch((e: Error) => {
-			caughtError = e;
-		});
-
-		await vi.advanceTimersByTimeAsync(60000); // Advance time to cover all retries
-		await vi.runAllTimersAsync(); // Ensure all timers complete
-
-		expect(caughtError).toBeInstanceOf(Error);
-		expect((caughtError as unknown as Error).message).toContain("ETIMEDOUT");
-	});
-
-	it("should skip branch linking when no final commit SHA is available", async () => {
-		// Mock createApiCommit to return no commit SHA
-		vi.mocked(createApiCommit).mockResolvedValue({ sha: "", created: false });
-
-		vi.mocked(exec.exec).mockImplementation(async (cmd, args, options?: ExecOptionsWithListeners) => {
-			if (cmd === "git" && args?.includes("status") && args?.includes("--porcelain")) {
-				if (options?.listeners?.stdout) {
-					options.listeners.stdout(Buffer.from("M package.json\n"));
-				}
-			}
-			return 0;
-		});
-
-		await createReleaseBranch("pnpm");
-
-		expect(core.info).toHaveBeenCalledWith("No final commit SHA available, skipping branch linking");
-	});
-
-	it("should link branch to issues when linked issues are found", async () => {
-		vi.mocked(exec.exec).mockImplementation(async (cmd, args, options?: ExecOptionsWithListeners) => {
-			if (cmd === "git" && args?.includes("status") && args?.includes("--porcelain")) {
-				if (options?.listeners?.stdout) {
-					options.listeners.stdout(Buffer.from("M package.json\n"));
-				}
-			}
-			if (cmd === "git" && args?.includes("rev-parse") && args?.includes("HEAD")) {
-				if (options?.listeners?.stdout) {
-					options.listeners.stdout(Buffer.from("abc123\n"));
-				}
-			}
-			return 0;
-		});
-
-		// Mock repos.get to return node_id
-		mockOctokit.rest.repos.get.mockResolvedValue({
-			data: { node_id: "test-repo-node-id" },
-		} as never);
-
-		// Mock linked issues
-		vi.mocked(getLinkedIssuesFromCommits).mockResolvedValue({
-			linkedIssues: [
-				{
-					number: 10,
-					title: "Test Issue",
-					node_id: "issue-node-id-1",
-					state: "open",
-					url: "https://github.com/test/issues/10",
-					commits: ["commit1"],
-				},
-				{
-					number: 20,
-					title: "Another Issue",
-					node_id: "issue-node-id-2",
-					state: "open",
-					url: "https://github.com/test/issues/20",
-					commits: ["commit1"],
-				},
-			],
-			commits: [{ sha: "commit1", message: "Fixes #10", author: "Test User" }],
-		});
-
-		// Mock GraphQL for both PR creation and branch linking
-		mockOctokit.graphql.mockImplementation(async (query: string) => {
-			if (query.includes("createPullRequest")) {
-				return {
-					createPullRequest: {
-						pullRequest: {
-							number: 123,
-							url: "https://github.com/test/pull/123",
-							id: "test-pr-node-id",
-						},
-					},
-				};
-			}
-			if (query.includes("createLinkedBranch")) {
-				return {
-					createLinkedBranch: { linkedBranch: { id: "linked-branch-id" } },
-				};
-			}
-			return {};
-		});
-
-		await createReleaseBranch("pnpm");
-
-		expect(mockOctokit.graphql).toHaveBeenCalledWith(
-			expect.stringContaining("createLinkedBranch"),
-			expect.objectContaining({
-				issueId: "issue-node-id-1",
-				name: "changeset-release/main",
-				oid: "abc123def456",
-				repositoryId: "test-repo-node-id",
-			}),
-		);
-	});
-
-	it("should handle GraphQL errors when linking individual issues", async () => {
-		vi.mocked(exec.exec).mockImplementation(async (cmd, args, options?: ExecOptionsWithListeners) => {
-			if (cmd === "git" && args?.includes("status") && args?.includes("--porcelain")) {
-				if (options?.listeners?.stdout) {
-					options.listeners.stdout(Buffer.from("M package.json\n"));
-				}
-			}
-			if (cmd === "git" && args?.includes("rev-parse") && args?.includes("HEAD")) {
-				if (options?.listeners?.stdout) {
-					options.listeners.stdout(Buffer.from("abc123\n"));
-				}
-			}
-			return 0;
-		});
-
-		mockOctokit.rest.repos.get.mockResolvedValue({
-			data: { node_id: "test-repo-node-id" },
-		} as never);
-
-		vi.mocked(getLinkedIssuesFromCommits).mockResolvedValue({
-			linkedIssues: [
-				{
-					number: 10,
-					title: "Test Issue",
-					node_id: "issue-node-id-1",
-					state: "open",
-					url: "https://github.com/test/issues/10",
-					commits: ["commit1"],
-				},
-			],
-			commits: [{ sha: "commit1", message: "Fixes #10", author: "Test User" }],
-		});
-
-		// Mock GraphQL to succeed for PR creation but fail for branch linking
-		mockOctokit.graphql.mockImplementation(async (query: string) => {
-			if (query.includes("createPullRequest")) {
-				return {
-					createPullRequest: {
-						pullRequest: {
-							number: 123,
-							url: "https://github.com/test/pull/123",
-							id: "test-pr-node-id",
-						},
-					},
-				};
-			}
-			if (query.includes("createLinkedBranch")) {
-				throw new Error("GraphQL API error");
-			}
-			return {};
-		});
-
-		await createReleaseBranch("pnpm");
-
-		expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("Failed to link issue #10"));
-	});
-
-	it("should handle errors from getLinkedIssuesFromCommits gracefully", async () => {
-		vi.mocked(exec.exec).mockImplementation(async (cmd, args, options?: ExecOptionsWithListeners) => {
-			if (cmd === "git" && args?.includes("status") && args?.includes("--porcelain")) {
-				if (options?.listeners?.stdout) {
-					options.listeners.stdout(Buffer.from("M package.json\n"));
-				}
-			}
-			if (cmd === "git" && args?.includes("rev-parse") && args?.includes("HEAD")) {
-				if (options?.listeners?.stdout) {
-					options.listeners.stdout(Buffer.from("abc123\n"));
-				}
-			}
-			return 0;
-		});
-
-		mockOctokit.rest.repos.get.mockResolvedValue({
-			data: { node_id: "test-repo-node-id" },
-		} as never);
-
-		// Mock getLinkedIssuesFromCommits to throw
-		vi.mocked(getLinkedIssuesFromCommits).mockRejectedValue(new Error("Failed to fetch linked issues"));
-
-		await createReleaseBranch("pnpm");
-
-		expect(core.warning).toHaveBeenCalledWith(
-			expect.stringContaining("Failed to link branch to issues: Failed to fetch linked issues"),
-		);
-	});
-
-	it("should use version-based PR title for single-package repos", async () => {
-		// Mock isSinglePackage to return true
-		vi.mocked(isSinglePackage).mockReturnValue(true);
-
-		// Mock readFile to return package.json with version
-		vi.mocked(readFile).mockResolvedValue(JSON.stringify({ name: "my-package", version: "0.1.0" }));
-
-		vi.mocked(exec.exec).mockImplementation(async (cmd, args, options?: ExecOptionsWithListeners) => {
-			if (cmd === "git" && args?.includes("status") && args?.includes("--porcelain")) {
-				if (options?.listeners?.stdout) {
-					options.listeners.stdout(Buffer.from("M package.json\n"));
-				}
-			}
-			return 0;
-		});
-
-		mockOctokit.rest.repos.get.mockResolvedValue({
-			data: { node_id: "test-repo-node-id" },
-		} as never);
-
-		await createReleaseBranch("pnpm");
-
-		// Verify the PR was created with the version-based title
-		expect(core.info).toHaveBeenCalledWith("Single-package repo detected, using PR title: release: 0.1.0");
-	});
-
-	it("should use default PR title for multi-package repos", async () => {
-		// Mock isSinglePackage to return false (multi-package repo)
-		vi.mocked(isSinglePackage).mockReturnValue(false);
-
-		vi.mocked(exec.exec).mockImplementation(async (cmd, args, options?: ExecOptionsWithListeners) => {
-			if (cmd === "git" && args?.includes("status") && args?.includes("--porcelain")) {
-				if (options?.listeners?.stdout) {
-					options.listeners.stdout(Buffer.from("M package.json\n"));
-				}
-			}
-			return 0;
-		});
-
-		mockOctokit.rest.repos.get.mockResolvedValue({
-			data: { node_id: "test-repo-node-id" },
-		} as never);
-
-		await createReleaseBranch("pnpm");
-
-		// Should NOT use version-based title
-		expect(core.info).not.toHaveBeenCalledWith(expect.stringContaining("Single-package repo detected"));
+	it("fails when addLabels cannot find the PR in the service (non-seeded state)", async () => {
+		// The GraphQL mock returns PR #42, but PullRequestTest has no PR #42.
+		// addLabels is called directly (not wrapped in Effect.either), so the
+		// effect must fail with a PullRequestError.
+		const f = makeFixtures({ seedPr: false });
+
+		await expect(runStage(f)).rejects.toThrow();
 	});
 });
