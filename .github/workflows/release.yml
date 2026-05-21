@@ -1,25 +1,22 @@
 name: Workflow
+
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
-      - changeset-release/main
-    types:
-      - opened
-      - synchronize
-      - reopened
+    branches: [main, changeset-release/main]
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
       dry_run:
         description: Run in dry-run mode
         type: boolean
         default: true
+
 concurrency:
   group: release-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
+
 jobs:
   workflow:
     name: Workflow
@@ -31,6 +28,7 @@ jobs:
       packages: write
       attestations: write
       checks: write
+      artifact-metadata: write
     with:
       dry-run: ${{ inputs.dry_run || false }}
       app-bot-id: ${{ vars.APP_BOT_ID }}
