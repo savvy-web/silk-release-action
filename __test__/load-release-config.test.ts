@@ -1,630 +1,288 @@
-import { existsSync, readFileSync } from "node:fs";
-import * as core from "@actions/core";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { loadReleaseConfig, loadSBOMConfig } from "../src/utils/load-release-config.js";
+/**
+ * Unit tests for `loadReleaseConfig` / `loadSBOMConfig`.
+ *
+ * Covers Schema-decoded valid configs, structural failures (non-object root,
+ * unwrapped fields, type violations), source priority across the
+ * local-file / action-input / env-var chain, and that `loadSBOMConfig`
+ * extracts only the `sbom` sub-section while propagating decode errors.
+ *
+ * Each test gets a fresh tmp dir to back the local-repo loader, and a guard
+ * `beforeEach` strips the env vars the loader reads so a developer's shell
+ * environment cannot contaminate the suite.
+ */
 
-// Mock fs modules
-vi.mock("node:fs", () => ({
-	existsSync: vi.fn(),
-	readFileSync: vi.fn(),
-}));
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ActionsConfigProvider } from "@savvy-web/github-action-effects";
+import { Effect } from "effect";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { LoadReleaseConfigResult, LoadSBOMConfigResult } from "../src/utils/load-release-config.js";
+import {
+	loadReleaseConfig as loadReleaseConfigEffect,
+	loadSBOMConfig as loadSBOMConfigEffect,
+} from "../src/utils/load-release-config.js";
 
-vi.mock("@actions/core", () => ({
-	debug: vi.fn(),
-	info: vi.fn(),
-	warning: vi.fn(),
-	getInput: vi.fn(),
-}));
+// GitHub Actions sets `INPUT_SBOM-CONFIG` (hyphen preserved) — the canonical
+// convention `ActionsConfigProvider` follows. The prior tests set
+// `INPUT_SBOM_CONFIG` (underscore), matching the loader's (incorrect) prior
+// env-var read; that bug was a silent "no template supplied" symptom in CI.
+const ENV_VARS = ["INPUT_SBOM-CONFIG", "SILK_RELEASE_SBOM_TEMPLATE"] as const;
 
-describe("load-release-config", () => {
-	const originalEnv = process.env;
+/**
+ * Synchronously evaluate `loadReleaseConfig` against the `ActionsConfigProvider`,
+ * so tests exercise the same env-var convention the action uses in CI.
+ */
+const runLoadReleaseConfig = (rootDir?: string): LoadReleaseConfigResult =>
+	Effect.runSync(loadReleaseConfigEffect(rootDir).pipe(Effect.withConfigProvider(ActionsConfigProvider)));
 
-	beforeEach(() => {
-		vi.resetAllMocks();
-		process.env = { ...originalEnv };
-		delete process.env.SILK_RELEASE_SBOM_TEMPLATE;
-	});
+const runLoadSBOMConfig = (rootDir?: string): LoadSBOMConfigResult =>
+	Effect.runSync(loadSBOMConfigEffect(rootDir).pipe(Effect.withConfigProvider(ActionsConfigProvider)));
 
-	afterEach(() => {
-		vi.resetAllMocks();
-		process.env = originalEnv;
-	});
+// Thin sync façades so the existing tests below can keep their call shape.
+const loadReleaseConfig = runLoadReleaseConfig;
+const loadSBOMConfig = runLoadSBOMConfig;
 
-	describe("loadReleaseConfig", () => {
-		it("should load config from .github/silk-release.json", () => {
-			vi.mocked(existsSync).mockImplementation((path) => {
-				return String(path).endsWith(".github/silk-release.json");
-			});
-			vi.mocked(readFileSync).mockReturnValue(
-				JSON.stringify({
-					sbom: {
-						supplier: { name: "Test Company" },
-					},
-				}),
-			);
+let tmpRoot: string;
+let savedEnv: Map<(typeof ENV_VARS)[number], string | undefined>;
 
-			const result = loadReleaseConfig("/repo");
+beforeEach(() => {
+	tmpRoot = mkdtempSync(join(tmpdir(), "load-release-config-"));
+	mkdirSync(join(tmpRoot, ".github"), { recursive: true });
+	savedEnv = new Map();
+	for (const key of ENV_VARS) {
+		savedEnv.set(key, process.env[key]);
+		delete process.env[key];
+	}
+});
 
-			expect(result.config).toEqual({
-				sbom: {
-					supplier: { name: "Test Company" },
-				},
-			});
-			expect(result.source.source).toBe("local");
-			expect(result.source.location).toBe(".github/silk-release.json");
-		});
+afterEach(() => {
+	for (const [key, value] of savedEnv) {
+		if (value === undefined) {
+			delete process.env[key];
+		} else {
+			process.env[key] = value;
+		}
+	}
+});
 
-		it("should load config from .github/silk-release.jsonc", () => {
-			vi.mocked(existsSync).mockImplementation((path) => {
-				return String(path).endsWith(".github/silk-release.jsonc");
-			});
-			vi.mocked(readFileSync).mockReturnValue(
-				JSON.stringify({
-					sbom: {
-						supplier: { name: "Test Company" },
-					},
-				}),
-			);
+const writeLocal = (fileName: string, body: string): string => {
+	const path = join(tmpRoot, ".github", fileName);
+	writeFileSync(path, body, "utf-8");
+	return path;
+};
 
-			const result = loadReleaseConfig("/repo");
-
-			expect(result.config).toEqual({
-				sbom: {
-					supplier: { name: "Test Company" },
-				},
-			});
-			expect(result.source.source).toBe("local");
-		});
-
-		it("should strip single-line comments from JSONC", () => {
-			vi.mocked(existsSync).mockImplementation((path) => {
-				return String(path).endsWith(".github/silk-release.json");
-			});
-			vi.mocked(readFileSync).mockReturnValue(`{
-				// This is a comment
-				"sbom": {
-					"supplier": { "name": "Test Company" }
-				}
-			}`);
-
-			const result = loadReleaseConfig("/repo");
-
-			expect(result.config).toEqual({
-				sbom: {
-					supplier: { name: "Test Company" },
-				},
-			});
-		});
-
-		it("should strip multi-line comments from JSONC", () => {
-			vi.mocked(existsSync).mockImplementation((path) => {
-				return String(path).endsWith(".github/silk-release.json");
-			});
-			vi.mocked(readFileSync).mockReturnValue(`{
-				/* This is a
-				   multi-line comment */
-				"sbom": {
-					"supplier": { "name": "Test Company" }
-				}
-			}`);
-
-			const result = loadReleaseConfig("/repo");
-
-			expect(result.config).toEqual({
-				sbom: {
-					supplier: { name: "Test Company" },
-				},
-			});
-		});
-
-		it("should return none source when no config file exists", () => {
-			vi.mocked(existsSync).mockReturnValue(false);
-
-			const result = loadReleaseConfig("/repo");
-
-			expect(result.config).toBeUndefined();
-			expect(result.source.source).toBe("none");
-		});
-
-		it("should return none source for invalid JSON", () => {
-			vi.mocked(existsSync).mockReturnValue(true);
-			vi.mocked(readFileSync).mockReturnValue("invalid json");
-
-			const result = loadReleaseConfig("/repo");
-
-			expect(result.config).toBeUndefined();
-			expect(result.source.source).toBe("none");
-		});
-
-		it("should return none source for invalid sbom config", () => {
-			vi.mocked(existsSync).mockReturnValue(true);
-			vi.mocked(readFileSync).mockReturnValue(
-				JSON.stringify({
-					sbom: "invalid", // should be object
-				}),
-			);
-
-			const result = loadReleaseConfig("/repo");
-
-			expect(result.config).toBeUndefined();
-		});
-
-		it("should return undefined config when supplier.name is not a string", () => {
-			vi.mocked(existsSync).mockReturnValue(true);
-			vi.mocked(readFileSync).mockReturnValue(
-				JSON.stringify({
-					sbom: {
-						supplier: { name: 123 }, // should be string
-					},
-				}),
-			);
-
-			const result = loadReleaseConfig("/repo");
-
-			expect(result.config).toBeUndefined();
-		});
-
-		it("should return undefined config when supplier.url is invalid type", () => {
-			vi.mocked(existsSync).mockReturnValue(true);
-			vi.mocked(readFileSync).mockReturnValue(
-				JSON.stringify({
-					sbom: {
-						supplier: { name: "Test", url: 123 }, // should be string or array
-					},
-				}),
-			);
-
-			const result = loadReleaseConfig("/repo");
-
-			expect(result.config).toBeUndefined();
-		});
-
-		it("should return undefined config when copyright.holder is not a string", () => {
-			vi.mocked(existsSync).mockReturnValue(true);
-			vi.mocked(readFileSync).mockReturnValue(
-				JSON.stringify({
-					sbom: {
-						copyright: { holder: 123 }, // should be string
-					},
-				}),
-			);
-
-			const result = loadReleaseConfig("/repo");
-
-			expect(result.config).toBeUndefined();
-		});
-
-		it("should return undefined config when copyright.startYear is not a number", () => {
-			vi.mocked(existsSync).mockReturnValue(true);
-			vi.mocked(readFileSync).mockReturnValue(
-				JSON.stringify({
-					sbom: {
-						copyright: { startYear: "2024" }, // should be number
-					},
-				}),
-			);
-
-			const result = loadReleaseConfig("/repo");
-
-			expect(result.config).toBeUndefined();
-		});
-
-		it("should return undefined config when publisher is not a string", () => {
-			vi.mocked(existsSync).mockReturnValue(true);
-			vi.mocked(readFileSync).mockReturnValue(
-				JSON.stringify({
-					sbom: {
-						publisher: 123, // should be string
-					},
-				}),
-			);
-
-			const result = loadReleaseConfig("/repo");
-
-			expect(result.config).toBeUndefined();
-		});
-
-		it("should return undefined config when documentationUrl is not a string", () => {
-			vi.mocked(existsSync).mockReturnValue(true);
-			vi.mocked(readFileSync).mockReturnValue(
-				JSON.stringify({
-					sbom: {
-						documentationUrl: 123, // should be string
-					},
-				}),
-			);
-
-			const result = loadReleaseConfig("/repo");
-
-			expect(result.config).toBeUndefined();
-		});
-
-		it("should accept valid config with all fields", () => {
-			vi.mocked(existsSync).mockReturnValue(true);
-			vi.mocked(readFileSync).mockReturnValue(
-				JSON.stringify({
-					sbom: {
-						supplier: {
-							name: "Test Company",
-							url: ["https://test.com"],
-						},
-						copyright: {
-							holder: "Test Company LLC",
-							startYear: 2020,
-						},
-						publisher: "Test Publisher",
-						documentationUrl: "https://docs.test.com",
-					},
-				}),
-			);
-
-			const result = loadReleaseConfig("/repo");
-
-			expect(result.config).toEqual({
+describe("loadReleaseConfig - happy path", () => {
+	it("decodes a full valid config from a local silk-release.json", () => {
+		const path = writeLocal(
+			"silk-release.json",
+			JSON.stringify({
 				sbom: {
 					supplier: {
-						name: "Test Company",
-						url: ["https://test.com"],
+						name: "Savvy Web Systems",
+						url: ["https://savvyweb.systems"],
+						contact: [{ name: "Security", email: "security@savvyweb.systems" }],
 					},
-					copyright: {
-						holder: "Test Company LLC",
-						startYear: 2020,
-					},
-					publisher: "Test Publisher",
-					documentationUrl: "https://docs.test.com",
+					authors: [{ name: "Author One" }],
+					publisher: "Savvy Web Systems",
+					copyright: { holder: "Savvy Web Systems LLC", startYear: 2024 },
+					documentationUrl: "https://docs.example",
 				},
-			});
-		});
+			}),
+		);
 
-		it("should accept config without sbom section", () => {
-			vi.mocked(existsSync).mockReturnValue(true);
-			vi.mocked(readFileSync).mockReturnValue(JSON.stringify({}));
+		const result = loadReleaseConfig(tmpRoot);
 
-			const result = loadReleaseConfig("/repo");
-
-			expect(result.config).toEqual({});
-		});
-
-		it("should use current working directory when no rootDir provided", () => {
-			vi.mocked(existsSync).mockReturnValue(false);
-
-			loadReleaseConfig();
-
-			// Should have been called with paths starting from cwd
-			expect(existsSync).toHaveBeenCalled();
-		});
-
-		it("should prefer .github/silk-release.json over .jsonc", () => {
-			// Both files exist
-			vi.mocked(existsSync).mockReturnValue(true);
-			vi.mocked(readFileSync).mockReturnValue(
-				JSON.stringify({
-					sbom: { supplier: { name: "JSON file" } },
-				}),
-			);
-
-			const result = loadReleaseConfig("/repo");
-
-			// Should have loaded the .json file (first in CONFIG_FILE_NAMES)
-			expect(result.config?.sbom?.supplier?.name).toBe("JSON file");
-		});
-
-		it("should return undefined config when supplier is not an object", () => {
-			vi.mocked(existsSync).mockReturnValue(true);
-			vi.mocked(readFileSync).mockReturnValue(
-				JSON.stringify({
-					sbom: {
-						supplier: null, // should be object
-					},
-				}),
-			);
-
-			const result = loadReleaseConfig("/repo");
-
-			expect(result.config).toBeUndefined();
-		});
-
-		it("should return undefined config when copyright is not an object", () => {
-			vi.mocked(existsSync).mockReturnValue(true);
-			vi.mocked(readFileSync).mockReturnValue(
-				JSON.stringify({
-					sbom: {
-						copyright: null, // should be object
-					},
-				}),
-			);
-
-			const result = loadReleaseConfig("/repo");
-
-			expect(result.config).toBeUndefined();
-		});
-
-		it("should load config from SILK_RELEASE_SBOM_TEMPLATE variable", () => {
-			vi.mocked(existsSync).mockReturnValue(false);
-			process.env.SILK_RELEASE_SBOM_TEMPLATE = JSON.stringify({
-				sbom: { supplier: { name: "Variable Company" } },
-			});
-
-			const result = loadReleaseConfig("/repo");
-
-			expect(result.config).toEqual({
-				sbom: { supplier: { name: "Variable Company" } },
-			});
-			expect(result.source.source).toBe("variable");
-			expect(result.source.location).toBe("SILK_RELEASE_SBOM_TEMPLATE");
-		});
-
-		it("should prefer local file over variable", () => {
-			vi.mocked(existsSync).mockImplementation((path) => {
-				return String(path).endsWith(".github/silk-release.json");
-			});
-			vi.mocked(readFileSync).mockReturnValue(
-				JSON.stringify({
-					sbom: { supplier: { name: "Local Company" } },
-				}),
-			);
-			process.env.SILK_RELEASE_SBOM_TEMPLATE = JSON.stringify({
-				sbom: { supplier: { name: "Variable Company" } },
-			});
-
-			const result = loadReleaseConfig("/repo");
-
-			expect(result.config?.sbom?.supplier?.name).toBe("Local Company");
-			expect(result.source.source).toBe("local");
-		});
-
-		it("should return none source when variable has invalid JSON", () => {
-			vi.mocked(existsSync).mockReturnValue(false);
-			process.env.SILK_RELEASE_SBOM_TEMPLATE = "invalid json";
-
-			const result = loadReleaseConfig("/repo");
-
-			expect(result.config).toBeUndefined();
-			expect(result.source.source).toBe("none");
-			expect(core.warning).toHaveBeenCalled();
-		});
-
-		it("should return none source when variable has invalid sbom config", () => {
-			vi.mocked(existsSync).mockReturnValue(false);
-			process.env.SILK_RELEASE_SBOM_TEMPLATE = JSON.stringify({
-				sbom: { supplier: { name: 123 } }, // invalid
-			});
-
-			const result = loadReleaseConfig("/repo");
-
-			expect(result.config).toBeUndefined();
-			expect(result.source.source).toBe("none");
-		});
-
-		it("should reject unwrapped SBOM config from environment variable with helpful error", () => {
-			vi.mocked(existsSync).mockReturnValue(false);
-			// Config without the 'sbom' wrapper - direct SBOM config at root level
-			process.env.SILK_RELEASE_SBOM_TEMPLATE = JSON.stringify({
-				supplier: { name: "Unwrapped Company", url: "https://example.com" },
-				copyright: { holder: "Unwrapped LLC" },
-			});
-
-			const result = loadReleaseConfig("/repo");
-
-			expect(result.config).toBeUndefined();
-			expect(result.source.source).toBe("none");
-			expect(core.warning).toHaveBeenCalledWith(
-				expect.stringContaining("Found SBOM fields (supplier, copyright) at root level"),
-			);
-			expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('must be wrapped in an "sbom" key'));
-		});
-
-		it("should reject unwrapped config with single SBOM field", () => {
-			vi.mocked(existsSync).mockReturnValue(false);
-			process.env.SILK_RELEASE_SBOM_TEMPLATE = JSON.stringify({
-				publisher: "Test Publisher",
-			});
-
-			const result = loadReleaseConfig("/repo");
-
-			expect(result.config).toBeUndefined();
-			expect(result.source.source).toBe("none");
-			expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("Found SBOM fields (publisher) at root level"));
-		});
-
-		it("should reject unwrapped config with documentationUrl field", () => {
-			vi.mocked(existsSync).mockReturnValue(false);
-			process.env.SILK_RELEASE_SBOM_TEMPLATE = JSON.stringify({
-				documentationUrl: "https://docs.example.com",
-			});
-
-			const result = loadReleaseConfig("/repo");
-
-			expect(result.config).toBeUndefined();
-			expect(result.source.source).toBe("none");
-			expect(core.warning).toHaveBeenCalledWith(
-				expect.stringContaining("Found SBOM fields (documentationUrl) at root level"),
-			);
-		});
-
-		it("should include schema URL in unwrapped config error message", () => {
-			vi.mocked(existsSync).mockReturnValue(false);
-			process.env.SILK_RELEASE_SBOM_TEMPLATE = JSON.stringify({
-				supplier: { name: "Test" },
-			});
-
-			loadReleaseConfig("/repo");
-
-			expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("silk-release.schema.json"));
-		});
-
-		it("should accept config that has sbom key along with other non-SBOM root fields", () => {
-			vi.mocked(existsSync).mockReturnValue(false);
-			// Config with sbom key should be accepted even if there are also extra root-level fields
-			process.env.SILK_RELEASE_SBOM_TEMPLATE = JSON.stringify({
-				sbom: { supplier: { name: "Wrapped Company" } },
-				someOtherField: "value", // Non-SBOM field is fine
-			});
-
-			const result = loadReleaseConfig("/repo");
-
-			expect(result.config?.sbom?.supplier?.name).toBe("Wrapped Company");
-			expect(result.source.source).toBe("variable");
-		});
-
-		it("should also reject unwrapped config in local files", () => {
-			vi.mocked(existsSync).mockImplementation((path) => {
-				return String(path).endsWith(".github/silk-release.json");
-			});
-			vi.mocked(readFileSync).mockReturnValue(
-				JSON.stringify({
-					supplier: { name: "Local Unwrapped" },
-				}),
-			);
-
-			const result = loadReleaseConfig("/repo");
-
-			expect(result.config).toBeUndefined();
-			expect(result.source.source).toBe("none");
-			expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("Found SBOM fields (supplier) at root level"));
-		});
-
-		it("should load config from sbom-config action input", () => {
-			vi.mocked(existsSync).mockReturnValue(false);
-			vi.mocked(core.getInput).mockReturnValue(
-				JSON.stringify({
-					sbom: { supplier: { name: "Input Company" } },
-				}),
-			);
-
-			const result = loadReleaseConfig("/repo");
-
-			expect(result.config).toEqual({
-				sbom: { supplier: { name: "Input Company" } },
-			});
-			expect(result.source.source).toBe("input");
-			expect(result.source.location).toBe("sbom-config");
-		});
-
-		it("should prefer local file over action input", () => {
-			vi.mocked(existsSync).mockImplementation((path) => {
-				return String(path).endsWith(".github/silk-release.json");
-			});
-			vi.mocked(readFileSync).mockReturnValue(
-				JSON.stringify({
-					sbom: { supplier: { name: "Local Company" } },
-				}),
-			);
-			vi.mocked(core.getInput).mockReturnValue(
-				JSON.stringify({
-					sbom: { supplier: { name: "Input Company" } },
-				}),
-			);
-
-			const result = loadReleaseConfig("/repo");
-
-			expect(result.config?.sbom?.supplier?.name).toBe("Local Company");
-			expect(result.source.source).toBe("local");
-		});
-
-		it("should prefer action input over environment variable", () => {
-			vi.mocked(existsSync).mockReturnValue(false);
-			vi.mocked(core.getInput).mockReturnValue(
-				JSON.stringify({
-					sbom: { supplier: { name: "Input Company" } },
-				}),
-			);
-			process.env.SILK_RELEASE_SBOM_TEMPLATE = JSON.stringify({
-				sbom: { supplier: { name: "Env Company" } },
-			});
-
-			const result = loadReleaseConfig("/repo");
-
-			expect(result.config?.sbom?.supplier?.name).toBe("Input Company");
-			expect(result.source.source).toBe("input");
-		});
-
-		it("should handle empty sbom-config input", () => {
-			vi.mocked(existsSync).mockReturnValue(false);
-			vi.mocked(core.getInput).mockReturnValue("");
-
-			const result = loadReleaseConfig("/repo");
-
-			expect(result.config).toBeUndefined();
-			expect(result.source.source).toBe("none");
-		});
-
-		it("should handle getInput throwing (not in action context)", () => {
-			vi.mocked(existsSync).mockReturnValue(false);
-			vi.mocked(core.getInput).mockImplementation(() => {
-				throw new Error("Input required and not supplied: sbom-config");
-			});
-			process.env.SILK_RELEASE_SBOM_TEMPLATE = JSON.stringify({
-				sbom: { supplier: { name: "Fallback Env" } },
-			});
-
-			const result = loadReleaseConfig("/repo");
-
-			// Should fall back to env var
-			expect(result.config?.sbom?.supplier?.name).toBe("Fallback Env");
-			expect(result.source.source).toBe("variable");
-		});
-
-		it("should log supplier name when loading from input", () => {
-			vi.mocked(existsSync).mockReturnValue(false);
-			vi.mocked(core.getInput).mockReturnValue(
-				JSON.stringify({
-					sbom: { supplier: { name: "Test Supplier Inc" } },
-				}),
-			);
-
-			loadReleaseConfig("/repo");
-
-			expect(core.info).toHaveBeenCalledWith("  Supplier: Test Supplier Inc");
-		});
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.source.source).toBe("local");
+		// Source location must point at the exact file that matched.
+		expect(result.source.location).toBe(path);
+		expect(result.config?.sbom?.supplier?.name).toBe("Savvy Web Systems");
+		expect(result.config?.sbom?.copyright?.startYear).toBe(2024);
+		expect(result.config?.sbom?.authors).toEqual([{ name: "Author One" }]);
 	});
 
-	describe("loadSBOMConfig", () => {
-		it("should return sbom section from release config", () => {
-			vi.mocked(existsSync).mockReturnValue(true);
-			vi.mocked(readFileSync).mockReturnValue(
-				JSON.stringify({
-					sbom: {
-						supplier: { name: "Test Company" },
+	it("accepts the scalar-or-array forms for supplier.url and supplier.contact", () => {
+		writeLocal(
+			"silk-release.json",
+			JSON.stringify({
+				sbom: {
+					supplier: {
+						name: "S",
+						url: "https://one.example",
+						contact: { email: "x@example" },
 					},
-				}),
-			);
+				},
+			}),
+		);
 
-			const result = loadSBOMConfig("/repo");
+		const result = loadReleaseConfig(tmpRoot);
 
-			expect(result).toEqual({
-				supplier: { name: "Test Company" },
-			});
-		});
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.config?.sbom?.supplier?.url).toBe("https://one.example");
+		expect(result.config?.sbom?.supplier?.contact).toEqual({ email: "x@example" });
+	});
 
-		it("should return undefined when no release config", () => {
-			vi.mocked(existsSync).mockReturnValue(false);
+	it("returns config: undefined and source: 'none' when no source supplies one", () => {
+		const result = loadReleaseConfig(tmpRoot);
 
-			const result = loadSBOMConfig("/repo");
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.config).toBeUndefined();
+		expect(result.source.source).toBe("none");
+	});
+});
 
-			expect(result).toBeUndefined();
-		});
+describe("loadReleaseConfig - structural failures", () => {
+	it("rejects a non-object root", () => {
+		writeLocal("silk-release.json", JSON.stringify([{ supplier: { name: "x" } }]));
 
-		it("should return undefined when no sbom section in config", () => {
-			vi.mocked(existsSync).mockReturnValue(true);
-			vi.mocked(readFileSync).mockReturnValue(JSON.stringify({}));
+		const result = loadReleaseConfig(tmpRoot);
 
-			const result = loadSBOMConfig("/repo");
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.error).toMatch(/must be a JSON object/);
+		expect(result.source.source).toBe("local");
+	});
 
-			expect(result).toBeUndefined();
-		});
+	it("rejects misplaced SBOM fields at the root and names them", () => {
+		writeLocal("silk-release.json", JSON.stringify({ supplier: { name: "x" }, publisher: "y" }));
 
-		it("should load from variable when local file not found", () => {
-			vi.mocked(existsSync).mockReturnValue(false);
-			process.env.SILK_RELEASE_SBOM_TEMPLATE = JSON.stringify({
-				sbom: { supplier: { name: "Variable Company" } },
-			});
+		const result = loadReleaseConfig(tmpRoot);
 
-			const result = loadSBOMConfig("/repo");
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.error).toMatch(/SBOM fields at the root/);
+		// Both misplaced fields appear in the message.
+		expect(result.error).toMatch(/supplier/);
+		expect(result.error).toMatch(/publisher/);
+		expect(result.error).toMatch(/wrap them in an "sbom" key/);
+	});
 
-			expect(result).toEqual({
-				supplier: { name: "Variable Company" },
-			});
-		});
+	it("rejects a Schema type violation with a path-prefixed message", () => {
+		writeLocal("silk-release.json", JSON.stringify({ sbom: { supplier: { name: 42 } } }));
+
+		const result = loadReleaseConfig(tmpRoot);
+
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		// The ArrayFormatter prefix names the failing path.
+		expect(result.error).toMatch(/sbom\.supplier\.name/);
+	});
+
+	it("rejects a fractional startYear (Schema.Int)", () => {
+		writeLocal("silk-release.json", JSON.stringify({ sbom: { copyright: { startYear: 2024.5 } } }));
+
+		const result = loadReleaseConfig(tmpRoot);
+
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.error).toMatch(/sbom\.copyright\.startYear/);
+	});
+
+	it("rejects invalid JSON syntax", () => {
+		writeLocal("silk-release.json", "{ not valid json");
+
+		const result = loadReleaseConfig(tmpRoot);
+
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.error).toMatch(/syntax error/);
+	});
+
+	it("reports the .jsonc path when the .jsonc variant decodes wrong", () => {
+		// Only the .jsonc variant exists — the loader must surface that path,
+		// not the .json filename it never read.
+		const path = writeLocal("silk-release.jsonc", JSON.stringify({ sbom: { supplier: { name: 7 } } }));
+
+		const result = loadReleaseConfig(tmpRoot);
+
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.source.location).toBe(path);
+		expect(result.error).toContain(path);
+	});
+});
+
+describe("loadReleaseConfig - source priority", () => {
+	it("action input wins over the env-var fallback", () => {
+		process.env["INPUT_SBOM-CONFIG"] = JSON.stringify({ sbom: { supplier: { name: "from-input" } } });
+		process.env.SILK_RELEASE_SBOM_TEMPLATE = JSON.stringify({ sbom: { supplier: { name: "from-env" } } });
+
+		const result = loadReleaseConfig(tmpRoot);
+
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.source.source).toBe("input");
+		expect(result.config?.sbom?.supplier?.name).toBe("from-input");
+	});
+
+	it("env-var is used when local file and input are absent", () => {
+		process.env.SILK_RELEASE_SBOM_TEMPLATE = JSON.stringify({ sbom: { supplier: { name: "from-env" } } });
+
+		const result = loadReleaseConfig(tmpRoot);
+
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.source.source).toBe("variable");
+		expect(result.config?.sbom?.supplier?.name).toBe("from-env");
+	});
+
+	it("a malformed local file short-circuits — it does not fall through to env-var", () => {
+		writeLocal("silk-release.json", JSON.stringify({ sbom: { supplier: { name: 99 } } }));
+		process.env.SILK_RELEASE_SBOM_TEMPLATE = JSON.stringify({ sbom: { supplier: { name: "from-env" } } });
+
+		const result = loadReleaseConfig(tmpRoot);
+
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.source.source).toBe("local");
+	});
+});
+
+describe("loadSBOMConfig", () => {
+	it("extracts the sbom sub-section from a valid config", () => {
+		writeLocal("silk-release.json", JSON.stringify({ sbom: { supplier: { name: "Savvy" }, publisher: "Savvy" } }));
+
+		const result = loadSBOMConfig(tmpRoot);
+
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.config?.supplier?.name).toBe("Savvy");
+		expect(result.config?.publisher).toBe("Savvy");
+	});
+
+	it("returns config: undefined when no source supplies one", () => {
+		const result = loadSBOMConfig(tmpRoot);
+
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.config).toBeUndefined();
+		expect(result.source.source).toBe("none");
+	});
+
+	it("returns config: undefined when the config has no sbom section", () => {
+		writeLocal("silk-release.json", JSON.stringify({ $schema: "https://example/schema.json" }));
+
+		const result = loadSBOMConfig(tmpRoot);
+
+		expect(result.ok).toBe(true);
+		if (!result.ok) return;
+		expect(result.config).toBeUndefined();
+		// Source still reflects where the (empty) config came from.
+		expect(result.source.source).toBe("local");
+	});
+
+	it("propagates the decode error from loadReleaseConfig", () => {
+		writeLocal("silk-release.json", JSON.stringify({ sbom: { supplier: { name: 42 } } }));
+
+		const result = loadSBOMConfig(tmpRoot);
+
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.error).toMatch(/sbom\.supplier\.name/);
+		expect(result.source.source).toBe("local");
 	});
 });

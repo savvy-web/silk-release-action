@@ -1,265 +1,161 @@
-import { endGroup, info, startGroup, warning } from "@actions/core";
-import { context, getOctokit } from "@actions/github";
+/**
+ * Close issues linked to a merged release PR.
+ *
+ * @remarks
+ * Uses `GitHubIssue.getLinkedIssues` (closingIssuesReferences) to find
+ * issues that should close when the PR merges, then comments and closes
+ * each one. The whole flow is wrapped in `CheckRun.withCheckRun` for PR
+ * feedback.
+ */
+
+import type { GitHubIssueError } from "@savvy-web/github-action-effects";
+import { ActionEnvironment, ActionOutputs, CheckRun, GitHubIssue } from "@savvy-web/github-action-effects";
+import { Effect } from "effect";
 import { summaryWriter } from "./summary-writer.js";
 
-/**
- * Closed issue information
- */
-interface ClosedIssue {
-	/** Issue number */
-	number: number;
-	/** Issue title */
-	title: string;
-	/** Whether close was successful */
-	closed: boolean;
-	/** Error message if close failed */
-	error?: string;
+/** Per-issue result. */
+export interface ClosedIssue {
+	readonly number: number;
+	readonly title: string;
+	readonly closed: boolean;
+	readonly error?: string;
+}
+
+/** Aggregate result of the close-linked-issues stage. */
+export interface CloseLinkedIssuesResult {
+	readonly closedCount: number;
+	readonly failedCount: number;
+	readonly issues: ReadonlyArray<ClosedIssue>;
 }
 
 /**
- * Result of closing linked issues
- */
-interface CloseLinkedIssuesResult {
-	/** Number of issues successfully closed */
-	closedCount: number;
-	/** Number of issues that failed to close */
-	failedCount: number;
-	/** Details of each issue */
-	issues: ClosedIssue[];
-	/** GitHub check run ID */
-	checkId: number;
-}
-
-/**
- * GraphQL response for closing issues references
- */
-interface ClosingIssuesResponse {
-	repository: {
-		pullRequest: {
-			closingIssuesReferences: {
-				nodes: Array<{
-					number: number;
-					title: string;
-					state: "OPEN" | "CLOSED";
-				}>;
-			};
-		};
-	};
-}
-
-/**
- * Gets linked issues from a PR using GitHub's GraphQL closingIssuesReferences
+ * Close a single linked issue (comment + close) and capture per-issue success.
  *
- * This finds issues that are linked to the PR via:
- * - Keywords in PR body/title (fixes #123, closes #123, etc.)
- * - linkBranch GraphQL mutation (Development section linking)
- *
- * @param github - GitHub API client
- * @param prNumber - PR number to query
- * @returns Array of linked issues with their state
+ * @internal
  */
-async function getLinkedIssues(
-	github: ReturnType<typeof getOctokit>,
-	prNumber: number,
-): Promise<Array<{ number: number; title: string; state: string }>> {
-	try {
-		const response = await github.graphql<ClosingIssuesResponse>(
-			`
-			query GetClosingIssues($owner: String!, $repo: String!, $prNumber: Int!) {
-				repository(owner: $owner, name: $repo) {
-					pullRequest(number: $prNumber) {
-						closingIssuesReferences(first: 50) {
-							nodes {
-								number
-								title
-								state
-							}
-						}
-					}
-				}
-			}
-			`,
-			{
-				owner: context.repo.owner,
-				repo: context.repo.repo,
-				prNumber,
-			},
-		);
-
-		return response.repository.pullRequest.closingIssuesReferences.nodes;
-	} catch (err) {
-		warning(`Failed to query linked issues via GraphQL: ${err instanceof Error ? err.message : String(err)}`);
-		return [];
-	}
-}
-
-/**
- * Closes linked issues when a release PR is merged
- *
- * Uses GitHub's GraphQL API to find issues linked to the PR via
- * closingIssuesReferences, which includes issues linked via:
- * - Keywords in PR body/title
- * - linkBranch mutations (Development section)
- *
- * @param token - GitHub token
- * @param prNumber - PR number that was merged
- * @param dryRun - Whether this is a dry-run
- * @returns Result with closed issues count and details
- */
-export async function closeLinkedIssues(
-	token: string,
+const closeOne = (
+	issueNumber: number,
+	title: string,
 	prNumber: number,
 	dryRun: boolean,
-): Promise<CloseLinkedIssuesResult> {
-	const github = getOctokit(token);
-	const issues: ClosedIssue[] = [];
-	let closedCount = 0;
-	let failedCount = 0;
-
-	startGroup("Closing linked issues");
-
-	// Get linked issues via GraphQL
-	const linkedIssues = await getLinkedIssues(github, prNumber);
-	info(`Found ${linkedIssues.length} linked issue(s) for PR #${prNumber}`);
-
-	if (linkedIssues.length === 0) {
-		info("No linked issues to close");
-		endGroup();
-
-		// Create check run even with no issues
-		const { data: checkRun } = await github.rest.checks.create({
-			owner: context.repo.owner,
-			repo: context.repo.repo,
-			name: dryRun ? "🧪 Close Linked Issues (Dry Run)" : "Close Linked Issues",
-			head_sha: context.sha,
-			status: "completed",
-			conclusion: "success",
-			output: {
-				title: "No linked issues to close",
-				summary: `PR #${prNumber} had no linked issues.`,
-			},
-		});
-
-		return {
-			closedCount: 0,
-			failedCount: 0,
-			issues: [],
-			checkId: checkRun.id,
-		};
-	}
-
-	// Close each linked issue
-	for (const linkedIssue of linkedIssues) {
-		const issueNumber = linkedIssue.number;
-
-		try {
-			// Check if already closed (GraphQL gives us state)
-			if (linkedIssue.state === "CLOSED") {
-				info(`Issue #${issueNumber} is already closed, skipping`);
-				issues.push({
-					number: issueNumber,
-					title: linkedIssue.title,
-					closed: true,
-					error: "Already closed",
-				});
-				continue;
-			}
-
-			if (!dryRun) {
-				// Close the issue with a comment
-				await github.rest.issues.createComment({
-					owner: context.repo.owner,
-					repo: context.repo.repo,
-					issue_number: issueNumber,
-					body: `Closed by release PR #${prNumber} merge.\n\n🤖 _Automated by workflow-release-action_`,
-				});
-
-				await github.rest.issues.update({
-					owner: context.repo.owner,
-					repo: context.repo.repo,
-					issue_number: issueNumber,
-					state: "closed",
-					state_reason: "completed",
-				});
-
-				info(`✓ Closed issue #${issueNumber}: ${linkedIssue.title}`);
-			} else {
-				info(`[DRY RUN] Would close issue #${issueNumber}: ${linkedIssue.title}`);
-			}
-
-			issues.push({
-				number: issueNumber,
-				title: linkedIssue.title,
-				closed: true,
-			});
-			closedCount++;
-		} catch (err) {
-			const errorMessage = err instanceof Error ? err.message : String(err);
-			warning(`Failed to close issue #${issueNumber}: ${errorMessage}`);
-			issues.push({
-				number: issueNumber,
-				title: linkedIssue.title,
-				closed: false,
-				error: errorMessage,
-			});
-			failedCount++;
+): Effect.Effect<ClosedIssue, never, GitHubIssue> =>
+	Effect.gen(function* () {
+		if (dryRun) {
+			yield* Effect.logInfo(`[DRY RUN] Would close issue #${issueNumber}: ${title}`);
+			return { number: issueNumber, title, closed: true } satisfies ClosedIssue;
 		}
-	}
 
-	endGroup();
+		const issues = yield* GitHubIssue;
+		const result = yield* Effect.either(
+			issues
+				.comment(issueNumber, `Closed by release PR #${prNumber} merge.\n\n🤖 _Automated by workflow-release-action_`)
+				.pipe(Effect.flatMap(() => issues.close(issueNumber, "completed"))),
+		);
 
-	// Create check run
-	const checkTitle = dryRun ? "🧪 Close Linked Issues (Dry Run)" : "Close Linked Issues";
+		if (result._tag === "Right") {
+			yield* Effect.logInfo(`✓ Closed issue #${issueNumber}: ${title}`);
+			return { number: issueNumber, title, closed: true } satisfies ClosedIssue;
+		}
 
-	const issuesTable = summaryWriter.table(
-		["Issue", "Title", "Status"],
-		issues.map((issue) => [
-			`[#${issue.number}](https://github.com/${context.repo.owner}/${context.repo.repo}/issues/${issue.number})`,
-			issue.title,
-			issue.closed ? (issue.error === "Already closed" ? "⏭️ Already closed" : "✅ Closed") : `❌ ${issue.error}`,
-		]),
-	);
-
-	const checkSections: Array<{ heading?: string; level?: 2 | 3; content: string }> = [
-		{
-			heading: "Linked Issues Closed",
-			content: `Closed ${closedCount} issue(s) from PR #${prNumber}${failedCount > 0 ? ` (${failedCount} failed)` : ""}`,
-		},
-		{ heading: "Issues", level: 3, content: issuesTable },
-	];
-
-	const checkDetails = summaryWriter.build(checkSections);
-
-	const { data: checkRun } = await github.rest.checks.create({
-		owner: context.repo.owner,
-		repo: context.repo.repo,
-		name: checkTitle,
-		head_sha: context.sha,
-		status: "completed",
-		conclusion: failedCount > 0 ? "neutral" : "success",
-		output: {
-			title: `Closed ${closedCount} linked issue(s)`,
-			summary: checkDetails,
-		},
+		const reason = (result.left as GitHubIssueError).reason ?? String(result.left);
+		yield* Effect.logWarning(`Failed to close issue #${issueNumber}: ${reason}`);
+		return { number: issueNumber, title, closed: false, error: reason } satisfies ClosedIssue;
 	});
 
-	info(`Created check run: ${checkRun.html_url}`);
+/**
+ * Effect program that closes all issues linked to `prNumber`.
+ *
+ * Reports progress through a Check Run on the PR's head SHA. Uses
+ * `CheckRun.create` + `CheckRun.complete` (rather than the `withCheckRun`
+ * bracket) so the inner work can keep its service requirements visible
+ * on the surrounding `Effect.gen` signature.
+ */
+export const closeLinkedIssues = (
+	prNumber: number,
+	dryRun: boolean,
+): Effect.Effect<CloseLinkedIssuesResult, never, ActionEnvironment | ActionOutputs | CheckRun | GitHubIssue> =>
+	Effect.gen(function* () {
+		const env = yield* ActionEnvironment;
+		const outputs = yield* ActionOutputs;
+		const checks = yield* CheckRun;
+		const ghIssues = yield* GitHubIssue;
 
-	// Write job summary
-	const jobSummary = summaryWriter.build([
-		{
-			heading: checkTitle,
-			content: `Closed ${closedCount} issue(s) from PR #${prNumber}${failedCount > 0 ? ` (${failedCount} failed)` : ""}`,
-		},
-		{ heading: "Issues", level: 3, content: issuesTable },
-	]);
+		const { sha, repository } = yield* env.github;
+		const [owner, repo] = repository.split("/");
 
-	await summaryWriter.write(jobSummary);
+		const checkName = dryRun ? "🧪 Close Linked Issues (Dry Run)" : "Close Linked Issues";
+		const { id: checkId } = yield* checks.create(checkName, sha);
 
-	return {
-		closedCount,
-		failedCount,
-		issues,
-		checkId: checkRun.id,
-	};
-}
+		yield* Effect.logInfo(`Querying linked issues for PR #${prNumber}`);
+
+		const linked = yield* ghIssues.getLinkedIssues(prNumber).pipe(
+			Effect.catchAll((e) =>
+				Effect.gen(function* () {
+					yield* Effect.logWarning(`Failed to query linked issues: ${e.reason}`);
+					return [] as Array<{ number: number; title: string }>;
+				}),
+			),
+		);
+
+		yield* Effect.logInfo(`Found ${linked.length} linked issue(s) for PR #${prNumber}`);
+
+		if (linked.length === 0) {
+			yield* checks.complete(checkId, "success", {
+				title: "No linked issues to close",
+				summary: `PR #${prNumber} had no linked issues.`,
+			});
+			yield* outputs.set("closed_issues_count", "0");
+			yield* outputs.set("failed_issues_count", "0");
+			yield* outputs.set("closed_issues", JSON.stringify([]));
+			return { closedCount: 0, failedCount: 0, issues: [] } satisfies CloseLinkedIssuesResult;
+		}
+
+		const issueResults: ClosedIssue[] = [];
+		for (const linkedIssue of linked) {
+			const result = yield* closeOne(linkedIssue.number, linkedIssue.title, prNumber, dryRun);
+			issueResults.push(result);
+		}
+
+		const closedCount = issueResults.filter((r) => r.closed).length;
+		const failedCount = issueResults.length - closedCount;
+
+		const issuesTable = summaryWriter.table(
+			["Issue", "Title", "Status"],
+			issueResults.map((issue) => [
+				`[#${issue.number}](https://github.com/${owner}/${repo}/issues/${issue.number})`,
+				issue.title,
+				issue.closed ? "✅ Closed" : `❌ ${issue.error ?? "Unknown error"}`,
+			]),
+		);
+
+		const summary = summaryWriter.build([
+			{
+				heading: "Linked Issues Closed",
+				content: `Closed ${closedCount} issue(s) from PR #${prNumber}${failedCount > 0 ? ` (${failedCount} failed)` : ""}`,
+			},
+			{ heading: "Issues", level: 3, content: issuesTable },
+		]);
+
+		const conclusion = failedCount > 0 ? "neutral" : "success";
+		yield* checks.complete(checkId, conclusion, {
+			title: `Closed ${closedCount} linked issue(s)`,
+			summary,
+		});
+
+		yield* outputs.summary(summary);
+		yield* outputs.set("closed_issues_count", String(closedCount));
+		yield* outputs.set("failed_issues_count", String(failedCount));
+		yield* outputs.set("closed_issues", JSON.stringify(issueResults));
+
+		return { closedCount, failedCount, issues: issueResults } satisfies CloseLinkedIssuesResult;
+	}).pipe(
+		// Defense-in-depth: the check-run / output / issue services can fail;
+		// we collapse to an empty result rather than propagating, since this
+		// stage is best-effort.
+		Effect.catchAll((e) =>
+			Effect.gen(function* () {
+				yield* Effect.logError(`close-linked-issues failed: ${String(e)}`);
+				return { closedCount: 0, failedCount: 0, issues: [] } satisfies CloseLinkedIssuesResult;
+			}),
+		),
+	);

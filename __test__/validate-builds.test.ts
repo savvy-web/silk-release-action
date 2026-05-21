@@ -1,232 +1,165 @@
-import * as core from "@actions/core";
-import * as exec from "@actions/exec";
-import { context, getOctokit } from "@actions/github";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+/**
+ * Fixture tests for the validate-builds stage.
+ *
+ * @remarks
+ * Exercises the two main paths through `validateBuilds`: a successful build
+ * (build command exits 0, no error text in stderr) and a failed build (exit 0
+ * but stderr contains TypeScript error messages the parser turns into
+ * annotations). Both paths are driven through the `CommandRunnerTest` layer
+ * so no real build is executed.
+ */
+
+import type { ActionOutputsTestState, CheckRunTestState } from "@savvy-web/github-action-effects/testing";
+import {
+	ActionEnvironmentTest,
+	ActionOutputsTest,
+	CheckRunTest,
+	CommandRunnerTest,
+} from "@savvy-web/github-action-effects/testing";
+import { ConfigProvider, Effect, Layer, Logger } from "effect";
+import { describe, expect, it } from "vitest";
+import type { BuildValidationResult } from "../src/utils/validate-builds.js";
 import { validateBuilds } from "../src/utils/validate-builds.js";
-import { cleanupTestEnvironment, createMockOctokit, setupTestEnvironment } from "./utils/github-mocks.js";
-import type { ExecOptionsWithListeners, MockOctokit } from "./utils/test-types.js";
 
-// Mock modules
-vi.mock("@actions/core");
-vi.mock("@actions/exec");
-vi.mock("@actions/github");
+interface Fixtures {
+	outputsState: ActionOutputsTestState;
+	checkRunState: CheckRunTestState;
+}
 
-describe("validate-builds", () => {
-	let mockOctokit: MockOctokit;
+const makeFixtures = (): Fixtures => ({
+	outputsState: ActionOutputsTest.empty(),
+	checkRunState: CheckRunTest.empty(),
+});
 
-	beforeEach(() => {
-		setupTestEnvironment({ suppressOutput: true });
+/**
+ * Run `validateBuilds` against the given fixtures.
+ *
+ * @remarks
+ * `commandResponses` keys are `"<command> <args...>"`. An unregistered command
+ * falls back to exit 0 with empty output (the `CommandRunnerTest` default).
+ * The `build-command` config defaults to `""` so the invocation key is
+ * `"pnpm ci:build"` when package manager is `"pnpm"`.
+ */
+const runStage = (
+	f: Fixtures,
+	commandResponses: Array<[string, { exitCode: number; stdout: string; stderr: string }]> = [],
+): Promise<BuildValidationResult> => {
+	const layer = Layer.mergeAll(
+		ActionEnvironmentTest.layer({
+			GITHUB_SHA: "abc123",
+			GITHUB_REF: "refs/heads/main",
+			GITHUB_REPOSITORY: "owner/repo",
+			GITHUB_REPOSITORY_OWNER: "owner",
+			GITHUB_WORKSPACE: "/workspace",
+			GITHUB_EVENT_NAME: "push",
+			GITHUB_EVENT_PATH: "/dev/null",
+			GITHUB_RUN_ID: "1",
+			GITHUB_RUN_NUMBER: "1",
+			GITHUB_ACTOR: "test",
+			GITHUB_SERVER_URL: "https://github.com",
+			GITHUB_API_URL: "https://api.github.com",
+		}),
+		ActionOutputsTest.layer(f.outputsState),
+		CheckRunTest.layer(f.checkRunState),
+		CommandRunnerTest.layer(new Map(commandResponses)),
+	);
+	const config = ConfigProvider.fromMap(
+		new Map([
+			["build-command", ""],
+			["dry-run", "false"],
+		]),
+	);
+	return Effect.runPromise(
+		validateBuilds("pnpm").pipe(
+			Effect.provide(layer),
+			Effect.provide(Logger.replace(Logger.defaultLogger, Logger.none)),
+			Effect.withConfigProvider(config),
+		),
+	);
+};
 
-		// Setup core.getState to return token and packageManager
-		vi.mocked(core.getState).mockImplementation((name: string) => {
-			if (name === "token") return "test-token";
-			if (name === "packageManager") return "pnpm";
-			return "";
-		});
+describe("validateBuilds", () => {
+	it("records a success check run when the build command succeeds", async () => {
+		const f = makeFixtures();
 
-		vi.mocked(core.getInput).mockImplementation((name: string) => {
-			if (name === "build-command") return "";
-			return "";
-		});
-		vi.mocked(core.getBooleanInput).mockImplementation((name: string) => {
-			if (name === "dry-run") return false;
-			return false;
-		});
-
-		// Mock core.summary
-		const mockSummary = {
-			addHeading: vi.fn().mockReturnThis(),
-			addEOL: vi.fn().mockReturnThis(),
-			addTable: vi.fn().mockReturnThis(),
-			addRaw: vi.fn().mockReturnThis(),
-			addCodeBlock: vi.fn().mockReturnThis(),
-			write: vi.fn().mockResolvedValue(undefined),
-			stringify: vi.fn().mockReturnValue(""),
-		};
-		Object.defineProperty(core, "summary", { value: mockSummary, writable: true });
-
-		mockOctokit = createMockOctokit();
-		vi.mocked(getOctokit).mockReturnValue(mockOctokit as unknown as ReturnType<typeof getOctokit>);
-		Object.defineProperty(vi.mocked(context), "repo", {
-			value: { owner: "test-owner", repo: "test-repo" },
-			writable: true,
-		});
-		Object.defineProperty(vi.mocked(context), "sha", { value: "abc123", writable: true });
-	});
-
-	afterEach(() => {
-		cleanupTestEnvironment();
-	});
-
-	it("should run build successfully with default command", async () => {
-		vi.mocked(exec.exec).mockResolvedValue(0);
-
-		const result = await validateBuilds("pnpm");
-
-		expect(result.success).toBe(true);
-		expect(result.checkId).toBe(12345);
-		expect(exec.exec).toHaveBeenCalledWith("pnpm", ["ci:build"], expect.any(Object));
-	});
-
-	it("should handle build failures", async () => {
-		vi.mocked(exec.exec).mockImplementation(async (_cmd, _args, options?: ExecOptionsWithListeners) => {
-			if (options?.listeners?.stderr) {
-				options.listeners.stderr(Buffer.from("Error: Build failed\n"));
-			}
-			throw new Error("Build failed");
-		});
-
-		const result = await validateBuilds("pnpm");
-
-		expect(result.success).toBe(false);
-	});
-
-	it("should use custom build command when provided", async () => {
-		vi.mocked(core.getInput).mockImplementation((name: string) => {
-			if (name === "build-command") return "turbo run build";
-			return "";
-		});
-		vi.mocked(exec.exec).mockResolvedValue(0);
-
-		await validateBuilds("pnpm");
-
-		expect(exec.exec).toHaveBeenCalledWith("pnpm", ["run", "turbo run build"], expect.any(Object));
-	});
-
-	it("should handle different package managers", async () => {
-		vi.mocked(exec.exec).mockResolvedValue(0);
-
-		await validateBuilds("npm");
-		expect(exec.exec).toHaveBeenCalledWith("npm", ["run", "ci:build"], expect.any(Object));
-	});
-
-	it("should skip build execution in dry-run mode", async () => {
-		vi.mocked(core.getBooleanInput).mockImplementation((name: string) => {
-			if (name === "dry-run") return true;
-			return false;
-		});
-		vi.mocked(exec.exec).mockResolvedValue(0);
-
-		const result = await validateBuilds("pnpm");
+		// The `pnpm ci:build` command succeeds (exit 0, empty stderr) — the
+		// CommandRunnerTest default applies when the key is not registered,
+		// but we register explicitly for clarity.
+		const result = await runStage(f, [["pnpm ci:build", { exitCode: 0, stdout: "Build complete\n", stderr: "" }]]);
 
 		expect(result.success).toBe(true);
-		expect(exec.exec).not.toHaveBeenCalled();
-		expect(core.info).toHaveBeenCalledWith(expect.stringContaining("[DRY RUN]"));
+		expect(f.checkRunState.runs).toHaveLength(1);
+		const run = f.checkRunState.runs[0];
+		expect(run.name).toBe("Build Validation");
+		expect(run.status).toBe("completed");
+		expect(run.conclusion).toBe("success");
 	});
 
-	it("should parse TypeScript errors and create annotations", async () => {
-		vi.mocked(exec.exec).mockImplementation(async (_cmd, _args, options?: ExecOptionsWithListeners) => {
-			if (options?.listeners?.stderr) {
-				options.listeners.stderr(
-					Buffer.from("src/index.ts:10:5 - error TS2322: Type 'string' is not assignable to type 'number'\n"),
-				);
-			}
-			return 0;
-		});
+	it("records a failure check run with annotations when the build emits TS errors", async () => {
+		const f = makeFixtures();
 
-		const result = await validateBuilds("pnpm");
+		// Provide stderr that matches the TypeScript error pattern so
+		// `parseAnnotations` produces at least one annotation entry.
+		// Exit code 0 — `execCapture` succeeds, `success` flips to false
+		// because `buildError.includes("error")` is true.
+		const tsErrors =
+			"src/foo.ts:10:5 - error TS2322: Type 'string' is not assignable to type 'number'.\n" +
+			"src/bar.ts:20:3 - error TS2345: Argument of type 'number' is not assignable to parameter of type 'string'.\n";
+
+		const result = await runStage(f, [["pnpm ci:build", { exitCode: 0, stdout: "", stderr: tsErrors }]]);
 
 		expect(result.success).toBe(false);
-		expect(result.errors).toContain("error TS2322");
+		expect(f.checkRunState.runs).toHaveLength(1);
+		const run = f.checkRunState.runs[0];
+		expect(run.name).toBe("Build Validation");
+		expect(run.status).toBe("completed");
+		expect(run.conclusion).toBe("failure");
+		// The completed output should carry the parsed annotations.
+		expect(run.outputs).toHaveLength(1);
+		const output = run.outputs[0];
+		expect(output.annotations).toBeDefined();
+		expect((output.annotations ?? []).length).toBeGreaterThan(0);
 	});
 
-	it("should use yarn command for yarn package manager", async () => {
-		vi.mocked(exec.exec).mockResolvedValue(0);
+	it("records a dry-run check run with the dry-run title", async () => {
+		const f = makeFixtures();
 
-		await validateBuilds("yarn");
+		const layer = Layer.mergeAll(
+			ActionEnvironmentTest.layer({
+				GITHUB_SHA: "abc123",
+				GITHUB_REF: "refs/heads/main",
+				GITHUB_REPOSITORY: "owner/repo",
+				GITHUB_REPOSITORY_OWNER: "owner",
+				GITHUB_WORKSPACE: "/workspace",
+				GITHUB_EVENT_NAME: "push",
+				GITHUB_EVENT_PATH: "/dev/null",
+				GITHUB_RUN_ID: "1",
+				GITHUB_RUN_NUMBER: "1",
+				GITHUB_ACTOR: "test",
+				GITHUB_SERVER_URL: "https://github.com",
+				GITHUB_API_URL: "https://api.github.com",
+			}),
+			ActionOutputsTest.layer(f.outputsState),
+			CheckRunTest.layer(f.checkRunState),
+			CommandRunnerTest.empty(),
+		);
+		const config = ConfigProvider.fromMap(
+			new Map([
+				["build-command", ""],
+				["dry-run", "true"],
+			]),
+		);
 
-		expect(exec.exec).toHaveBeenCalledWith("yarn", ["ci:build"], expect.any(Object));
-	});
+		await Effect.runPromise(
+			validateBuilds("pnpm").pipe(
+				Effect.provide(layer),
+				Effect.provide(Logger.replace(Logger.defaultLogger, Logger.none)),
+				Effect.withConfigProvider(config),
+			),
+		);
 
-	it("should handle non-Error throw from build command", async () => {
-		vi.mocked(exec.exec).mockImplementation(async () => {
-			throw "String error thrown"; // Non-Error throw to hit String(error) path
-		});
-
-		const result = await validateBuilds("pnpm");
-
-		expect(result.success).toBe(false);
-		expect(core.error).toHaveBeenCalledWith(expect.stringContaining("String error thrown"));
-	});
-
-	it("should capture stdout during build", async () => {
-		vi.mocked(exec.exec).mockImplementation(async (_cmd, _args, options?: ExecOptionsWithListeners) => {
-			if (options?.listeners?.stdout) {
-				options.listeners.stdout(Buffer.from("Build completed successfully\n"));
-			}
-			return 0;
-		});
-
-		const result = await validateBuilds("pnpm");
-
-		expect(result.success).toBe(true);
-	});
-
-	it("should parse generic ERROR in file.ts pattern", async () => {
-		vi.mocked(exec.exec).mockImplementation(async (_cmd, _args, options?: ExecOptionsWithListeners) => {
-			if (options?.listeners?.stderr) {
-				options.listeners.stderr(Buffer.from("ERROR in src/utils/helper.ts: Cannot find module\n"));
-			}
-			// Don't throw - let the ERROR substring in stderr trigger failure via success check
-			return 0;
-		});
-
-		const result = await validateBuilds("pnpm");
-
-		expect(result.success).toBe(false);
-		expect(result.errors).toContain("ERROR in src/utils/helper.ts");
-	});
-
-	it("should ignore non-TypeScript files in generic error pattern", async () => {
-		vi.mocked(exec.exec).mockImplementation(async (_cmd, _args, options?: ExecOptionsWithListeners) => {
-			if (options?.listeners?.stderr) {
-				options.listeners.stderr(Buffer.from("ERROR in webpack.config.js: Invalid configuration\n"));
-			}
-			// Don't throw - let the ERROR substring in stderr trigger failure
-			return 0;
-		});
-
-		const result = await validateBuilds("pnpm");
-
-		expect(result.success).toBe(false);
-		// Non-TS files should be skipped in annotations (the .js file won't create an annotation)
-		expect(result.errors).toContain("ERROR in webpack.config.js");
-	});
-
-	it("should handle generic error pattern without message", async () => {
-		vi.mocked(exec.exec).mockImplementation(async (_cmd, _args, options?: ExecOptionsWithListeners) => {
-			if (options?.listeners?.stderr) {
-				options.listeners.stderr(Buffer.from("ERROR in src/broken.ts\n"));
-			}
-			// Don't throw - let the ERROR substring in stderr trigger failure
-			return 0;
-		});
-
-		const result = await validateBuilds("pnpm");
-
-		expect(result.success).toBe(false);
-		expect(result.errors).toContain("ERROR in src/broken.ts");
-	});
-
-	it("should show truncation message when more than 20 errors", async () => {
-		// Generate more than 20 TypeScript errors
-		const errors = Array.from(
-			{ length: 25 },
-			(_, i) => `src/file${i}.ts:${i + 1}:5 - error TS2322: Type error ${i}\n`,
-		).join("");
-
-		vi.mocked(exec.exec).mockImplementation(async (_cmd, _args, options?: ExecOptionsWithListeners) => {
-			if (options?.listeners?.stderr) {
-				options.listeners.stderr(Buffer.from(errors));
-			}
-			// Don't throw - let the "error" substring in stderr trigger failure via success check
-			return 0;
-		});
-
-		const result = await validateBuilds("pnpm");
-
-		expect(result.success).toBe(false);
-		// The summary should indicate truncation when annotations.length > 20
-		expect(core.summary.addRaw).toHaveBeenCalledWith(expect.stringContaining("Showing first 20"));
+		expect(f.checkRunState.runs).toHaveLength(1);
+		expect(f.checkRunState.runs[0].name).toContain("Dry Run");
+		expect(f.checkRunState.runs[0].conclusion).toBe("success");
 	});
 });

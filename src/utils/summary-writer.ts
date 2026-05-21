@@ -1,4 +1,4 @@
-import { summary } from "@actions/core";
+import { appendFileSync } from "node:fs";
 import type { MarkdownEntryOrPrimitive } from "ts-markdown";
 import { codeblock, h2, h3, h4, table, tsMarkdown, ul } from "ts-markdown";
 
@@ -12,7 +12,10 @@ export const summaryWriter = {
 	 * Appends trailing newlines to separate from subsequent summaries.
 	 */
 	async write(markdown: string): Promise<void> {
-		await summary.addRaw(`${markdown}\n\n`).write();
+		const path = process.env.GITHUB_STEP_SUMMARY;
+		if (path !== undefined && path !== "") {
+			appendFileSync(path, `${markdown}\n\n`);
+		}
 	},
 
 	/**
@@ -74,7 +77,7 @@ export const summaryWriter = {
 	 * Build a markdown code block
 	 */
 	codeBlock(code: string, lang: string = ""): string {
-		return tsMarkdown([codeblock(code, { language: lang || undefined, fenced: true })]);
+		return tsMarkdown([codeblock(code, lang ? { language: lang, fenced: true } : { fenced: true })]);
 	},
 
 	/**

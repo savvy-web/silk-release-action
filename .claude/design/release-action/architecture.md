@@ -3,8 +3,14 @@ title: Release Action Architecture
 category: architecture
 status: current
 completeness: 95
-last-synced: 2026-02-10
+created: 2026-02-07
+updated: 2026-05-21
+last-synced: 2026-05-21
 module: release-action
+related:
+  - integration.md
+  - testing.md
+dependencies: []
 ---
 
 ## Table of Contents
@@ -19,14 +25,18 @@ module: release-action
   - [Phase 3a: Issue Closing](#phase-3a-issue-closing)
   - [Module Dependency Graph](#module-dependency-graph)
   - [Shared Infrastructure](#shared-infrastructure)
+  - [Schema Layer](#schema-layer)
   - [Type System](#type-system)
 - [Rationale](#rationale)
   - [Why Three Phases?](#why-three-phases)
   - [Why API Commits?](#why-api-commits)
   - [Why Recreate vs Rebase?](#why-recreate-vs-rebase)
-  - [Why Pre-validate All Targets?](#why-pre-validate-all-targets)
-  - [Why Topological Sorting?](#why-topological-sorting)
+  - [Why a Five-Step Phase-3 Flow?](#why-a-five-step-phase-3-flow)
+  - [Why Pack Once per Directory?](#why-pack-once-per-directory)
+  - [Why Step.failure Is Non-Throwing?](#why-stepfailure-is-non-throwing)
+  - [Why a Silk-Specific Publishability Helper?](#why-a-silk-specific-publishability-helper)
 - [Key Design Patterns](#key-design-patterns)
+  - [Step-Buffered Logging](#step-buffered-logging)
   - [State Management](#state-management)
   - [Error Handling Strategy](#error-handling-strategy)
   - [GitHub API Usage](#github-api-usage)
@@ -35,238 +45,102 @@ module: release-action
 
 ## Overview
 
-The `workflow-release-action` is a TypeScript GitHub Action implementing a
-three-phase automated release workflow for monorepos and single-package
-repositories using changesets. It runs as a Node.js 24 action
-(`runs.using: node24`) with `pre`, `main`, and `post` lifecycle hooks,
-declared in `action.yml`.
+The `workflow-release-action` is a TypeScript GitHub Action implementing a three-phase automated release workflow for monorepos and single-package repositories using changesets. It runs as a Node.js 24 action (`runs.using: node24`) with `pre`, `main`, and `post` lifecycle hooks, declared in `action.yml`.
 
-The action automates the full release lifecycle: detecting pending changes,
-managing a release branch and PR, validating builds and registry readiness,
-publishing to multiple registries (npm, JSR, GitHub Packages, custom), creating
-Git tags and GitHub releases with attestations, and closing linked issues. All
-operations produce GitHub Check Runs for rich CI feedback and post sticky
-comments on the release PR for at-a-glance status.
+The action automates the full release lifecycle: detecting pending changes, managing a release branch and PR, validating builds and registry readiness, publishing to multiple registries (npm, JSR, GitHub Packages, custom), creating Git tags and GitHub releases with attestations, and closing linked issues. All operations produce GitHub Check Runs for rich CI feedback and post sticky comments on the release PR for at-a-glance status.
 
-The codebase totals approximately 17,000 lines of TypeScript across 3 entry
-points, 38 utility modules, and 4 type definition files.
+Phase 3 is a pure Effect orchestration built on `@savvy-web/github-action-effects@1.2.0` library services. Phases 1 and 2 remain as a mix of Effect entry points (entry-point scripts, `src/release/validation.ts`) and imperative utility modules. The library ships the `Attest` and `Sbom` services, eliminating the old `src/services/attest/` directory entirely.
 
 ## Current State
 
 ### Entry Points
 
-Three lifecycle scripts correspond to the GitHub Actions `pre`, `main`, and
-`post` execution stages:
+Three lifecycle scripts correspond to the GitHub Actions `pre`, `main`, and `post` execution stages. All three are full Effect programs run via `Action.run` from `@savvy-web/github-action-effects`:
 
-- **`src/pre.ts`** (79 lines) -- Pre-action setup. Generates a GitHub App
-  installation token via `createAppToken()` using the `app-id` and
-  `private-key` inputs. Validates token permissions via
-  `checkTokenPermissions()`. Saves the token, expiration time, installation ID,
-  app slug, and optional `github-token` (for GitHub Packages fallback) to
-  Actions state for use by the main and post scripts. Failures here call
-  `setFailed()` to abort the workflow.
+- **`src/pre.ts`** — Pre-action setup. Provisions a GitHub App installation token via `GitHubToken.provision()` using the `app-client-id` and `app-private-key` inputs. `provision` persists the `InstallationToken` envelope (token, expiry, installation ID, and resolved App identity) to `ActionState` under an internal key. Also records the optional `github-token` input to `GithubPackagesTokenState` in `src/state.ts`. Failures here abort the workflow. The `PreLive` layer composes `GitHubAppLive` over `OctokitAuthAppLive` plus `NodeFileSystem.layer`.
+- **`src/main.ts`** — Main orchestrator. Auto-detects the package manager via `detectRepoType()`, reads action inputs, retrieves the token via `GitHubToken.client()`, and calls `detectWorkflowPhase()` to determine which phase to run. Routes execution to one of four phase handlers. Each phase emits its results through the `ReleaseOutput` schema (see `src/schema/`).
+- **`src/post.ts`** — Post-action cleanup. Logs total execution duration, then conditionally revokes the GitHub App installation token via `GitHubToken.dispose()`. Errors are emitted as warnings so they never fail the overall workflow.
 
-- **`src/main.ts`** (1,043 lines) -- Main orchestrator. Auto-detects the
-  package manager via `detectRepoType()`, reads action inputs, retrieves the
-  token from state, and calls `detectWorkflowPhase()` to determine which phase
-  to run. Routes execution to one of four phase handlers via a `switch`
-  statement:
-  - `runPhase1BranchManagement()` -- creates or updates the release branch
-  - `runPhase2Validation()` -- validates builds, publishing, and release notes
-  - `runPhase3Publishing()` -- publishes packages, creates tags and releases
-  - `runCloseLinkedIssues()` -- closes issues linked to the release PR
-
-- **`src/post.ts`** (50 lines) -- Post-action cleanup. Logs total execution
-  duration, then conditionally revokes the GitHub App installation token.
-  Skips revocation if the token is a legacy token, if `skip-token-revoke` is
-  true, or if the token has already expired. Errors are emitted as warnings
-  (not failures) so they never fail the overall workflow.
+Input renames from the `github-action-effects` 1.1.0 migration: `app-id` → `app-client-id`, `private-key` → `app-private-key`.
 
 ### Phase Detection
 
-**`detect-workflow-phase.ts`** (411 lines)
+**`detect-workflow-phase.ts`**
 
-The phase router determines which phase to execute based on GitHub event
-context. It exports both an async version (with API calls for release commit
-detection) and a synchronous lightweight version for quick checks.
+The phase router determines which phase to execute based on GitHub event context. It exports both an async version (with API calls for release commit detection) and a synchronous lightweight version for quick checks.
 
 Detection priority order:
 
-1. **Explicit phase** -- If the `phase` input is provided, skip detection and
-   use it directly. This supports the `workflow-control-action` pattern where
-   phase is pre-determined.
-
-2. **Phase 3a (close-issues)** -- `pull_request` event where the release PR
-   (`changeset-release/main` to `main`) was merged. Detected from event
-   payload without API calls.
-
-3. **Phase 3 (publishing)** -- Push to main with a release commit. Detection
-   uses a two-strategy approach with retry logic:
-   - **Primary**: Query `listPullRequestsAssociatedWithCommit` to find a
-     merged PR from the release branch.
-   - **Fallback**: Query recently closed PRs from the release branch and
-     match `merge_commit_sha` against the current commit. This handles cases
-     where the branch is auto-deleted before the association API returns
-     results.
-   - **Retry**: 3 attempts with 5-second delays between attempts to handle
-     GitHub API eventual consistency after PR merge.
-
-4. **Phase 2 (validation)** -- Push to the release branch
-   (`changeset-release/main`).
-
-5. **Phase 1 (branch-management)** -- Push to main that is not a release
-   commit.
-
-6. **None** -- Any other branch or event. Logs a skip message and exits.
+1. **Explicit phase** — If the `phase` input is provided, skip detection and use it directly. This supports the `workflow-control-action` pattern where phase is pre-determined.
+2. **Phase 3a (close-issues)** — `pull_request` event where the release PR (`changeset-release/main` to `main`) was merged. Detected from event payload without API calls.
+3. **Phase 3 (publishing)** — Push to main with a release commit. Detection uses a two-strategy approach with retry logic: primary queries `listPullRequestsAssociatedWithCommit`; fallback queries recently closed PRs from the release branch and matches `merge_commit_sha`. 3 attempts with 5-second delays handle GitHub API eventual consistency.
+4. **Phase 2 (validation)** — Push to the release branch (`changeset-release/main`).
+5. **Phase 1 (branch-management)** — Push to main that is not a release commit.
+6. **None** — Any other branch or event. Logs a skip message and exits.
 
 ### Phase 1: Release Branch Management
 
-Triggers on push to `main` (non-release commits). Three sequential steps:
+Triggers on push to `main` (non-release commits). Phase 1 is rewired onto the `ChangesetAnalyzer` service from `@savvy-web/github-action-effects` (replacing the old `get-changeset-status.ts` module). Publishability detection now flows through `PublishabilityDetectorAdaptiveLive` from `src/release/publishability.ts` (which delegates to the silk rules in silk mode). The remaining utility modules are:
 
-- **`detect-publishable-changes.ts`** (467 lines) -- Runs
-  `changeset status --output=json` to find pending changesets. Builds a
-  package map from `workspace-tools`, reads each package's `package.json` to
-  check for `publishConfig.access` or publish targets. Separates packages into
-  two categories: publishable (have registry targets) and version-only (have
-  changesets but no publish targets -- receive version bumps and GitHub
-  releases only). Creates a GitHub Check Run summarizing discovered packages.
-
-- **`get-changeset-status.ts`** (236 lines) -- Wraps the changeset status
-  command with fallback logic. If changesets have already been consumed (after
-  a version command), checks out the merge base between the release branch and
-  target branch to retrieve the original changeset state.
-
-- **`check-release-branch.ts`** (158 lines) -- Checks whether the
-  `changeset-release/main` branch exists (via `repos.getBranch` REST API,
-  handling 404) and whether an open PR exists from that branch to the target
-  branch. Creates a Check Run reporting findings.
-
-- **`create-release-branch.ts`** (504 lines) -- Creates a new branch from
-  `origin/{targetBranch}`, runs the changeset version command, creates a
-  signed API commit (see `create-api-commit.ts`), links issues found in
-  changeset files via GraphQL mutations, and opens a PR with standard labels.
-  Includes retry logic with exponential backoff for API operations.
-
-- **`update-release-branch.ts`** (868 lines) -- Recreates the branch from
-  main rather than rebasing (avoids merge conflicts entirely). Collects linked
-  issues from changesets BEFORE running the version command (since version
-  consumes changesets). Creates an API commit with the main branch HEAD as
-  parent (effectively rebasing onto main). After the version command runs,
-  computes a version-aware PR title for single-package repos (e.g.,
-  "release: 1.2.3") by calling `isSinglePackage()` and reading `package.json`;
-  falls back to `prTitlePrefix` for multi-package repos or on failure. For
-  existing open PRs, updates the title via `pulls.update`. Handles PR
-  reopening if the branch was previously deleted, with a fallback that resets
-  `prNumber` to `null` when the reopen API call fails (e.g., after a
-  force-push), causing the existing "create new PR" block to execute instead
-  of leaving the release branch orphaned without a PR.
+- **`check-release-branch.ts`** — Checks whether the `changeset-release/main` branch exists and whether an open PR exists from that branch to the target branch.
+- **`create-release-branch.ts`** — Creates a new branch from `origin/{targetBranch}`, runs the changeset version command, creates a signed API commit (see `create-api-commit.ts`), links issues found in changeset files via GraphQL mutations, and opens a PR with standard labels.
+- **`update-release-branch.ts`** — Recreates the branch from main rather than rebasing. Collects linked issues from changesets before running the version command. Creates an API commit with the main branch HEAD as parent. Handles PR reopening if the branch was previously deleted.
 
 ### Phase 2: Release Validation
 
-Triggers on push to the release branch. Creates all validation Check Runs
-upfront for immediate visibility, then runs steps sequentially:
+Triggers on push to the release branch. Creates all validation Check Runs upfront for immediate visibility. Phase 2 now routes through `src/release/validation.ts` (`runValidation`) — a pure Effect program — rather than a chain of imperative utility modules.
 
-- **`link-issues-from-commits.ts`** (626 lines) -- Gets commits since the
-  last release tag via `compareCommitsWithBasehead`. Extracts issue references
-  using patterns like `closes #N`, `fixes #N`, `resolves #N`. Queries
-  GraphQL for PR-linked issues (via `closingIssuesReferences`). Creates
-  cross-reference comments on linked issues.
+**`src/release/validation.ts`** (`runValidation`) — Enumerates workspace packages, diffs versions against the target branch to discover which packages are being released, resolves publish targets via `resolvePublishableTargets` (the `PublishabilityDetectorAdaptiveLive` seam), groups targets by build directory, runs `PackagePublish.dryRun` per build directory, generates one SBOM per build directory via the `Sbom` service, applies `sbom-config` metadata, and assembles a `ValidationReport`. The report is build-centric: `ValidationPackageResult` carries builds, sizes, SBOMs, and registry targets. `strict-warnings` mode escalates warning-severity findings to `failure` for auto-merge gating.
 
-- **`validate-builds.ts`** (232 lines) -- Runs the build command (e.g.,
-  `pnpm ci:build`). Parses stdout and stderr for TypeScript errors
-  (`TS\d{4}:` pattern) and generic error patterns. Creates a Check Run with
-  annotations (capped at 50 per GitHub API limit).
+The remaining Phase-2 imperative modules handle check-run lifecycle:
 
-- **`validate-publish.ts`** (360 lines) -- Multi-registry dry-run validation
-  for each package. For each package: resolves publish targets via
-  `resolveTargets()`, sets up authentication via `setupRegistryAuth()`,
-  pre-validates (directory exists, `package.json` present) via
-  `preValidateTarget()`, then runs `dryRunPublish()`. Version conflicts
-  (package already published at that version) are treated as non-errors.
-  Handles version-only packages that have no publish targets.
-
-- **`generate-release-notes-preview.ts`** (460 lines) -- Extracts the latest
-  version section from each package's `CHANGELOG.md` file. Creates a Check
-  Run with a formatted preview of all pending release notes.
-
-- **`generate-sbom-preview.ts`** (471 lines) -- Generates Software Bill of
-  Materials previews for each package. Validates NTIA compliance via
-  `validate-ntia-compliance.ts`. Creates a Check Run with SBOM details.
-
-- **`create-validation-check.ts`** (128 lines) -- Creates a unified Check Run
-  aggregating results from all validation steps into a single status table.
-
-- **`update-sticky-comment.ts`** (120 lines) -- Posts or updates a PR comment
-  using the `<!-- sticky-comment-id: release-validation -->` HTML marker for
-  idempotent updates. Contains validation results table, publish summary,
-  version-only package list, and release notes preview link.
-
-- **`cleanup-validation-checks.ts`** (151 lines) -- On workflow failure, marks
-  any incomplete Check Runs as failed with the error message. Prevents
-  orphaned "in progress" checks.
+- **`validate-builds.ts`** — Runs the build command and parses stdout/stderr for TypeScript errors and generic error patterns.
+- **`link-issues-from-commits.ts`** — Gets commits since the last release tag and extracts issue references.
+- **`create-validation-check.ts`** — Creates a unified Check Run aggregating all validation steps.
+- **`update-sticky-comment.ts`** — Posts or updates a PR comment using an HTML marker for idempotent updates.
+- **`cleanup-validation-checks.ts`** — On workflow failure, marks any incomplete Check Runs as failed.
+- **`extract-release-notes.ts`** — Extracts the first-H2-to-second-H2 CHANGELOG section for the new version.
+- **`count-changesets.ts`** — Counts changesets per package.
+- **`derive-check-conclusion.ts`** — Derives a GitHub check-run conclusion from findings with `strict-warnings` support.
 
 ### Phase 3: Release Publishing
 
-Triggers on merge of the release PR to main. Creates publishing Check Runs
-upfront, then runs steps sequentially:
+Triggers on merge of the release PR to main. Phase 3 is a pure Effect orchestration in `src/release/`. The old imperative modules (`publish-packages.ts`, `create-github-releases.ts`, `create-attestation.ts`, `attest-runner.ts`, `detect-released-packages.ts`, `generate-publish-summary.ts`, `registry-auth.ts`, `resolve-targets.ts`, `topological-sort.ts`, `pre-validate-target.ts`, `dry-run-publish.ts`, `registry-utils.ts`, `logger.ts`, and others) are all deleted.
 
-- **`detect-released-packages.ts`** (303 lines) -- Two detection strategies:
-  1. **From PR**: Gets files changed in the merged PR via `pulls.listFiles`,
-     reads old and new `package.json` versions from the PR diff.
-  2. **From commit**: Compares `HEAD~1` with `HEAD` to find version changes.
-  Infers bump type (major, minor, patch) from version comparison.
+`main.ts` calls the five Phase-3 steps in sequence:
 
-- **`publish-packages.ts`** (756 lines) -- The core publishing engine.
-  Pre-validates ALL targets across ALL packages before publishing any single
-  package (fail-early strategy). Sorts packages in topological order via
-  `topological-sort.ts`. For each package, resolves targets, sets up auth,
-  builds, and calls `publishToTarget()`. Collects results including tarball
-  paths, provenance URLs, and attestation details.
+1. **`detectReleases`** (`src/release/publish.ts`) — Detects released packages from the merged PR's file diff (PR-first) or commit diff (fallback). Wrapped in `Step.withStep`.
+2. **`runBuildAndSbom`** (`src/release/publish.ts`) — Runs `ci:build` once, then generates one CycloneDX SBOM per package via `Sbom.generate`. Aborts the phase if the build fails. Returns `BuildSbomResult` including per-package SBOM paths.
+3. **`runPublishTargets`** (`src/release/publish.ts`) — Publishes packages. Discovers workspace packages, resolves publish targets via `PublishabilityDetector`, sorts topologically via `TopologicalSorter`, and calls `publishDirectoryGroup` for each unique build directory. The publish orchestrator aborts before any releases if fewer than half the targets published (i.e., N/2 or 0/N).
+4. **`runReleases`** (`src/release/releases.ts`) — Creates Git tags (sha-aware idempotency) and GitHub releases, uploads SBOM and tarball assets, creates SLSA provenance and SBOM attestations (idempotent: checks `Attest.listForSubject` before writing). One attestation per build directory, not per target.
+5. **`buildPublishSummary`** (`src/release/report.ts`) — Generates the sticky-comment publish summary and Check Run output.
 
-- **`publish-target.ts`** (776 lines) -- Handles publishing a single package
-  to a single registry. Packs the tarball (`npm pack`), verifies tarball
-  integrity via SHA-512 hash, uploads to the registry. Supports four registry
-  types:
-  - **npm** (npmjs.org): OIDC trusted publishing or token-based auth
-  - **JSR** (jsr.io): OIDC trusted publishing via `jsr publish`
-  - **GitHub Packages**: GitHub App token auth
-  - **Custom registries**: Token from `custom-registries` input
+The `determine-tag-strategy.ts` utility (still in `src/utils/`) decides between single-tag and per-package tag strategies and runs between steps 3 and 4.
 
-- **`determine-tag-strategy.ts`** (215 lines) -- Decides between single-tag
-  (`v1.0.0`) for single-package repos or fixed versioning groups, and
-  per-package tags (`@scope/pkg@1.0.0`) for independent versioning in
-  monorepos. Also determines the overall release type (major, minor, patch)
-  from changeset bump types.
+#### `publishDirectoryGroup` three-way probe-then-decide
 
-- **`create-github-releases.ts`** (761 lines) -- Creates GitHub releases for
-  each tag. Extracts release notes from `CHANGELOG.md` files. Uploads tarball
-  assets from the publish step. Creates attestations (provenance, SBOM,
-  per-asset) via `create-attestation.ts`.
+For each npm target in a directory group:
 
-- **`create-attestation.ts`** (1,180 lines) -- Generates npm provenance
-  attestations and CycloneDX SBOM attestations via the GitHub Attestations
-  API (`@actions/attest`). Enhances SBOM metadata via
-  `enhance-sbom-metadata.ts`. The largest single module in the codebase.
+1. **Pack once** — `PackagePublish.pack(directory)` runs once for the group; the same tarball (same digest) is used for all targets.
+2. **Auth setup** — `PackagePublish.setupAuth` writes the token to `~/.npmrc` before the probe so authenticated registries (e.g. GitHub Packages) can be probed.
+3. **Probe** — `NpmRegistry.getPublishedIntegrity` checks whether the version is already on the registry.
+4. **Decide** — Three outcomes, each rendered with the correct icon:
+   - Version absent → publish tarball → `Step.success("published")`
+   - Version present, digest matches → recovery skip → `Step.success("skipped-identical (recovery)")`
+   - Version present, digest mismatch → abort → `Step.failure("failed-mismatch")`
+5. **Attestation** — After all targets in the group are resolved, `runAttestations` checks `Attest.listForSubject` for existing provenance and SBOM attestations; writes fresh ones only if absent.
 
-- **`generate-publish-summary.ts`** (1,055 lines) -- Generates detailed
-  markdown summaries for publish results. Three summary types: normal
-  publish results, pre-validation failure summaries, and build failure
-  summaries. Used for both Check Run output and job summary.
+#### Abort-before-releases gate
+
+After `runPublishTargets`, `main.ts` checks whether the publish results warrant creating GitHub releases. The rule: if fewer than half the targets published (i.e., every target failed or was mismatched), the release step is skipped and the workflow fails. A fully-recovered run (all targets were `skipped-identical`) proceeds to release creation normally.
 
 ### Phase 3a: Issue Closing
 
-- **`close-linked-issues.ts`** (265 lines) -- Queries the merged PR's
-  `closingIssuesReferences` via GraphQL (up to 50 issues). For each linked
-  issue, posts a comment noting the release and closes the issue. Creates a
-  Check Run summarizing results.
-
-- **`run-close-linked-issues.ts`** (48 lines) -- Thin wrapper that calls
-  `closeLinkedIssues()` and sets action outputs (`closed_issues_count`,
-  `failed_issues_count`, `closed_issues`).
+**`close-linked-issues.ts`** — Queries the merged PR's `closingIssuesReferences` via GraphQL (up to 50 issues). For each linked issue, posts a comment noting the release and closes the issue. Creates a Check Run summarizing results.
 
 ### Module Dependency Graph
 
-Key dependency flows between modules:
+Key dependency flows:
 
 ```text
 main.ts
@@ -274,10 +148,7 @@ main.ts
   +-- detect-workflow-phase.ts (routing)
   |
   +-- Phase 1 chain:
-  |     detect-publishable-changes.ts
-  |       +-- get-changeset-status.ts
-  |       +-- find-package-path.ts
-  |       +-- release-summary-helpers.ts
+  |     ChangesetAnalyzer (library service, replaces get-changeset-status)
   |     check-release-branch.ts
   |     create-release-branch.ts
   |       +-- create-api-commit.ts
@@ -290,162 +161,100 @@ main.ts
   +-- Phase 2 chain:
   |     link-issues-from-commits.ts
   |     validate-builds.ts
-  |     validate-publish.ts
-  |       +-- resolve-targets.ts
-  |       +-- registry-auth.ts
-  |       +-- pre-validate-target.ts
-  |       +-- dry-run-publish.ts
-  |       +-- registry-utils.ts
-  |     generate-release-notes-preview.ts
-  |     generate-sbom-preview.ts
+  |     release/validation.ts (runValidation — Effect, all-in-one)
+  |       +-- release/resolve-targets.ts (resolvePublishableTargets seam)
+  |       +-- release/publishability.ts (PublishabilityDetectorAdaptiveLive)
+  |       +-- release/changeset-config.ts (ChangesetConfig service)
   |       +-- infer-sbom-metadata.ts
+  |       +-- load-release-config.ts
+  |       +-- count-changesets.ts
+  |       +-- extract-release-notes.ts
   |       +-- validate-ntia-compliance.ts
-  |     create-validation-check.ts
+  |       +-- PackagePublish.dryRun (library service)
+  |       +-- Sbom.generate (library service)
+  |     release/report.ts (buildValidationComment, buildChecksTable, …)
+  |     create-validation-check.ts + derive-check-conclusion.ts
   |     update-sticky-comment.ts
   |     cleanup-validation-checks.ts
   |
-  +-- Phase 3 chain:
-  |     detect-released-packages.ts
-  |       +-- find-package-path.ts
-  |     publish-packages.ts
-  |       +-- topological-sort.ts
-  |       +-- resolve-targets.ts
-  |       +-- registry-auth.ts
-  |       +-- publish-target.ts
-  |       +-- pre-validate-target.ts
-  |       +-- load-release-config.ts
-  |     determine-tag-strategy.ts
-  |       +-- release-summary-helpers.ts
-  |     create-github-releases.ts
-  |       +-- create-attestation.ts
-  |       +-- enhance-sbom-metadata.ts
-  |     generate-publish-summary.ts
+  +-- Phase 3 chain (all Effect):
+  |     release/publish.ts
+  |       detectReleases → GitHubContent / PullRequest / GitHubCommit (library services)
+  |       runBuildAndSbom → CommandRunner + Sbom (library services)
+  |       runPublishTargets → WorkspaceDiscovery + PublishabilityDetector +
+  |                           TopologicalSorter + PackagePublish + NpmRegistry +
+  |                           Attest (library services)
+  |     determine-tag-strategy.ts (between publish and releases)
+  |     release/releases.ts
+  |       runReleases → GitHubRelease + GitTag + GitHubArtifactMetadata +
+  |                     Attest + OidcTokenIssuer (library services)
+  |     release/report.ts (buildPublishSummary, buildReleaseNotesPreviewSummary, …)
+  |     release/layers.ts
+  |       ReleaseLive = WorkspacesLive + ChangesetConfigLive + PublishabilityDetectorAdaptiveLive
+  |
+  +-- Phase 3a:
   |     close-linked-issues.ts
   |
   +-- Cross-cutting:
-        create-api-commit.ts (Phase 1: create/update branch)
-        registry-auth.ts (Phase 2: validate, Phase 3: publish)
-        registry-utils.ts (Phase 2: validate, Phase 3: publish)
-        resolve-targets.ts (Phase 2: validate, Phase 3: publish)
-        find-package-path.ts (Phase 1: detect, Phase 3: detect)
+        create-api-commit.ts (Phase 1)
+          +-- commit-signoff.ts (DCO trailer)
         release-summary-helpers.ts (Phase 1: detect, Phase 3: tags)
-        logger.ts (all phases)
+        determine-tag-strategy.ts (Phase 3: tag strategy)
+        tokens.ts (still used by Phase 2 build validation context)
         summary-writer.ts (all phases)
+        schema/release-output.ts + schema/projections.ts (all phases, output)
+        schema/silk-release-config.ts (Phase 2: sbom-config decoding)
 ```
 
 ### Shared Infrastructure
 
-- **`logger.ts`** (162 lines) -- Structured workflow logging using emoji-based
-  state indicators and phase markers. Provides methods for phase headers,
-  step groups (wrapping `@actions/core` startGroup/endGroup), context
-  logging, success/warning/error messages, and skip/no-action messages.
-  All methods are constants on a frozen object.
+- **`summary-writer.ts`** — Type-safe markdown generation using `ts-markdown`. Provides methods for tables, key-value tables, bulleted lists, headings, code blocks, and multi-section document building. Writes to the GitHub Actions job summary.
 
-- **`summary-writer.ts`** (125 lines) -- Type-safe markdown generation using
-  the `ts-markdown` library. Provides methods for tables, key-value tables,
-  bulleted lists, headings, code blocks, sections, and multi-section document
-  building. Writes to the GitHub Actions job summary.
+- **`create-api-commit.ts`** — Creates Git commits via the GitHub REST API (blob, tree, commit, ref update). Produces automatically GPG-signed commits when authenticated as a GitHub App. Used by both `create-release-branch.ts` and `update-release-branch.ts`.
 
-- **`topological-sort.ts`** (150 lines) -- Implements Kahn's algorithm for
-  sorting packages in dependency order. Uses `workspace-tools` to build the
-  dependency graph. Returns sorted package names with dependencies first,
-  or reports circular dependency errors.
+- **`tokens.ts`** — Two exported helpers for the (non-Effect) publish chain context. `appToken()` returns the GitHub App installation token from `ActionState`. `packagesToken()` prefers the workflow `github-token` and falls back to the App token.
 
-- **`create-api-commit.ts`** (326 lines) -- Creates Git commits via the
-  GitHub REST API (blob, tree, commit, ref update). Produces automatically
-  GPG-signed commits when authenticated as a GitHub App. Handles file
-  additions, modifications, and deletions. Used by both
-  `create-release-branch.ts` and `update-release-branch.ts`.
+- **`commit-signoff.ts`** — Resolves the DCO `Signed-off-by` trailer for action-created commits. Reads the App bot identity via `GitHubToken.botIdentity()` and falls back to `github-actions[bot]` when unavailable.
 
-- **`create-app-token.ts`** (211 lines) -- Generates GitHub App installation
-  tokens using `@octokit/auth-app`. Supports scoped permissions. Exports
-  `isTokenExpired()` and `revokeAppToken()` for post-action cleanup.
+- **`detect-repo-type.ts`** — Detects whether the repository is a monorepo or single-package repo. Auto-detects the package manager from `package.json`. Reads changeset configuration for ignore patterns and private package handling.
 
-- **`check-token-permissions.ts`** (105 lines) -- Detects token type
-  (GitHub App, fine-grained PAT, classic PAT, GITHUB_TOKEN) by inspecting
-  the token prefix and querying the API. Logs diagnostic information about
-  the authenticated identity.
+- **`release-summary-helpers.ts`** — Package discovery and workspace analysis utilities. Provides changeset config reading (fixed/linked groups), workspace package info retrieval, and package group classification. Consumed by Phase 1 (detect summary) and Phase 3 tag strategy.
 
-- **`find-package-path.ts`** (106 lines) -- Resolves package names to
-  filesystem paths using `workspace-tools`. Caches the workspace map to
-  avoid repeated filesystem operations across multiple lookups.
+- **`parse-changesets.ts`** — Parses changeset YAML frontmatter from `.changeset/*.md` files. Extracts package names, bump types, and summary descriptions. Used during branch creation to link issues.
 
-- **`detect-repo-type.ts`** (289 lines) -- Detects whether the repository is
-  a monorepo or single-package repo. Auto-detects the package manager from
-  the `packageManager` field in `package.json` or lockfile presence
-  (`pnpm-lock.yaml`, `yarn.lock`, `bun.lock`, `package-lock.json`). Reads
-  changeset configuration for ignore patterns and private package handling.
+- **`determine-tag-strategy.ts`** — Decides between single-tag (`v1.0.0`) for single-package repos and per-package tags (`@scope/pkg@1.0.0`) for independent monorepo versioning.
 
-- **`parse-changesets.ts`** (246 lines) -- Parses changeset YAML frontmatter
-  from `.changeset/*.md` files. Extracts package names, bump types, and
-  summary descriptions. Used during branch creation to link issues.
+- **`extract-release-notes.ts`** — Extracts a CHANGELOG section from first-H2 to second-H2 for a given version. Used by Phase 2 validation and Phase 3 release creation.
 
-- **`release-summary-helpers.ts`** (282 lines) -- Package discovery and
-  workspace analysis utilities. Provides changeset config reading
-  (fixed/linked groups), workspace package info retrieval, and package
-  group classification.
+- **`count-changesets.ts`** — Counts changesets per package. Used by Phase 2 validation.
 
-- **`registry-utils.ts`** (149 lines) -- Registry URL utilities including
-  display name generation, package view URL construction, npm registry
-  detection, and GitHub Packages registry detection.
+- **`derive-check-conclusion.ts`** — Derives a GitHub check-run conclusion (`success` | `failure` | `neutral`) from structured `ValidationFinding` arrays. Supports `strict-warnings` escalation.
 
-- **`resolve-targets.ts`** (208 lines) -- Reads `publishConfig` from each
-  package's `package.json` and resolves it into a list of `ResolvedTarget`
-  objects (one per registry). Handles npm, JSR, GitHub Packages, and custom
-  registries. Maps registry URLs to environment variable names for auth.
+- **`infer-sbom-metadata.ts`** — Infers SBOM metadata from `package.json` fields (license, author, repository, homepage).
 
-- **`registry-auth.ts`** (523 lines) -- Sets up authentication for each
-  registry type. Creates/modifies `.npmrc` files with auth tokens. Supports
-  OIDC token exchange for npm and JSR, GitHub App token for GitHub Packages,
-  and explicit tokens for custom registries. Validates registry availability
-  with health checks (10-second timeout).
+- **`validate-ntia-compliance.ts`** — Validates SBOMs against the 7 NTIA minimum elements.
 
-- **`pre-validate-target.ts`** (238 lines) -- Pre-publication validation for
-  a single target. Checks that the package directory exists, `package.json`
-  is present and parseable, the version field exists, and the tarball can
-  be created.
+- **`load-release-config.ts`** — Layered config loading (repo file, action input, env var) for SBOM metadata. Now decodes through `SilkReleaseConfig` schema from `src/schema/silk-release-config.ts`.
 
-- **`dry-run-publish.ts`** (217 lines) -- Executes `npm publish --dry-run`
-  against each target registry. Parses output for errors vs. warnings.
-  Treats "version already published" as a non-error (idempotent).
+- **`detect-copyright-year.ts`** — Detects copyright year ranges from LICENSE files, existing copyright notices, and git history.
 
-- **`load-release-config.ts`** (377 lines) -- Loads release configuration
-  from the SBOM config input, environment variables, and package-level
-  settings. Merges supplier, copyright, and license metadata for SBOM
-  generation.
+### Schema Layer
 
-- **`infer-sbom-metadata.ts`** (289 lines) -- Infers SBOM metadata from
-  `package.json` fields (license, author, repository, homepage). Falls back
-  to repository-level defaults when package-level metadata is incomplete.
+The `src/schema/` directory contains the structured output contract and input config schema.
 
-- **`validate-ntia-compliance.ts`** (256 lines) -- Validates that generated
-  SBOMs meet NTIA (National Telecommunications and Information
-  Administration) minimum elements for software transparency.
+- **`src/schema/release-output.ts`** — Defines `ReleaseOutput` as a `Schema.Union` of three phase structs discriminated by the `phase` literal: `BranchManagementOutput`, `ValidationOutput`, `PublishingOutput`. Each struct carries orthogonal machine flags (`noop`, `succeeded`, `hasFailures`) plus a derived human-readable `status`. The action emits a Schema-encoded instance as the single `result` action output plus five scalar mirrors (`phase`, `status`, `succeeded`, `package-count`, `release-pr-number`). Action manifest outputs collapsed from ~22 to 9 total.
+- **`src/schema/projections.ts`** — Three pure projection functions (`toBranchManagementOutput`, `toValidationOutput`, `toPublishingOutput`). Each takes an explicit input interface as the deliberate seam between internal pipeline types and the published contract.
+- **`src/schema/silk-release-config.ts`** — `SilkReleaseConfig` Effect schema for the `sbom-config` action input (and `.github/silk-release.json`). The `INPUT_SCHEMA_URL` constant points to the hosted JSON Schema at the `savvy-web/silk-release-action` rename target.
 
-- **`enhance-sbom-metadata.ts`** (247 lines) -- Enriches CycloneDX SBOM
-  documents with supplier information, copyright notices, and lifecycle
-  metadata from the release configuration.
-
-- **`detect-copyright-year.ts`** (142 lines) -- Detects copyright year ranges
-  from LICENSE files, existing copyright notices, and Git history. Used by
-  SBOM metadata generation.
+Two JSON Schema artifacts at repo root are generated from these schemas: `silk-release-action.input.schema.json` and `silk-release-action.output.schema.json`. Both carry `$id` URLs pointing to `raw.githubusercontent.com/savvy-web/silk-release-action/main/`.
 
 ### Type System
 
-- **`types/publish-config.ts`** (334 lines) -- Comprehensive type definitions
-  for the multi-registry publishing system: `PublishTarget`,
-  `ResolvedTarget`, `PublishResult`, `PackagePublishValidation`,
-  `AuthSetupResult`, `PrePackedTarball`, and related types.
-
-- **`types/shared-types.ts`** (69 lines) -- Shared interfaces used across
-  modules: `ValidationResult` and `PackageValidationResult`.
-
-- **`types/sbom-config.ts`** (328 lines) -- Type definitions for SBOM
-  configuration: `SBOMConfig`, `EnhancedCycloneDXDocument`, NTIA compliance
-  types, and supplier/copyright metadata types.
-
-- **`types/global.d.ts`** (7 lines) -- Global type augmentations for the
-  Vitest testing globals.
+- **`src/release/types.ts`** — Stable type home for publish-chain result shapes: `TargetPublishResult`, `PackagePublishResult`, `PublishPackagesResult`, `ValidationFinding`, `ValidationFindingScope`, `ValidationPackageResult`, `PackageBuildResult`, `BuildTargetResult`, `BuildSbom`, `ReleaseInfo`, `AssetInfo`. The three-way `TargetPublishResult.status` (`"published" | "skipped" | "failed"`) is the canonical publish outcome; `success: boolean` is a backward-compat projection.
+- **`src/types/publish-config.ts`** — Comprehensive type definitions for the multi-registry publishing system: `PublishTarget`, `ResolvedTarget`, `PublishResult`, `AuthSetupResult`, `PrePackedTarball` and related types.
+- **`src/types/shared-types.ts`** — Shared interfaces used across modules: `ValidationResult` and `PackageValidationResult`.
+- **`src/types/sbom-config.ts`** — Type definitions for SBOM configuration: `SBOMConfig`, `EnhancedCycloneDXDocument`, NTIA compliance types, and supplier/copyright metadata types.
+- **`src/types/global.d.ts`** — Global type augmentations for Vitest testing globals.
 
 ## Rationale
 
@@ -453,181 +262,135 @@ main.ts
 
 The three-phase approach separates concerns by execution context:
 
-1. **Branch management** runs on every push to main. It is fast (no builds)
-   and creates/updates the release PR as a staging area.
-2. **Validation** runs on the release branch. Build compilation, dry-run
-   publishing, and SBOM generation can be slow without blocking pushes to
-   main. The release PR provides a visible gate for review.
-3. **Publishing** only runs after the release PR is merged. This gating
-   ensures human approval before packages reach registries.
+1. **Branch management** runs on every push to main. It is fast (no builds) and creates/updates the release PR as a staging area.
+2. **Validation** runs on the release branch. Build compilation, dry-run publishing, and SBOM generation can be slow without blocking pushes to main. The release PR provides a visible gate for review.
+3. **Publishing** only runs after the release PR is merged. This gating ensures human approval before packages reach registries.
 
-This separation also means that validation failures never block development
-on main, and publishing failures are isolated from the validation context.
+This separation also means that validation failures never block development on main, and publishing failures are isolated from the validation context.
 
 ### Why API Commits?
 
-Using the GitHub REST API to create commits (blob, tree, commit, ref update)
-instead of `git push` provides several benefits:
+Using the GitHub REST API to create commits instead of `git push` provides:
 
-- **Automatic GPG signing**: Commits created by a GitHub App are
-  automatically signed and marked as "verified" in the GitHub UI.
-- **Atomic operations**: Branch creation and commit happen as API calls,
-  avoiding race conditions with concurrent pushes.
-- **No git credentials on runner**: The runner never needs git push
-  access -- only the API token is used.
-- **DCO compliance**: The commit message can include a
-  `Signed-off-by` footer for Developer Certificate of Origin compliance.
+- **Automatic GPG signing**: Commits created by a GitHub App are automatically signed and marked as "verified" in the GitHub UI.
+- **Atomic operations**: Branch creation and commit happen as API calls, avoiding race conditions with concurrent pushes.
+- **No git credentials on runner**: The runner never needs git push access — only the API token is used.
+- **DCO compliance**: The commit message can include a `Signed-off-by` footer.
 
 ### Why Recreate vs Rebase?
 
-The `update-release-branch.ts` module recreates the release branch from main
-instead of performing a `git rebase`:
+The `update-release-branch.ts` module recreates the release branch from main instead of performing a `git rebase`. The release branch contains only machine-generated changes (changeset version bumps and CHANGELOG updates). Recreation is atomic; there is never a reason to preserve manual commits on it.
 
-- **Avoids merge conflicts entirely**: The release branch contains only
-  machine-generated changes (changeset version bumps and CHANGELOG updates).
-  There is never a reason to preserve manual commits on it.
-- **Simpler error handling**: Rebase can fail partway through, leaving the
-  branch in a broken state. Recreation is atomic -- it either succeeds
-  completely or fails without side effects.
-- **Deterministic output**: The branch always reflects the current state of
-  main plus the version command output. No accumulated history.
+### Why a Five-Step Phase-3 Flow?
 
-### Why Pre-validate All Targets?
+Phase 3 is split into `detectReleases` → `runBuildAndSbom` → `runPublishTargets` → `runReleases` → summary to enforce fail-fast gating at each boundary:
 
-The `publish-packages.ts` module pre-validates ALL targets across ALL packages
-before publishing any single package. This prevents partial publishes where
-some packages succeed and others fail, leaving registries in an inconsistent
-state. For monorepos with inter-package dependencies, a partial publish could
-mean dependent packages reference versions that do not exist on some
-registries.
+- Build failure aborts before any tarball is created.
+- Publish failure of more than half the targets aborts before GitHub releases are created, preventing a release that references versions which are not fully on registries.
+- Attestation failures are non-fatal so a single OIDC hiccup does not roll back the entire release.
 
-### Why Topological Sorting?
+### Why Pack Once per Directory?
 
-Packages are published in dependency order (dependencies before dependents)
-so that registries like JSR and npm can resolve inter-package dependencies
-at publish time. Without topological sorting, a package referencing
-`@org/dep@2.0.0` could be published before `@org/dep@2.0.0` exists on the
-registry, causing the publish to fail or the package to be installed with
-a stale dependency.
+When publishing to multiple registries, the action packs the tarball once and reuses it for all targets. This ensures every registry receives identical content with the same SHA-256 digest. This is critical for attestation — provenance attestations reference a specific digest, so all targets must share the same tarball.
+
+### Why Step.failure Is Non-Throwing?
+
+`@savvy-web/github-action-effects@1.2.0` introduced `Step.failure` as a non-throwing primitive. Unlike an Effect failure (which short-circuits), `Step.failure(label)` renders `❌ label` and spills the buffered step output to the log, but the Effect value continues propagating normally. This allows the orchestrator to record a failed outcome for a target, emit the correct icon in the log, and still process the remaining targets in the batch. Every failure path in `publishDirectoryGroup` and `runReleases` uses `Step.failure`; no failure path emits `✅`.
+
+### Why a Silk-Specific Publishability Helper?
+
+The vanilla `PublishabilityDetectorLive` from `workspaces-effect` treats `package.json#private: true` as "not publishable" full stop. Silk convention extends that: private packages may opt back in by declaring `publishConfig.access` (one default target) or `publishConfig.targets` (one or more targets). `PublishabilityDetectorAdaptiveLive` in `src/release/publishability.ts` reads `ChangesetConfig.mode` per-call and dispatches to the silk override (silk mode), the library default (vanilla mode), or a no-op detector (none mode). The same rules are encoded identically in `pnpm-config-dependency-action` and the silk `changesets` package.
 
 ## Key Design Patterns
 
+### Step-Buffered Logging
+
+Every Phase-3 operation is wrapped in `Step.withStep(name, effect)`. The library buffers all log output emitted during the step and either flushes it on success or spills it on failure. Key primitives:
+
+- `Step.withStep(name, effect)` — wraps an operation; buffers output; re-emits buffer on failure.
+- `Step.success(label)` — marks the step passed; renders `✅ label`.
+- `Step.failure(label)` — marks the step failed; renders `❌ label`; spills buffer; returns normally (does not throw).
+
+This gives every sub-operation a clear emoji-annotated outcome in the GitHub Actions log without requiring the orchestrator to catch and re-wrap errors.
+
 ### State Management
 
-GitHub Actions state (`core.saveState()` / `core.getState()`) passes data
-between the `pre`, `main`, and `post` lifecycle hooks within a single action
-run. State is stored as strings and includes:
+GitHub Actions state passes data between `pre`, `main`, and `post` lifecycle hooks. State schemas are defined in `src/state.ts`:
 
-- `token` -- The generated GitHub App installation token
-- `expiresAt` -- Token expiration time (ISO 8601)
-- `installationId` -- GitHub App installation ID
-- `appSlug` -- GitHub App URL-friendly name
-- `skipTokenRevoke` -- Whether to skip token revocation
-- `tokenType`, `tokenLogin`, `appName` -- Token identity metadata
-- `packageManager` -- Auto-detected package manager
-- `githubToken` -- Optional fallback token for GitHub Packages
+- **`StartTimeState`** — Wall-clock timestamp captured by `pre.ts` for total-duration reporting in `post.ts`.
+- **`GithubPackagesTokenState`** — Optional workflow `github-token` written by `pre.ts` when the input is provided; read by the Phase-3 publish flow.
+- **`PackageManagerState`** — Auto-detected package manager, written by `main.ts` Phase-0 boot.
+
+The GitHub App installation token is persisted by `GitHubToken.provision` (from `@savvy-web/github-action-effects`) under an internal key and read back via `GitHubToken.client()` / `GitHubToken.read()`. `process.env.GITHUB_TOKEN` is never written by the action.
 
 ### Error Handling Strategy
 
-Errors are handled differently depending on the execution context:
+Errors are handled differently depending on execution context:
 
-- **Pre-action**: Fatal. Calls `setFailed()` immediately because the token is
-  required for all subsequent operations.
-- **Post-action**: Non-fatal. Emits `warning()` so that token revocation
-  failures never fail the overall workflow.
-- **Phase handlers**: Each phase wraps its execution in try/catch. On failure,
-  incomplete Check Runs are cleaned up via `cleanupValidationChecks()`, then
-  `setFailed()` is called with context about which phase failed.
-- **Network operations**: Retry logic with exponential backoff for transient
-  API failures. The release commit detection retries 3 times with 5-second
-  delays.
-- **Non-critical operations**: Sticky comment updates and issue closing use
-  try/catch with warnings. Their failure does not fail the workflow since the
-  primary operations (validation or publishing) already succeeded.
+- **Pre-action**: Fatal. Calls `setFailed()` immediately because the token is required for all subsequent operations.
+- **Post-action**: Non-fatal. Emits `warning()` so that token revocation failures never fail the overall workflow.
+- **Phase handlers**: Each phase wraps its execution in try/catch. On failure, incomplete Check Runs are cleaned up via `cleanupValidationChecks()`, then `setFailed()` is called.
+- **Phase-3 per-target failures**: Non-fatal via `Step.failure`. The batch continues; the abort-before-releases gate checks aggregate results afterward.
+- **Network operations**: Retry logic with exponential backoff for transient API failures.
 
 ### GitHub API Usage
 
 The action uses three GitHub API communication patterns:
 
-- **REST API** (`octokit.rest.*`): Standard CRUD operations -- Check Runs,
-  branch queries, PR listing, file comparisons, release creation, asset
-  uploads.
-- **GraphQL API**: Complex queries requiring nested data that REST cannot
-  efficiently provide. Used for `closingIssuesReferences` on PRs (linked
-  issues) and branch protection mutations.
-- **Check Runs**: Primary CI feedback mechanism. Each validation step and
-  publishing step creates a Check Run with structured output (title, summary,
-  annotations). Check Runs are created upfront in "queued" status and updated
-  as steps progress, giving immediate visibility in the PR UI.
-- **Attestations**: `@actions/attest` library for npm provenance (Sigstore
-  SLSA) and CycloneDX SBOM attestations via the GitHub Attestations API.
+- **REST API** (`octokit.rest.*`): Standard CRUD operations — Check Runs, branch queries, PR listing, file comparisons, release creation, asset uploads.
+- **GraphQL API**: Complex queries requiring nested data. Used for `closingIssuesReferences` on PRs (linked issues) and branch protection mutations.
+- **Library services**: `@savvy-web/github-action-effects@1.2.0` provides Effect services (`PullRequest`, `GitTag`, `CheckRun`, `GitHubRelease`, `GitHubArtifactMetadata`, `GitHubCommit`, `GitHubContent`, `NpmRegistry`, `Attest`, `Sbom`, `PackagePublish`, `RegistryClassifier`) that wrap all Phase-3 GitHub and registry interactions. No raw Octokit calls remain in `src/release/` modules.
 
 ### Dry-Run Mode
 
-When `dry-run: true` is set, the action executes a parallel path that
-validates without mutations:
-
-- Package manager commands run with `--dry-run` flags
-- Git branch and commit operations are skipped
-- Check Run names are prefixed with the test tube emoji
-- Registry publish commands use `npm publish --dry-run`
-- Output and summaries are clearly marked as dry-run results
-- All validation logic runs identically to production mode
-
-This allows testing the full workflow without creating branches, PRs, tags,
-releases, or publishing to any registry.
+When `dry-run: true` is set, the action executes a parallel path that validates without mutations: package manager commands run with `--dry-run` flags, Git branch and commit operations are skipped, Check Run names are prefixed with the test tube emoji, and registry publish commands use the dry-run flag. All validation logic runs identically to production mode.
 
 ## File Reference
 
-| File | Lines | Description |
-| :--- | ----: | :---------- |
-| `src/pre.ts` | 79 | Pre-action: GitHub App token generation and permission validation |
-| `src/main.ts` | 1,043 | Main orchestrator: phase detection and routing |
-| `src/post.ts` | 50 | Post-action: token revocation and cleanup |
-| `src/types/global.d.ts` | 7 | Global type augmentations for Vitest |
-| `src/types/shared-types.ts` | 69 | ValidationResult and PackageValidationResult interfaces |
-| `src/types/publish-config.ts` | 334 | Multi-registry publishing type definitions |
-| `src/types/sbom-config.ts` | 328 | SBOM configuration and CycloneDX types |
-| `src/utils/check-release-branch.ts` | 158 | Check if release branch and PR exist |
-| `src/utils/check-token-permissions.ts` | 105 | Token type detection and diagnostic logging |
-| `src/utils/cleanup-validation-checks.ts` | 151 | Mark incomplete Check Runs as failed on error |
-| `src/utils/close-linked-issues.ts` | 265 | Close issues linked to merged release PR |
-| `src/utils/create-api-commit.ts` | 326 | GitHub API commits (auto-signed by App) |
-| `src/utils/create-app-token.ts` | 211 | GitHub App installation token generation |
-| `src/utils/create-attestation.ts` | 1,180 | npm provenance and CycloneDX SBOM attestations |
-| `src/utils/create-github-releases.ts` | 761 | GitHub releases with tarball assets and attestations |
-| `src/utils/create-release-branch.ts` | 504 | Create release branch, version, commit, and PR |
-| `src/utils/create-validation-check.ts` | 128 | Unified Check Run aggregating all validations |
-| `src/utils/detect-copyright-year.ts` | 142 | Copyright year detection from LICENSE/git history |
-| `src/utils/detect-publishable-changes.ts` | 467 | Changeset detection and package discovery |
-| `src/utils/detect-released-packages.ts` | 303 | Detect version bumps from PR diff or commit |
-| `src/utils/detect-repo-type.ts` | 289 | Monorepo/single-repo and package manager detection |
-| `src/utils/detect-workflow-phase.ts` | 411 | Phase routing based on GitHub event context |
-| `src/utils/determine-tag-strategy.ts` | 215 | Single vs per-package tag strategy selection |
-| `src/utils/dry-run-publish.ts` | 217 | Dry-run publish validation per registry |
-| `src/utils/enhance-sbom-metadata.ts` | 247 | Enrich CycloneDX SBOMs with supplier/copyright |
-| `src/utils/find-package-path.ts` | 106 | Workspace package path resolution with caching |
-| `src/utils/generate-publish-summary.ts` | 1,055 | Markdown summaries for publish results |
-| `src/utils/generate-release-notes-preview.ts` | 460 | CHANGELOG extraction and preview Check Run |
-| `src/utils/generate-sbom-preview.ts` | 471 | SBOM preview generation and NTIA validation |
-| `src/utils/get-changeset-status.ts` | 236 | Changeset status with merge-base fallback |
-| `src/utils/infer-sbom-metadata.ts` | 289 | Infer SBOM metadata from package.json fields |
-| `src/utils/link-issues-from-commits.ts` | 626 | Extract and cross-reference issues from commits |
-| `src/utils/load-release-config.ts` | 377 | Load SBOM/release config from inputs and env |
-| `src/utils/logger.ts` | 162 | Structured emoji-based workflow logging |
-| `src/utils/parse-changesets.ts` | 246 | Changeset YAML frontmatter parsing |
-| `src/utils/pre-validate-target.ts` | 238 | Pre-publication target validation |
-| `src/utils/publish-packages.ts` | 756 | Core publishing engine with topological sort |
-| `src/utils/publish-target.ts` | 776 | Single-package single-registry publish handler |
-| `src/utils/registry-auth.ts` | 523 | Multi-registry auth setup (OIDC, token, .npmrc) |
-| `src/utils/registry-utils.ts` | 149 | Registry URL utilities and display helpers |
-| `src/utils/release-summary-helpers.ts` | 282 | Package discovery and workspace analysis |
-| `src/utils/resolve-targets.ts` | 208 | publishConfig to ResolvedTarget resolution |
-| `src/utils/run-close-linked-issues.ts` | 48 | Thin wrapper for close-linked-issues |
-| `src/utils/summary-writer.ts` | 125 | Type-safe markdown via ts-markdown |
-| `src/utils/topological-sort.ts` | 150 | Kahn's algorithm for dependency ordering |
-| `src/utils/update-release-branch.ts` | 868 | Recreate release branch from main |
-| `src/utils/update-sticky-comment.ts` | 120 | Idempotent PR comment management |
-| `src/utils/validate-builds.ts` | 232 | Build validation with error annotation |
-| `src/utils/validate-ntia-compliance.ts` | 256 | NTIA minimum elements SBOM validation |
-| `src/utils/validate-publish.ts` | 360 | Multi-registry dry-run publish validation |
+| File | Description |
+| :--- | :---------- |
+| `src/pre.ts` | Pre-action: Effect program, App token provisioning via GitHubToken.provision |
+| `src/main.ts` | Main orchestrator: phase detection, routing, ReleaseOutput emission |
+| `src/post.ts` | Post-action: Effect program, duration reporting, token revocation |
+| `src/state.ts` | Schema.Class state bundles shared across pre/main/post |
+| `src/schema/release-output.ts` | ReleaseOutput Schema.Union, phase structs, ReleaseFlags, deriveStatus |
+| `src/schema/projections.ts` | toBranchManagementOutput, toValidationOutput, toPublishingOutput |
+| `src/schema/silk-release-config.ts` | SilkReleaseConfig Effect schema; INPUT_SCHEMA_URL |
+| `src/release/publish.ts` | detectReleases, runBuildAndSbom, runPublishTargets, publishDirectoryGroup |
+| `src/release/releases.ts` | runReleases: tags, GitHub releases, SBOM/attestation uploads |
+| `src/release/validation.ts` | runValidation: Phase-2 dry-run + SBOM + ValidationReport |
+| `src/release/report.ts` | buildValidationComment, buildPublishSummary, buildChecksTable, buildFindingsTable |
+| `src/release/publishability.ts` | SilkPublishabilityDetectorLive, PublishabilityDetectorAdaptiveLive |
+| `src/release/changeset-config.ts` | ChangesetConfig Effect service (mode, versionPrivate) |
+| `src/release/layers.ts` | ReleaseLive = WorkspacesLive + ChangesetConfigLive + PublishabilityDetectorAdaptiveLive |
+| `src/release/resolve-targets.ts` | resolvePublishableTargets seam for Phase-2 and Phase-3 |
+| `src/release/types.ts` | TargetPublishResult, PackagePublishResult, ValidationFinding, ValidationPackageResult, etc. |
+| `src/release/errors.ts` | ValidationError, ReleasesError tagged error types |
+| `src/utils/check-release-branch.ts` | Check if release branch and PR exist |
+| `src/utils/cleanup-validation-checks.ts` | Mark incomplete Check Runs as failed on error |
+| `src/utils/close-linked-issues.ts` | Close issues linked to merged release PR |
+| `src/utils/commit-signoff.ts` | DCO Signed-off-by trailer via GitHubToken.botIdentity |
+| `src/utils/create-api-commit.ts` | GitHub API commits (auto-signed by App) |
+| `src/utils/create-release-branch.ts` | Create release branch, version, commit, and PR |
+| `src/utils/create-validation-check.ts` | Unified Check Run aggregating all validations |
+| `src/utils/count-changesets.ts` | Count changesets per package |
+| `src/utils/derive-check-conclusion.ts` | Check-run conclusion from findings with strict-warnings support |
+| `src/utils/detect-repo-type.ts` | Monorepo/single-repo and package manager detection (workspaces-effect) |
+| `src/utils/detect-workflow-phase.ts` | Phase routing based on GitHub event context |
+| `src/utils/determine-tag-strategy.ts` | Single vs per-package tag strategy selection |
+| `src/utils/extract-release-notes.ts` | First-H2-to-second-H2 CHANGELOG section extraction |
+| `src/utils/infer-sbom-metadata.ts` | Infer SBOM metadata from package.json fields |
+| `src/utils/link-issues-from-commits.ts` | Extract and cross-reference issues from commits |
+| `src/utils/load-release-config.ts` | Layered config loading; decodes via SilkReleaseConfig schema |
+| `src/utils/parse-changesets.ts` | Changeset YAML frontmatter parsing |
+| `src/utils/release-summary-helpers.ts` | Package discovery and workspace analysis |
+| `src/utils/summary-writer.ts` | Type-safe markdown via ts-markdown |
+| `src/utils/tokens.ts` | appToken() and packagesToken() helpers for non-Effect publish chain context |
+| `src/utils/update-release-branch.ts` | Recreate release branch from main |
+| `src/utils/update-sticky-comment.ts` | Idempotent PR comment management |
+| `src/utils/validate-builds.ts` | Build validation with error annotation |
+| `src/utils/validate-ntia-compliance.ts` | NTIA minimum elements SBOM validation |
+| `src/types/publish-config.ts` | Multi-registry publishing type definitions |
+| `src/types/sbom-config.ts` | SBOM configuration and CycloneDX types |
+| `src/types/shared-types.ts` | ValidationResult and PackageValidationResult interfaces |
+| `src/types/global.d.ts` | Global type augmentations for Vitest |

@@ -1,481 +1,180 @@
-import * as core from "@actions/core";
-import { context, getOctokit } from "@actions/github";
+/**
+ * Fixture tests for the detect-workflow-phase module.
+ *
+ * @remarks
+ * Exercises the `PullRequest.list` rewire (Strategy 2 — closed-PR / merge-SHA
+ * lookup) and the fall-through path where no merged release PR is found.
+ * Strategy 1 (`listPullRequestsAssociatedWithCommit`) is left raw ("Bucket B");
+ * `GitHubClientTest.empty()` causes it to return a `Left` so the test falls
+ * through to Strategy 2 on every run.
+ */
 
-/** Context type derived from @actions/github exports */
-type Context = typeof context;
+import { FileSystem } from "@effect/platform";
+import type { PullRequestTestState } from "@savvy-web/github-action-effects/testing";
+import { ActionEnvironmentTest, GitHubClientTest, PullRequestTest } from "@savvy-web/github-action-effects/testing";
+import { Effect, Layer, Logger } from "effect";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { PhaseDetectionResult } from "../src/utils/detect-workflow-phase.js";
+import { detectWorkflowPhase } from "../src/utils/detect-workflow-phase.js";
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PhaseDetectionOptions } from "../src/utils/detect-workflow-phase.js";
-import { detectWorkflowPhase, detectWorkflowPhaseSync } from "../src/utils/detect-workflow-phase.js";
-import { cleanupTestEnvironment, createMockOctokit, setupTestEnvironment } from "./utils/github-mocks.js";
-import type { MockOctokit } from "./utils/test-types.js";
+const RELEASE_BRANCH = "changeset-release/main";
+const TARGET_BRANCH = "main";
+const MERGE_COMMIT_SHA = "deadbeef123456";
 
-// Mock modules
-vi.mock("@actions/core");
-vi.mock("@actions/github");
+interface Fixtures {
+	prState: PullRequestTestState;
+}
 
-describe("detect-workflow-phase", () => {
-	let mockOctokit: MockOctokit;
-	let mockContext: Context;
-
-	beforeEach(() => {
-		setupTestEnvironment({ suppressOutput: true });
-
-		mockOctokit = createMockOctokit();
-		vi.mocked(getOctokit).mockReturnValue(mockOctokit as unknown as ReturnType<typeof getOctokit>);
-
-		// Setup default context
-		mockContext = {
-			repo: { owner: "test-owner", repo: "test-repo" },
-			sha: "abc123",
-			ref: "refs/heads/main",
-			eventName: "push",
-			payload: {
-				head_commit: { message: "feat: add new feature" },
-			},
-		} as unknown as Context;
-
-		Object.defineProperty(vi.mocked(context), "repo", {
-			value: mockContext.repo,
-			writable: true,
+const makeFixtures = (
+	params: {
+		prs?: Array<{
+			number: number;
+			head: string;
+			base: string;
+			state: "open" | "closed";
+			mergedAt?: string | null;
+			mergeCommitSha?: string | null;
+		}>;
+	} = {},
+): Fixtures => {
+	const prState = PullRequestTest.empty();
+	let nextNumber = 1;
+	for (const pr of params.prs ?? []) {
+		prState.prs.push({
+			number: pr.number,
+			nodeId: `node-${pr.number}`,
+			url: `https://github.com/owner/repo/pull/${pr.number}`,
+			title: `PR #${pr.number}`,
+			body: "",
+			state: pr.state,
+			head: pr.head,
+			base: pr.base,
+			draft: false,
+			merged: (pr.mergedAt ?? null) !== null,
+			mergedAt: pr.mergedAt ?? null,
+			mergeCommitSha: pr.mergeCommitSha ?? null,
+			labels: [],
+			reviewers: [],
+			teamReviewers: [],
+			autoMerge: undefined,
 		});
-		Object.defineProperty(vi.mocked(context), "sha", {
-			value: mockContext.sha,
-			writable: true,
-		});
-		Object.defineProperty(vi.mocked(context), "ref", {
-			value: mockContext.ref,
-			writable: true,
-		});
-		Object.defineProperty(vi.mocked(context), "eventName", {
-			value: mockContext.eventName,
-			writable: true,
-		});
-		Object.defineProperty(vi.mocked(context), "payload", {
-			value: mockContext.payload,
-			writable: true,
-		});
-	});
+		nextNumber = Math.max(nextNumber, pr.number + 1);
+	}
+	prState.nextNumber = nextNumber;
 
+	return { prState };
+};
+
+/**
+ * Run `detectWorkflowPhase` against the given fixtures.
+ *
+ * @remarks
+ * The SHA is set to `MERGE_COMMIT_SHA` so tests can control whether a seeded
+ * PR's `mergeCommitSha` matches. `GitHubClientTest.empty()` is used so the
+ * `listPullRequestsAssociatedWithCommit` call (Strategy 1) always fails with a
+ * 404, driving execution to Strategy 2 (the rewired `pr.list` call).
+ *
+ * `GITHUB_EVENT_PATH` is intentionally blank so `readEventPayload` short-circuits
+ * before touching the filesystem, avoiding any need for a real FileSystem layer.
+ */
+const runDetect = (f: Fixtures): Promise<PhaseDetectionResult> => {
+	const layer = Layer.mergeAll(
+		ActionEnvironmentTest.layer({
+			GITHUB_SHA: MERGE_COMMIT_SHA,
+			GITHUB_REF: `refs/heads/${TARGET_BRANCH}`,
+			GITHUB_REPOSITORY: "owner/repo",
+			GITHUB_REPOSITORY_OWNER: "owner",
+			GITHUB_WORKSPACE: "/workspace",
+			GITHUB_EVENT_NAME: "push",
+			GITHUB_EVENT_PATH: "",
+			GITHUB_RUN_ID: "1",
+			GITHUB_RUN_NUMBER: "1",
+			GITHUB_ACTOR: "test",
+			GITHUB_SERVER_URL: "https://github.com",
+			GITHUB_API_URL: "https://api.github.com",
+		}),
+		GitHubClientTest.empty(),
+		PullRequestTest.layer(f.prState),
+		FileSystem.layerNoop({ readFileString: () => Effect.succeed("{}") }),
+	);
+
+	return Effect.runPromise(
+		detectWorkflowPhase({ releaseBranch: RELEASE_BRANCH, targetBranch: TARGET_BRANCH }).pipe(
+			Effect.provide(layer),
+			Effect.provide(Logger.replace(Logger.defaultLogger, Logger.none)),
+		),
+	);
+};
+
+describe("detectWorkflowPhase", () => {
 	afterEach(() => {
-		cleanupTestEnvironment();
-		vi.useRealTimers(); // Reset timers after each test
+		vi.useRealTimers();
 	});
 
-	describe("detectWorkflowPhase (async)", () => {
-		const createOptions = (): PhaseDetectionOptions => ({
-			releaseBranch: "changeset-release/main",
-			targetBranch: "main",
-			context: mockContext,
-			octokit: mockOctokit as unknown as PhaseDetectionOptions["octokit"],
-		});
-
-		it("should detect branch-management phase on push to main with no release commit", async () => {
-			vi.useFakeTimers(); // Use fake timers to avoid real delays during retry
-			mockOctokit.rest.repos.listPullRequestsAssociatedWithCommit.mockResolvedValue({ data: [] });
-			mockOctokit.rest.pulls.list.mockResolvedValue({ data: [] });
-
-			const resultPromise = detectWorkflowPhase(createOptions());
-			await vi.advanceTimersByTimeAsync(30000); // Advance past all retry delays
-			const result = await resultPromise;
-
-			expect(result.phase).toBe("branch-management");
-			expect(result.isMainBranch).toBe(true);
-			expect(result.isReleaseCommit).toBe(false);
-			expect(result.reason).toContain("not a release commit");
-		});
-
-		it("should detect validation phase on push to release branch", async () => {
-			mockContext.ref = "refs/heads/changeset-release/main";
-
-			const result = await detectWorkflowPhase(createOptions());
-
-			expect(result.phase).toBe("validation");
-			expect(result.isReleaseBranch).toBe(true);
-			expect(result.reason).toContain("Push to release branch");
-		});
-
-		it("should detect publishing phase when merged release PR is found", async () => {
-			mockOctokit.rest.repos.listPullRequestsAssociatedWithCommit.mockResolvedValue({
-				data: [
-					{
-						number: 42,
-						merged_at: "2024-01-01T00:00:00Z",
-						head: { ref: "changeset-release/main" },
-						base: { ref: "main" },
-					},
-				],
-			});
-
-			const result = await detectWorkflowPhase(createOptions());
-
-			expect(result.phase).toBe("publishing");
-			expect(result.isReleaseCommit).toBe(true);
-			expect(result.mergedReleasePRNumber).toBe(42);
-			expect(result.reason).toContain("Merged release PR #42");
-		});
-
-		it("should detect close-issues phase on pull_request merge event", async () => {
-			mockContext.eventName = "pull_request";
-			mockContext.payload = {
-				pull_request: {
-					number: 99,
-					merged: true,
-					head: { ref: "changeset-release/main" },
-					base: { ref: "main" },
+	it("returns phase=publishing when a closed PR with matching mergeCommitSha is found (Strategy 2)", async () => {
+		// Seed a merged release PR whose merge_commit_sha matches the push SHA.
+		// Strategy 1 will fail (GitHubClientTest.empty()), driving code to Strategy 2.
+		const f = makeFixtures({
+			prs: [
+				{
+					number: 7,
+					head: RELEASE_BRANCH,
+					base: TARGET_BRANCH,
+					state: "closed",
+					mergedAt: "2026-01-15T12:00:00Z",
+					mergeCommitSha: MERGE_COMMIT_SHA,
 				},
-			};
-
-			const result = await detectWorkflowPhase(createOptions());
-
-			expect(result.phase).toBe("close-issues");
-			expect(result.isReleasePRMerged).toBe(true);
-			expect(result.mergedReleasePRNumber).toBe(99);
+			],
 		});
 
-		it("should detect none phase for unrelated branches", async () => {
-			mockContext.ref = "refs/heads/feature/my-feature";
-			mockOctokit.rest.repos.listPullRequestsAssociatedWithCommit.mockResolvedValue({ data: [] });
+		const result = await runDetect(f);
 
-			const result = await detectWorkflowPhase(createOptions());
-
-			expect(result.phase).toBe("none");
-			expect(result.isMainBranch).toBe(false);
-			expect(result.isReleaseBranch).toBe(false);
-			expect(result.reason).toContain("Not on main or changeset-release/main");
-		});
-
-		it("should return branch-management when both APIs fail", async () => {
-			vi.useFakeTimers();
-			mockContext.payload = {
-				head_commit: { message: "chore: release v1.0.0\n\nVersion Packages" },
-			};
-			mockOctokit.rest.repos.listPullRequestsAssociatedWithCommit.mockRejectedValue(new Error("API Error"));
-			mockOctokit.rest.pulls.list.mockRejectedValue(new Error("Pulls API Error"));
-
-			const resultPromise = detectWorkflowPhase(createOptions());
-			await vi.advanceTimersByTimeAsync(30000);
-			const result = await resultPromise;
-
-			// Without API success, we can't detect release commit
-			expect(result.phase).toBe("branch-management");
-			expect(result.isReleaseCommit).toBe(false);
-			expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("Failed to check for associated PRs"));
-			expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("Failed to check for merged PRs"));
-		});
-
-		it("should detect publishing phase via merge_commit_sha fallback when primary API fails", async () => {
-			// Primary API returns empty (no PRs found via commit association)
-			mockOctokit.rest.repos.listPullRequestsAssociatedWithCommit.mockResolvedValue({ data: [] });
-			// Fallback API finds the merged PR via merge_commit_sha
-			mockOctokit.rest.pulls.list.mockResolvedValue({
-				data: [
-					{
-						number: 137,
-						merged_at: "2024-01-01T00:00:00Z",
-						merge_commit_sha: "abc123", // Matches context.sha
-						head: { ref: "changeset-release/main" },
-						base: { ref: "main" },
-					},
-				],
-			});
-
-			const result = await detectWorkflowPhase(createOptions());
-
-			expect(result.phase).toBe("publishing");
-			expect(result.isReleaseCommit).toBe(true);
-			expect(result.mergedReleasePRNumber).toBe(137);
-			expect(core.info).toHaveBeenCalledWith(expect.stringContaining("via merge_commit_sha match"));
-		});
-
-		it("should return branch-management when merge_commit_sha does not match", async () => {
-			vi.useFakeTimers();
-			mockOctokit.rest.repos.listPullRequestsAssociatedWithCommit.mockResolvedValue({ data: [] });
-			mockOctokit.rest.pulls.list.mockResolvedValue({
-				data: [
-					{
-						number: 100,
-						merged_at: "2024-01-01T00:00:00Z",
-						merge_commit_sha: "different-sha", // Does NOT match context.sha
-						head: { ref: "changeset-release/main" },
-						base: { ref: "main" },
-					},
-				],
-			});
-
-			const resultPromise = detectWorkflowPhase(createOptions());
-			await vi.advanceTimersByTimeAsync(30000);
-			const result = await resultPromise;
-
-			expect(result.phase).toBe("branch-management");
-			expect(result.isReleaseCommit).toBe(false);
-			expect(core.info).toHaveBeenCalledWith(expect.stringContaining("No merged release PR found matching commit"));
-		});
-
-		it("should use custom branch names", async () => {
-			mockContext.ref = "refs/heads/release/next";
-			const options = {
-				...createOptions(),
-				releaseBranch: "release/next",
-				targetBranch: "develop",
-			};
-
-			const result = await detectWorkflowPhase(options);
-
-			expect(result.phase).toBe("validation");
-			expect(result.isReleaseBranch).toBe(true);
-		});
-
-		it("should not treat non-release PR merges as release commits", async () => {
-			vi.useFakeTimers();
-			mockOctokit.rest.repos.listPullRequestsAssociatedWithCommit.mockResolvedValue({
-				data: [
-					{
-						number: 50,
-						merged_at: "2024-01-01T00:00:00Z",
-						head: { ref: "feature/something" },
-						base: { ref: "main" },
-					},
-				],
-			});
-			mockOctokit.rest.pulls.list.mockResolvedValue({ data: [] });
-
-			const resultPromise = detectWorkflowPhase(createOptions());
-			await vi.advanceTimersByTimeAsync(30000);
-			const result = await resultPromise;
-
-			expect(result.phase).toBe("branch-management");
-			expect(result.isReleaseCommit).toBe(false);
-		});
-
-		it("should handle PR merge event that is not from release branch", async () => {
-			mockContext.eventName = "pull_request";
-			mockContext.payload = {
-				pull_request: {
-					number: 55,
-					merged: true,
-					head: { ref: "feature/other" },
-					base: { ref: "main" },
-				},
-			};
-
-			const result = await detectWorkflowPhase(createOptions());
-
-			// Since it's not a release PR, it won't be close-issues phase
-			// But since it's a pull_request event, we can't determine the branch from context.ref
-			expect(result.isReleasePRMerged).toBe(false);
-		});
-
-		it("should truncate long commit messages", async () => {
-			vi.useFakeTimers();
-			mockContext.payload = {
-				head_commit: { message: "a".repeat(200) },
-			};
-			mockOctokit.rest.repos.listPullRequestsAssociatedWithCommit.mockResolvedValue({ data: [] });
-			mockOctokit.rest.pulls.list.mockResolvedValue({ data: [] });
-
-			const resultPromise = detectWorkflowPhase(createOptions());
-			await vi.advanceTimersByTimeAsync(30000);
-			const result = await resultPromise;
-
-			expect(result.commitMessage.length).toBe(103); // 100 chars + "..."
-			expect(result.commitMessage.endsWith("...")).toBe(true);
-		});
-
-		it("should handle workflow_dispatch event on main branch", async () => {
-			vi.useFakeTimers();
-			mockContext.eventName = "workflow_dispatch";
-			mockOctokit.rest.repos.listPullRequestsAssociatedWithCommit.mockResolvedValue({ data: [] });
-			mockOctokit.rest.pulls.list.mockResolvedValue({ data: [] });
-
-			const resultPromise = detectWorkflowPhase(createOptions());
-			await vi.advanceTimersByTimeAsync(30000);
-			const result = await resultPromise;
-
-			// workflow_dispatch on main with no release commit should be branch-management
-			expect(result.phase).toBe("branch-management");
-		});
-
-		describe("explicit phase", () => {
-			it("should use explicit phase and skip automatic detection", async () => {
-				// Even on release branch, explicit phase should override
-				mockContext.ref = "refs/heads/changeset-release/main";
-
-				const result = await detectWorkflowPhase({
-					...createOptions(),
-					explicitPhase: "branch-management",
-				});
-
-				expect(result.phase).toBe("branch-management");
-				expect(result.reason).toBe("Explicit phase provided: branch-management");
-				// Metadata should still reflect actual context
-				expect(result.isReleaseBranch).toBe(true);
-			});
-
-			it("should populate merged PR number for explicit publishing phase", async () => {
-				mockOctokit.rest.repos.listPullRequestsAssociatedWithCommit.mockResolvedValue({
-					data: [
-						{
-							number: 77,
-							merged_at: "2024-01-01T00:00:00Z",
-							head: { ref: "changeset-release/main" },
-							base: { ref: "main" },
-						},
-					],
-				});
-
-				const result = await detectWorkflowPhase({
-					...createOptions(),
-					explicitPhase: "publishing",
-				});
-
-				expect(result.phase).toBe("publishing");
-				expect(result.mergedReleasePRNumber).toBe(77);
-				expect(result.isReleaseCommit).toBe(true);
-			});
-
-			it("should populate PR number for explicit close-issues phase", async () => {
-				mockContext.eventName = "pull_request";
-				mockContext.payload = {
-					pull_request: {
-						number: 88,
-						merged: true,
-						head: { ref: "changeset-release/main" },
-						base: { ref: "main" },
-					},
-				};
-
-				const result = await detectWorkflowPhase({
-					...createOptions(),
-					explicitPhase: "close-issues",
-				});
-
-				expect(result.phase).toBe("close-issues");
-				expect(result.mergedReleasePRNumber).toBe(88);
-				expect(result.isReleaseCommit).toBe(true);
-			});
-
-			it("should handle explicit validation phase", async () => {
-				const result = await detectWorkflowPhase({
-					...createOptions(),
-					explicitPhase: "validation",
-				});
-
-				expect(result.phase).toBe("validation");
-				expect(result.reason).toBe("Explicit phase provided: validation");
-			});
-
-			it("should handle explicit none phase", async () => {
-				const result = await detectWorkflowPhase({
-					...createOptions(),
-					explicitPhase: "none",
-				});
-
-				expect(result.phase).toBe("none");
-				expect(result.reason).toBe("Explicit phase provided: none");
-			});
-
-			it("should not call API for explicit non-publishing phases", async () => {
-				await detectWorkflowPhase({
-					...createOptions(),
-					explicitPhase: "validation",
-				});
-
-				expect(mockOctokit.rest.repos.listPullRequestsAssociatedWithCommit).not.toHaveBeenCalled();
-			});
-
-			it("should handle explicit publishing when API returns no merged PR", async () => {
-				vi.useFakeTimers();
-				mockOctokit.rest.repos.listPullRequestsAssociatedWithCommit.mockResolvedValue({ data: [] });
-				mockOctokit.rest.pulls.list.mockResolvedValue({ data: [] });
-
-				const resultPromise = detectWorkflowPhase({
-					...createOptions(),
-					explicitPhase: "publishing",
-				});
-				await vi.advanceTimersByTimeAsync(30000);
-				const result = await resultPromise;
-
-				expect(result.phase).toBe("publishing");
-				expect(result.mergedReleasePRNumber).toBeUndefined();
-				expect(result.isReleaseCommit).toBe(false);
-			});
-		});
+		expect(result.phase).toBe("publishing");
+		expect(result.isReleaseCommit).toBe(true);
+		expect(result.mergedReleasePRNumber).toBe(7);
+		expect(result.isMainBranch).toBe(true);
+		expect(result.isReleaseBranch).toBe(false);
 	});
 
-	describe("detectWorkflowPhaseSync", () => {
-		const createSyncOptions = (): { releaseBranch: string; targetBranch: string; context: Context } => ({
-			releaseBranch: "changeset-release/main",
-			targetBranch: "main",
-			context: mockContext,
-		});
+	it("returns phase=branch-management when no merged PR matches the commit SHA (Strategy 2 fall-through)", async () => {
+		// No PRs seeded — Strategy 2 finds nothing matching the SHA.
+		// detectReleaseCommit retries 3× with 5s delays; fake timers skip the waits.
+		vi.useFakeTimers();
+		const f = makeFixtures();
 
-		it("should detect branch-management phase on main branch", () => {
-			const result = detectWorkflowPhaseSync(createSyncOptions());
+		const resultPromise = runDetect(f);
+		await vi.advanceTimersByTimeAsync(60000);
+		const result = await resultPromise;
 
-			expect(result.phase).toBe("branch-management");
-			expect(result.isMainBranch).toBe(true);
-		});
+		expect(result.phase).toBe("branch-management");
+		expect(result.isReleaseCommit).toBe(false);
+		expect(result.mergedReleasePRNumber).toBeUndefined();
+		expect(result.isMainBranch).toBe(true);
+	});
 
-		it("should detect validation phase on release branch", () => {
-			mockContext.ref = "refs/heads/changeset-release/main";
-
-			const result = detectWorkflowPhaseSync(createSyncOptions());
-
-			expect(result.phase).toBe("validation");
-			expect(result.isReleaseBranch).toBe(true);
-		});
-
-		it("should return branch-management for commit message patterns (no API available)", () => {
-			// Sync version cannot detect release commits from commit messages
-			// since we removed the unstable commit message detection
-			mockContext.payload = {
-				head_commit: { message: "chore: version packages" },
-			};
-
-			const result = detectWorkflowPhaseSync(createSyncOptions());
-
-			// Without API call, we can't detect release commits on push events
-			expect(result.phase).toBe("branch-management");
-			expect(result.isReleaseCommit).toBe(false);
-		});
-
-		it("should detect close-issues on PR merge event", () => {
-			mockContext.eventName = "pull_request";
-			mockContext.payload = {
-				pull_request: {
-					number: 10,
-					merged: true,
-					head: { ref: "changeset-release/main" },
-					base: { ref: "main" },
+	it("ignores a closed PR with a non-matching mergeCommitSha and falls through to branch-management", async () => {
+		// A real merged PR exists, but its SHA does not match the push event SHA.
+		// Still retries 3× before returning false; fake timers skip the waits.
+		vi.useFakeTimers();
+		const f = makeFixtures({
+			prs: [
+				{
+					number: 3,
+					head: RELEASE_BRANCH,
+					base: TARGET_BRANCH,
+					state: "closed",
+					mergedAt: "2026-01-10T09:00:00Z",
+					mergeCommitSha: "aaaa0000differentsha",
 				},
-			};
-
-			const result = detectWorkflowPhaseSync(createSyncOptions());
-
-			expect(result.phase).toBe("close-issues");
-			expect(result.isReleasePRMerged).toBe(true);
+			],
 		});
 
-		it("should detect none phase for other branches", () => {
-			mockContext.ref = "refs/heads/feature/test";
+		const resultPromise = runDetect(f);
+		await vi.advanceTimersByTimeAsync(60000);
+		const result = await resultPromise;
 
-			const result = detectWorkflowPhaseSync(createSyncOptions());
-
-			expect(result.phase).toBe("none");
-		});
-
-		it("should not detect release from merge commit message (requires API)", () => {
-			// Commit message detection was removed as it's not stable across merge strategies
-			mockContext.payload = {
-				head_commit: { message: "Merge pull request #123 from owner/changeset-release/main" },
-			};
-
-			const result = detectWorkflowPhaseSync(createSyncOptions());
-
-			// Sync version can only detect release via pull_request event, not push
-			expect(result.phase).toBe("branch-management");
-			expect(result.isReleaseCommit).toBe(false);
-		});
+		expect(result.phase).toBe("branch-management");
+		expect(result.isReleaseCommit).toBe(false);
+		expect(result.mergedReleasePRNumber).toBeUndefined();
 	});
 });

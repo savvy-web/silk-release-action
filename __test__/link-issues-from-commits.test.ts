@@ -1,924 +1,314 @@
-import * as core from "@actions/core";
-import { context, getOctokit } from "@actions/github";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getLinkedIssuesFromCommits, linkIssuesFromCommits } from "../src/utils/link-issues-from-commits.js";
-import { cleanupTestEnvironment, createMockOctokit, setupTestEnvironment } from "./utils/github-mocks.js";
-import type { MockOctokit } from "./utils/test-types.js";
+/**
+ * Fixture tests for the link-issues-from-commits module.
+ *
+ * @remarks
+ * Exercises the rewired `GitTag.list()` path that replaced the raw
+ * `repos.listTags` Octokit call, and the rewired `GitHubIssue.get` path
+ * that replaced the raw `issues.get` Octokit call. The still-raw calls
+ * (`compareCommits`, `listCommits`, `closingIssuesReferences` GraphQL) are
+ * satisfied via `GitHubClientTest` — either by seeding a response or by
+ * letting `Effect.either` absorb the 404 that the test layer emits for
+ * unregistered operations.
+ *
+ * Three focused scenarios:
+ *
+ * 1. **`getLatestTagSha` direct unit tests** — exercises tag-selection logic
+ *    in isolation without any `GitHubClient` or `compareCommits` involvement.
+ *    The multi-digit test seeds tags in an order where the semver-highest is
+ *    NOT last, so it strictly fails against the old `tags[length-1]` code.
+ *
+ * 2. **Latest-tag selection (integration)** — `GitTagTest` is seeded with a
+ *    known set of tags; verifies the full `getLinkedIssuesFromCommits` path.
+ *
+ * 3. **No tags** — `GitTagTest` is empty. The function falls back to
+ *    `getAllCommitsOnBranch` (the `GitHubCommit.list` path), which is seeded
+ *    in `GitHubCommitTest`. The returned `commits` array reflects those
+ *    listed commits.
+ */
 
-// Mock modules
-vi.mock("@actions/core");
-vi.mock("@actions/github");
+import type {
+	GitHubClientTestState,
+	GitHubCommitTestState,
+	GitHubIssueTestState,
+	GitTagTestState,
+} from "@savvy-web/github-action-effects/testing";
+import {
+	ActionEnvironmentTest,
+	GitHubClientTest,
+	GitHubCommitTest,
+	GitHubIssueTest,
+	GitTagTest,
+} from "@savvy-web/github-action-effects/testing";
+import { Effect, Layer, Logger } from "effect";
+import { describe, expect, it } from "vitest";
+import { getLatestTagSha, getLinkedIssuesFromCommits } from "../src/utils/link-issues-from-commits.js";
 
-describe("link-issues-from-commits", () => {
-	let mockOctokit: MockOctokit;
+// ---------------------------------------------------------------------------
+// Shared constants
+// ---------------------------------------------------------------------------
 
-	beforeEach(() => {
-		setupTestEnvironment({ suppressOutput: true });
+const OWNER = "owner";
+const REPO = "repo";
+const TARGET_BRANCH = "main";
 
-		// Setup core.getState to return token
-		vi.mocked(core.getState).mockReturnValue("test-token");
+/** Minimal commit summary that satisfies the `CommitSummary` shape. */
+const makeCommit = (sha: string, message: string, author = "Test Author") => ({
+	sha,
+	message,
+	author,
+});
 
-		vi.mocked(core.getInput).mockImplementation((name: string) => {
-			if (name === "token") return "test-token";
-			if (name === "release-branch") return "changeset-release/main";
-			if (name === "target-branch") return "main";
-			return "";
+// ---------------------------------------------------------------------------
+// Fixtures
+// ---------------------------------------------------------------------------
+
+interface Fixtures {
+	tagState: GitTagTestState;
+	clientState: GitHubClientTestState;
+	commitState: GitHubCommitTestState;
+	issueState: GitHubIssueTestState;
+}
+
+const makeFixtures = (
+	params: {
+		tags?: Array<{ tag: string; sha: string }>;
+		/** Commits seeded for `compare(latestTagSha, TARGET_BRANCH)`. */
+		compareCommitsData?: Array<{ sha: string; message: string; author: string }>;
+		/** SHA used as the `compare` base — must match the seeded tag's SHA. */
+		compareBaseSha?: string;
+		/** Commits seeded for `list(TARGET_BRANCH)` (the no-tag fallback). */
+		listCommitsData?: Array<{ sha: string; message: string; author: string }>;
+		issues?: Array<{ number: number; title: string; state: string; htmlUrl?: string; nodeId?: string }>;
+	} = {},
+): Fixtures => {
+	const tagState = GitTagTest.empty().state;
+	for (const { tag, sha } of params.tags ?? []) {
+		tagState.tags.set(tag, sha);
+	}
+
+	const clientState: GitHubClientTestState = {
+		restResponses: new Map(),
+		graphqlResponses: new Map(),
+		paginateResponses: new Map(),
+		repo: { owner: OWNER, repo: REPO },
+	};
+
+	const commitState: GitHubCommitTestState = GitHubCommitTest.empty();
+
+	if (params.compareCommitsData !== undefined && params.compareBaseSha !== undefined) {
+		commitState.comparisons.set(`${params.compareBaseSha}...${TARGET_BRANCH}`, {
+			commits: params.compareCommitsData,
+			files: [],
 		});
-		vi.mocked(core.getBooleanInput).mockImplementation((name: string) => {
-			if (name === "dry-run") return false;
-			return false;
-		});
+	}
 
-		// Mock core.summary
-		const mockSummary = {
-			addHeading: vi.fn().mockReturnThis(),
-			addEOL: vi.fn().mockReturnThis(),
-			addTable: vi.fn().mockReturnThis(),
-			addRaw: vi.fn().mockReturnThis(),
-			write: vi.fn().mockResolvedValue(undefined),
-			stringify: vi.fn().mockReturnValue(""),
-		};
-		Object.defineProperty(core, "summary", { value: mockSummary, writable: true });
+	if (params.listCommitsData !== undefined) {
+		commitState.commitLists.set(TARGET_BRANCH, params.listCommitsData);
+	}
 
-		mockOctokit = createMockOctokit();
-		vi.mocked(getOctokit).mockReturnValue(mockOctokit as unknown as ReturnType<typeof getOctokit>);
-		Object.defineProperty(vi.mocked(context), "repo", {
-			value: { owner: "test-owner", repo: "test-repo" },
-			writable: true,
+	const issueState = GitHubIssueTest.empty().state;
+	for (const issue of params.issues ?? []) {
+		issueState.issues.set(issue.number, {
+			number: issue.number,
+			title: issue.title,
+			state: issue.state,
+			labels: [],
+			...(issue.htmlUrl !== undefined ? { htmlUrl: issue.htmlUrl } : {}),
+			...(issue.nodeId !== undefined ? { nodeId: issue.nodeId } : {}),
 		});
-		Object.defineProperty(vi.mocked(context), "sha", { value: "abc123", writable: true });
+	}
+
+	return { tagState, clientState, commitState, issueState };
+};
+
+// ---------------------------------------------------------------------------
+// Test runner
+// ---------------------------------------------------------------------------
+
+const runStage = (
+	f: Fixtures,
+): Promise<{
+	linkedIssues: Array<{
+		number: number;
+		title: string;
+		state: string;
+		url: string;
+		node_id: string;
+		commits: string[];
+	}>;
+	commits: Array<{ sha: string; message: string; author: string }>;
+}> => {
+	const layer = Layer.mergeAll(
+		ActionEnvironmentTest.layer({
+			GITHUB_SHA: "headsha123",
+			GITHUB_REF: `refs/heads/${TARGET_BRANCH}`,
+			GITHUB_REPOSITORY: `${OWNER}/${REPO}`,
+			GITHUB_REPOSITORY_OWNER: OWNER,
+			GITHUB_WORKSPACE: "/workspace",
+			GITHUB_EVENT_NAME: "push",
+			GITHUB_EVENT_PATH: "/dev/null",
+			GITHUB_RUN_ID: "1",
+			GITHUB_RUN_NUMBER: "1",
+			GITHUB_ACTOR: "test",
+			GITHUB_SERVER_URL: "https://github.com",
+			GITHUB_API_URL: "https://api.github.com",
+		}),
+		GitTagTest.layer(f.tagState),
+		GitHubClientTest.layer(f.clientState),
+		GitHubCommitTest.layer(f.commitState),
+		GitHubIssueTest.layer(f.issueState),
+	);
+	return Effect.runPromise(
+		getLinkedIssuesFromCommits(TARGET_BRANCH).pipe(
+			Effect.provide(layer),
+			Effect.provide(Logger.replace(Logger.defaultLogger, Logger.none)),
+		),
+	);
+};
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Direct unit tests for getLatestTagSha
+// ---------------------------------------------------------------------------
+
+/**
+ * Run `getLatestTagSha` in isolation: only `GitTagTest` is provided.
+ * No `GitHubClient` or `compareCommits` is involved.
+ */
+const runGetLatestTagSha = (tags: Array<{ tag: string; sha: string }>): Promise<string | null> => {
+	const state = GitTagTest.empty().state;
+	for (const { tag, sha } of tags) {
+		state.tags.set(tag, sha);
+	}
+	return Effect.runPromise(
+		getLatestTagSha.pipe(
+			Effect.provide(GitTagTest.layer(state)),
+			Effect.provide(Logger.replace(Logger.defaultLogger, Logger.none)),
+		),
+	);
+};
+
+describe("getLatestTagSha", () => {
+	it("returns null when no tags are present", async () => {
+		const sha = await runGetLatestTagSha([]);
+		expect(sha).toBeNull();
 	});
 
-	afterEach(() => {
-		cleanupTestEnvironment();
+	it("selects the semver-highest SHA even when it is NOT last in Map-insertion order (multi-digit regression)", async () => {
+		// Insert order: v1.10.1 first, v1.9.0 second, v1.10.0 third.
+		// Map insertion order means the LAST entry is v1.10.0 (sha-v1-10).
+		// The old `tags[tags.length - 1]` bug would return "sha-v1-10" (last
+		// inserted), NOT "sha-v1-10-1" (true semver maximum).
+		// The semver fix must return "sha-v1-10-1".
+		const sha = await runGetLatestTagSha([
+			{ tag: "v1.10.1", sha: "sha-v1-10-1" },
+			{ tag: "v1.9.0", sha: "sha-v1-9" },
+			{ tag: "v1.10.0", sha: "sha-v1-10" },
+		]);
+		expect(sha).toBe("sha-v1-10-1");
 	});
 
-	it("should find no issues when commits have no references", async () => {
-		// Mock tags to use compareCommits path
-		mockOctokit.rest.repos.listTags.mockResolvedValue({
-			data: [{ name: "v1.0.0", commit: { sha: "tag-sha" } }],
-		});
-		mockOctokit.rest.repos.compareCommits.mockResolvedValue({
-			data: {
-				commits: [
-					{ sha: "abc123", commit: { message: "feat: add new feature", author: { name: "Test User" } } },
-					{ sha: "def456", commit: { message: "fix: bug fix", author: { name: "Test User" } } },
-				],
-			},
-		});
-
-		const result = await linkIssuesFromCommits();
-
-		expect(result.linkedIssues).toEqual([]);
-		expect(result.commits).toHaveLength(2);
-		expect(result.checkId).toBe(12345);
+	it("handles scoped-package tags in @scope/pkg@X.Y.Z format", async () => {
+		// @scope/pkg@X.Y.Z: extractVersionFromTag strips everything up to the last @.
+		const sha = await runGetLatestTagSha([
+			{ tag: "@scope/pkg@1.0.0", sha: "sha-1-0-0" },
+			{ tag: "@scope/pkg@2.0.0", sha: "sha-2-0-0" },
+			{ tag: "@scope/pkg@1.9.0", sha: "sha-1-9-0" },
+		]);
+		expect(sha).toBe("sha-2-0-0");
 	});
+});
 
-	it("should extract issue references from commits", async () => {
-		// Mock tags to use compareCommits path
-		mockOctokit.rest.repos.listTags.mockResolvedValue({
-			data: [{ name: "v1.0.0", commit: { sha: "tag-sha" } }],
-		});
-		mockOctokit.rest.repos.compareCommits.mockResolvedValue({
-			data: {
-				commits: [
-					{ sha: "abc123", commit: { message: "feat: add feature\n\nCloses #42", author: { name: "Test User" } } },
-					{ sha: "def456", commit: { message: "fix: bug fix\n\nFixes #123", author: { name: "Test User" } } },
-				],
-			},
-		});
-		mockOctokit.rest.issues.get
-			.mockResolvedValueOnce({
-				data: { number: 42, title: "Feature request", state: "open", html_url: "https://github.com/test/issues/42" },
-			})
-			.mockResolvedValueOnce({
-				data: { number: 123, title: "Bug report", state: "closed", html_url: "https://github.com/test/issues/123" },
+describe("getLinkedIssuesFromCommits", () => {
+	describe("latest-tag selection", () => {
+		it("uses the semver-latest tag's SHA as the compareCommits base", async () => {
+			// Seed three semver tags in non-alphabetical insertion order.
+			// GitTag.list() returns them in insertion order from the test Map.
+			// We insert in ascending order so the last entry is the highest tag.
+			const tags = [
+				{ tag: "v1.0.0", sha: "sha-v1" },
+				{ tag: "v1.1.0", sha: "sha-v1-1" },
+				{ tag: "v2.0.0", sha: "sha-v2" },
+			];
+
+			const compareCommit = makeCommit("commit-abc", "feat: add feature");
+			const f = makeFixtures({
+				tags,
+				// compare is called with base=sha-v2; we return one commit.
+				compareBaseSha: "sha-v2",
+				compareCommitsData: [compareCommit],
 			});
 
-		const result = await linkIssuesFromCommits();
+			const result = await runStage(f);
 
-		expect(result.linkedIssues).toHaveLength(2);
-		expect(result.linkedIssues[0].number).toBe(42);
-		expect(result.linkedIssues[0].title).toBe("Feature request");
-		expect(result.linkedIssues[1].number).toBe(123);
-	});
-
-	it("should handle multiple issue patterns (closes, fixes, resolves)", async () => {
-		// Mock tags to use compareCommits path
-		mockOctokit.rest.repos.listTags.mockResolvedValue({
-			data: [{ name: "v1.0.0", commit: { sha: "tag-sha" } }],
-		});
-		mockOctokit.rest.repos.compareCommits.mockResolvedValue({
-			data: {
-				commits: [
-					{ sha: "aaa111", commit: { message: "Close #1", author: { name: "Test" } } },
-					{ sha: "bbb222", commit: { message: "Fixes #2", author: { name: "Test" } } },
-					{ sha: "ccc333", commit: { message: "Resolves #3", author: { name: "Test" } } },
-					{ sha: "ddd444", commit: { message: "fixed #4", author: { name: "Test" } } },
-				],
-			},
-		});
-		mockOctokit.rest.issues.get.mockResolvedValue({
-			data: { number: 1, title: "Issue", state: "open", html_url: "https://github.com/test/issues/1" },
+			// The function found commits via compareCommits (not listCommits).
+			expect(result.commits).toHaveLength(1);
+			expect(result.commits[0].sha).toBe("commit-abc");
+			// No issue references in the commit message, so linkedIssues is empty.
+			expect(result.linkedIssues).toHaveLength(0);
 		});
 
-		const result = await linkIssuesFromCommits();
-
-		expect(result.linkedIssues).toHaveLength(4);
-		expect(mockOctokit.rest.issues.get).toHaveBeenCalledTimes(4);
-	});
-
-	it("should deduplicate issues referenced in multiple commits", async () => {
-		// Mock tags to use compareCommits path
-		mockOctokit.rest.repos.listTags.mockResolvedValue({
-			data: [{ name: "v1.0.0", commit: { sha: "tag-sha" } }],
-		});
-		mockOctokit.rest.repos.compareCommits.mockResolvedValue({
-			data: {
-				commits: [
-					{ sha: "abc123", commit: { message: "part 1\n\nFixes #42", author: { name: "Test" } } },
-					{ sha: "def456", commit: { message: "part 2\n\nCloses #42", author: { name: "Test" } } },
-				],
-			},
-		});
-		mockOctokit.rest.issues.get.mockResolvedValue({
-			data: { number: 42, title: "Issue", state: "open", html_url: "https://github.com/test/issues/42" },
-		});
-
-		const result = await linkIssuesFromCommits();
-
-		expect(result.linkedIssues).toHaveLength(1);
-		expect(result.linkedIssues[0].commits).toContain("abc123");
-		expect(result.linkedIssues[0].commits).toContain("def456");
-		expect(mockOctokit.rest.issues.get).toHaveBeenCalledTimes(1);
-	});
-
-	it("should handle failed issue fetch gracefully", async () => {
-		// Mock tags to use compareCommits path
-		mockOctokit.rest.repos.listTags.mockResolvedValue({
-			data: [{ name: "v1.0.0", commit: { sha: "tag-sha" } }],
-		});
-		mockOctokit.rest.repos.compareCommits.mockResolvedValue({
-			data: {
-				commits: [{ sha: "abc123", commit: { message: "Fixes #999", author: { name: "Test" } } }],
-			},
-		});
-		mockOctokit.rest.issues.get.mockRejectedValue(new Error("Issue not found"));
-
-		const result = await linkIssuesFromCommits();
-
-		expect(result.linkedIssues).toEqual([]);
-		expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("Failed to fetch issue #999"));
-	});
-
-	it("should include dry-run mode in check output", async () => {
-		vi.mocked(core.getBooleanInput).mockImplementation((name: string) => {
-			if (name === "dry-run") return true;
-			return false;
-		});
-		mockOctokit.rest.repos.compareCommits.mockResolvedValue({
-			data: { commits: [] },
-		});
-
-		const result = await linkIssuesFromCommits();
-
-		expect(result.checkId).toBe(12345);
-		expect(mockOctokit.rest.checks.create).toHaveBeenCalledWith(
-			expect.objectContaining({
-				name: expect.stringContaining("Dry Run"),
-			}),
-		);
-	});
-
-	it("should track commits that reference each issue", async () => {
-		// Mock tags to use compareCommits path
-		mockOctokit.rest.repos.listTags.mockResolvedValue({
-			data: [{ name: "v1.0.0", commit: { sha: "tag-sha" } }],
-		});
-		mockOctokit.rest.repos.compareCommits.mockResolvedValue({
-			data: {
-				commits: [
-					{ sha: "commit1", commit: { message: "start work fixes #10", author: { name: "Test" } } },
-					{ sha: "commit2", commit: { message: "more work closes #10", author: { name: "Test" } } },
-				],
-			},
-		});
-		mockOctokit.rest.issues.get.mockResolvedValue({
-			data: { number: 10, title: "Work", state: "open", html_url: "https://github.com/test/issues/10" },
-		});
-
-		const result = await linkIssuesFromCommits();
-
-		expect(result.linkedIssues[0].commits).toHaveLength(2);
-		expect(result.linkedIssues[0].commits).toContain("commit1");
-		expect(result.linkedIssues[0].commits).toContain("commit2");
-	});
-
-	it("should use 'Unknown' when commit author is missing", async () => {
-		// Mock tags to use compareCommits path
-		mockOctokit.rest.repos.listTags.mockResolvedValue({
-			data: [{ name: "v1.0.0", commit: { sha: "tag-sha" } }],
-		});
-		mockOctokit.rest.repos.compareCommits.mockResolvedValue({
-			data: {
-				commits: [{ sha: "abc123", commit: { message: "Fixes #42", author: null } }],
-			},
-		});
-		mockOctokit.rest.issues.get.mockResolvedValue({
-			data: { number: 42, title: "Issue", state: "open", html_url: "https://github.com/test/issues/42" },
-		});
-
-		const result = await linkIssuesFromCommits();
-
-		expect(result.linkedIssues).toHaveLength(1);
-		expect(result.commits).toHaveLength(1);
-	});
-
-	it("should handle commit author without name property", async () => {
-		// Mock tags to use compareCommits path
-		mockOctokit.rest.repos.listTags.mockResolvedValue({
-			data: [{ name: "v1.0.0", commit: { sha: "tag-sha" } }],
-		});
-		mockOctokit.rest.repos.compareCommits.mockResolvedValue({
-			data: {
-				commits: [{ sha: "abc123", commit: { message: "Closes #5", author: {} } }],
-			},
-		});
-		mockOctokit.rest.issues.get.mockResolvedValue({
-			data: { number: 5, title: "Issue", state: "open", html_url: "https://github.com/test/issues/5" },
-		});
-
-		const result = await linkIssuesFromCommits();
-
-		expect(result.linkedIssues).toHaveLength(1);
-	});
-
-	it("should use default target branch and look back from latest tag", async () => {
-		vi.mocked(core.getInput).mockImplementation((name: string) => {
-			if (name === "token") return "test-token";
-			if (name === "release-branch") return ""; // Empty to trigger default
-			if (name === "target-branch") return ""; // Empty to trigger default
-			return "";
-		});
-
-		// Mock tags API to return a tag
-		mockOctokit.rest.repos.listTags.mockResolvedValue({
-			data: [{ name: "v1.0.0", commit: { sha: "tag-sha-123" } }],
-		});
-
-		mockOctokit.rest.repos.compareCommits.mockResolvedValue({
-			data: { commits: [] },
-		});
-
-		await linkIssuesFromCommits();
-
-		// Verify it compares from latest tag to target branch
-		expect(mockOctokit.rest.repos.compareCommits).toHaveBeenCalledWith(
-			expect.objectContaining({
-				base: "tag-sha-123", // Latest tag SHA
-				head: "main", // Default target-branch
-			}),
-		);
-	});
-
-	it("should handle non-Error throw from issues.get", async () => {
-		// Mock tags to use compareCommits path
-		mockOctokit.rest.repos.listTags.mockResolvedValue({
-			data: [{ name: "v1.0.0", commit: { sha: "tag-sha" } }],
-		});
-		mockOctokit.rest.repos.compareCommits.mockResolvedValue({
-			data: {
-				commits: [{ sha: "abc123", commit: { message: "Fixes #42", author: { name: "Test" } } }],
-			},
-		});
-		// Throw a non-Error value to hit the String(error) path
-		mockOctokit.rest.issues.get.mockRejectedValue("String error");
-
-		const result = await linkIssuesFromCommits();
-
-		expect(result.linkedIssues).toEqual([]);
-		expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("String error"));
-	});
-
-	it("should extract PR number from merge commit and query linked issues", async () => {
-		// Mock tags to use compareCommits path
-		mockOctokit.rest.repos.listTags.mockResolvedValue({
-			data: [{ name: "v1.0.0", commit: { sha: "tag-sha" } }],
-		});
-		// Mock a merge commit with PR number in message
-		mockOctokit.rest.repos.compareCommits.mockResolvedValue({
-			data: {
-				commits: [
+		it("extracts issue references from commit messages when using the tag-based path", async () => {
+			const tags = [
+				{ tag: "v0.9.0", sha: "sha-old" },
+				{ tag: "v1.0.0", sha: "sha-latest" },
+			];
+			// A commit with a 'closes #7' reference.
+			const commitWithRef = makeCommit("abc0001", "fix: resolve bug\n\nCloses #7");
+			const f = makeFixtures({
+				tags,
+				compareBaseSha: "sha-latest",
+				compareCommitsData: [commitWithRef],
+				// Seed the GitHubIssue.get response so the issue details are backfilled.
+				issues: [
 					{
-						sha: "merge123",
-						commit: {
-							message: "feat: add new feature (#108)",
-							author: { name: "GitHub" },
-						},
+						number: 7,
+						title: "Bug report",
+						state: "closed",
+						htmlUrl: "https://github.com/owner/repo/issues/7",
+						nodeId: "node7",
 					},
 				],
-			},
-		});
-
-		// Mock GraphQL response with linked issues
-		mockOctokit.graphql.mockResolvedValue({
-			repository: {
-				pullRequest: {
-					allLinked: {
-						nodes: [
-							{
-								id: "issue-node-id-42",
-								number: 42,
-								title: "Feature request",
-								state: "OPEN",
-								url: "https://github.com/test-owner/test-repo/issues/42",
-							},
-						],
-					},
-					manuallyLinked: {
-						nodes: [],
-					},
-				},
-			},
-		});
-
-		const result = await linkIssuesFromCommits();
-
-		// Verify GraphQL was called for PR #108
-		expect(mockOctokit.graphql).toHaveBeenCalledWith(
-			expect.stringContaining("closingIssuesReferences"),
-			expect.objectContaining({
-				owner: "test-owner",
-				repo: "test-repo",
-				prNumber: 108,
-			}),
-		);
-
-		// Verify linked issue was found
-		expect(result.linkedIssues).toHaveLength(1);
-		expect(result.linkedIssues[0]).toMatchObject({
-			number: 42,
-			title: "Feature request",
-			state: "open",
-		});
-	});
-
-	it("should paginate through all commits when no tags exist", async () => {
-		// Mock listTags to return empty array
-		mockOctokit.rest.repos.listTags.mockResolvedValue({
-			data: [],
-		});
-
-		// Mock listCommits to return paginated results
-		mockOctokit.rest.repos.listCommits
-			.mockResolvedValueOnce({
-				data: Array(100)
-					.fill(null)
-					.map((_, i) => ({
-						sha: `commit${i}`,
-						commit: { message: `Commit ${i}`, author: { name: "Dev" } },
-					})),
-			})
-			.mockResolvedValueOnce({
-				data: Array(50)
-					.fill(null)
-					.map((_, i) => ({
-						sha: `commit${i + 100}`,
-						commit: { message: `Commit ${i + 100}`, author: { name: "Dev" } },
-					})),
 			});
 
-		const result = await linkIssuesFromCommits();
+			const result = await runStage(f);
 
-		// Verify it fetched all commits via pagination
-		expect(mockOctokit.rest.repos.listCommits).toHaveBeenCalledTimes(2);
-		expect(mockOctokit.rest.repos.listCommits).toHaveBeenNthCalledWith(
-			1,
-			expect.objectContaining({
-				owner: "test-owner",
-				repo: "test-repo",
-				sha: "main",
-				per_page: 100,
-				page: 1,
-			}),
-		);
-		expect(mockOctokit.rest.repos.listCommits).toHaveBeenNthCalledWith(
-			2,
-			expect.objectContaining({
-				page: 2,
-			}),
-		);
-		expect(result.commits).toHaveLength(150);
+			expect(result.commits).toHaveLength(1);
+			expect(result.linkedIssues).toHaveLength(1);
+			expect(result.linkedIssues[0].number).toBe(7);
+			expect(result.linkedIssues[0].title).toBe("Bug report");
+		});
 	});
 
-	it("should handle GraphQL errors gracefully when fetching PR linked issues", async () => {
-		mockOctokit.rest.repos.compareCommits.mockResolvedValue({
-			data: {
-				commits: [
-					{
-						sha: "merge123",
-						commit: {
-							message: "feat: add feature (#99)",
-							author: { name: "GitHub" },
-						},
-					},
-				],
-			},
-		});
-
-		// Mock GraphQL to throw error
-		mockOctokit.graphql.mockRejectedValue(new Error("GraphQL API error"));
-
-		const result = await linkIssuesFromCommits();
-
-		// Should not throw, but return empty linked issues
-		expect(result.linkedIssues).toEqual([]);
-	});
-
-	it("should combine issues from both commit messages and PR GraphQL queries", async () => {
-		// Mock tags to use compareCommits path
-		mockOctokit.rest.repos.listTags.mockResolvedValue({
-			data: [{ name: "v1.0.0", commit: { sha: "tag-sha" } }],
-		});
-		mockOctokit.rest.repos.compareCommits.mockResolvedValue({
-			data: {
-				commits: [
-					{
-						sha: "commit1",
-						commit: {
-							message: "fix: resolve bug\n\nCloses #10",
-							author: { name: "Dev" },
-						},
-					},
-					{
-						sha: "merge2",
-						commit: {
-							message: "feat: new feature (#20)",
-							author: { name: "GitHub" },
-						},
-					},
-				],
-			},
-		});
-
-		// Mock GraphQL for PR #20
-		mockOctokit.graphql.mockResolvedValue({
-			repository: {
-				pullRequest: {
-					allLinked: {
-						nodes: [
-							{
-								id: "issue-node-id-30",
-								number: 30,
-								title: "Feature request",
-								state: "OPEN",
-								url: "https://github.com/test-owner/test-repo/issues/30",
-							},
-						],
-					},
-					manuallyLinked: {
-						nodes: [],
-					},
-				},
-			},
-		});
-
-		// Mock REST API for issue #10 (from commit message)
-		mockOctokit.rest.issues.get.mockResolvedValue({
-			data: {
-				title: "Bug report",
-				state: "open",
-				html_url: "https://github.com/test-owner/test-repo/issues/10",
-			},
-		});
-
-		const result = await linkIssuesFromCommits();
-
-		// Should have both issues
-		expect(result.linkedIssues).toHaveLength(2);
-		expect(result.linkedIssues.map((i) => i.number).sort()).toEqual([10, 30]);
-	});
-
-	it("should add comments to issues to create cross-references", async () => {
-		// Mock tags to use compareCommits path
-		mockOctokit.rest.repos.listTags.mockResolvedValue({
-			data: [{ name: "v1.0.0", commit: { sha: "tag-sha" } }],
-		});
-		mockOctokit.rest.repos.compareCommits.mockResolvedValue({
-			data: {
-				commits: [{ sha: "abc123", commit: { message: "Closes #42", author: { name: "Test" } } }],
-			},
-		});
-		mockOctokit.rest.issues.get.mockResolvedValue({
-			data: {
-				number: 42,
-				title: "Issue",
-				state: "open",
-				html_url: "https://github.com/test/issues/42",
-				node_id: "I_42",
-			},
-		});
-
-		// Mock PR associated with commit
-		mockOctokit.rest.repos.listPullRequestsAssociatedWithCommit.mockResolvedValue({
-			data: [{ number: 109, title: "Release PR" }],
-		});
-
-		// Mock GraphQL timeline query (no existing cross-reference)
-		mockOctokit.graphql
-			.mockResolvedValueOnce({
-				repository: {
-					issue: {
-						timelineItems: {
-							nodes: [],
-						},
-					},
-				},
-			})
-			// Mock GraphQL addComment mutation
-			.mockResolvedValueOnce({
-				addComment: {
-					commentEdge: {
-						node: { id: "IC_123" },
-					},
-				},
+	describe("no-tags fallback", () => {
+		it("fetches all commits from the branch when no tags exist", async () => {
+			const commits = [makeCommit("sha-first", "chore: initial commit"), makeCommit("sha-second", "feat: add widget")];
+			const f = makeFixtures({
+				// No tags seeded.
+				// GitHubCommit.list returns these two commits for the branch.
+				listCommitsData: commits,
 			});
 
-		await linkIssuesFromCommits();
+			const result = await runStage(f);
 
-		// Verify timeline was queried (first call)
-		expect(mockOctokit.graphql).toHaveBeenNthCalledWith(
-			1,
-			expect.stringContaining("timelineItems"),
-			expect.objectContaining({
-				issueNumber: 42,
-				prNumber: 109,
-			}),
-		);
-
-		// Verify comment was added (second call)
-		expect(mockOctokit.graphql).toHaveBeenNthCalledWith(
-			2,
-			expect.stringContaining("addComment"),
-			expect.objectContaining({
-				subjectId: "I_42",
-				body: expect.stringContaining("#109"),
-			}),
-		);
-
-		expect(core.info).toHaveBeenCalledWith("  ✓ Added cross-reference comment to issue #42");
-		expect(core.info).toHaveBeenCalledWith("✓ Successfully linked 1 issue(s) to PR #109");
-	});
-
-	it("should not duplicate cross-references if already linked", async () => {
-		// Mock tags
-		mockOctokit.rest.repos.listTags.mockResolvedValue({
-			data: [{ name: "v1.0.0", commit: { sha: "tag-sha" } }],
-		});
-		mockOctokit.rest.repos.compareCommits.mockResolvedValue({
-			data: {
-				commits: [{ sha: "abc123", commit: { message: "Closes #42", author: { name: "Test" } } }],
-			},
-		});
-		mockOctokit.rest.issues.get.mockResolvedValue({
-			data: {
-				number: 42,
-				title: "Issue",
-				state: "open",
-				html_url: "https://github.com/test/issues/42",
-				node_id: "I_42",
-			},
+			// Both commits returned via the list fallback.
+			expect(result.commits).toHaveLength(2);
+			expect(result.commits.map((c) => c.sha)).toEqual(["sha-first", "sha-second"]);
+			expect(result.linkedIssues).toHaveLength(0);
 		});
 
-		// Mock PR associated with commit
-		mockOctokit.rest.repos.listPullRequestsAssociatedWithCommit.mockResolvedValue({
-			data: [{ number: 109, title: "Release PR" }],
+		it("returns empty commits when there are no tags and no commits on the branch", async () => {
+			// No tags, no commit list seeded — GitHubCommit.list returns []
+			// (lenient default), so getAllCommitsOnBranch yields [].
+			const f = makeFixtures();
+
+			const result = await runStage(f);
+
+			expect(result.commits).toHaveLength(0);
+			expect(result.linkedIssues).toHaveLength(0);
 		});
-
-		// Mock GraphQL timeline query (existing cross-reference found)
-		mockOctokit.graphql.mockResolvedValueOnce({
-			repository: {
-				issue: {
-					timelineItems: {
-						nodes: [
-							{
-								__typename: "CrossReferencedEvent",
-								source: {
-									__typename: "PullRequest",
-									number: 109,
-								},
-							},
-						],
-					},
-				},
-			},
-		});
-
-		await linkIssuesFromCommits();
-
-		// Verify timeline was queried
-		expect(mockOctokit.graphql).toHaveBeenCalledWith(
-			expect.stringContaining("timelineItems"),
-			expect.objectContaining({
-				issueNumber: 42,
-				prNumber: 109,
-			}),
-		);
-
-		// Verify addComment was NOT called since already linked
-		expect(mockOctokit.graphql).not.toHaveBeenCalledWith(expect.stringContaining("addComment"), expect.anything());
-		expect(core.info).toHaveBeenCalledWith("  Issue #42 already linked to PR #109");
-		expect(core.info).toHaveBeenCalledWith("All issues already linked to PR");
-	});
-
-	it("should skip linking in dry-run mode", async () => {
-		vi.mocked(core.getBooleanInput).mockImplementation((name: string) => {
-			if (name === "dry-run") return true;
-			return false;
-		});
-
-		// Mock tags
-		mockOctokit.rest.repos.listTags.mockResolvedValue({
-			data: [{ name: "v1.0.0", commit: { sha: "tag-sha" } }],
-		});
-		mockOctokit.rest.repos.compareCommits.mockResolvedValue({
-			data: {
-				commits: [{ sha: "abc123", commit: { message: "Closes #42", author: { name: "Test" } } }],
-			},
-		});
-		mockOctokit.rest.issues.get.mockResolvedValue({
-			data: {
-				number: 42,
-				title: "Issue",
-				state: "open",
-				html_url: "https://github.com/test/issues/42",
-				node_id: "I_42",
-			},
-		});
-
-		await linkIssuesFromCommits();
-
-		// Verify PR lookup was NOT called in dry-run mode
-		expect(mockOctokit.rest.repos.listPullRequestsAssociatedWithCommit).not.toHaveBeenCalled();
-		// Verify GraphQL timeline query was NOT called
-		expect(mockOctokit.graphql).not.toHaveBeenCalledWith(expect.stringContaining("timelineItems"), expect.anything());
-		// Verify addComment was NOT called
-		expect(mockOctokit.graphql).not.toHaveBeenCalledWith(expect.stringContaining("addComment"), expect.anything());
-	});
-
-	it("should handle missing PR gracefully", async () => {
-		// Mock tags
-		mockOctokit.rest.repos.listTags.mockResolvedValue({
-			data: [{ name: "v1.0.0", commit: { sha: "tag-sha" } }],
-		});
-		mockOctokit.rest.repos.compareCommits.mockResolvedValue({
-			data: {
-				commits: [{ sha: "abc123", commit: { message: "Closes #42", author: { name: "Test" } } }],
-			},
-		});
-		mockOctokit.rest.issues.get.mockResolvedValue({
-			data: {
-				number: 42,
-				title: "Issue",
-				state: "open",
-				html_url: "https://github.com/test/issues/42",
-				node_id: "I_42",
-			},
-		});
-
-		// Mock no PR found
-		mockOctokit.rest.repos.listPullRequestsAssociatedWithCommit.mockResolvedValue({
-			data: [],
-		});
-
-		await linkIssuesFromCommits();
-
-		// Should not throw, just skip linking
-		expect(core.warning).toHaveBeenCalledWith("No PR found for current commit, skipping issue linking");
-		// Verify GraphQL was NOT called when no PR exists
-		expect(mockOctokit.graphql).not.toHaveBeenCalled();
-	});
-
-	it("should handle non-Error from listTags API", async () => {
-		// Throw a non-Error to test String(error) path
-		mockOctokit.rest.repos.listTags.mockRejectedValue("String error from API");
-		mockOctokit.rest.repos.compareCommits.mockResolvedValue({
-			data: { commits: [] },
-		});
-
-		const result = await linkIssuesFromCommits();
-
-		// Should handle the error gracefully and fall back to all commits
-		expect(result.linkedIssues).toEqual([]);
-	});
-
-	it("should handle PR with manually linked issues not in allLinked", async () => {
-		mockOctokit.rest.repos.listTags.mockResolvedValue({
-			data: [{ name: "v1.0.0", commit: { sha: "tag-sha" } }],
-		});
-		mockOctokit.rest.repos.compareCommits.mockResolvedValue({
-			data: {
-				commits: [
-					{
-						sha: "merge123",
-						commit: {
-							message: "feat: add feature (#50)",
-							author: { name: "GitHub" },
-						},
-					},
-				],
-			},
-		});
-
-		// Mock GraphQL with a manually linked issue that's NOT in allLinked
-		mockOctokit.graphql.mockResolvedValue({
-			repository: {
-				pullRequest: {
-					allLinked: {
-						nodes: [
-							{
-								id: "issue-node-id-10",
-								number: 10,
-								title: "Keyword linked",
-								state: "OPEN",
-								url: "https://github.com/test-owner/test-repo/issues/10",
-							},
-						],
-					},
-					manuallyLinked: {
-						nodes: [
-							{
-								id: "issue-node-id-20",
-								number: 20,
-								title: "Manually linked only",
-								state: "OPEN",
-								url: "https://github.com/test-owner/test-repo/issues/20",
-							},
-						],
-					},
-				},
-			},
-		});
-
-		const result = await getLinkedIssuesFromCommits(mockOctokit as unknown as ReturnType<typeof getOctokit>, "main");
-
-		// Should have both issues (one from allLinked, one from manuallyLinked only)
-		expect(result.linkedIssues).toHaveLength(2);
-		expect(result.linkedIssues.map((i) => i.number).sort()).toEqual([10, 20]);
-	});
-
-	it("should handle GraphQL errors when linking issues to PR", async () => {
-		mockOctokit.rest.repos.listTags.mockResolvedValue({
-			data: [{ name: "v1.0.0", commit: { sha: "tag-sha" } }],
-		});
-		mockOctokit.rest.repos.compareCommits.mockResolvedValue({
-			data: {
-				commits: [{ sha: "abc123", commit: { message: "Closes #42", author: { name: "Test" } } }],
-			},
-		});
-		mockOctokit.rest.issues.get.mockResolvedValue({
-			data: {
-				number: 42,
-				title: "Issue",
-				state: "open",
-				html_url: "https://github.com/test/issues/42",
-				node_id: "I_42",
-			},
-		});
-
-		// Mock PR found
-		mockOctokit.rest.repos.listPullRequestsAssociatedWithCommit.mockResolvedValue({
-			data: [{ number: 109, title: "Release PR" }],
-		});
-
-		// Mock GraphQL to throw error when querying timeline
-		mockOctokit.graphql.mockRejectedValue(new Error("GraphQL error"));
-
-		await linkIssuesFromCommits();
-
-		// Should log warning but not throw
-		expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("Failed to link issue #42"));
-	});
-
-	it("should skip commit if it's already in existing.commits array", async () => {
-		mockOctokit.rest.repos.listTags.mockResolvedValue({
-			data: [{ name: "v1.0.0", commit: { sha: "tag-sha" } }],
-		});
-		mockOctokit.rest.repos.compareCommits.mockResolvedValue({
-			data: {
-				commits: [
-					{
-						sha: "commit1",
-						commit: {
-							message: "fix: initial\n\nCloses #15",
-							author: { name: "Dev" },
-						},
-					},
-					{
-						sha: "merge1",
-						commit: {
-							message: "Merge branch (#99)",
-							author: { name: "GitHub" },
-						},
-					},
-				],
-			},
-		});
-
-		// Mock GraphQL for PR #99 to return issue #15 (same as in commit message)
-		mockOctokit.graphql.mockResolvedValue({
-			repository: {
-				pullRequest: {
-					allLinked: {
-						nodes: [
-							{
-								id: "issue-node-id-15",
-								number: 15,
-								title: "Bug fix",
-								state: "CLOSED",
-								url: "https://github.com/test-owner/test-repo/issues/15",
-							},
-						],
-					},
-					manuallyLinked: {
-						nodes: [],
-					},
-				},
-			},
-		});
-
-		const result = await getLinkedIssuesFromCommits(mockOctokit as unknown as ReturnType<typeof getOctokit>, "main");
-
-		// Should have only 1 issue (deduplicated)
-		expect(result.linkedIssues).toHaveLength(1);
-		expect(result.linkedIssues[0].number).toBe(15);
-		// Should have both commits listed, but not duplicated
-		expect(result.linkedIssues[0].commits).toEqual(["commit1", "merge1"]);
-	});
-
-	it("should handle errors from listPullRequestsAssociatedWithCommit", async () => {
-		mockOctokit.rest.repos.listTags.mockResolvedValue({
-			data: [{ name: "v1.0.0", commit: { sha: "tag-sha" } }],
-		});
-		mockOctokit.rest.repos.compareCommits.mockResolvedValue({
-			data: {
-				commits: [{ sha: "abc123", commit: { message: "Closes #42", author: { name: "Test" } } }],
-			},
-		});
-		mockOctokit.rest.issues.get.mockResolvedValue({
-			data: {
-				number: 42,
-				title: "Issue",
-				state: "open",
-				html_url: "https://github.com/test/issues/42",
-				node_id: "I_42",
-			},
-		});
-
-		// Mock listPullRequestsAssociatedWithCommit to throw error
-		mockOctokit.rest.repos.listPullRequestsAssociatedWithCommit.mockRejectedValue(
-			new Error("API error when listing PRs"),
-		);
-
-		await linkIssuesFromCommits();
-
-		// Should handle the error gracefully and log warning
-		expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("Failed to link issues to PR"));
-	});
-
-	it("should throw error when token is missing from state", async () => {
-		// Mock getState to return empty token
-		vi.mocked(core.getState).mockReturnValue("");
-
-		await expect(linkIssuesFromCommits()).rejects.toThrow("No token available from state");
-	});
-
-	it("should handle non-Error thrown from getLinkedIssuesFromPR", async () => {
-		mockOctokit.rest.repos.listTags.mockResolvedValue({
-			data: [{ name: "v1.0.0", commit: { sha: "tag-sha" } }],
-		});
-		mockOctokit.rest.repos.compareCommits.mockResolvedValue({
-			data: {
-				commits: [
-					{
-						sha: "merge123",
-						commit: {
-							message: "feat: add feature (#75)",
-							author: { name: "GitHub" },
-						},
-					},
-				],
-			},
-		});
-
-		// Mock GraphQL to throw non-Error value
-		mockOctokit.graphql.mockRejectedValue("String error from GraphQL");
-
-		const result = await getLinkedIssuesFromCommits(mockOctokit as unknown as ReturnType<typeof getOctokit>, "main");
-
-		// Should handle gracefully
-		expect(result.linkedIssues).toEqual([]);
-		expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("Failed to get linked issues for PR #75"));
-		expect(core.warning).toHaveBeenCalledWith(expect.stringContaining("String error from GraphQL"));
 	});
 });

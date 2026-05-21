@@ -7,57 +7,53 @@
  * 2. Load explicit config from .github/silk-release.json
  * 3. Merge config over inferred values (config wins)
  *
+ * The input-config types (`SBOMContact`, `SBOMSupplierConfig`,
+ * `SBOMCopyrightConfig`, `SBOMMetadataConfig`, `ReleaseConfig`) are derived
+ * from the Effect Schema in `src/schema/silk-release-config.ts` — the schema
+ * is the single source of truth and is also the source of the generated
+ * `silk-release-action.input.schema.json`. The CycloneDX-wire and
+ * NTIA-result types below stay hand-rolled because they model external
+ * shapes the action only consumes, not config it parses.
+ *
  * @see https://www.ntia.gov/files/ntia/publications/sbom_minimum_elements_report.pdf
  */
 
+import type {
+	SbomConfig,
+	SbomContact,
+	SbomCopyright,
+	SbomSupplier,
+	SilkReleaseConfig,
+} from "../schema/silk-release-config.js";
+
 /**
  * Contact information for supplier or security
+ *
+ * @remarks
+ * Re-exported alias of {@link SbomContact} — the Schema-derived type.
  */
-export interface SBOMContact {
-	/** Contact name (inferred from package.json author) */
-	name?: string;
-	/** Contact email (inferred from package.json author or security contact) */
-	email?: string;
-	/** Contact phone */
-	phone?: string;
-}
+export type SBOMContact = SbomContact;
 
 /**
  * Supplier configuration for SBOM metadata
  *
  * @remarks
- * The supplier field is required for NTIA minimum elements compliance.
- * This information identifies who supplies/distributes the software.
+ * Re-exported alias of {@link SbomSupplier} — the Schema-derived type. The
+ * supplier `name` is required for NTIA minimum-elements compliance; `url`
+ * accepts a string or string array and `contact` accepts an object or array.
  */
-export interface SBOMSupplierConfig {
-	/** Organization or company name (required for NTIA compliance) */
-	name: string;
-	/** Organization website URLs */
-	url?: string | string[];
-	/** Contact information (security contact recommended) */
-	contact?: SBOMContact | SBOMContact[];
-}
+export type SBOMSupplierConfig = SbomSupplier;
 
 /**
  * Copyright configuration for SBOM metadata
+ *
+ * @remarks
+ * Re-exported alias of {@link SbomCopyright} — the Schema-derived type.
+ * Most users should NOT set `startYear`; it is auto-detected from the npm
+ * registry's first-publication date. Override only when registry lookup is
+ * unreliable or the copyright predates first npm publication.
  */
-export interface SBOMCopyrightConfig {
-	/** Copyright holder name (defaults to supplier.name) */
-	holder?: string;
-	/**
-	 * Override for copyright start year
-	 *
-	 * @remarks
-	 * **Most users should NOT set this.** The start year is auto-detected from the
-	 * npm registry (first publication date). For new packages, the current year is used.
-	 *
-	 * Only use this override if:
-	 * - The package was published elsewhere before npm
-	 * - The copyright predates the first npm publication
-	 * - The registry lookup fails or returns incorrect data
-	 */
-	startYear?: number;
-}
+export type SBOMCopyrightConfig = SbomCopyright;
 
 /**
  * External reference types in CycloneDX format
@@ -122,9 +118,9 @@ export interface SBOMExternalReference {
  * Complete SBOM metadata configuration
  *
  * @remarks
- * This configuration is loaded from .github/silk-release.json and merged
- * with auto-inferred values from package.json. Explicit config values take
- * precedence over inferred values.
+ * Re-exported alias of {@link SbomConfig} — the Schema-derived type. Merged
+ * with auto-inferred values from `package.json` by `resolveSBOMMetadata`;
+ * explicit config values take precedence over inferred values.
  *
  * @example
  * ```json
@@ -144,35 +140,17 @@ export interface SBOMExternalReference {
  * }
  * ```
  */
-export interface SBOMMetadataConfig {
-	/** Supplier information (required for NTIA compliance) */
-	supplier?: SBOMSupplierConfig;
-	/** Copyright configuration */
-	copyright?: SBOMCopyrightConfig;
-	/**
-	 * Publisher name for component metadata
-	 *
-	 * @remarks
-	 * If not specified, defaults to supplier.name or author name from package.json
-	 */
-	publisher?: string;
-	/**
-	 * Documentation URL (overrides homepage from package.json)
-	 */
-	documentationUrl?: string;
-}
+export type SBOMMetadataConfig = SbomConfig;
 
 /**
  * Release configuration file structure
  *
  * @remarks
- * This is the structure of .github/silk-release.json which configures
- * release-related settings including SBOM metadata.
+ * Re-exported alias of {@link SilkReleaseConfig} — the Schema-derived top-level
+ * type for `.github/silk-release.json`, the `sbom-config` action input, and
+ * the `SILK_RELEASE_SBOM_TEMPLATE` environment variable.
  */
-export interface ReleaseConfig {
-	/** SBOM metadata configuration */
-	sbom?: SBOMMetadataConfig;
-}
+export type ReleaseConfig = SilkReleaseConfig;
 
 /**
  * Inferred SBOM metadata from package.json
@@ -183,17 +161,17 @@ export interface ReleaseConfig {
  */
 export interface InferredSBOMMetadata {
 	/** Author name parsed from package.json author field */
-	authorName?: string;
+	authorName?: string | undefined;
 	/** Author email parsed from package.json author field */
-	authorEmail?: string;
+	authorEmail?: string | undefined;
 	/** VCS URL from package.json repository field */
-	vcsUrl?: string;
+	vcsUrl?: string | undefined;
 	/** Issue tracker URL from package.json bugs field */
-	issueTrackerUrl?: string;
+	issueTrackerUrl?: string | undefined;
 	/** Documentation/homepage URL from package.json homepage field */
-	documentationUrl?: string;
+	documentationUrl?: string | undefined;
 	/** Package license from package.json license field */
-	license?: string;
+	license?: string | undefined;
 }
 
 /**
@@ -205,19 +183,25 @@ export interface InferredSBOMMetadata {
  */
 export interface ResolvedSBOMMetadata {
 	/** Supplier information */
-	supplier?: {
-		name: string;
-		url?: string[];
-		contact?: Array<{ name?: string; email?: string; phone?: string }>;
-	};
+	supplier?:
+		| {
+				name: string;
+				url?: string[] | undefined;
+				contact?:
+					| Array<{ name?: string | undefined; email?: string | undefined; phone?: string | undefined }>
+					| undefined;
+		  }
+		| undefined;
 	/** Component metadata */
-	component?: {
-		publisher?: string;
-		copyright?: string;
-		externalReferences?: SBOMExternalReference[];
-	};
+	component?:
+		| {
+				publisher?: string | undefined;
+				copyright?: string | undefined;
+				externalReferences?: SBOMExternalReference[] | undefined;
+		  }
+		| undefined;
 	/** Author of the component */
-	author?: string;
+	author?: string | undefined;
 }
 
 /**
@@ -249,9 +233,9 @@ export interface NTIAFieldResult {
 	/** Whether the field passes compliance */
 	passed: boolean;
 	/** Value found (if any) */
-	value?: string;
+	value?: string | undefined;
 	/** Suggestion for how to fix if missing */
-	suggestion?: string;
+	suggestion?: string | undefined;
 }
 
 /**
@@ -263,31 +247,41 @@ export interface NTIAFieldResult {
  */
 export interface EnhancedCycloneDXMetadata {
 	/** Timestamp when SBOM was generated */
-	timestamp?: string;
+	timestamp?: string | undefined;
 	/** Supplier/distributor information */
-	supplier?: {
-		name: string;
-		url?: string[];
-		contact?: Array<{ name?: string; email?: string; phone?: string }>;
-	};
+	supplier?:
+		| {
+				name: string;
+				url?: string[] | undefined;
+				contact?:
+					| Array<{ name?: string | undefined; email?: string | undefined; phone?: string | undefined }>
+					| undefined;
+		  }
+		| undefined;
 	/** Component being described */
-	component?: {
-		type?: string;
-		name: string;
-		version?: string;
-		publisher?: string;
-		copyright?: string;
-		purl?: string;
-		externalReferences?: SBOMExternalReference[];
-	};
+	component?:
+		| {
+				type?: string | undefined;
+				name: string;
+				version?: string | undefined;
+				publisher?: string | undefined;
+				copyright?: string | undefined;
+				purl?: string | undefined;
+				externalReferences?: SBOMExternalReference[] | undefined;
+		  }
+		| undefined;
 	/** Tool that generated the SBOM */
-	tools?: {
-		components?: Array<{
-			type: string;
-			name: string;
-			version?: string;
-		}>;
-	};
+	tools?:
+		| {
+				components?:
+					| Array<{
+							type: string;
+							name: string;
+							version?: string | undefined;
+					  }>
+					| undefined;
+		  }
+		| undefined;
 }
 
 /**
@@ -296,19 +290,23 @@ export interface EnhancedCycloneDXMetadata {
 export interface EnhancedCycloneDXComponent {
 	type: string;
 	name: string;
-	version?: string;
-	purl?: string;
-	publisher?: string;
-	copyright?: string;
-	licenses?: Array<{
-		license?: {
-			id?: string;
-			name?: string;
-			url?: string;
-		};
-		expression?: string;
-	}>;
-	externalReferences?: SBOMExternalReference[];
+	version?: string | undefined;
+	purl?: string | undefined;
+	publisher?: string | undefined;
+	copyright?: string | undefined;
+	licenses?:
+		| Array<{
+				license?:
+					| {
+							id?: string | undefined;
+							name?: string | undefined;
+							url?: string | undefined;
+					  }
+					| undefined;
+				expression?: string | undefined;
+		  }>
+		| undefined;
+	externalReferences?: SBOMExternalReference[] | undefined;
 }
 
 /**
@@ -318,11 +316,13 @@ export interface EnhancedCycloneDXDocument {
 	bomFormat: "CycloneDX";
 	specVersion: string;
 	version: number;
-	serialNumber?: string;
-	metadata?: EnhancedCycloneDXMetadata;
-	components?: EnhancedCycloneDXComponent[];
-	dependencies?: Array<{
-		ref: string;
-		dependsOn?: string[];
-	}>;
+	serialNumber?: string | undefined;
+	metadata?: EnhancedCycloneDXMetadata | undefined;
+	components?: EnhancedCycloneDXComponent[] | undefined;
+	dependencies?:
+		| Array<{
+				ref: string;
+				dependsOn?: string[] | undefined;
+		  }>
+		| undefined;
 }
