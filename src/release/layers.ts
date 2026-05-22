@@ -20,6 +20,9 @@ import { PublishabilityDetectorAdaptiveLive } from "./publishability.js";
  * `workspaces-effect`, plus the silk `ChangesetConfig` and the adaptive
  * `PublishabilityDetector` override (silk rules in silk mode).
  */
+// ChangesetConfigLive is listed twice: directly (for Phase-2/3 consumers that
+// yield* ChangesetConfig) and as the provider for PublishabilityDetectorAdaptiveLive.
+// Effect memoizes identical layer references — one instantiation serves both slots.
 export const ReleaseLive = Layer.mergeAll(
 	WorkspacesLive,
 	ChangesetConfigLive,
