@@ -1,6 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
-import { findWorkspaceRootSync, getWorkspacePackagesSync } from "workspaces-effect";
+import { Effect } from "effect";
+import {
+	PublishabilityDetector,
+	WorkspaceDiscovery,
+	findWorkspaceRootSync,
+	getWorkspacePackagesSync,
+} from "workspaces-effect";
 import { isIgnoredPackage } from "./detect-repo-type.js";
 
 /** Minimal raw package.json shape needed to read publishConfig. */
@@ -46,6 +52,36 @@ export interface WorkspacePackageInfo {
 	/** Number of publish targets */
 	targetCount: number;
 }
+
+/** A publishable workspace package and the count of its resolved publish targets. */
+export interface PublishablePackage {
+	readonly name: string;
+	readonly version: string;
+	readonly path: string;
+	readonly targetCount: number;
+}
+
+/**
+ * The publishable, non-ignored packages, resolved through the single
+ * PublishabilityDetector (which already honors changeset ignore). Replaces the
+ * synchronous getAllWorkspacePackages + target-count reimplementation.
+ */
+export const listPublishablePackages = (
+	workspaceRoot: string,
+): Effect.Effect<ReadonlyArray<PublishablePackage>, never, WorkspaceDiscovery | PublishabilityDetector> =>
+	Effect.gen(function* () {
+		const discovery = yield* WorkspaceDiscovery;
+		const detector = yield* PublishabilityDetector;
+		const packages = yield* discovery.listPackages().pipe(Effect.orDie);
+		const out: PublishablePackage[] = [];
+		for (const pkg of packages) {
+			const targets = yield* detector.detect(pkg, workspaceRoot);
+			if (targets.length > 0) {
+				out.push({ name: pkg.name, version: pkg.version, path: pkg.path, targetCount: targets.length });
+			}
+		}
+		return out;
+	});
 
 /**
  * Read the changeset configuration file
@@ -173,10 +209,10 @@ export function getPublishablePackages(): WorkspacePackageInfo[] {
  * @returns The publishable packages whose `package.json` is in the changed set.
  */
 export function getReleasingPackages(
-	publishablePackages: ReadonlyArray<WorkspacePackageInfo>,
+	publishablePackages: ReadonlyArray<PublishablePackage>,
 	changedFiles: string,
 	repoRoot: string,
-): WorkspacePackageInfo[] {
+): PublishablePackage[] {
 	const changedPaths = new Set(
 		changedFiles
 			.split("\n")

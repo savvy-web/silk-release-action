@@ -15,40 +15,19 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { WorkspacePackageInfo } from "../src/utils/release-summary-helpers.js";
+import type { PublishablePackage } from "../src/utils/release-summary-helpers.js";
 import {
 	formatReleasePackageList,
 	getReleasingPackages,
-	isPublishablePackage,
 	resolveReleasePrTitle,
 } from "../src/utils/release-summary-helpers.js";
 
-const pkg = (overrides: Partial<WorkspacePackageInfo>): WorkspacePackageInfo => ({
+const pkg = (overrides: Partial<PublishablePackage>): PublishablePackage => ({
 	name: "@org/pkg",
 	version: "1.0.0",
 	path: "/repo/pkg",
-	private: false,
-	hasPublishConfig: false,
-	targetCount: 0,
+	targetCount: 1,
 	...overrides,
-});
-
-describe("isPublishablePackage", () => {
-	it("treats a public package with no publish config as publishable", () => {
-		expect(isPublishablePackage(pkg({ private: false }))).toBe(true);
-	});
-
-	it("treats a private package with publishConfig.access as publishable", () => {
-		expect(isPublishablePackage(pkg({ private: true, hasPublishConfig: true }))).toBe(true);
-	});
-
-	it("treats a private package with publishConfig.targets as publishable", () => {
-		expect(isPublishablePackage(pkg({ private: true, targetCount: 2 }))).toBe(true);
-	});
-
-	it("treats a private package with no publish config as not publishable", () => {
-		expect(isPublishablePackage(pkg({ private: true, hasPublishConfig: false, targetCount: 0 }))).toBe(false);
-	});
 });
 
 describe("getReleasingPackages", () => {
