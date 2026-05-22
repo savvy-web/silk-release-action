@@ -2,14 +2,16 @@
  * Main-action entry point.
  *
  * @remarks
- * Skeleton state during the @actions/* → @savvy-web/github-action-effects
- * migration. Routes to one of four phase handlers — `branch-management`,
- * `validation`, `publishing`, `close-issues` — each currently stubbed.
+ * Resolves the workflow phase via `detectWorkflowPhase` — which reads the
+ * GitHub event context through `GitHubClient` + `ActionEnvironment`, honoring
+ * an explicit `phase` input when set — and routes to the matching handler:
  *
- * Phase detection that previously used `@actions/github`'s `context` and
- * `getOctokit` will move into a `detectWorkflowPhase` Effect that yields
- * `GitHubClient` + `ActionEnvironment`. Until that lands, the skeleton
- * trusts the `phase` input and falls through to a no-op when absent.
+ * - `branch-management` — create/update the release branch and PR (Phase 1)
+ * - `validation` — build validation, publish dry-runs, release-notes preview (Phase 2)
+ * - `publishing` — multi-registry publish, GitHub releases, SBOM/attestation (Phase 3)
+ * - `close-issues` — close issues linked to the merged release PR
+ *
+ * An absent or unrecognized phase falls through to a no-op.
  */
 
 import { FetchHttpClient, FileSystem } from "@effect/platform";
