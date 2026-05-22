@@ -1,57 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
-import { join, relative, sep } from "node:path";
+import { relative, sep } from "node:path";
 import { Effect } from "effect";
-import {
-	PublishabilityDetector,
-	WorkspaceDiscovery,
-	findWorkspaceRootSync,
-	getWorkspacePackagesSync,
-} from "workspaces-effect";
-import { isIgnoredPackage } from "./detect-repo-type.js";
-
-/** Minimal raw package.json shape needed to read publishConfig. */
-interface RawPackageJson {
-	name?: string;
-	version?: string;
-	private?: boolean;
-	publishConfig?: {
-		access?: "public" | "restricted";
-		registry?: string;
-		directory?: string;
-		/** Silk-specific: explicit list of publish targets (e.g. `["npm", "github"]`). */
-		targets?: unknown[];
-	};
-}
-
-/**
- * Changeset configuration
- */
-export interface ChangesetConfig {
-	fixed?: string[][];
-	linked?: string[][];
-	/** Package names/patterns excluded from releases (e.g. `["@libraries/*"]`). */
-	ignore?: string[];
-}
-
-/**
- * Workspace package info
- */
-export interface WorkspacePackageInfo {
-	/** Package name */
-	name: string;
-	/** Package version */
-	version: string;
-	/** Package path */
-	path: string;
-	/** Whether package is private */
-	private: boolean;
-	/** Whether package has publishConfig.access */
-	hasPublishConfig: boolean;
-	/** Access level if configured */
-	access?: "public" | "restricted" | undefined;
-	/** Number of publish targets */
-	targetCount: number;
-}
+import { PublishabilityDetector, WorkspaceDiscovery } from "workspaces-effect";
 
 /** A publishable workspace package and the count of its resolved publish targets. */
 export interface PublishablePackage {
@@ -84,116 +33,6 @@ export const listPublishablePackages = (
 	});
 
 /**
- * Read the changeset configuration file
- *
- * @returns Changeset config or null if not found/readable
- */
-export function readChangesetConfig(): ChangesetConfig | null {
-	const configPath = join(process.cwd(), ".changeset", "config.json");
-
-	try {
-		if (existsSync(configPath)) {
-			const content = readFileSync(configPath, "utf8");
-			return JSON.parse(content) as ChangesetConfig;
-		}
-	} catch {
-		// ignore — no config is a valid state
-	}
-
-	return null;
-}
-
-/**
- * Get all workspace packages including their publish configuration
- *
- * @returns Array of workspace package info
- */
-export function getAllWorkspacePackages(): WorkspacePackageInfo[] {
-	const cwd = process.cwd();
-	const workspaceRoot = findWorkspaceRootSync(cwd);
-
-	if (!workspaceRoot) {
-		return [];
-	}
-
-	const workspaces = getWorkspacePackagesSync(workspaceRoot);
-	const packages: WorkspacePackageInfo[] = [];
-
-	for (const workspace of workspaces) {
-		// `workspaces-effect`'s typed PublishConfig doesn't carry `targets`, so
-		// re-read the raw package.json to compute target counts under silk rules.
-		const rawPath = join(workspace.path, "package.json");
-		let rawPkg: RawPackageJson = {};
-		try {
-			rawPkg = JSON.parse(readFileSync(rawPath, "utf8")) as RawPackageJson;
-		} catch {
-			// ignore — treat as empty publish config
-		}
-
-		const hasPublishConfig = rawPkg.publishConfig?.access !== undefined;
-		// targetCount: mirrors the silk publishability rules without needing
-		// the Effect-based publishability.ts service.
-		//   - `publishConfig.targets` is a non-empty array → count its length
-		//     (e.g. ["npm", "github"] → 2)
-		//   - `publishConfig.access` is set but no explicit targets array →
-		//     one implicit target (the default npm/GitHub Packages registry)
-		//   - neither → 0 (not publishable)
-		const rawTargets = rawPkg.publishConfig?.targets;
-		const targetCount =
-			Array.isArray(rawTargets) && rawTargets.length > 0 ? rawTargets.length : hasPublishConfig ? 1 : 0;
-
-		packages.push({
-			name: workspace.name,
-			version: workspace.version || "0.0.0",
-			path: workspace.path,
-			private: workspace.private === true,
-			hasPublishConfig,
-			access: rawPkg.publishConfig?.access,
-			targetCount,
-		});
-	}
-
-	return packages;
-}
-
-/**
- * The shared "is this package publishable" predicate.
- *
- * @remarks
- * A package is publishable when it carries explicit publish config
- * (`publishConfig.access` or `publishConfig.targets`) or is simply not marked
- * private. This mirrors the silk publishability rules; `determineTagStrategy`
- * uses the same predicate so tag strategy and release-PR-title detection stay
- * in lockstep.
- *
- * @param pkg - The workspace package to test.
- * @returns True when the package would be published.
- */
-export function isPublishablePackage(pkg: WorkspacePackageInfo): boolean {
-	return pkg.hasPublishConfig || pkg.targetCount > 0 || !pkg.private;
-}
-
-/**
- * The workspace packages that can actually release — every workspace that
- * {@link isPublishablePackage} and is not excluded by the changeset `ignore`
- * list.
- *
- * @remarks
- * Honouring `ignore` matters for repos like rslib-builder, whose example
- * packages carry `publishConfig` (so they look publishable) but are excluded
- * from releases via `ignore: ["@libraries/*", "@rspress/*"]`. Without this they
- * would be miscounted as releasable and skew the release-PR-title format.
- *
- * @returns The subset of {@link getAllWorkspacePackages} that would publish and is not changeset-ignored.
- */
-export function getPublishablePackages(): WorkspacePackageInfo[] {
-	const ignorePatterns = readChangesetConfig()?.ignore ?? [];
-	return getAllWorkspacePackages().filter(
-		(pkg) => isPublishablePackage(pkg) && !isIgnoredPackage(pkg.name, ignorePatterns),
-	);
-}
-
-/**
  * The publishable packages whose `package.json` changed in this version bump —
  * i.e. the packages that will actually release.
  *
@@ -203,7 +42,7 @@ export function getPublishablePackages(): WorkspacePackageInfo[] {
  * repo-root-relative `package.json` path against the changed files. Paths are
  * normalised to POSIX separators to match `git status` output.
  *
- * @param publishablePackages - The publishable workspaces (see {@link getPublishablePackages}).
+ * @param publishablePackages - The publishable workspaces (see {@link listPublishablePackages}).
  * @param changedFiles - `git status --porcelain` output for the version bump.
  * @param repoRoot - The directory the workspace paths and git output resolve against (usually `process.cwd()`).
  * @returns The publishable packages whose `package.json` is in the changed set.

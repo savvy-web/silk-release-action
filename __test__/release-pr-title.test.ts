@@ -1,6 +1,5 @@
 /**
- * Tests for publishable-package detection, releasing-package detection, and the
- * release PR title decision.
+ * Tests for releasing-package detection and the release PR title decision.
  *
  * @remarks
  * `resolveReleasePrTitle` decides whether the changeset release PR keeps the
@@ -9,9 +8,8 @@
  * group) — yields `release: <version>`, mirroring the commit title. An
  * independent multi-package release lists `name@version` per package, falling
  * back to `release: <count> packages` once the title exceeds a length cap.
- * `isPublishablePackage` is the shared predicate that `determine-tag-strategy`
- * also uses; `getReleasingPackages` narrows the publishable set to the packages
- * whose package.json changed in this version bump.
+ * `getReleasingPackages` narrows the publishable set (from {@link listPublishablePackages})
+ * to the packages whose package.json changed in this version bump.
  */
 
 import { describe, expect, it } from "vitest";
