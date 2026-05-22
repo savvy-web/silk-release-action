@@ -79,6 +79,46 @@ describe("SilkPublishabilityDetectorLive — silk rules", () => {
 		expect(targets.length).toBe(1);
 	});
 
+	it("private !== true + publishConfig.targets → resolves every target (regression: was one default in pc.directory)", async () => {
+		// The lint-staged shape: a public source package that declares explicit
+		// multi-registry targets in dist/npm. Silk publishability must come from
+		// the declared targets, not the `private` flag — otherwise the single
+		// default target points at pc.directory (dist/dev, the private dev/link
+		// artifact) and gets filtered out, misclassifying the package as
+		// version-only.
+		writePkg(tmpDir, {
+			name: "x",
+			version: "1.0.0",
+			private: false,
+			publishConfig: {
+				directory: "dist/dev",
+				access: "public",
+				targets: [
+					{
+						protocol: "npm",
+						registry: "https://npm.pkg.github.com/",
+						directory: "dist/npm",
+						access: "public",
+						provenance: true,
+					},
+					{
+						protocol: "npm",
+						registry: "https://registry.npmjs.org/",
+						directory: "dist/npm",
+						access: "public",
+						provenance: true,
+					},
+				],
+			},
+		});
+		const targets = await runSilk(
+			Effect.flatMap(PublishabilityDetector, (d) => d.detect(makeWsPkg(tmpDir, "x"), tmpDir)),
+		);
+		expect(targets.length).toBe(2);
+		expect(targets.every((t) => t.directory === "dist/npm")).toBe(true);
+		expect(targets.map((t) => t.registry)).toEqual(["https://npm.pkg.github.com/", "https://registry.npmjs.org/"]);
+	});
+
 	it("private === true + publishConfig.access public, no targets → publishable", async () => {
 		writePkg(tmpDir, { name: "x", version: "1.0.0", private: true, publishConfig: { access: "public" } });
 		const targets = await runSilk(

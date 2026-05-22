@@ -11,7 +11,12 @@
  * `privatePackages.version` interaction. `private-target-with-directory`
  * guards the `42cc7e2` regression (per-target `directory` discarded, target
  * resolved to the private dev build and dropped); `private-shorthand-targets`
- * guards shorthand-string expansion.
+ * guards shorthand-string expansion; `public-multi-target` mirrors the
+ * `@savvy-web/lint-staged` shape (public source + `publishConfig.targets`) and
+ * guards the regression where a non-private source short-circuited to a single
+ * default target at `publishConfig.directory` (the private `dist/dev` artifact),
+ * which the private-build filter then dropped — misclassifying the package as
+ * version-only.
  */
 
 import { fileURLToPath } from "node:url";
@@ -134,6 +139,24 @@ describe("publishability fixture harness", () => {
 		expect(publishTargets[0].registry).toBe("https://registry.npmjs.org/");
 		expect(publishTargets[0].directory).toBe("dist/npm");
 		expect(publishTargets[0].access).toBe("public");
+		expect(versionable).toBe(true);
+	});
+
+	it("should resolve both targets at dist/npm when a non-private source declares publishConfig.targets (public-multi-target fixture, lint-staged version-only regression guard)", async () => {
+		const { publishTargets, versionable } = await Effect.runPromise(resolveFixture("public-multi-target"));
+		expect(publishTargets).toHaveLength(2);
+		// Declaration order is preserved (GitHub Packages first, then npm) — these
+		// must resolve to the public dist/npm artifact, NOT the private dist/dev
+		// build named by publishConfig.directory.
+		expect(publishTargets.map((t) => t.registry)).toEqual([
+			"https://npm.pkg.github.com/",
+			"https://registry.npmjs.org/",
+		]);
+		for (const target of publishTargets) {
+			expect(target.directory).toBe("dist/npm");
+			expect(target.access).toBe("public");
+			expect(target.provenance).toBe(true);
+		}
 		expect(versionable).toBe(true);
 	});
 

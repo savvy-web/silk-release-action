@@ -104,31 +104,32 @@ const readRawPackageJson = (pkgPath: string): RawPackageJson | null => {
 };
 
 /**
- * Apply silk publishability rules to a raw package.json:
- *  - pkg.private !== true → publishable (one target)
- *  - pkg.private === true + publishConfig.access set + no targets → publishable (one target)
- *  - pkg.private === true + publishConfig.targets non-empty → resolve each target;
- *    return one PublishTarget per target that resolves to public/restricted access
- *  - Otherwise → not publishable ([])
+ * Apply silk publishability rules to a raw package.json.
+ *
+ * In silk mode `private: true` is the norm on workspace package.json — it keeps
+ * the package out of accidental `npm publish` and out of transitive public
+ * installs. Publishability is therefore derived from `publishConfig`, **not**
+ * from the `private` flag. The build pipeline rewrites `private: false` onto the
+ * real publish artifact (e.g. `dist/npm`) while leaving the dev/link artifact
+ * (`publishConfig.directory`, e.g. `dist/dev`) private.
+ *
+ * Precedence (the `private` flag is only the last-resort default):
+ *  - `publishConfig.targets` non-empty → resolve each target (regardless of
+ *    `private`); one PublishTarget per target that resolves to public/restricted
+ *    access.
+ *  - `publishConfig.access` set, no targets → one target using that access
+ *    (regardless of `private`).
+ *  - `private !== true` (no usable publishConfig) → one default target.
+ *  - Otherwise (private, no usable publishConfig) → not publishable ([]).
  */
 const silkDetect = (pkgName: string, raw: RawPackageJson): ReadonlyArray<PublishTarget> => {
-	if (raw.private !== true) {
-		// Public package — one target with defaults
-		return [
-			new PublishTarget({
-				name: pkgName,
-				registry: raw.publishConfig?.registry ?? "https://registry.npmjs.org/",
-				directory: raw.publishConfig?.directory ?? ".",
-				access: raw.publishConfig?.access ?? "public",
-			}),
-		];
-	}
-
 	const pc = raw.publishConfig;
-	if (!pc) return [];
 
-	// private === true with targets array
-	if (pc.targets && pc.targets.length > 0) {
+	// publishConfig.targets array → resolve each declared target. This is the
+	// publishability signal in silk mode and is consulted before the `private`
+	// flag: a public OR private source package that declares targets publishes
+	// to exactly those targets.
+	if (pc?.targets && pc.targets.length > 0) {
 		const results: PublishTarget[] = [];
 		for (const target of pc.targets) {
 			const access = resolveTargetAccess(target, pc.access);
@@ -152,14 +153,26 @@ const silkDetect = (pkgName: string, raw: RawPackageJson): ReadonlyArray<Publish
 		return results;
 	}
 
-	// private === true + no targets + publishConfig.access set → publishable
-	if (pc.access === "public" || pc.access === "restricted") {
+	// publishConfig.access set, no targets → one target using that access.
+	if (pc && (pc.access === "public" || pc.access === "restricted")) {
 		return [
 			new PublishTarget({
 				name: pkgName,
 				registry: pc.registry ?? "https://registry.npmjs.org/",
 				directory: pc.directory ?? ".",
 				access: pc.access,
+			}),
+		];
+	}
+
+	// Public package with no explicit publish config → one default target.
+	if (raw.private !== true) {
+		return [
+			new PublishTarget({
+				name: pkgName,
+				registry: pc?.registry ?? "https://registry.npmjs.org/",
+				directory: pc?.directory ?? ".",
+				access: pc?.access ?? "public",
 			}),
 		];
 	}
