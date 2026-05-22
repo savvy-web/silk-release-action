@@ -37,6 +37,7 @@ import {
 	SbomTest,
 	SigstoreSignerTest,
 } from "@savvy-web/github-action-effects/testing";
+import type { Redacted } from "effect";
 import { ConfigProvider, Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 import {
@@ -1340,7 +1341,7 @@ describe("runPublishTargets", () => {
 				"@savvy-web/github-action-effects"
 			);
 			const failingPubLayer = Layer.succeed(PackagePublishSvc, {
-				setupAuth: (_registry: string, _token: string) => Effect.succeed(undefined as undefined),
+				setupAuth: (_registry: string, _token: Redacted.Redacted<string>) => Effect.succeed(undefined as undefined),
 				pack: (packageDir: string) => {
 					if (packageDir.includes("fail-pkg")) {
 						return Effect.fail(

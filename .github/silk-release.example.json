@@ -1,5 +1,5 @@
 {
-	"$schema": "https://raw.githubusercontent.com/savvy-web/workflow-release-action/main/.github/silk-release.schema.json",
+	"$schema": "https://raw.githubusercontent.com/savvy-web/silk-release-action/main/.github/silk-release.schema.json",
 	"sbom": {
 		"supplier": {
 			"name": "Your Company Name",

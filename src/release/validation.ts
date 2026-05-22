@@ -28,7 +28,7 @@ import {
 	isGitHubPackagesRegistry,
 	isNpmRegistry,
 } from "@savvy-web/github-action-effects";
-import { Config, Effect, Option } from "effect";
+import { Config, Effect, Option, Redacted } from "effect";
 import type { PublishTarget, WorkspacePackage } from "workspaces-effect";
 import { WorkspaceDiscovery } from "workspaces-effect";
 import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
@@ -590,7 +590,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 							const token = pickToken(sizingTarget.registry, npmToken, ghPkgsToken);
 							if (token !== null) {
 								yield* publish
-									.setupAuth(sizingTarget.registry, token)
+									.setupAuth(sizingTarget.registry, Redacted.make(token))
 									.pipe(
 										Effect.catchAll((e: PackagePublishError) =>
 											Effect.logWarning(`setupAuth failed for ${sizingTarget.registry}: ${e.message}`),

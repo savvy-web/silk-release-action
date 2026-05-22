@@ -1,4 +1,4 @@
-# workflow-release-action
+# silk-release-action
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-4caf50.svg)](https://opensource.org/licenses/MIT)
 
@@ -15,7 +15,7 @@ Automated release management for GitHub repositories using changesets. Handles t
 ## Install
 
 ```yaml
-- uses: savvy-web/workflow-release-action@main
+- uses: savvy-web/silk-release-action@main
   with:
     app-client-id: ${{ vars.APP_CLIENT_ID }}
     app-private-key: ${{ secrets.APP_PRIVATE_KEY }}
@@ -44,7 +44,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: savvy-web/workflow-release-action@main
+      - uses: savvy-web/silk-release-action@main
         with:
           app-client-id: ${{ vars.APP_CLIENT_ID }}
           app-private-key: ${{ secrets.APP_PRIVATE_KEY }}

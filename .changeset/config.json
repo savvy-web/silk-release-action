@@ -3,7 +3,7 @@
 	"changelog": [
 		"@savvy-web/changesets/changelog",
 		{
-			"repo": "savvy-web/workflow-release-action"
+			"repo": "savvy-web/silk-release-action"
 		}
 	],
 	"commit": false,

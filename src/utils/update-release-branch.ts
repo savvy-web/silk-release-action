@@ -37,6 +37,13 @@ import type { ConfigError } from "effect";
 import { Config, Duration, Effect } from "effect";
 import { resolveSignoff } from "./commit-signoff.js";
 import { isSinglePackage } from "./detect-repo-type.js";
+import { isMonorepoForTagging } from "./determine-tag-strategy.js";
+import {
+	formatReleasePackageList,
+	getPublishablePackages,
+	getReleasingPackages,
+	resolveReleasePrTitle,
+} from "./release-summary-helpers.js";
 import { summaryWriter } from "./summary-writer.js";
 
 /**
@@ -271,15 +278,20 @@ export const updateReleaseBranch = (
 			yield* Effect.logInfo("New version changes:");
 			yield* Effect.logInfo(versionSummary);
 
-			if (isSinglePackage()) {
+			// Title the release PR from the packages that will release: a single
+			// package (or a locked group sharing one version) gets `release:
+			// <version>`; an independent multi-package release lists name@version
+			// (collapsing to a count when long); a single-package repo with nothing
+			// publishable falls back to the root version. Otherwise the prefix.
+			const publishablePackages = getPublishablePackages();
+			const detectedReleasing = getReleasingPackages(publishablePackages, changedFiles, process.cwd());
+			const releasingPackages = detectedReleasing.length > 0 ? detectedReleasing : publishablePackages;
+			let singlePackageRepoVersion: string | undefined;
+			if (releasingPackages.length === 0 && isSinglePackage()) {
 				const readResult = yield* Effect.either(fs.readFileString("package.json"));
 				if (readResult._tag === "Right") {
 					try {
-						const parsed = JSON.parse(readResult.right) as { version?: string };
-						if (parsed.version) {
-							prTitle = `release: ${parsed.version}`;
-							yield* Effect.logInfo(`Single-package repo detected, using PR title: ${prTitle}`);
-						}
+						singlePackageRepoVersion = (JSON.parse(readResult.right) as { version?: string }).version;
 					} catch (error) {
 						yield* Effect.logWarning(
 							`Failed to read version for PR title: ${error instanceof Error ? error.message : String(error)}`,
@@ -289,10 +301,24 @@ export const updateReleaseBranch = (
 					yield* Effect.logWarning(`Failed to read package.json: ${readResult.left.message}`);
 				}
 			}
+			prTitle = resolveReleasePrTitle({
+				releasingPackages,
+				perPackageVersioning: isMonorepoForTagging(),
+				releasablePackages: publishablePackages,
+				singlePackageRepoVersion,
+				prTitlePrefix,
+			});
+			if (prTitle !== prTitlePrefix) {
+				yield* Effect.logInfo(`Release PR title: ${prTitle}`);
+			}
 
 			if (!dryRun) yield* runner.exec("git", ["add", "."]);
 
-			const commitMessage = `${prTitlePrefix}\n\nVersion bump from changesets (rebased on ${targetBranch})\n\n${signoff}`;
+			// Commit subject matches the PR title; body lists the releasing packages
+			// with full (scoped) names, falling back to a description when none.
+			const releaseList = formatReleasePackageList(releasingPackages);
+			const commitBody = releaseList !== "" ? releaseList : `Version bump from changesets (rebased on ${targetBranch})`;
+			const commitMessage = `${prTitle}\n\n${commitBody}\n\n${signoff}`;
 			if (!dryRun) {
 				yield* Effect.logInfo("Creating verified commit via GitHub API (rebasing onto main)...");
 				yield* commitChangesOntoTarget({

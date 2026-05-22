@@ -48,7 +48,7 @@ const closeOne = (
 		const issues = yield* GitHubIssue;
 		const result = yield* Effect.either(
 			issues
-				.comment(issueNumber, `Closed by release PR #${prNumber} merge.\n\n🤖 _Automated by workflow-release-action_`)
+				.comment(issueNumber, `Closed by release PR #${prNumber} merge.\n\n🤖 _Automated by silk-release-action_`)
 				.pipe(Effect.flatMap(() => issues.close(issueNumber, "completed"))),
 		);
 

@@ -32,7 +32,7 @@ dependencies:
 
 The release action supports publishing to multiple registries simultaneously with OIDC-first authentication, SBOM generation, and NTIA compliance validation. This document covers the registry infrastructure, authentication model, SBOM/compliance system, and the type system that ties them together.
 
-Phase 3 is a self-recovering publish chain built on `@savvy-web/github-action-effects@1.2.0` library services. The old imperative registry modules (`registry-auth.ts`, `registry-utils.ts`, `pre-validate-target.ts`, `dry-run-publish.ts`, `resolve-targets.ts`, `publish-packages.ts`, `publish-target.ts`) are deleted. The `Attest` and `Sbom` services from the old `src/services/attest/` directory are now part of the library; that directory no longer exists in this repo. See `src/release/publish.ts` and `src/release/releases.ts` for the current Effect orchestration.
+Phase 3 is a self-recovering publish chain built on `@savvy-web/github-action-effects@2.0.0` library services. The old imperative registry modules (`registry-auth.ts`, `registry-utils.ts`, `pre-validate-target.ts`, `dry-run-publish.ts`, `resolve-targets.ts`, `publish-packages.ts`, `publish-target.ts`) are deleted. The `Attest` and `Sbom` services from the old `src/services/attest/` directory are now part of the library; that directory no longer exists in this repo. See `src/release/publish.ts` and `src/release/releases.ts` for the current Effect orchestration.
 
 ## Current State
 
@@ -91,9 +91,11 @@ The first source found wins. All sources support JSONC via `jsonc-parser`.
 
 Attestation and storage-record calls use the workflow token because it carries `attestations:write` and `packages:write` from the workflow's own permissions block.
 
+Under the 2.0 library all three identities are carried as `Redacted<string>` through the secret-bearing APIs (`GitHubApp.generateToken` / `revokeToken`, `GitHubClientLive.fromToken` / `fromApp`, `PackagePublish.setupAuth`, and the decoded `InstallationToken.token`). `PackagePublishLive` additionally requires `ActionOutputs` so it can mask the registry token via `setSecret` before writing `~/.npmrc`.
+
 ### Attestation System
 
-The `Attest` and `Sbom` services are now part of `@savvy-web/github-action-effects@1.2.0`. The old `src/services/attest/` directory no longer exists in this repo; the library's published surface (`Attest`, `Sbom`, `SigstoreSigner`, `OidcTokenIssuer`) is consumed directly in `src/release/publish.ts` and `src/release/releases.ts`.
+The `Attest` and `Sbom` services are now part of `@savvy-web/github-action-effects@2.0.0`. The old `src/services/attest/` directory no longer exists in this repo; the library's published surface (`Attest`, `Sbom`, `SigstoreSigner`, `OidcTokenIssuer`) is consumed directly in `src/release/publish.ts` and `src/release/releases.ts`.
 
 **Key properties of the current attestation flow:**
 

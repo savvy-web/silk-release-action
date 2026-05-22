@@ -7,8 +7,10 @@ import {
 } from "../src/utils/determine-tag-strategy.js";
 import * as releaseSummaryHelpers from "../src/utils/release-summary-helpers.js";
 
-// Mock release-summary-helpers
-vi.mock("../src/utils/release-summary-helpers.js", () => ({
+// Mock release-summary-helpers — keep the pure helpers (isPublishablePackage)
+// real and only stub the two filesystem-reading functions.
+vi.mock("../src/utils/release-summary-helpers.js", async (importActual) => ({
+	...(await importActual<typeof import("../src/utils/release-summary-helpers.js")>()),
 	getAllWorkspacePackages: vi.fn(),
 	readChangesetConfig: vi.fn(),
 }));
@@ -569,6 +571,41 @@ describe("determine-tag-strategy", () => {
 			]);
 
 			// Only 1 publishable package, so not a monorepo for tagging
+			expect(isMonorepoForTagging()).toBe(false);
+		});
+
+		it("excludes changeset-ignored packages when counting publishable packages", () => {
+			// rslib-builder shape: one real package plus several publishable example
+			// packages that are excluded via the changeset `ignore` list.
+			vi.mocked(releaseSummaryHelpers.getAllWorkspacePackages).mockReturnValue([
+				{
+					name: "@savvy-web/rslib-builder",
+					version: "0.20.5",
+					path: "/package",
+					private: true,
+					hasPublishConfig: true,
+					targetCount: 2,
+				},
+				{
+					name: "@libraries/single-entry",
+					version: "0.0.0",
+					path: "/examples/libraries/single-entry",
+					private: true,
+					hasPublishConfig: true,
+					targetCount: 2,
+				},
+				{
+					name: "@rspress/plugin",
+					version: "0.0.0",
+					path: "/examples/rspress-plugin/plugin",
+					private: true,
+					hasPublishConfig: true,
+					targetCount: 2,
+				},
+			]);
+			vi.mocked(releaseSummaryHelpers.readChangesetConfig).mockReturnValue({ ignore: ["@libraries/*", "@rspress/*"] });
+
+			// Only @savvy-web/rslib-builder can actually release → single-tag repo.
 			expect(isMonorepoForTagging()).toBe(false);
 		});
 	});

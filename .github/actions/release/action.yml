@@ -1,4 +1,4 @@
-name: Workflow Release
+name: Silk Release
 description: Automated release management with changesets, build validation, and GitHub releases
 
 branding:

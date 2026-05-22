@@ -11,6 +11,7 @@
  * Post-action failures should never fail the workflow.
  */
 
+import { FetchHttpClient } from "@effect/platform";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Action, ActionState, GitHubAppLive, GitHubToken, OctokitAuthAppLive } from "@savvy-web/github-action-effects";
 import { Config, Effect, Layer, Option } from "effect";
@@ -57,9 +58,13 @@ export const post = Effect.gen(function* () {
 
 /**
  * Domain layers for post-action. `GitHubToken.dispose` needs a `GitHubApp`
- * layer; `NodeFileSystem.layer` backs `ActionStateLive`.
+ * layer; in 2.0 `GitHubAppLive` also requires `HttpClient.HttpClient`, provided
+ * here via `FetchHttpClient.layer`. `NodeFileSystem.layer` backs `ActionStateLive`.
  */
-export const PostLive = Layer.mergeAll(GitHubAppLive.pipe(Layer.provide(OctokitAuthAppLive)), NodeFileSystem.layer);
+export const PostLive = Layer.mergeAll(
+	GitHubAppLive.pipe(Layer.provide(OctokitAuthAppLive), Layer.provide(FetchHttpClient.layer)),
+	NodeFileSystem.layer,
+);
 
 /* v8 ignore next 3 -- entry-point guard, only runs in GitHub Actions */
 if (process.env.GITHUB_ACTIONS) {

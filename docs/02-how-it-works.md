@@ -14,7 +14,7 @@ When new commits land on `main` that include changeset files, the action:
 4. If no branch exists: creates the branch, runs the version command, and opens a release PR
 5. If the branch exists: rebases it onto `main` to incorporate new changes, detecting conflicts
 
-The release PR title uses the configured prefix (default: `chore: release`) and lists the pending version bumps.
+The release PR title and the release-branch commit subject are derived from the packages that will release. A single releasable package or a group locked to one shared version gets `release: <version>`. An independent multi-package repo lists each release as `release: name@version, …`, omitting the npm scope shared by every package and collapsing to `release: <count> packages` once the title would exceed 100 characters. Packages excluded by changeset config are left out. The commit body is a bullet list of the releasing packages with their full scoped names. When no releasable package or version can be determined, the title falls back to the `pr-title-prefix` input (default: `chore: release`).
 
 ## Phase 2: Validation
 

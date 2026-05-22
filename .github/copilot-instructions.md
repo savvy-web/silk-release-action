@@ -2,7 +2,7 @@
 
 ## Repository Overview
 
-This is a **private GitHub Actions and Workflows repository** (`@savvy-web/workflow-release-action`) that provides shared GitHub Actions, reusable workflows, and internal project automation for Savvy Web Systems projects. **This repository contains NO application code or packages to build** - it only contains GitHub Actions composite actions (YAML) and workflow definitions.
+This is a **private GitHub Actions and Workflows repository** (`@savvy-web/silk-release-action`) that provides shared GitHub Actions, reusable workflows, and internal project automation for Savvy Web Systems projects. **This repository contains NO application code or packages to build** - it only contains GitHub Actions composite actions (YAML) and workflow definitions.
 
 **Key Characteristics:**
 
@@ -259,7 +259,7 @@ npm install -g pnpm@10.20.0
 3. Test in a consuming repository by referencing your branch:
 
    ```yaml
-   uses: savvy-web/workflow-release-action/.github/actions/node@your-branch
+   uses: savvy-web/silk-release-action/.github/actions/node@your-branch
    ```
 
 4. Run `pnpm lint:fix` to format YAML

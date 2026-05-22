@@ -19,6 +19,7 @@ import {
 	ActionEnvironment,
 	ActionLogger,
 	ActionOutputs,
+	ActionOutputsLive,
 	ActionState,
 	ActionStateLive,
 	AttestLive,
@@ -48,7 +49,7 @@ import {
 	SigstoreSignerLive,
 	Step,
 } from "@savvy-web/github-action-effects";
-import { Config, Effect, Layer, Option } from "effect";
+import { Config, Effect, Layer, Option, Redacted } from "effect";
 import { ReleaseLive } from "./release/layers.js";
 import { detectReleases, runBuildAndSbom, runPublishTargets } from "./release/publish.js";
 import { runReleases } from "./release/releases.js";
@@ -581,9 +582,9 @@ const runValidation = Effect.gen(function* () {
 				sbomConfigSource,
 			);
 
-			const publishTitle = dryRun ? "🧪 Publish Validation (Dry Run)" : "📦 Publish Validation";
-			const releaseNotesTitle = dryRun ? "🧪 Release Notes Preview (Dry Run)" : "📋 Release Notes Preview";
-			const sbomTitle = dryRun ? "🧪 SBOM Preview (Dry Run)" : "🔏 SBOM Preview";
+			const publishTitle = dryRun ? "🧪 Publish Validation (Dry Run)" : "Publish Validation";
+			const releaseNotesTitle = dryRun ? "🧪 Release Notes Preview (Dry Run)" : "Release Notes Preview";
+			const sbomTitle = dryRun ? "🧪 SBOM Preview (Dry Run)" : "SBOM Preview";
 
 			const publishCheckUrl = yield* createPerStepCheck(
 				publishTitle,
@@ -972,7 +973,9 @@ export const main = Effect.gen(function* () {
 	// (tokens.ts) can read it via `process.env.STATE_token`.
 	// `process.env.GITHUB_TOKEN` is intentionally never set.
 	const installationToken = yield* GitHubToken.read();
-	process.env.STATE_token = installationToken.token;
+	// `InstallationToken.token` decodes to `Redacted<string>` in 2.0; unwrap it
+	// for the `STATE_token` env bridge the imperative publish helpers read.
+	process.env.STATE_token = Redacted.value(installationToken.token);
 
 	// Bridge the optional workflow-issued `github-token` (saved by pre.ts as
 	// `githubPackagesToken`) into the `STATE_githubToken` env var so
@@ -1048,7 +1051,15 @@ const githubApiBase = Layer.merge(githubClient, githubGraphQL);
 
 const releaseLive = ReleaseLive.pipe(Layer.provide(Layer.merge(NodeFileSystem.layer, NodePath.layer)), Layer.orDie);
 const npmRegistryLive = NpmRegistryLive.pipe(Layer.provide(CommandRunnerLive));
-const packagePublishLive = PackagePublishLive.pipe(Layer.provide(Layer.merge(CommandRunnerLive, npmRegistryLive)));
+// 2.0: `PackagePublishLive.setupAuth` masks the registry token via
+// `ActionOutputs.setSecret`, so the layer now requires `ActionOutputs`.
+// `Action.run`'s `layer` option must be self-contained, so provide a
+// `NodeFileSystem`-backed `ActionOutputsLive` here rather than leaking the
+// requirement up to `MainLive`.
+const actionOutputsLive = ActionOutputsLive.pipe(Layer.provide(NodeFileSystem.layer));
+const packagePublishLive = PackagePublishLive.pipe(
+	Layer.provide(Layer.mergeAll(CommandRunnerLive, npmRegistryLive, actionOutputsLive)),
+);
 
 const oidcTokenIssuerLive = OidcTokenIssuerLive.pipe(Layer.provide(FetchHttpClient.layer));
 const sigstoreSignerLive = SigstoreSignerLive.pipe(Layer.provide(oidcTokenIssuerLive));

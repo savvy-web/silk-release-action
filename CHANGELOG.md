@@ -1,4 +1,4 @@
-# @savvy-web/workflow-release-action
+# @savvy-web/silk-release-action
 
 ## 1.0.0
 

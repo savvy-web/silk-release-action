@@ -105,6 +105,8 @@ describe("pre", () => {
 		await runPre(fixtures);
 
 		expect(fixtures.stateState.entries.has("githubPackagesToken")).toBe(false);
-		expect(fixtures.outputsState.secrets).toHaveLength(0);
+		// 2.0: provision masks the minted installation token via setSecret, so it
+		// is the only registered secret — no github-packages token is added.
+		expect(fixtures.outputsState.secrets).toEqual(["ghs_test_token_123"]);
 	});
 });
