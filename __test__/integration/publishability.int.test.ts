@@ -20,6 +20,7 @@
  */
 
 import { fileURLToPath } from "node:url";
+import { NodeContext } from "@effect/platform-node";
 import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 import { WorkspacePackage } from "workspaces-effect";
@@ -52,7 +53,11 @@ const resolveFixture = (name: string) =>
 		const publishTargets = yield* resolvePublishableTargets(pkg, dir);
 		const versionPrivate = yield* config.versionPrivate(dir);
 		return { publishTargets, versionable: publishTargets.length > 0 || versionPrivate };
-	}).pipe(Effect.provide(Layer.mergeAll(SilkPublishabilityDetectorLive, ChangesetConfigLive)));
+	}).pipe(
+		Effect.provide(
+			Layer.mergeAll(SilkPublishabilityDetectorLive, ChangesetConfigLive).pipe(Layer.provideMerge(NodeContext.layer)),
+		),
+	);
 
 describe("publishability fixture harness", () => {
 	it("should resolve one public target from the package root when the package is not private (public-package fixture)", async () => {
@@ -185,7 +190,10 @@ const resolveWorkspacePackage = (workspace: string, subPath: string, name: strin
 		return yield* resolvePublishableTargets(pkg, root);
 	}).pipe(
 		Effect.provide(
-			Layer.mergeAll(PublishabilityDetectorAdaptiveLive.pipe(Layer.provide(ChangesetConfigLive)), ChangesetConfigLive),
+			Layer.mergeAll(
+				PublishabilityDetectorAdaptiveLive.pipe(Layer.provide(ChangesetConfigLive)),
+				ChangesetConfigLive,
+			).pipe(Layer.provideMerge(NodeContext.layer)),
 		),
 	);
 

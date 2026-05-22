@@ -1,36 +1,20 @@
 import { relative, sep } from "node:path";
-import { Effect } from "effect";
-import { PublishabilityDetector, WorkspaceDiscovery } from "workspaces-effect";
+import type { PublishablePackage } from "@savvy-web/silk-effects";
+import { SilkPublishability } from "@savvy-web/silk-effects";
+import type { Effect } from "effect";
+import type { PublishabilityDetector, WorkspaceDiscovery } from "workspaces-effect";
 
-/** A publishable workspace package and the count of its resolved publish targets. */
-export interface PublishablePackage {
-	readonly name: string;
-	readonly version: string;
-	readonly path: string;
-	readonly targetCount: number;
-}
+export type { PublishablePackage };
 
 /**
  * The publishable, non-ignored packages, resolved through the single
- * PublishabilityDetector (which already honors changeset ignore). Replaces the
- * synchronous getAllWorkspacePackages + target-count reimplementation.
+ * `PublishabilityDetector` (which already honors changeset ignore). Delegates to
+ * the shared `@savvy-web/silk-effects` implementation.
  */
 export const listPublishablePackages = (
 	workspaceRoot: string,
 ): Effect.Effect<ReadonlyArray<PublishablePackage>, never, WorkspaceDiscovery | PublishabilityDetector> =>
-	Effect.gen(function* () {
-		const discovery = yield* WorkspaceDiscovery;
-		const detector = yield* PublishabilityDetector;
-		const packages = yield* discovery.listPackages().pipe(Effect.orDie);
-		const out: PublishablePackage[] = [];
-		for (const pkg of packages) {
-			const targets = yield* detector.detect(pkg, workspaceRoot);
-			if (targets.length > 0) {
-				out.push({ name: pkg.name, version: pkg.version, path: pkg.path, targetCount: targets.length });
-			}
-		}
-		return out;
-	});
+	SilkPublishability.listPublishable(workspaceRoot);
 
 /**
  * The publishable packages whose `package.json` changed in this version bump —

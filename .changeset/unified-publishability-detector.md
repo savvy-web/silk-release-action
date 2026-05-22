@@ -10,3 +10,4 @@
 ## Refactoring
 
 - Consolidate all publishability detection onto a single ignore-aware `PublishabilityDetector` layer. `ChangesetConfig` is now the single source of changeset-config truth (`mode`, `versionPrivate`, `ignorePatterns`, `isIgnored`, `fixed`), and the synchronous reimplementation of the silk rules in `release-summary-helpers.ts` has been removed in favor of an Effect-based `listPublishablePackages`.
+- Extract the silk publishability + changeset-ignore detection into the shared `@savvy-web/silk-effects` (`^0.4.0`) library and consume it here, so the rules live in one place across the Silk tooling instead of being duplicated per repo.

@@ -5,6 +5,7 @@
  * registry, git, or SBOM tooling is exercised.
  */
 
+import { NodeContext } from "@effect/platform-node";
 import { ActionsConfigProvider } from "@savvy-web/github-action-effects";
 import type { CommandResponse } from "@savvy-web/github-action-effects/testing";
 import {
@@ -142,6 +143,7 @@ describe("runValidation", () => {
 			const { state: pubState, layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -206,6 +208,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -249,6 +252,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.layer({ dryRunOk: false });
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -290,6 +294,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.layer({ dryRunOk: false });
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -330,6 +335,7 @@ describe("runValidation", () => {
 			const { state: pubState, layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -369,6 +375,7 @@ describe("runValidation", () => {
 			const { state: pubState, layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -410,6 +417,7 @@ describe("runValidation", () => {
 			const { state: pubState, layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -454,6 +462,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -498,6 +507,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -556,6 +566,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -596,6 +607,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -648,6 +660,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -690,6 +703,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -729,6 +743,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.layer({ dryRunOk: false });
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -771,6 +786,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -838,6 +854,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -903,6 +920,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -966,6 +984,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -1029,6 +1048,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -1082,6 +1102,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -1156,6 +1177,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -1229,6 +1251,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),

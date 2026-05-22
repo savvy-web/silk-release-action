@@ -23,5 +23,5 @@ import { PublishabilityDetectorAdaptiveLive } from "./publishability.js";
 export const ReleaseLive = Layer.mergeAll(
 	WorkspacesLive,
 	ChangesetConfigLive,
-	PublishabilityDetectorAdaptiveLive.pipe(Layer.provide(Layer.merge(WorkspacesLive, ChangesetConfigLive))),
+	PublishabilityDetectorAdaptiveLive.pipe(Layer.provide(ChangesetConfigLive)),
 );
