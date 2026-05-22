@@ -35,13 +35,15 @@ import {
 } from "@savvy-web/github-action-effects";
 import type { ConfigError } from "effect";
 import { Config, Duration, Effect } from "effect";
+import type { PublishabilityDetector, WorkspaceDiscovery } from "workspaces-effect";
+import type { ChangesetConfig } from "../release/changeset-config.js";
 import { resolveSignoff } from "./commit-signoff.js";
 import { isSinglePackage } from "./detect-repo-type.js";
 import { isMonorepoForTagging } from "./determine-tag-strategy.js";
 import {
 	formatReleasePackageList,
-	getPublishablePackages,
 	getReleasingPackages,
+	listPublishablePackages,
 	resolveReleasePrTitle,
 } from "./release-summary-helpers.js";
 import { summaryWriter } from "./summary-writer.js";
@@ -171,13 +173,16 @@ export const updateReleaseBranch = (
 	| ActionEnvironment
 	| ActionOutputs
 	| ActionState
+	| ChangesetConfig
 	| CheckRun
 	| CommandRunner
 	| FileSystem.FileSystem
 	| GitCommit
 	| GitHubClient
 	| GitHubIssue
+	| PublishabilityDetector
 	| PullRequest
+	| WorkspaceDiscovery
 > =>
 	Effect.gen(function* () {
 		const env = yield* ActionEnvironment;
@@ -283,7 +288,7 @@ export const updateReleaseBranch = (
 			// <version>`; an independent multi-package release lists name@version
 			// (collapsing to a count when long); a single-package repo with nothing
 			// publishable falls back to the root version. Otherwise the prefix.
-			const publishablePackages = getPublishablePackages();
+			const publishablePackages = yield* listPublishablePackages(process.cwd());
 			const detectedReleasing = getReleasingPackages(publishablePackages, changedFiles, process.cwd());
 			const releasingPackages = detectedReleasing.length > 0 ? detectedReleasing : publishablePackages;
 			let singlePackageRepoVersion: string | undefined;
@@ -303,7 +308,7 @@ export const updateReleaseBranch = (
 			}
 			prTitle = resolveReleasePrTitle({
 				releasingPackages,
-				perPackageVersioning: isMonorepoForTagging(),
+				perPackageVersioning: yield* isMonorepoForTagging(process.cwd()),
 				releasablePackages: publishablePackages,
 				singlePackageRepoVersion,
 				prTitlePrefix,

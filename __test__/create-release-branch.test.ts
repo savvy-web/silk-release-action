@@ -38,8 +38,31 @@ import {
 } from "@savvy-web/github-action-effects/testing";
 import { ConfigProvider, Effect, Layer, Logger } from "effect";
 import { describe, expect, it } from "vitest";
+import { PublishabilityDetector, WorkspaceDiscovery } from "workspaces-effect";
+import { ChangesetConfig } from "../src/release/changeset-config.js";
 import type { CreateReleaseBranchResult } from "../src/utils/create-release-branch.js";
 import { CREATE_PULL_REQUEST_MUTATION, createReleaseBranch } from "../src/utils/create-release-branch.js";
+
+/** Minimal WorkspaceDiscovery stub: no packages. */
+const workspaceDiscoveryStub = Layer.succeed(WorkspaceDiscovery, {
+	listPackages: () => Effect.succeed([]),
+	getPackage: () => Effect.die("not implemented"),
+	importerMap: () => Effect.die("not implemented"),
+});
+
+/** Minimal PublishabilityDetector stub: no publish targets for any package. */
+const publishabilityDetectorStub = Layer.succeed(PublishabilityDetector, {
+	detect: () => Effect.succeed([]),
+});
+
+/** Minimal ChangesetConfig stub: no ignore, no fixed. */
+const changesetConfigStub = Layer.succeed(ChangesetConfig, {
+	mode: () => Effect.succeed("silk" as const),
+	versionPrivate: () => Effect.succeed(false),
+	ignorePatterns: () => Effect.succeed([]),
+	isIgnored: () => Effect.succeed(false),
+	fixed: () => Effect.succeed([]),
+});
 
 const RELEASE_BRANCH = "changeset-release/main";
 const TARGET_BRANCH = "main";
@@ -162,6 +185,9 @@ const runStage = (
 		GitTagTest.empty().layer,
 		PullRequestTest.layer(f.prState),
 		FileSystem.layerNoop({}),
+		workspaceDiscoveryStub,
+		publishabilityDetectorStub,
+		changesetConfigStub,
 	);
 	const config = ConfigProvider.fromMap(
 		new Map([
