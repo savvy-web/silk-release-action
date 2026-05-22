@@ -1,5 +1,17 @@
 # @savvy-web/silk-release-action
 
+## 1.2.0
+
+### Bug Fixes
+
+* [`a72d920`](https://github.com/savvy-web/silk-release-action/commit/a72d92008a4f3a95f7e9334bbb1ec02990cc1e98) Resolve `publishConfig.targets` regardless of the `private` flag. A public source package (`private: false`) that declared explicit multi-registry targets was short-circuited to a single default target at `publishConfig.directory` (the private `dist/dev` artifact), which the private-build filter then dropped — misclassifying the package as version-only. Publishability now derives from the declared targets first.
+* Honor the changeset `ignore` list across validation and publishing. Ignored example packages that carry `publishConfig.targets` (e.g. `@libraries/*`, `@rspress/*`) are now fully excluded from releases — no publish target, no version-only row, no tag.
+
+### Refactoring
+
+* [`a72d920`](https://github.com/savvy-web/silk-release-action/commit/a72d92008a4f3a95f7e9334bbb1ec02990cc1e98) Consolidate all publishability detection onto a single ignore-aware `PublishabilityDetector` layer. `ChangesetConfig` is now the single source of changeset-config truth (`mode`, `versionPrivate`, `ignorePatterns`, `isIgnored`, `fixed`), and the synchronous reimplementation of the silk rules in `release-summary-helpers.ts` has been removed in favor of an Effect-based `listPublishablePackages`.
+* Extract the silk publishability + changeset-ignore detection into the shared `@savvy-web/silk-effects` (`^0.4.0`) library and consume it here, so the rules live in one place across the Silk tooling instead of being duplicated per repo.
+
 ## 1.1.0
 
 ### Features
