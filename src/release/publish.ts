@@ -39,6 +39,7 @@ import { PublishabilityDetector, TopologicalSorter, WorkspaceDiscovery, Workspac
 
 import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
 import { buildProvenancePredicate } from "./attest-helpers.js";
+import { ChangesetConfig } from "./changeset-config.js";
 import { humanizeSize } from "./report.js";
 import { isTargetPrivate, pickToken } from "./resolve-targets.js";
 import type { PackagePublishResult, PublishPackagesResult, TargetPublishResult } from "./types.js";
@@ -909,7 +910,7 @@ const publishDirectoryGroup = (
  */
 export const detectReleases = (
 	args: PublishInputArgs,
-): Effect.Effect<ReadonlyArray<DetectedRelease>, never, GitHubCommit | GitHubContent | PullRequest> =>
+): Effect.Effect<ReadonlyArray<DetectedRelease>, never, GitHubCommit | GitHubContent | PullRequest | ChangesetConfig> =>
 	Step.withStep(
 		"Detect released packages",
 		Effect.gen(function* () {
@@ -928,8 +929,20 @@ export const detectReleases = (
 			}
 
 			yield* Effect.logDebug(`detectReleases: ${detected.length} package(s) detected`);
-			yield* Step.success(`${detected.length} package(s) in scope`);
-			return detected;
+
+			// Drop packages whose names match the changeset ignore list so they
+			// are fully excluded from Phase-3 publishing, not just from the Phase-1
+			// changeset analysis.
+			const config = yield* ChangesetConfig;
+			const root = process.cwd();
+			const kept: DetectedRelease[] = [];
+			for (const d of detected) {
+				if (yield* config.isIgnored(d.name, root)) continue;
+				kept.push(d);
+			}
+			yield* Effect.logDebug(`detectReleases: ${kept.length} package(s) in scope after ignore filter`);
+			yield* Step.success(`${kept.length} package(s) in scope`);
+			return kept;
 		}),
 	);
 
