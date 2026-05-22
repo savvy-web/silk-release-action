@@ -1,32 +1,80 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Effect, Layer } from "effect";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { PublishabilityDetector, WorkspaceDiscovery } from "workspaces-effect";
+import { ChangesetConfig } from "../src/release/changeset-config.js";
 import type { PackagePublishResult } from "../src/release/types.js";
 import {
 	determineReleaseType,
 	determineTagStrategy,
 	isMonorepoForTagging,
 } from "../src/utils/determine-tag-strategy.js";
-import * as releaseSummaryHelpers from "../src/utils/release-summary-helpers.js";
+import { cleanupTestEnvironment, setupTestEnvironment } from "./utils/github-mocks.js";
 
-// Mock release-summary-helpers — keep the pure helpers (isPublishablePackage)
-// real and only stub the two filesystem-reading functions.
-vi.mock("../src/utils/release-summary-helpers.js", async (importActual) => ({
-	...(await importActual<typeof import("../src/utils/release-summary-helpers.js")>()),
-	getAllWorkspacePackages: vi.fn(),
-	readChangesetConfig: vi.fn(),
-}));
+// ─── Minimal test layers ───────────────────────────────────────────────────
+
+interface WsPkgStub {
+	name: string;
+	version: string;
+	path: string;
+	private?: boolean;
+}
+
+/** Build a WorkspaceDiscovery test layer that returns the given package stubs. */
+const makeDiscoveryLayer = (packages: WsPkgStub[]): Layer.Layer<WorkspaceDiscovery> =>
+	Layer.succeed(WorkspaceDiscovery, {
+		listPackages: () => Effect.succeed(packages as never),
+		getPackage: () => Effect.die("not implemented"),
+		importerMap: () => Effect.die("not implemented"),
+	});
+
+/**
+ * Build a PublishabilityDetector test layer that resolves targets per package
+ * name. Any package in the map with a non-empty targets list is publishable;
+ * packages missing from the map resolve to zero targets (not publishable).
+ */
+const makeDetectorLayer = (publishableNames: Set<string>): Layer.Layer<PublishabilityDetector> =>
+	Layer.succeed(PublishabilityDetector, {
+		detect: (pkg: { name: string }) =>
+			Effect.succeed(publishableNames.has(pkg.name) ? ([{ protocol: "npm" }] as never) : []),
+	});
+
+/** Build a ChangesetConfig test layer returning the given fixed groups. */
+const makeChangesetConfigLayer = (
+	fixed: ReadonlyArray<ReadonlyArray<string>> = [],
+	ignore: ReadonlyArray<string> = [],
+): Layer.Layer<ChangesetConfig> =>
+	Layer.succeed(ChangesetConfig, {
+		mode: () => Effect.succeed("silk" as const),
+		versionPrivate: () => Effect.succeed(false),
+		ignorePatterns: () => Effect.succeed(ignore),
+		isIgnored: (name: string) =>
+			Effect.succeed(ignore.some((p) => name === p || (p.endsWith("/*") && name.startsWith(p.slice(0, -1))))),
+		fixed: () => Effect.succeed(fixed),
+	});
+
+const runIsMonorepo = (
+	packages: WsPkgStub[],
+	publishableNames: Set<string>,
+	fixed: ReadonlyArray<ReadonlyArray<string>> = [],
+	ignore: ReadonlyArray<string> = [],
+): Promise<boolean> =>
+	Effect.runPromise(
+		isMonorepoForTagging("/repo").pipe(
+			Effect.provide(makeDiscoveryLayer(packages)),
+			Effect.provide(makeDetectorLayer(publishableNames)),
+			Effect.provide(makeChangesetConfigLayer(fixed, ignore)),
+		),
+	);
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("determine-tag-strategy", () => {
 	beforeEach(() => {
-		vi.clearAllMocks();
-		// Default: single package repo (not a monorepo)
-		vi.mocked(releaseSummaryHelpers.getAllWorkspacePackages).mockReturnValue([
-			{ name: "root-pkg", version: "1.0.0", path: "/", private: false, hasPublishConfig: true, targetCount: 1 },
-		]);
-		vi.mocked(releaseSummaryHelpers.readChangesetConfig).mockReturnValue(null);
+		setupTestEnvironment({ suppressOutput: true });
 	});
 
 	afterEach(() => {
-		vi.restoreAllMocks();
+		cleanupTestEnvironment();
 	});
 
 	describe("determineTagStrategy", () => {
@@ -53,7 +101,7 @@ describe("determine-tag-strategy", () => {
 				},
 			];
 
-			const result = determineTagStrategy(publishResults);
+			const result = determineTagStrategy(publishResults, false);
 
 			expect(result.strategy).toBe("single");
 			expect(result.tags).toHaveLength(0);
@@ -83,7 +131,7 @@ describe("determine-tag-strategy", () => {
 				},
 			];
 
-			const result = determineTagStrategy(publishResults);
+			const result = determineTagStrategy(publishResults, false);
 
 			expect(result.strategy).toBe("single");
 			expect(result.tags).toHaveLength(1);
@@ -135,7 +183,7 @@ describe("determine-tag-strategy", () => {
 				},
 			];
 
-			const result = determineTagStrategy(publishResults);
+			const result = determineTagStrategy(publishResults, false);
 
 			expect(result.strategy).toBe("single");
 			expect(result.tags).toHaveLength(1);
@@ -146,26 +194,6 @@ describe("determine-tag-strategy", () => {
 		});
 
 		it("returns multiple tags for independent versioning in monorepo", () => {
-			// Mock a monorepo with multiple publishable packages
-			vi.mocked(releaseSummaryHelpers.getAllWorkspacePackages).mockReturnValue([
-				{
-					name: "@org/pkg-a",
-					version: "1.0.0",
-					path: "/pkgs/a",
-					private: false,
-					hasPublishConfig: true,
-					targetCount: 1,
-				},
-				{
-					name: "@org/pkg-b",
-					version: "2.0.0",
-					path: "/pkgs/b",
-					private: false,
-					hasPublishConfig: true,
-					targetCount: 1,
-				},
-			]);
-
 			const publishResults: PackagePublishResult[] = [
 				{
 					name: "@org/pkg-a",
@@ -205,7 +233,7 @@ describe("determine-tag-strategy", () => {
 				},
 			];
 
-			const result = determineTagStrategy(publishResults);
+			const result = determineTagStrategy(publishResults, true);
 
 			expect(result.strategy).toBe("multiple");
 			expect(result.tags).toHaveLength(2);
@@ -215,12 +243,6 @@ describe("determine-tag-strategy", () => {
 		});
 
 		it("uses v prefix for non-scoped packages in independent versioning", () => {
-			// Mock a monorepo with multiple non-scoped publishable packages
-			vi.mocked(releaseSummaryHelpers.getAllWorkspacePackages).mockReturnValue([
-				{ name: "pkg-a", version: "1.0.0", path: "/pkgs/a", private: false, hasPublishConfig: true, targetCount: 1 },
-				{ name: "pkg-b", version: "2.0.0", path: "/pkgs/b", private: false, hasPublishConfig: true, targetCount: 1 },
-			]);
-
 			const publishResults: PackagePublishResult[] = [
 				{
 					name: "pkg-a",
@@ -260,7 +282,7 @@ describe("determine-tag-strategy", () => {
 				},
 			];
 
-			const result = determineTagStrategy(publishResults);
+			const result = determineTagStrategy(publishResults, true);
 
 			expect(result.tags[0].name).toBe("pkg-a@v1.0.0");
 			expect(result.tags[1].name).toBe("pkg-b@v2.0.0");
@@ -307,7 +329,7 @@ describe("determine-tag-strategy", () => {
 				},
 			];
 
-			const result = determineTagStrategy(publishResults);
+			const result = determineTagStrategy(publishResults, false);
 
 			expect(result.strategy).toBe("single");
 			expect(result.tags).toHaveLength(1);
@@ -317,33 +339,6 @@ describe("determine-tag-strategy", () => {
 		it("uses per-package tag when monorepo releases single package (bug fix)", () => {
 			// This is the key bug fix: when a monorepo releases only ONE package,
 			// it should still use per-package tags, not v1.0.0
-			vi.mocked(releaseSummaryHelpers.getAllWorkspacePackages).mockReturnValue([
-				{
-					name: "@org/pkg-a",
-					version: "1.0.0",
-					path: "/pkgs/a",
-					private: false,
-					hasPublishConfig: true,
-					targetCount: 1,
-				},
-				{
-					name: "@org/pkg-b",
-					version: "0.1.0",
-					path: "/pkgs/b",
-					private: false,
-					hasPublishConfig: true,
-					targetCount: 1,
-				},
-				{
-					name: "@org/pkg-c",
-					version: "0.1.0",
-					path: "/pkgs/c",
-					private: false,
-					hasPublishConfig: true,
-					targetCount: 1,
-				},
-			]);
-
 			const publishResults: PackagePublishResult[] = [
 				{
 					name: "@org/pkg-a",
@@ -365,7 +360,7 @@ describe("determine-tag-strategy", () => {
 				},
 			];
 
-			const result = determineTagStrategy(publishResults);
+			const result = determineTagStrategy(publishResults, true);
 
 			// Should use per-package tag, NOT v1.0.0
 			expect(result.strategy).toBe("multiple");
@@ -382,7 +377,7 @@ describe("determine-tag-strategy", () => {
 				},
 			];
 
-			const result = determineTagStrategy(publishResults);
+			const result = determineTagStrategy(publishResults, false);
 
 			expect(result.strategy).toBe("single");
 			expect(result.tags).toHaveLength(1);
@@ -395,28 +390,6 @@ describe("determine-tag-strategy", () => {
 		});
 
 		it("uses single tag when all packages are in same fixed group", () => {
-			vi.mocked(releaseSummaryHelpers.getAllWorkspacePackages).mockReturnValue([
-				{
-					name: "@org/pkg-a",
-					version: "1.0.0",
-					path: "/pkgs/a",
-					private: false,
-					hasPublishConfig: true,
-					targetCount: 1,
-				},
-				{
-					name: "@org/pkg-b",
-					version: "1.0.0",
-					path: "/pkgs/b",
-					private: false,
-					hasPublishConfig: true,
-					targetCount: 1,
-				},
-			]);
-			vi.mocked(releaseSummaryHelpers.readChangesetConfig).mockReturnValue({
-				fixed: [["@org/pkg-a", "@org/pkg-b"]],
-			});
-
 			const publishResults: PackagePublishResult[] = [
 				{
 					name: "@org/pkg-a",
@@ -430,7 +403,8 @@ describe("determine-tag-strategy", () => {
 				},
 			];
 
-			const result = determineTagStrategy(publishResults);
+			// needsPerPackageTags=false means all in fixed group → single tag
+			const result = determineTagStrategy(publishResults, false);
 
 			expect(result.strategy).toBe("single");
 			expect(result.tags).toHaveLength(1);
@@ -439,174 +413,79 @@ describe("determine-tag-strategy", () => {
 	});
 
 	describe("isMonorepoForTagging", () => {
-		it("returns false for single publishable package", () => {
-			vi.mocked(releaseSummaryHelpers.getAllWorkspacePackages).mockReturnValue([
-				{ name: "my-pkg", version: "1.0.0", path: "/", private: false, hasPublishConfig: true, targetCount: 1 },
-			]);
-
-			expect(isMonorepoForTagging()).toBe(false);
+		it("returns false for single publishable package", async () => {
+			const pkgs = [{ name: "my-pkg", version: "1.0.0", path: "/" }];
+			const result = await runIsMonorepo(pkgs, new Set(["my-pkg"]));
+			expect(result).toBe(false);
 		});
 
-		it("returns true for multiple publishable packages without fixed config", () => {
-			vi.mocked(releaseSummaryHelpers.getAllWorkspacePackages).mockReturnValue([
-				{
-					name: "@org/pkg-a",
-					version: "1.0.0",
-					path: "/pkgs/a",
-					private: false,
-					hasPublishConfig: true,
-					targetCount: 1,
-				},
-				{
-					name: "@org/pkg-b",
-					version: "1.0.0",
-					path: "/pkgs/b",
-					private: false,
-					hasPublishConfig: true,
-					targetCount: 1,
-				},
-			]);
-			vi.mocked(releaseSummaryHelpers.readChangesetConfig).mockReturnValue(null);
-
-			expect(isMonorepoForTagging()).toBe(true);
+		it("returns true for multiple publishable packages without fixed config", async () => {
+			const pkgs = [
+				{ name: "@org/pkg-a", version: "1.0.0", path: "/pkgs/a" },
+				{ name: "@org/pkg-b", version: "1.0.0", path: "/pkgs/b" },
+			];
+			const result = await runIsMonorepo(pkgs, new Set(["@org/pkg-a", "@org/pkg-b"]));
+			expect(result).toBe(true);
 		});
 
-		it("returns false when all publishable packages are in same fixed group", () => {
-			vi.mocked(releaseSummaryHelpers.getAllWorkspacePackages).mockReturnValue([
-				{
-					name: "@org/pkg-a",
-					version: "1.0.0",
-					path: "/pkgs/a",
-					private: false,
-					hasPublishConfig: true,
-					targetCount: 1,
-				},
-				{
-					name: "@org/pkg-b",
-					version: "1.0.0",
-					path: "/pkgs/b",
-					private: false,
-					hasPublishConfig: true,
-					targetCount: 1,
-				},
-			]);
-			vi.mocked(releaseSummaryHelpers.readChangesetConfig).mockReturnValue({
-				fixed: [["@org/pkg-a", "@org/pkg-b"]],
-			});
-
-			expect(isMonorepoForTagging()).toBe(false);
+		it("returns false when all publishable packages are in same fixed group", async () => {
+			const pkgs = [
+				{ name: "@org/pkg-a", version: "1.0.0", path: "/pkgs/a" },
+				{ name: "@org/pkg-b", version: "1.0.0", path: "/pkgs/b" },
+			];
+			const result = await runIsMonorepo(pkgs, new Set(["@org/pkg-a", "@org/pkg-b"]), [["@org/pkg-a", "@org/pkg-b"]]);
+			expect(result).toBe(false);
 		});
 
-		it("returns true when packages are in linked group (not fixed)", () => {
-			vi.mocked(releaseSummaryHelpers.getAllWorkspacePackages).mockReturnValue([
-				{
-					name: "@org/pkg-a",
-					version: "1.0.0",
-					path: "/pkgs/a",
-					private: false,
-					hasPublishConfig: true,
-					targetCount: 1,
-				},
-				{
-					name: "@org/pkg-b",
-					version: "1.0.0",
-					path: "/pkgs/b",
-					private: false,
-					hasPublishConfig: true,
-					targetCount: 1,
-				},
-			]);
-			vi.mocked(releaseSummaryHelpers.readChangesetConfig).mockReturnValue({
-				linked: [["@org/pkg-a", "@org/pkg-b"]],
-			});
-
-			expect(isMonorepoForTagging()).toBe(true);
+		it("returns true when packages are in linked group (not fixed)", async () => {
+			const pkgs = [
+				{ name: "@org/pkg-a", version: "1.0.0", path: "/pkgs/a" },
+				{ name: "@org/pkg-b", version: "1.0.0", path: "/pkgs/b" },
+			];
+			// No fixed groups — linked doesn't affect isMonorepoForTagging
+			const result = await runIsMonorepo(pkgs, new Set(["@org/pkg-a", "@org/pkg-b"]));
+			expect(result).toBe(true);
 		});
 
-		it("returns true when only some packages are in fixed group", () => {
-			vi.mocked(releaseSummaryHelpers.getAllWorkspacePackages).mockReturnValue([
-				{
-					name: "@org/pkg-a",
-					version: "1.0.0",
-					path: "/pkgs/a",
-					private: false,
-					hasPublishConfig: true,
-					targetCount: 1,
-				},
-				{
-					name: "@org/pkg-b",
-					version: "1.0.0",
-					path: "/pkgs/b",
-					private: false,
-					hasPublishConfig: true,
-					targetCount: 1,
-				},
-				{
-					name: "@org/pkg-c",
-					version: "1.0.0",
-					path: "/pkgs/c",
-					private: false,
-					hasPublishConfig: true,
-					targetCount: 1,
-				},
+		it("returns true when only some packages are in fixed group", async () => {
+			const pkgs = [
+				{ name: "@org/pkg-a", version: "1.0.0", path: "/pkgs/a" },
+				{ name: "@org/pkg-b", version: "1.0.0", path: "/pkgs/b" },
+				{ name: "@org/pkg-c", version: "1.0.0", path: "/pkgs/c" },
+			];
+			// Only pkg-a and pkg-b in fixed group; pkg-c is independent
+			const result = await runIsMonorepo(pkgs, new Set(["@org/pkg-a", "@org/pkg-b", "@org/pkg-c"]), [
+				["@org/pkg-a", "@org/pkg-b"],
 			]);
-			vi.mocked(releaseSummaryHelpers.readChangesetConfig).mockReturnValue({
-				fixed: [["@org/pkg-a", "@org/pkg-b"]], // pkg-c not in fixed
-			});
-
-			expect(isMonorepoForTagging()).toBe(true);
+			expect(result).toBe(true);
 		});
 
-		it("ignores private packages without publish config", () => {
-			vi.mocked(releaseSummaryHelpers.getAllWorkspacePackages).mockReturnValue([
-				{
-					name: "@org/pkg-a",
-					version: "1.0.0",
-					path: "/pkgs/a",
-					private: false,
-					hasPublishConfig: true,
-					targetCount: 1,
-				},
-				{ name: "root", version: "0.0.0", path: "/", private: true, hasPublishConfig: false, targetCount: 0 },
-			]);
-
+		it("ignores packages the detector returns no targets for (private no publish config)", async () => {
+			const pkgs = [
+				{ name: "@org/pkg-a", version: "1.0.0", path: "/pkgs/a" },
+				{ name: "root", version: "0.0.0", path: "/" },
+			];
+			// Only pkg-a is publishable; root resolves to 0 targets
+			const result = await runIsMonorepo(pkgs, new Set(["@org/pkg-a"]));
 			// Only 1 publishable package, so not a monorepo for tagging
-			expect(isMonorepoForTagging()).toBe(false);
+			expect(result).toBe(false);
 		});
 
-		it("excludes changeset-ignored packages when counting publishable packages", () => {
+		it("excludes changeset-ignored packages when counting publishable packages", async () => {
 			// rslib-builder shape: one real package plus several publishable example
 			// packages that are excluded via the changeset `ignore` list.
-			vi.mocked(releaseSummaryHelpers.getAllWorkspacePackages).mockReturnValue([
-				{
-					name: "@savvy-web/rslib-builder",
-					version: "0.20.5",
-					path: "/package",
-					private: true,
-					hasPublishConfig: true,
-					targetCount: 2,
-				},
-				{
-					name: "@libraries/single-entry",
-					version: "0.0.0",
-					path: "/examples/libraries/single-entry",
-					private: true,
-					hasPublishConfig: true,
-					targetCount: 2,
-				},
-				{
-					name: "@rspress/plugin",
-					version: "0.0.0",
-					path: "/examples/rspress-plugin/plugin",
-					private: true,
-					hasPublishConfig: true,
-					targetCount: 2,
-				},
-			]);
-			vi.mocked(releaseSummaryHelpers.readChangesetConfig).mockReturnValue({ ignore: ["@libraries/*", "@rspress/*"] });
-
+			// The detector returns targets for all, but ignorePatterns causes detector to return []
+			// via the adaptive layer. In our test setup, we model it directly:
+			// only rslib-builder is publishable (detector returns no targets for examples).
+			const pkgs = [
+				{ name: "@savvy-web/rslib-builder", version: "0.20.5", path: "/package" },
+				{ name: "@libraries/single-entry", version: "0.0.0", path: "/examples/libraries/single-entry" },
+				{ name: "@rspress/plugin", version: "0.0.0", path: "/examples/rspress-plugin/plugin" },
+			];
+			// The detector returns targets only for rslib-builder (ignored packages get [] from adaptive layer)
+			const result = await runIsMonorepo(pkgs, new Set(["@savvy-web/rslib-builder"]));
 			// Only @savvy-web/rslib-builder can actually release → single-tag repo.
-			expect(isMonorepoForTagging()).toBe(false);
+			expect(result).toBe(false);
 		});
 	});
 

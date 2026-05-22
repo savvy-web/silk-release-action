@@ -82,7 +82,7 @@ import { deriveCheckConclusion } from "./utils/derive-check-conclusion.js";
 import type { WorkflowPhase } from "./utils/detect-workflow-phase.js";
 import { detectWorkflowPhase } from "./utils/detect-workflow-phase.js";
 import type { TagInfo } from "./utils/determine-tag-strategy.js";
-import { determineTagStrategy } from "./utils/determine-tag-strategy.js";
+import { determineTagStrategy, isMonorepoForTagging } from "./utils/determine-tag-strategy.js";
 import { linkIssuesFromCommits } from "./utils/link-issues-from-commits.js";
 import type { ConfigSource } from "./utils/load-release-config.js";
 import { updateReleaseBranch } from "./utils/update-release-branch.js";
@@ -815,8 +815,10 @@ const runPublishing = (mergedReleasePRNumber: number | undefined) =>
 					// publishing, making every detected package a tag candidate; that is
 					// correct because a publish failure (Step 4) aborts releases (Step 5)
 					// before a single tag is ever created.
+					const needsPerPackageTags = yield* isMonorepoForTagging(process.cwd());
 					const strategy = determineTagStrategy(
 						detected.map((d) => ({ name: d.name, version: d.version, targets: [] })),
+						needsPerPackageTags,
 					);
 					yield* Effect.logDebug(`tag strategy: ${strategy.strategy}, ${strategy.tags.length} tag(s)`);
 					const strategyLabel = strategy.strategy === "multiple" ? "per-package tags" : "single shared tag";

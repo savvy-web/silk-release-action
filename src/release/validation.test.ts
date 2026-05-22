@@ -22,7 +22,7 @@ import { PublishTarget, PublishabilityDetector, WorkspaceDiscovery, WorkspacePac
 
 import { matchesIgnorePattern } from "../utils/detect-repo-type.js";
 import { ChangesetConfig } from "./changeset-config.js";
-import { detectReleasedPackages, runValidation } from "./validation.js";
+import { runValidation } from "./validation.js";
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
 
@@ -119,6 +119,7 @@ const changesetConfigDefaultLayer = Layer.succeed(ChangesetConfig, {
 	versionPrivate: () => Effect.succeed(false),
 	ignorePatterns: () => Effect.succeed([]),
 	isIgnored: (_name: string) => Effect.succeed(false),
+	fixed: () => Effect.succeed([]),
 });
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -896,6 +897,7 @@ describe("runValidation", () => {
 				versionPrivate: () => Effect.succeed(false),
 				ignorePatterns: () => Effect.succeed(ignore),
 				isIgnored: (name: string) => Effect.succeed(ignore.some((p) => matchesIgnorePattern(name, p))),
+				fixed: () => Effect.succeed([]),
 			});
 
 			const { layer: pubLayer } = PackagePublishTest.empty();

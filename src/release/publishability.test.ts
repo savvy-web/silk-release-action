@@ -23,6 +23,7 @@ const mockChangesetConfig = (mode: "silk" | "vanilla" | "none", versionPrivate =
 		versionPrivate: () => Effect.succeed(versionPrivate),
 		ignorePatterns: () => Effect.succeed(ignore),
 		isIgnored: (name: string) => Effect.succeed(ignore.some((p) => matchesIgnorePattern(name, p))),
+		fixed: () => Effect.succeed([]),
 	});
 
 /**
