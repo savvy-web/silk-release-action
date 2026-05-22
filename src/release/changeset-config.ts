@@ -11,12 +11,14 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Context, Effect, Layer } from "effect";
+import { matchesIgnorePattern } from "../utils/detect-repo-type.js";
 
 export type ChangesetMode = "silk" | "vanilla" | "none";
 
 interface ChangesetConfigJson {
 	readonly changelog?: string | ReadonlyArray<unknown>;
 	readonly privatePackages?: { readonly version?: boolean };
+	readonly ignore?: ReadonlyArray<string>;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -28,6 +30,10 @@ export class ChangesetConfig extends Context.Tag("ChangesetConfig")<
 	{
 		readonly mode: (workspaceRoot: string) => Effect.Effect<ChangesetMode>;
 		readonly versionPrivate: (workspaceRoot: string) => Effect.Effect<boolean>;
+		/** Returns the raw `ignore` array from `.changeset/config.json`, or `[]` if absent. */
+		readonly ignorePatterns: (workspaceRoot: string) => Effect.Effect<ReadonlyArray<string>>;
+		/** Returns `true` if `name` matches any pattern in the changeset `ignore` list. */
+		readonly isIgnored: (name: string, workspaceRoot: string) => Effect.Effect<boolean>;
 	}
 >() {}
 
@@ -77,6 +83,9 @@ export const ChangesetConfigLive = Layer.effect(
 			mode: (workspaceRoot) => Effect.sync(() => detectMode(cachedRead(workspaceRoot))),
 			versionPrivate: (workspaceRoot) =>
 				Effect.sync(() => cachedRead(workspaceRoot)?.privatePackages?.version === true),
+			ignorePatterns: (workspaceRoot) => Effect.sync(() => cachedRead(workspaceRoot)?.ignore ?? []),
+			isIgnored: (name, workspaceRoot) =>
+				Effect.sync(() => (cachedRead(workspaceRoot)?.ignore ?? []).some((p) => matchesIgnorePattern(name, p))),
 		};
 	}),
 );

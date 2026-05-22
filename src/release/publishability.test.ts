@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { Effect, Layer } from "effect";
 import { beforeEach, describe, expect, it } from "vitest";
 import { PublishConfig, PublishabilityDetector, WorkspacePackage } from "workspaces-effect";
+import { matchesIgnorePattern } from "../utils/detect-repo-type.js";
 import { ChangesetConfig } from "./changeset-config.js";
 import { PublishabilityDetectorAdaptiveLive, SilkPublishabilityDetectorLive } from "./publishability.js";
 
@@ -16,10 +17,12 @@ const writePkg = (dir: string, content: unknown): void => {
 	writeFileSync(join(dir, "package.json"), JSON.stringify(content), "utf-8");
 };
 
-const mockChangesetConfig = (mode: "silk" | "vanilla" | "none", versionPrivate = false) =>
+const mockChangesetConfig = (mode: "silk" | "vanilla" | "none", versionPrivate = false, ignore: string[] = []) =>
 	Layer.succeed(ChangesetConfig, {
 		mode: () => Effect.succeed(mode),
 		versionPrivate: () => Effect.succeed(versionPrivate),
+		ignorePatterns: () => Effect.succeed(ignore),
+		isIgnored: (name: string) => Effect.succeed(ignore.some((p) => matchesIgnorePattern(name, p))),
 	});
 
 /**

@@ -77,3 +77,34 @@ describe("ChangesetConfig", () => {
 		expect(v).toBe(false);
 	});
 });
+
+describe("ChangesetConfig.isIgnored / ignorePatterns", () => {
+	let tmpDir: string;
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "cc-ignore-"));
+	});
+
+	it("returns the configured ignore patterns", async () => {
+		writeConfig(tmpDir, { changelog: "@changesets/cli/changelog", ignore: ["@libraries/*", "@rspress/*"] });
+		const patterns = await run(Effect.flatMap(ChangesetConfig, (c) => c.ignorePatterns(tmpDir)));
+		expect(patterns).toEqual(["@libraries/*", "@rspress/*"]);
+	});
+
+	it("isIgnored matches scope wildcards", async () => {
+		writeConfig(tmpDir, { changelog: "@changesets/cli/changelog", ignore: ["@libraries/*"] });
+		const ignored = await run(Effect.flatMap(ChangesetConfig, (c) => c.isIgnored("@libraries/multi-entry", tmpDir)));
+		expect(ignored).toBe(true);
+	});
+
+	it("isIgnored is false for a package not in the ignore list", async () => {
+		writeConfig(tmpDir, { changelog: "@changesets/cli/changelog", ignore: ["@libraries/*"] });
+		const ignored = await run(Effect.flatMap(ChangesetConfig, (c) => c.isIgnored("@savvy-web/rslib-builder", tmpDir)));
+		expect(ignored).toBe(false);
+	});
+
+	it("isIgnored is false when no ignore list is present", async () => {
+		writeConfig(tmpDir, { changelog: "@changesets/cli/changelog" });
+		const ignored = await run(Effect.flatMap(ChangesetConfig, (c) => c.isIgnored("@libraries/x", tmpDir)));
+		expect(ignored).toBe(false);
+	});
+});
