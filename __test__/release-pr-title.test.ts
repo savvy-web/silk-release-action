@@ -1,6 +1,5 @@
 /**
- * Tests for publishable-package detection, releasing-package detection, and the
- * release PR title decision.
+ * Tests for releasing-package detection and the release PR title decision.
  *
  * @remarks
  * `resolveReleasePrTitle` decides whether the changeset release PR keeps the
@@ -9,46 +8,24 @@
  * group) — yields `release: <version>`, mirroring the commit title. An
  * independent multi-package release lists `name@version` per package, falling
  * back to `release: <count> packages` once the title exceeds a length cap.
- * `isPublishablePackage` is the shared predicate that `determine-tag-strategy`
- * also uses; `getReleasingPackages` narrows the publishable set to the packages
- * whose package.json changed in this version bump.
+ * `getReleasingPackages` narrows the publishable set (from {@link listPublishablePackages})
+ * to the packages whose package.json changed in this version bump.
  */
 
 import { describe, expect, it } from "vitest";
-import type { WorkspacePackageInfo } from "../src/utils/release-summary-helpers.js";
+import type { PublishablePackage } from "../src/utils/release-summary-helpers.js";
 import {
 	formatReleasePackageList,
 	getReleasingPackages,
-	isPublishablePackage,
 	resolveReleasePrTitle,
 } from "../src/utils/release-summary-helpers.js";
 
-const pkg = (overrides: Partial<WorkspacePackageInfo>): WorkspacePackageInfo => ({
+const pkg = (overrides: Partial<PublishablePackage>): PublishablePackage => ({
 	name: "@org/pkg",
 	version: "1.0.0",
 	path: "/repo/pkg",
-	private: false,
-	hasPublishConfig: false,
-	targetCount: 0,
+	targetCount: 1,
 	...overrides,
-});
-
-describe("isPublishablePackage", () => {
-	it("treats a public package with no publish config as publishable", () => {
-		expect(isPublishablePackage(pkg({ private: false }))).toBe(true);
-	});
-
-	it("treats a private package with publishConfig.access as publishable", () => {
-		expect(isPublishablePackage(pkg({ private: true, hasPublishConfig: true }))).toBe(true);
-	});
-
-	it("treats a private package with publishConfig.targets as publishable", () => {
-		expect(isPublishablePackage(pkg({ private: true, targetCount: 2 }))).toBe(true);
-	});
-
-	it("treats a private package with no publish config as not publishable", () => {
-		expect(isPublishablePackage(pkg({ private: true, hasPublishConfig: false, targetCount: 0 }))).toBe(false);
-	});
 });
 
 describe("getReleasingPackages", () => {

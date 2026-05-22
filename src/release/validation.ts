@@ -39,6 +39,7 @@ import { inferSBOMMetadata, resolveSBOMMetadata } from "../utils/infer-sbom-meta
 import type { ConfigSource } from "../utils/load-release-config.js";
 import { loadSBOMConfig } from "../utils/load-release-config.js";
 import { validateNTIACompliance } from "../utils/validate-ntia-compliance.js";
+import { ChangesetConfig } from "./changeset-config.js";
 import { ValidationError } from "./errors.js";
 import { pickToken, resolvePublishableTargets } from "./resolve-targets.js";
 import type {
@@ -318,51 +319,67 @@ const readVersionOnBranch = (
 /**
  * Collect workspace packages that are being released (version differs from
  * target branch, or package is brand-new on the target branch).
+ *
+ * Packages whose names match a pattern in `.changeset/config.json`'s `ignore`
+ * list are fully excluded — they must not appear in the validation report.
  */
-const detectReleasedPackages = (
+export const detectReleasedPackages = (
 	workspacePackages: ReadonlyArray<WorkspacePackage>,
 	runner: typeof CommandRunner.Service,
 	targetBranch: string,
-): Effect.Effect<ReadonlyArray<ReleasedPackage>, ValidationError> =>
-	// We deliberately do NOT filter out root workspaces here. In a typical
-	// monorepo the root is a private orchestrator whose version never changes,
-	// so it falls through the version-diff check naturally (currentVersion ===
-	// baseVersion). In a single-root-workspace repo like `github-action-builder`
-	// (pnpm-workspace.yaml `packages: [.]`), the root IS the publishable
-	// package — filtering it out here would silently drop the only thing the
-	// action is supposed to release. Downstream `resolvePublishableTargets`
-	// handles the "private root without publishConfig" case correctly by
-	// returning an empty target list, which validation then emits as a
-	// version-only package entry.
-	Effect.all(
-		workspacePackages.map((pkg) => {
-			// The relative path to package.json from the repo root, used for
-			// `git show <branch>:<path>`. WorkspacePackage.relativePath is the
-			// workspace-relative path from the root: `""` for the legacy "no
-			// relative path" shape, `"."` for the canonical root workspace
-			// (pnpm-workspace.yaml `packages: [.]`), or a nested path like
-			// `"packages/alpha"`. Normalise the root shapes to an empty
-			// string so the git ref path is the canonical `package.json`
-			// rather than the non-canonical `./package.json` git rejects on
-			// some platforms.
-			const rel = pkg.relativePath === "." ? "" : pkg.relativePath;
-			const relPkgJsonPath = rel !== "" ? `${rel}/package.json` : "package.json";
+): Effect.Effect<ReadonlyArray<ReleasedPackage>, ValidationError, ChangesetConfig> =>
+	Effect.gen(function* () {
+		const config = yield* ChangesetConfig;
+		const root = process.cwd();
 
-			return readVersionOnBranch(runner, targetBranch, relPkgJsonPath).pipe(
-				Effect.map((baseVersion): ReleasedPackage | null => {
-					const currentVersion = pkg.version;
-					// Brand-new package (doesn't exist on target branch) → released.
-					// Changed version → released.
-					// Same version → NOT released, excluded from validation.
-					if (baseVersion === null || currentVersion !== baseVersion) {
-						return { pkg, currentVersion, baseVersion };
-					}
-					return null;
-				}),
-			);
-		}),
-		{ concurrency: "unbounded" },
-	).pipe(Effect.map((results) => results.filter((r): r is ReleasedPackage => r !== null)));
+		// We deliberately do NOT filter out root workspaces here. In a typical
+		// monorepo the root is a private orchestrator whose version never changes,
+		// so it falls through the version-diff check naturally (currentVersion ===
+		// baseVersion). In a single-root-workspace repo like `github-action-builder`
+		// (pnpm-workspace.yaml `packages: [.]`), the root IS the publishable
+		// package — filtering it out here would silently drop the only thing the
+		// action is supposed to release. Downstream `resolvePublishableTargets`
+		// handles the "private root without publishConfig" case correctly by
+		// returning an empty target list, which validation then emits as a
+		// version-only package entry.
+		const candidates = yield* Effect.all(
+			workspacePackages.map((pkg) => {
+				// The relative path to package.json from the repo root, used for
+				// `git show <branch>:<path>`. WorkspacePackage.relativePath is the
+				// workspace-relative path from the root: `""` for the legacy "no
+				// relative path" shape, `"."` for the canonical root workspace
+				// (pnpm-workspace.yaml `packages: [.]`), or a nested path like
+				// `"packages/alpha"`. Normalise the root shapes to an empty
+				// string so the git ref path is the canonical `package.json`
+				// rather than the non-canonical `./package.json` git rejects on
+				// some platforms.
+				const rel = pkg.relativePath === "." ? "" : pkg.relativePath;
+				const relPkgJsonPath = rel !== "" ? `${rel}/package.json` : "package.json";
+
+				return readVersionOnBranch(runner, targetBranch, relPkgJsonPath).pipe(
+					Effect.map((baseVersion): ReleasedPackage | null => {
+						const currentVersion = pkg.version;
+						// Brand-new package (doesn't exist on target branch) → released.
+						// Changed version → released.
+						// Same version → NOT released, excluded from validation.
+						if (baseVersion === null || currentVersion !== baseVersion) {
+							return { pkg, currentVersion, baseVersion };
+						}
+						return null;
+					}),
+				);
+			}),
+			{ concurrency: "unbounded" },
+		).pipe(Effect.map((results) => results.filter((r): r is ReleasedPackage => r !== null)));
+
+		// Drop packages whose names are listed in the changeset ignore list.
+		const kept: ReleasedPackage[] = [];
+		for (const c of candidates) {
+			if (yield* config.isIgnored(c.pkg.name, root)) continue;
+			kept.push(c);
+		}
+		return kept;
+	});
 
 // ─── runValidation ────────────────────────────────────────────────────────────
 

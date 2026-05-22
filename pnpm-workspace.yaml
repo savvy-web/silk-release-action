@@ -3,10 +3,3 @@ packages:
 autoInstallPeers: true
 configDependencies:
   "@savvy-web/pnpm-plugin-silk": 0.13.2+sha512-Q33+6XS8UB5Y3iCHtJ8OeXH96g0aZQaWDXDUTLti9Oy9O//ow6nqxZ59S/M3Av54H8Z3iLbwriSIvUVqbfCAAA==
-overrides:
-  "@isaacs/brace-expansion": ^5.0.1
-  lodash: ^4.17.23
-  markdown-it: ^14.1.1
-  minimatch: ">=10.2.3"
-  smol-toml: ">=1.6.1"
-  tmp: ^0.2.4

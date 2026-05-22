@@ -4,8 +4,8 @@ category: architecture
 status: current
 completeness: 95
 created: 2026-02-07
-updated: 2026-05-21
-last-synced: 2026-05-21
+updated: 2026-05-22
+last-synced: 2026-05-22
 module: release-action
 related:
   - integration.md
@@ -88,7 +88,7 @@ Triggers on push to `main` (non-release commits). Phase 1 is rewired onto the `C
 
 #### Release PR and commit titles
 
-Both branch-management modules resolve the PR title and the commit subject from the packages that will release, using helpers in `release-summary-helpers.ts`. The flow is: `getPublishablePackages` (the publishable workspaces minus the changeset `ignore` list) → `getReleasingPackages` (the subset whose `package.json` changed in this version bump) → `resolveReleasePrTitle`. `formatReleasePackageList` renders the commit body.
+Both branch-management modules resolve the PR title and the commit subject from the packages that will release, using helpers in `release-summary-helpers.ts`. The flow is: `listPublishablePackages` (an Effect over `WorkspaceDiscovery` + `PublishabilityDetector`, so it already honors the changeset `ignore` list and the silk rules) → `getReleasingPackages` (the subset whose `package.json` changed in this version bump) → `resolveReleasePrTitle`. `formatReleasePackageList` renders the commit body. The per-package-versioning signal comes from `yield* isMonorepoForTagging(process.cwd())` (Effect-based, resolved through the same detector plus `ChangesetConfig.fixed`).
 
 The title format keys off versioning topology rather than how many packages release this run. `resolveReleasePrTitle` takes `perPackageVersioning`, which is the same signal as `isMonorepoForTagging` so the PR title and the git tag strategy stay aligned:
 
@@ -102,7 +102,7 @@ The commit subject matches the PR title; the commit body is a bullet list of ful
 
 Triggers on push to the release branch. Creates all validation Check Runs upfront for immediate visibility. Phase 2 now routes through `src/release/validation.ts` (`runValidation`) — a pure Effect program — rather than a chain of imperative utility modules.
 
-**`src/release/validation.ts`** (`runValidation`) — Enumerates workspace packages, diffs versions against the target branch to discover which packages are being released, resolves publish targets via `resolvePublishableTargets` (the `PublishabilityDetectorAdaptiveLive` seam), groups targets by build directory, runs `PackagePublish.dryRun` per build directory, generates one SBOM per build directory via the `Sbom` service, applies `sbom-config` metadata, and assembles a `ValidationReport`. The report is build-centric: `ValidationPackageResult` carries builds, sizes, SBOMs, and registry targets. `strict-warnings` mode escalates warning-severity findings to `failure` for auto-merge gating.
+**`src/release/validation.ts`** (`runValidation`) — Enumerates workspace packages, diffs versions against the target branch to discover which packages are being released (`detectReleasedPackages` drops changeset-ignored names entirely via `ChangesetConfig.isIgnored`, so they never appear, not even as version-only rows), resolves publish targets via `resolvePublishableTargets` (the `PublishabilityDetectorAdaptiveLive` seam), groups targets by build directory, runs `PackagePublish.dryRun` per build directory, generates one SBOM per build directory via the `Sbom` service, applies `sbom-config` metadata, and assembles a `ValidationReport`. The report is build-centric: `ValidationPackageResult` carries builds, sizes, SBOMs, and registry targets. `strict-warnings` mode escalates warning-severity findings to `failure` for auto-merge gating.
 
 Phase 2 emits three per-step Check Runs — `Publish Validation`, `Release Notes Preview` and `SBOM Preview`. Their titles carry no decorative leading icons (the older `📦`/`📋`/`🔏` markers were removed); the only title decoration is the `🧪` marker prepended in dry-run mode (see [Dry-Run Mode](#dry-run-mode)).
 
@@ -123,13 +123,13 @@ Triggers on merge of the release PR to main. Phase 3 is a pure Effect orchestrat
 
 `main.ts` calls the five Phase-3 steps in sequence:
 
-1. **`detectReleases`** (`src/release/publish.ts`) — Detects released packages from the merged PR's file diff (PR-first) or commit diff (fallback). Wrapped in `Step.withStep`.
+1. **`detectReleases`** (`src/release/publish.ts`) — Detects released packages from the merged PR's file diff (PR-first) or commit diff (fallback), then drops changeset-ignored names entirely via `ChangesetConfig.isIgnored`. Wrapped in `Step.withStep`.
 2. **`runBuildAndSbom`** (`src/release/publish.ts`) — Runs `ci:build` once, then generates one CycloneDX SBOM per package via `Sbom.generate`. Aborts the phase if the build fails. Returns `BuildSbomResult` including per-package SBOM paths.
 3. **`runPublishTargets`** (`src/release/publish.ts`) — Publishes packages. Discovers workspace packages, resolves publish targets via `PublishabilityDetector`, sorts topologically via `TopologicalSorter`, and calls `publishDirectoryGroup` for each unique build directory. The publish orchestrator aborts before any releases if fewer than half the targets published (i.e., N/2 or 0/N).
 4. **`runReleases`** (`src/release/releases.ts`) — Creates Git tags (sha-aware idempotency) and GitHub releases, uploads SBOM and tarball assets, creates SLSA provenance and SBOM attestations (idempotent: checks `Attest.listForSubject` before writing). One attestation per build directory, not per target.
 5. **`buildPublishSummary`** (`src/release/report.ts`) — Generates the sticky-comment publish summary and Check Run output.
 
-The `determine-tag-strategy.ts` utility (still in `src/utils/`) decides between single-tag and per-package tag strategies and runs between steps 3 and 4.
+The `determine-tag-strategy.ts` utility (still in `src/utils/`) decides between single-tag and per-package tag strategies and runs between steps 3 and 4. `main.ts` resolves the per-package-tags boolean via `yield* isMonorepoForTagging(process.cwd())` (Effect, through the single detector + `ChangesetConfig.fixed`) and passes it to the pure `determineTagStrategy(publishResults, needsPerPackageTags)`.
 
 #### `publishDirectoryGroup` three-way probe-then-decide
 
@@ -167,10 +167,16 @@ main.ts
   |     create-release-branch.ts
   |       +-- create-api-commit.ts
   |       +-- parse-changesets.ts
+  |       +-- release-summary-helpers.ts (listPublishablePackages, getReleasingPackages)
+  |       +-- determine-tag-strategy.ts (isMonorepoForTagging)
+  |         +-- release/publishability.ts (PublishabilityDetectorAdaptiveLive)
+  |         +-- release/changeset-config.ts (ChangesetConfig service)
   |     update-release-branch.ts
   |       +-- create-api-commit.ts
   |       +-- parse-changesets.ts
   |       +-- detect-repo-type.ts
+  |       +-- release-summary-helpers.ts (listPublishablePackages, getReleasingPackages)
+  |       +-- determine-tag-strategy.ts (isMonorepoForTagging)
   |
   +-- Phase 2 chain:
   |     link-issues-from-commits.ts
@@ -193,12 +199,15 @@ main.ts
   |
   +-- Phase 3 chain (all Effect):
   |     release/publish.ts
-  |       detectReleases → GitHubContent / PullRequest / GitHubCommit (library services)
+  |       detectReleases → GitHubContent / PullRequest / GitHubCommit +
+  |                        ChangesetConfig (isIgnored filter)
   |       runBuildAndSbom → CommandRunner + Sbom (library services)
   |       runPublishTargets → WorkspaceDiscovery + PublishabilityDetector +
   |                           TopologicalSorter + PackagePublish + NpmRegistry +
   |                           Attest (library services)
   |     determine-tag-strategy.ts (between publish and releases)
+  |       isMonorepoForTagging → WorkspaceDiscovery + PublishabilityDetector + ChangesetConfig.fixed
+  |       determineTagStrategy (pure; needsPerPackageTags computed at main.ts boundary)
   |     release/releases.ts
   |       runReleases → GitHubRelease + GitTag + GitHubArtifactMetadata +
   |                     Attest + OidcTokenIssuer (library services)
@@ -212,8 +221,8 @@ main.ts
   +-- Cross-cutting:
         create-api-commit.ts (Phase 1)
           +-- commit-signoff.ts (DCO trailer)
-        release-summary-helpers.ts (Phase 1: detect, Phase 3: tags)
-        determine-tag-strategy.ts (Phase 3: tag strategy)
+        release-summary-helpers.ts (Phase 1: PR/commit titles; Phase 3: tag strategy via listPublishablePackages)
+        determine-tag-strategy.ts (Phase 1 + Phase 3: isMonorepoForTagging via the single detector)
         tokens.ts (still used by Phase 2 build validation context)
         summary-writer.ts (all phases)
         schema/release-output.ts + schema/projections.ts (all phases, output)
@@ -230,13 +239,13 @@ main.ts
 
 - **`commit-signoff.ts`** — Resolves the DCO `Signed-off-by` trailer for action-created commits. Reads the App bot identity via `GitHubToken.botIdentity()` and falls back to `github-actions[bot]` when unavailable.
 
-- **`detect-repo-type.ts`** — Detects whether the repository is a monorepo or single-package repo. Auto-detects the package manager from `package.json`. Reads changeset configuration for ignore patterns and private package handling.
+- **`detect-repo-type.ts`** — Detects whether the repository is a monorepo or single-package repo. Auto-detects the package manager from `package.json`. Reads changeset configuration for ignore patterns and private package handling. Exports `matchesIgnorePattern(name, pattern)` (exact and `@scope/*` wildcard), the shared matcher behind `ChangesetConfig.isIgnored`.
 
-- **`release-summary-helpers.ts`** — Package discovery and workspace analysis utilities. Provides changeset config reading (fixed/linked groups), workspace package info retrieval, and package group classification. Consumed by Phase 1 (detect summary) and Phase 3 tag strategy.
+- **`release-summary-helpers.ts`** — Release-title and package-listing helpers built on the single `PublishabilityDetector`. `listPublishablePackages(root)` is an Effect over `WorkspaceDiscovery` + `PublishabilityDetector` (so it inherits changeset-ignore and silk-rule handling); `getReleasingPackages`, `resolveReleasePrTitle` and `formatReleasePackageList` are pure. This replaced the parallel synchronous reimplementation of the silk rules (the deleted `getAllWorkspacePackages` / `getPublishablePackages` / `isPublishablePackage` / `computeTargetCount`). Consumed by Phase 1 (PR/commit titles) and Phase 3 tag strategy.
 
 - **`parse-changesets.ts`** — Parses changeset YAML frontmatter from `.changeset/*.md` files. Extracts package names, bump types, and summary descriptions. Used during branch creation to link issues.
 
-- **`determine-tag-strategy.ts`** — Decides between single-tag (`v1.0.0`) for single-package repos and per-package tags (`@scope/pkg@1.0.0`) for independent monorepo versioning.
+- **`determine-tag-strategy.ts`** — Decides between single-tag (`v1.0.0`) for single-package repos and per-package tags (`@scope/pkg@1.0.0`) for independent monorepo versioning. `isMonorepoForTagging(root)` is Effect-based, resolving the publishable set through `listPublishablePackages` (the single detector) plus `ChangesetConfig.fixed`; `determineTagStrategy(publishResults, needsPerPackageTags)` is pure — the caller computes the boolean at the `main.ts` boundary and passes it in.
 
 - **`extract-release-notes.ts`** — Extracts a CHANGELOG section from first-H2 to second-H2 for a given version. Used by Phase 2 validation and Phase 3 release creation.
 
@@ -313,7 +322,7 @@ When publishing to multiple registries, the action packs the tarball once and re
 
 ### Why a Silk-Specific Publishability Helper?
 
-The vanilla `PublishabilityDetectorLive` from `workspaces-effect` treats `package.json#private: true` as "not publishable" full stop. Silk convention extends that: private packages may opt back in by declaring `publishConfig.access` (one default target) or `publishConfig.targets` (one or more targets). `PublishabilityDetectorAdaptiveLive` in `src/release/publishability.ts` reads `ChangesetConfig.mode` per-call and dispatches to the silk override (silk mode), the library default (vanilla mode), or a no-op detector (none mode). The same rules are encoded identically in `pnpm-config-dependency-action` and the silk `changesets` package.
+The vanilla `PublishabilityDetectorLive` from `workspaces-effect` treats `package.json#private: true` as "not publishable" full stop. Silk convention inverts that: in silk mode `private: true` is the norm on workspace `package.json` and publishability is derived from `publishConfig`, not the `private` flag. The silk rules therefore consult `publishConfig.targets` first, then `publishConfig.access`, and only fall back to the `private` flag as a last-resort default (see [Publishability Detection (Silk Rules)](integration.md#publishability-detection-silk-rules) for the full precedence). `PublishabilityDetectorAdaptiveLive` in `src/release/publishability.ts` short-circuits changeset-ignored packages to `[]` regardless of mode (via `ChangesetConfig.isIgnored`), then reads `ChangesetConfig.mode` per-call and dispatches to the silk override (silk mode), the library default (vanilla mode), or a no-op detector (none mode). This single ignore-aware detector is the only publishability path — Phase 1 (`listPublishablePackages`/`isMonorepoForTagging`), Phase 2 (`runValidation`) and Phase 3 (`runPublishTargets`) all resolve through it. The same rules are encoded identically in `pnpm-config-dependency-action` and the silk `changesets` package.
 
 ## Key Design Patterns
 
@@ -377,7 +386,7 @@ When `dry-run: true` is set, the action executes a parallel path that validates 
 | `src/release/validation.ts` | runValidation: Phase-2 dry-run + SBOM + ValidationReport |
 | `src/release/report.ts` | buildValidationComment, buildPublishSummary, buildChecksTable, buildFindingsTable |
 | `src/release/publishability.ts` | SilkPublishabilityDetectorLive, PublishabilityDetectorAdaptiveLive |
-| `src/release/changeset-config.ts` | ChangesetConfig Effect service (mode, versionPrivate) |
+| `src/release/changeset-config.ts` | ChangesetConfig Effect service: single source of changeset-config truth (mode, versionPrivate, ignorePatterns, isIgnored, fixed) |
 | `src/release/layers.ts` | ReleaseLive = WorkspacesLive + ChangesetConfigLive + PublishabilityDetectorAdaptiveLive |
 | `src/release/resolve-targets.ts` | resolvePublishableTargets seam for Phase-2 and Phase-3 |
 | `src/release/types.ts` | TargetPublishResult, PackagePublishResult, ValidationFinding, ValidationPackageResult, etc. |
@@ -391,15 +400,15 @@ When `dry-run: true` is set, the action executes a parallel path that validates 
 | `src/utils/create-validation-check.ts` | Unified Check Run aggregating all validations |
 | `src/utils/count-changesets.ts` | Count changesets per package |
 | `src/utils/derive-check-conclusion.ts` | Check-run conclusion from findings with strict-warnings support |
-| `src/utils/detect-repo-type.ts` | Monorepo/single-repo and package manager detection (workspaces-effect) |
+| `src/utils/detect-repo-type.ts` | Monorepo/single-repo and package manager detection; exports matchesIgnorePattern (shared changeset-ignore matcher) |
 | `src/utils/detect-workflow-phase.ts` | Phase routing based on GitHub event context |
-| `src/utils/determine-tag-strategy.ts` | Single vs per-package tag strategy selection |
+| `src/utils/determine-tag-strategy.ts` | isMonorepoForTagging (Effect, via the single detector + ChangesetConfig.fixed) and pure determineTagStrategy |
 | `src/utils/extract-release-notes.ts` | First-H2-to-second-H2 CHANGELOG section extraction |
 | `src/utils/infer-sbom-metadata.ts` | Infer SBOM metadata from package.json fields |
 | `src/utils/link-issues-from-commits.ts` | Extract and cross-reference issues from commits |
 | `src/utils/load-release-config.ts` | Layered config loading; decodes via SilkReleaseConfig schema |
 | `src/utils/parse-changesets.ts` | Changeset YAML frontmatter parsing |
-| `src/utils/release-summary-helpers.ts` | Package discovery and workspace analysis |
+| `src/utils/release-summary-helpers.ts` | listPublishablePackages (Effect over the single detector), getReleasingPackages, resolveReleasePrTitle, formatReleasePackageList |
 | `src/utils/summary-writer.ts` | Type-safe markdown via ts-markdown |
 | `src/utils/tokens.ts` | appToken() and packagesToken() helpers for non-Effect publish chain context |
 | `src/utils/update-release-branch.ts` | Recreate release branch from main |

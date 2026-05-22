@@ -7,7 +7,7 @@ export default defineConfig({
 		post: "src/post.ts",
 	},
 	build: {
-		minify: false,
+		minify: true,
 		// `@cyclonedx/cyclonedx-library` ships optional plugins (XML
 		// serializers, XML validators, draft-2019 JSON validators) we
 		// never invoke — we only use the JSON serializer. They aren't

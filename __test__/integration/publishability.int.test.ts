@@ -11,15 +11,24 @@
  * `privatePackages.version` interaction. `private-target-with-directory`
  * guards the `42cc7e2` regression (per-target `directory` discarded, target
  * resolved to the private dev build and dropped); `private-shorthand-targets`
- * guards shorthand-string expansion.
+ * guards shorthand-string expansion; `public-multi-target` mirrors the
+ * `@savvy-web/lint-staged` shape (public source + `publishConfig.targets`) and
+ * guards the regression where a non-private source short-circuited to a single
+ * default target at `publishConfig.directory` (the private `dist/dev` artifact),
+ * which the private-build filter then dropped — misclassifying the package as
+ * version-only.
  */
 
 import { fileURLToPath } from "node:url";
+import { NodeContext } from "@effect/platform-node";
 import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 import { WorkspacePackage } from "workspaces-effect";
 import { ChangesetConfig, ChangesetConfigLive } from "../../src/release/changeset-config.js";
-import { SilkPublishabilityDetectorLive } from "../../src/release/publishability.js";
+import {
+	PublishabilityDetectorAdaptiveLive,
+	SilkPublishabilityDetectorLive,
+} from "../../src/release/publishability.js";
 import { resolvePublishableTargets } from "../../src/release/resolve-targets.js";
 
 /**
@@ -44,7 +53,11 @@ const resolveFixture = (name: string) =>
 		const publishTargets = yield* resolvePublishableTargets(pkg, dir);
 		const versionPrivate = yield* config.versionPrivate(dir);
 		return { publishTargets, versionable: publishTargets.length > 0 || versionPrivate };
-	}).pipe(Effect.provide(Layer.mergeAll(SilkPublishabilityDetectorLive, ChangesetConfigLive)));
+	}).pipe(
+		Effect.provide(
+			Layer.mergeAll(SilkPublishabilityDetectorLive, ChangesetConfigLive).pipe(Layer.provideMerge(NodeContext.layer)),
+		),
+	);
 
 describe("publishability fixture harness", () => {
 	it("should resolve one public target from the package root when the package is not private (public-package fixture)", async () => {
@@ -137,9 +150,74 @@ describe("publishability fixture harness", () => {
 		expect(versionable).toBe(true);
 	});
 
+	it("should resolve both targets at dist/npm when a non-private source declares publishConfig.targets (public-multi-target fixture, lint-staged version-only regression guard)", async () => {
+		const { publishTargets, versionable } = await Effect.runPromise(resolveFixture("public-multi-target"));
+		expect(publishTargets).toHaveLength(2);
+		// Declaration order is preserved (GitHub Packages first, then npm) — these
+		// must resolve to the public dist/npm artifact, NOT the private dist/dev
+		// build named by publishConfig.directory.
+		expect(publishTargets.map((t) => t.registry)).toEqual([
+			"https://npm.pkg.github.com/",
+			"https://registry.npmjs.org/",
+		]);
+		for (const target of publishTargets) {
+			expect(target.directory).toBe("dist/npm");
+			expect(target.access).toBe("public");
+			expect(target.provenance).toBe(true);
+		}
+		expect(versionable).toBe(true);
+	});
+
 	it("should drop the detected target and be non-versionable when the built target package.json is private (private-target-built-private fixture)", async () => {
 		const { publishTargets, versionable } = await Effect.runPromise(resolveFixture("private-target-built-private"));
 		expect(publishTargets).toHaveLength(0);
 		expect(versionable).toBe(false);
+	});
+});
+
+/** Resolve one sub-package of a workspace fixture against the fixture root. */
+const resolveWorkspacePackage = (workspace: string, subPath: string, name: string) =>
+	Effect.gen(function* () {
+		const root = fileURLToPath(new URL(`fixtures/${workspace}`, import.meta.url));
+		const dir = fileURLToPath(new URL(`fixtures/${workspace}/${subPath}`, import.meta.url));
+		const pkg = new WorkspacePackage({
+			name,
+			version: "1.0.0",
+			path: dir,
+			packageJsonPath: fileURLToPath(new URL(`fixtures/${workspace}/${subPath}/package.json`, import.meta.url)),
+			relativePath: subPath,
+		});
+		return yield* resolvePublishableTargets(pkg, root);
+	}).pipe(
+		Effect.provide(
+			Layer.mergeAll(
+				PublishabilityDetectorAdaptiveLive.pipe(Layer.provide(ChangesetConfigLive)),
+				ChangesetConfigLive,
+			).pipe(Layer.provideMerge(NodeContext.layer)),
+		),
+	);
+
+describe("changeset ignore (ignore-monorepo fixture)", () => {
+	it("resolves the main package to exactly one targetGroup / one target", async () => {
+		const targets = await Effect.runPromise(
+			resolveWorkspacePackage("ignore-monorepo", "package", "@fixture/ignore-main"),
+		);
+		expect(targets).toHaveLength(1);
+		expect(targets[0].directory).toBe("dist/npm");
+		expect(targets[0].registry).toBe("https://registry.npmjs.org/");
+	});
+
+	it("excludes a @libraries/* example package despite its publishConfig.targets", async () => {
+		const targets = await Effect.runPromise(
+			resolveWorkspacePackage("ignore-monorepo", "examples/lib", "@libraries/example"),
+		);
+		expect(targets).toHaveLength(0);
+	});
+
+	it("excludes a @rspress/* example package despite its publishConfig.targets", async () => {
+		const targets = await Effect.runPromise(
+			resolveWorkspacePackage("ignore-monorepo", "examples/site", "@rspress/example"),
+		);
+		expect(targets).toHaveLength(0);
 	});
 });

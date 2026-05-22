@@ -5,6 +5,7 @@
  * registry, git, or SBOM tooling is exercised.
  */
 
+import { NodeContext } from "@effect/platform-node";
 import { ActionsConfigProvider } from "@savvy-web/github-action-effects";
 import type { CommandResponse } from "@savvy-web/github-action-effects/testing";
 import {
@@ -20,6 +21,8 @@ import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 import { PublishTarget, PublishabilityDetector, WorkspaceDiscovery, WorkspacePackage } from "workspaces-effect";
 
+import { matchesIgnorePattern } from "../utils/detect-repo-type.js";
+import { ChangesetConfig } from "./changeset-config.js";
 import { runValidation } from "./validation.js";
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
@@ -111,6 +114,14 @@ const sbomLayer = SbomTest.empty();
 const attestLayer = AttestTest.empty();
 // Empty ActionState (no tokens persisted) — tests exercise the "no token" path.
 const actionStateLayer = ActionStateTest.layer(ActionStateTest.empty());
+// Default ChangesetConfig stub: no packages ignored (isIgnored always false).
+const changesetConfigDefaultLayer = Layer.succeed(ChangesetConfig, {
+	mode: () => Effect.succeed("silk" as const),
+	versionPrivate: () => Effect.succeed(false),
+	ignorePatterns: () => Effect.succeed([]),
+	isIgnored: (_name: string) => Effect.succeed(false),
+	fixed: () => Effect.succeed([]),
+});
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
@@ -132,6 +143,7 @@ describe("runValidation", () => {
 			const { state: pubState, layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -139,6 +151,7 @@ describe("runValidation", () => {
 				npmRegistryLayer,
 				sbomLayer,
 				attestLayer,
+				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/alpha", [target]]])),
 			);
@@ -195,6 +208,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -202,6 +216,7 @@ describe("runValidation", () => {
 				npmRegistryLayer,
 				sbomLayer,
 				attestLayer,
+				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([rootPkg]),
 				makePublishabilityLayer(new Map([["@savvy-web/github-action-builder", [target]]])),
 			);
@@ -237,6 +252,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.layer({ dryRunOk: false });
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -244,6 +260,7 @@ describe("runValidation", () => {
 				npmRegistryLayer,
 				sbomLayer,
 				attestLayer,
+				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/beta", [target]]])),
 			);
@@ -277,6 +294,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.layer({ dryRunOk: false });
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -284,6 +302,7 @@ describe("runValidation", () => {
 				npmRegistryLayer,
 				sbomLayer,
 				attestLayer,
+				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/gamma", [target]]])),
 			);
@@ -316,6 +335,7 @@ describe("runValidation", () => {
 			const { state: pubState, layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -323,6 +343,7 @@ describe("runValidation", () => {
 				npmRegistryLayer,
 				sbomLayer,
 				attestLayer,
+				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/unchanged", [target]]])),
 			);
@@ -354,6 +375,7 @@ describe("runValidation", () => {
 			const { state: pubState, layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -361,6 +383,7 @@ describe("runValidation", () => {
 				npmRegistryLayer,
 				sbomLayer,
 				attestLayer,
+				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/new-pkg", [target]]])),
 			);
@@ -394,6 +417,7 @@ describe("runValidation", () => {
 			const { state: pubState, layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -401,6 +425,7 @@ describe("runValidation", () => {
 				npmRegistryLayer,
 				sbomLayer,
 				attestLayer,
+				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map()), // no targets for this package
 			);
@@ -437,6 +462,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -444,6 +470,7 @@ describe("runValidation", () => {
 				npmRegistryLayer,
 				sbomLayer,
 				attestLayer,
+				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/stable", [makeNpmTarget("@test/stable")]]])),
 			);
@@ -480,6 +507,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -487,6 +515,7 @@ describe("runValidation", () => {
 				npmRegistryLayer,
 				sbomLayer,
 				attestLayer,
+				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/stable", [makeNpmTarget("@test/stable")]]])),
 			);
@@ -537,6 +566,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -544,6 +574,7 @@ describe("runValidation", () => {
 				npmRegistryLayer,
 				sbomLayer,
 				attestLayer,
+				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/counted", [target]]])),
 			);
@@ -576,6 +607,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -583,6 +615,7 @@ describe("runValidation", () => {
 				npmRegistryLayer,
 				sbomLayer,
 				attestLayer,
+				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/no-changesets", [target]]])),
 			);
@@ -627,6 +660,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -634,6 +668,7 @@ describe("runValidation", () => {
 				npmRegistryLayer,
 				sbomTestLayer,
 				attestLayer,
+				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/provenance-pkg", [provenanceTarget]]])),
 			);
@@ -668,6 +703,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -675,6 +711,7 @@ describe("runValidation", () => {
 				npmRegistryLayer,
 				sbomLayer,
 				attestLayer,
+				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/no-provenance", [target]]])),
 			);
@@ -706,6 +743,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.layer({ dryRunOk: false });
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -713,6 +751,7 @@ describe("runValidation", () => {
 				npmRegistryLayer,
 				sbomLayer,
 				attestLayer,
+				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/finding-fail", [target]]])),
 			);
@@ -747,6 +786,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -754,6 +794,7 @@ describe("runValidation", () => {
 				npmRegistryLayer,
 				sbomLayer,
 				attestLayer,
+				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/ntia-incomplete", [target]]])),
 			);
@@ -813,6 +854,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -820,6 +862,7 @@ describe("runValidation", () => {
 				npmRegistryLayer,
 				sbomTestLayer,
 				attestLayer,
+				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/all-pass", [target]]])),
 			);
@@ -833,6 +876,74 @@ describe("runValidation", () => {
 			expect(report.publishOk).toBe(true);
 			expect(report.sbomOk).toBe(true);
 			expect(report.findings).toEqual([]);
+		});
+	});
+
+	describe("changeset-ignored packages", () => {
+		it("detectReleasedPackages drops changeset-ignored packages", async () => {
+			// Arrange — two workspace packages:
+			//  - @libraries/x: ignored via @libraries/* glob; has a version diff (would
+			//    otherwise be detected as released)
+			//  - @keep/main: not ignored; has a version diff and must be kept
+			//
+			// Drive the test through runValidation so we exercise detectReleasedPackages
+			// through the real call site with a ChangesetConfig stub that ignores
+			// @libraries/*. runValidation discovers packages via WorkspaceDiscovery,
+			// so we supply both workspace packages and configure git-show responses for
+			// both.
+			const ignoredPkg = makeWsPkg("@libraries/x", "2.0.0", "packages/libraries-x");
+			const keptPkg = makeWsPkg("@keep/main", "3.0.0", "packages/keep-main");
+			const keptTarget = makeNpmTarget("@keep/main", "/tmp/dist/keep-main");
+
+			// Both packages have version diffs against "main" branch
+			const commandResponses = new Map<string, CommandResponse>([
+				[
+					"git show main:packages/libraries-x/package.json",
+					{ exitCode: 0, stdout: JSON.stringify({ name: "@libraries/x", version: "1.0.0" }), stderr: "" },
+				],
+				[
+					"git show main:packages/keep-main/package.json",
+					{ exitCode: 0, stdout: JSON.stringify({ name: "@keep/main", version: "2.0.0" }), stderr: "" },
+				],
+			]);
+
+			// ChangesetConfig stub: isIgnored matches @libraries/* glob
+			const ignore = ["@libraries/*"];
+			const changesetConfigIgnoreLayer = Layer.succeed(ChangesetConfig, {
+				mode: () => Effect.succeed("silk" as const),
+				versionPrivate: () => Effect.succeed(false),
+				ignorePatterns: () => Effect.succeed(ignore),
+				isIgnored: (name: string) => Effect.succeed(ignore.some((p) => matchesIgnorePattern(name, p))),
+				fixed: () => Effect.succeed([]),
+			});
+
+			const { layer: pubLayer } = PackagePublishTest.empty();
+
+			const layers = Layer.mergeAll(
+				NodeContext.layer,
+				loggerLayer,
+				actionStateLayer,
+				makeCommandRunnerLayer(commandResponses),
+				pubLayer,
+				npmRegistryLayer,
+				sbomLayer,
+				attestLayer,
+				changesetConfigIgnoreLayer,
+				makeWorkspaceDiscoveryLayer([ignoredPkg, keptPkg]),
+				makePublishabilityLayer(new Map([["@keep/main", [keptTarget]]])),
+			);
+
+			// Act — run through runValidation so that detectReleasedPackages's ignore
+			// filter is exercised in the real Phase-2 call site.
+			const report = await Effect.runPromise(
+				runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(Effect.provide(layers)),
+			);
+
+			// Assert — only the non-ignored package appears in the report. The ignored
+			// @libraries/x package must be absent even though it had a version diff.
+			const names = report.validationPackages.map((p) => p.name);
+			expect(names).toEqual(["@keep/main"]);
+			expect(names).not.toContain("@libraries/x");
 		});
 	});
 
@@ -873,6 +984,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -880,6 +992,7 @@ describe("runValidation", () => {
 				npmRegistryLayer,
 				sbomTestLayer,
 				attestLayer,
+				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/shared-dir", [targetA, targetB]]])),
 			);
@@ -935,6 +1048,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -942,6 +1056,7 @@ describe("runValidation", () => {
 				npmRegistryLayer,
 				sbomTestLayer,
 				attestLayer,
+				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/two-dirs", [npmTarget, ghTarget]]])),
 			);
@@ -987,6 +1102,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -994,6 +1110,7 @@ describe("runValidation", () => {
 				npmRegistryLayer,
 				sbomLayer,
 				attestLayer,
+				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/relative-dir", [relativeTarget, absoluteTarget]]])),
 			);
@@ -1060,6 +1177,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -1067,6 +1185,7 @@ describe("runValidation", () => {
 				npmRegistryLayer,
 				sbomTestLayer,
 				attestLayer,
+				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/metadata", [target]]])),
 			);
@@ -1132,6 +1251,7 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
+				NodeContext.layer,
 				loggerLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
@@ -1139,6 +1259,7 @@ describe("runValidation", () => {
 				npmRegistryLayer,
 				sbomLayer,
 				attestLayer,
+				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/no-deps", [target]]])),
 			);

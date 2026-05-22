@@ -48,6 +48,8 @@ import {
 	WorkspacePackage,
 } from "workspaces-effect";
 
+import { matchesIgnorePattern } from "../utils/detect-repo-type.js";
+import { ChangesetConfig } from "./changeset-config.js";
 import type { BuildSbomResult, DetectedRelease, PublishInputArgs } from "./publish.js";
 import { detectReleases, runBuildAndSbom, runPublishTargets } from "./publish.js";
 import type { PublishPackagesResult } from "./types.js";
@@ -214,6 +216,14 @@ const sigstoreSignerLayer = SigstoreSignerTest;
 const actionStateLayer = ActionStateTest.layer(ActionStateTest.empty());
 // Empty ConfigProvider — `npm-token` is absent, Config.option returns None (OIDC path).
 const configProviderLayer = Layer.setConfigProvider(ConfigProvider.fromMap(new Map<string, string>()));
+// Default ChangesetConfig stub: no packages ignored (isIgnored always false).
+const changesetConfigDefaultLayer = Layer.succeed(ChangesetConfig, {
+	mode: () => Effect.succeed("silk" as const),
+	versionPrivate: () => Effect.succeed(false),
+	ignorePatterns: () => Effect.succeed([]),
+	isIgnored: (_name: string) => Effect.succeed(false),
+	fixed: () => Effect.succeed([]),
+});
 
 // ─── detectReleases ─────────────────────────────────────────────────────────
 
@@ -295,7 +305,11 @@ describe("detectReleases", () => {
 			// Act
 			let detected: ReadonlyArray<DetectedRelease>;
 			try {
-				detected = await runInCwd(tmpCwd, () => Effect.runPromise(detectReleases(args).pipe(Effect.provide(ghLayer))));
+				detected = await runInCwd(tmpCwd, () =>
+					Effect.runPromise(
+						detectReleases(args).pipe(Effect.provide(ghLayer), Effect.provide(changesetConfigDefaultLayer)),
+					),
+				);
 			} finally {
 				if (savedSha === undefined) delete process.env.GITHUB_SHA;
 				else process.env.GITHUB_SHA = savedSha;
@@ -335,7 +349,11 @@ describe("detectReleases", () => {
 			// Act
 			let detected: ReadonlyArray<DetectedRelease>;
 			try {
-				detected = await runInCwd(tmpCwd, () => Effect.runPromise(detectReleases(args).pipe(Effect.provide(ghLayer))));
+				detected = await runInCwd(tmpCwd, () =>
+					Effect.runPromise(
+						detectReleases(args).pipe(Effect.provide(ghLayer), Effect.provide(changesetConfigDefaultLayer)),
+					),
+				);
 			} finally {
 				if (savedSha === undefined) delete process.env.GITHUB_SHA;
 				else process.env.GITHUB_SHA = savedSha;
@@ -367,7 +385,9 @@ describe("detectReleases", () => {
 
 			// Act — change cwd so detectFromPR's readFileSync resolves paths correctly
 			const detected: ReadonlyArray<DetectedRelease> = await runInCwd(tmpCwd, () =>
-				Effect.runPromise(detectReleases(args).pipe(Effect.provide(ghLayer))),
+				Effect.runPromise(
+					detectReleases(args).pipe(Effect.provide(ghLayer), Effect.provide(changesetConfigDefaultLayer)),
+				),
 			);
 
 			// Assert: detection found @test/detected-pkg with the new version
@@ -402,11 +422,62 @@ describe("detectReleases", () => {
 
 			// Act
 			const detected: ReadonlyArray<DetectedRelease> = await runInCwd(tmpCwd, () =>
-				Effect.runPromise(detectReleases(args).pipe(Effect.provide(ghLayer))),
+				Effect.runPromise(
+					detectReleases(args).pipe(Effect.provide(ghLayer), Effect.provide(changesetConfigDefaultLayer)),
+				),
 			);
 
 			// Assert: old version == new version → no release detected.
 			expect(detected).toHaveLength(0);
+		});
+	});
+
+	describe("changeset-ignored packages are excluded from detection result", () => {
+		it("detectReleases drops packages matching the changeset ignore list", async () => {
+			// Arrange: set up a PR detection scenario with two packages:
+			//   - @libraries/ignored: should be excluded by the @libraries/* ignore pattern
+			//   - @keep/released: should be kept
+			const prNumber = 99;
+			const { layer: ghLayer, tmpCwd } = makeLayerForPR(prNumber, [
+				{
+					name: "@libraries/ignored",
+					newVersion: "2.0.0",
+					oldVersion: "1.0.0",
+					filename: "packages/ignored/package.json",
+				},
+				{
+					name: "@keep/released",
+					newVersion: "3.0.0",
+					oldVersion: "2.0.0",
+					filename: "packages/released/package.json",
+				},
+			]);
+
+			const ignore = ["@libraries/*"];
+			const changesetConfigLayer = Layer.succeed(ChangesetConfig, {
+				mode: () => Effect.succeed("silk" as const),
+				versionPrivate: () => Effect.succeed(false),
+				ignorePatterns: () => Effect.succeed(ignore),
+				isIgnored: (name: string) => Effect.succeed(ignore.some((p) => matchesIgnorePattern(name, p))),
+				fixed: () => Effect.succeed([]),
+			});
+
+			const args: PublishInputArgs = {
+				packageManager: "pnpm",
+				targetBranch: "main",
+				dryRun: false,
+				mergedReleasePRNumber: prNumber,
+			};
+
+			// Act
+			const detected: ReadonlyArray<DetectedRelease> = await runInCwd(tmpCwd, () =>
+				Effect.runPromise(detectReleases(args).pipe(Effect.provide(ghLayer), Effect.provide(changesetConfigLayer))),
+			);
+
+			// Assert — the ignored @libraries/ignored package must be absent
+			const names = detected.map((d) => d.name);
+			expect(names).toContain("@keep/released");
+			expect(names).not.toContain("@libraries/ignored");
 		});
 	});
 });

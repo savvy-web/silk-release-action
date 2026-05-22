@@ -4,8 +4,8 @@ category: integration
 status: current
 completeness: 92
 created: 2026-02-07
-updated: 2026-05-21
-last-synced: 2026-05-21
+updated: 2026-05-22
+last-synced: 2026-05-22
 module: release-action
 related:
   - architecture.md
@@ -40,14 +40,18 @@ Phase 3 is a self-recovering publish chain built on `@savvy-web/github-action-ef
 
 The silk publishability rules live in `src/release/publishability.ts`. Two Effect Layer implementations wrap the `PublishabilityDetector` Context.Tag from `workspaces-effect`:
 
-**`SilkPublishabilityDetectorLive`** implements the four silk rules:
+**`SilkPublishabilityDetectorLive`** (`silkDetect`) consults `publishConfig` first, treating the `private` flag only as a last-resort default. In silk mode `private: true` is the norm on workspace `package.json` — it keeps the package out of accidental `npm publish` and out of transitive public installs — so publishability is derived from `publishConfig`, regardless of `private`. The build pipeline rewrites `private: false` onto the real publish artifact (e.g. `dist/npm`) while leaving the dev/link artifact (`publishConfig.directory`, e.g. `dist/dev`) private. Precedence:
 
-1. `private !== true` — publishable to one default target; registry, access, and directory come from `publishConfig` if present.
-2. `private === true` + `publishConfig.targets` — publishable to each target in the array. String shorthands (`"npm"`, `"github"`, `"jsr"`, URL strings) are expanded; object targets may override access and registry. Targets whose resolved access is not `"public"` or `"restricted"` are dropped.
-3. `private === true` + `publishConfig.access` (no `targets`) — publishable to one target using that access.
-4. Otherwise — empty array (not publishable).
+1. `publishConfig.targets` non-empty → resolve each target, regardless of `private`. String shorthands (`"npm"`, `"github"`, `"jsr"`, URL strings) are expanded; object targets may override access and registry. Targets whose resolved access is not `"public"` or `"restricted"` are dropped.
+2. `publishConfig.access` set, no `targets` → one target using that access, regardless of `private`.
+3. `private !== true` (no usable `publishConfig`) → one default target.
+4. Otherwise (private, no usable `publishConfig`) → empty array (not publishable).
 
-**`PublishabilityDetectorAdaptiveLive`** reads `ChangesetConfig.mode` per-call and dispatches to the silk override (silk mode), the library's built-in `PublishabilityDetectorLive` (vanilla mode), or a no-op detector that returns an empty array for every package (none mode). Phase 2 (`runValidation` via `resolvePublishableTargets`) and Phase 3 (`runPublishTargets` via `PublishabilityDetector`) both resolve through this adaptive layer.
+This precedence fixed a regression where a public source package (`private: false`) declaring `publishConfig.targets` was short-circuited to a single default target at `publishConfig.directory` (the private `dist/dev` artifact), which the private-build filter then dropped — misclassifying it as version-only.
+
+**`PublishabilityDetectorAdaptiveLive`** is the single ignore-aware detector. It short-circuits to `[]` for any package whose name matches the changeset `ignore` globs (via `ChangesetConfig.isIgnored`, which uses the shared `matchesIgnorePattern` matcher exported from `src/utils/detect-repo-type.ts`), regardless of mode. It then reads `ChangesetConfig.mode` per-call and dispatches to the silk override (silk mode), the library's built-in `PublishabilityDetectorLive` (vanilla mode), or a no-op detector that returns an empty array for every package (none mode). Every publishability path resolves through this layer: Phase 1 (`listPublishablePackages` / `isMonorepoForTagging`), Phase 2 (`runValidation` via `resolvePublishableTargets`) and Phase 3 (`runPublishTargets` via `PublishabilityDetector`).
+
+Ignored packages are excluded from detection entirely, not just from publishing: Phase-2 `detectReleasedPackages` and Phase-3 `detectReleases` both drop changeset-ignored names via `ChangesetConfig.isIgnored`, so they never appear in validation or publish output — not even as version-only rows.
 
 The implementation reads raw `package.json` from disk (not the typed `WorkspacePackage`) so it can see `publishConfig.targets`, which is not surfaced by the typed `PublishConfig` schema in `workspaces-effect`. The same rules are encoded identically in `pnpm-config-dependency-action` and the silk `changesets` package.
 
@@ -163,7 +167,7 @@ Calling `Attest.listForSubject` before writing enables safe retries without dupl
 
 ### Why Silk-Specific Publishability Rules?
 
-`workspaces-effect`'s built-in `PublishabilityDetectorLive` treats `private: true` as a hard "not publishable" stop. Silk's convention broadens that: a package can be private (so it never leaks into a public npm install transitively) while still being publishable to one or more declared targets. The `PublishabilityDetectorAdaptiveLive` dispatches to the silk override only when the repo uses the silk changesets preset, so vanilla repos are unaffected.
+`workspaces-effect`'s built-in `PublishabilityDetectorLive` treats `private: true` as a hard "not publishable" stop. Silk's convention inverts that: in silk mode `private: true` is the norm on workspace `package.json` (so a package never leaks into a public npm install transitively) and publishability comes from `publishConfig.targets` / `publishConfig.access`, with the `private` flag consulted only as a last-resort default. Consulting `publishConfig` before `private` is what lets a public source package that declares `targets` resolve to those targets rather than collapsing to a single default target at the private dev artifact. The `PublishabilityDetectorAdaptiveLive` dispatches to the silk override only when the repo uses the silk changesets preset, so vanilla repos are unaffected.
 
 ### Why OIDC-First Authentication?
 
@@ -187,8 +191,9 @@ Packing once ensures every registry receives identical content with the same SHA
 
 | File | Description |
 | --- | --- |
-| `src/release/publishability.ts` | SilkPublishabilityDetectorLive, PublishabilityDetectorAdaptiveLive |
-| `src/release/changeset-config.ts` | ChangesetConfig service (mode: silk/vanilla/none) |
+| `src/release/publishability.ts` | SilkPublishabilityDetectorLive (publishConfig-first precedence), PublishabilityDetectorAdaptiveLive (ignore-aware, single detector) |
+| `src/release/changeset-config.ts` | ChangesetConfig service: single source of changeset-config truth (mode, versionPrivate, ignorePatterns, isIgnored, fixed) |
+| `src/utils/detect-repo-type.ts` | Exports matchesIgnorePattern (shared changeset-ignore matcher behind ChangesetConfig.isIgnored) |
 | `src/release/resolve-targets.ts` | resolvePublishableTargets seam (Phase 2 + Phase 3) |
 
 ### Phase-3 Orchestration

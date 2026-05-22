@@ -9,11 +9,12 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { join } from "node:path";
+import type { FileSystem } from "@effect/platform";
 import { isGitHubPackagesRegistry, isNpmRegistry } from "@savvy-web/github-action-effects";
-import { Effect } from "effect";
-import type { PublishTarget, WorkspacePackage } from "workspaces-effect";
-import { PublishabilityDetector } from "workspaces-effect";
+import { SilkPublishability } from "@savvy-web/silk-effects";
+import type { Effect } from "effect";
+import type { PublishTarget, PublishabilityDetector, WorkspacePackage } from "workspaces-effect";
 
 /**
  * Report whether a built target directory's `package.json` is marked `private`.
@@ -60,12 +61,8 @@ export function isTargetPrivate(targetDir: string): boolean {
 export const resolvePublishableTargets = (
 	pkg: WorkspacePackage,
 	workspaceRoot: string,
-): Effect.Effect<ReadonlyArray<PublishTarget>, never, PublishabilityDetector> =>
-	Effect.gen(function* () {
-		const detector = yield* PublishabilityDetector;
-		const targets = yield* detector.detect(pkg, workspaceRoot);
-		return targets.filter((t) => !isTargetPrivate(isAbsolute(t.directory) ? t.directory : join(pkg.path, t.directory)));
-	});
+): Effect.Effect<ReadonlyArray<PublishTarget>, never, PublishabilityDetector | FileSystem.FileSystem> =>
+	SilkPublishability.resolveTargets(pkg, workspaceRoot);
 
 /**
  * Resolve the auth token for a publish-target registry.

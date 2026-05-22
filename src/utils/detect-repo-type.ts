@@ -97,7 +97,7 @@ function detectPackageManager(packageJson: PackageJson): PackageManager {
  * - Exact match: `"my-package"` matches only `"my-package"`
  * - Scope wildcard: `"@scope/*"` matches any package starting with `"@scope/"`
  */
-function matchesIgnorePattern(packageName: string, pattern: string): boolean {
+export function matchesIgnorePattern(packageName: string, pattern: string): boolean {
 	if (pattern.endsWith("/*")) {
 		// Scope wildcard pattern: "@scope/*" matches "@scope/anything"
 		const prefix = pattern.slice(0, -1); // Remove trailing "*", keep "/"

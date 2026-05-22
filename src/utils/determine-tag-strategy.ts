@@ -1,6 +1,8 @@
+import { Effect } from "effect";
+import type { PublishabilityDetector, WorkspaceDiscovery } from "workspaces-effect";
+import { ChangesetConfig } from "../release/changeset-config.js";
 import type { PackagePublishResult } from "../release/types.js";
-import { isIgnoredPackage } from "./detect-repo-type.js";
-import { getAllWorkspacePackages, isPublishablePackage, readChangesetConfig } from "./release-summary-helpers.js";
+import { listPublishablePackages } from "./release-summary-helpers.js";
 
 /**
  * Tag strategy result
@@ -27,7 +29,7 @@ export interface TagInfo {
 }
 
 /**
- * Determines if the repository requires per-package tags (is a "monorepo" for tagging purposes)
+ * Determines if the repository requires per-package tags (is a "monorepo" for tagging purposes).
  *
  * @remarks
  * A repository needs per-package tags when:
@@ -37,45 +39,23 @@ export interface TagInfo {
  * - Only 1 publishable package exists, OR
  * - All publishable packages are in the same fixed group
  *
- * A package is "publishable" if:
- * - It has publishConfig.targets or publishConfig.access, OR
- * - It is not marked as private
+ * Resolved through the single `PublishabilityDetector` (which already honors changeset ignore).
  *
- * @returns True if per-package tags are needed, false for single version tag
+ * @returns Effect resolving to true if per-package tags are needed, false for single version tag
  */
-export function isMonorepoForTagging(): boolean {
-	const allPackages = getAllWorkspacePackages();
-	const changesetConfig = readChangesetConfig();
-
-	// Packages that can actually release: publishable AND not changeset-ignored
-	// (shared with the release-PR-title detection). Ignored example packages
-	// often carry publishConfig but must not count toward the tag strategy.
-	const ignorePatterns = changesetConfig?.ignore ?? [];
-	const publishablePackages = allPackages.filter(
-		(pkg) => isPublishablePackage(pkg) && !isIgnoredPackage(pkg.name, ignorePatterns),
-	);
-
-	// Single publishable package → single tag
-	if (publishablePackages.length <= 1) {
-		return false;
-	}
-
-	// Check if all publishable packages are in the same fixed group
-	if (changesetConfig?.fixed) {
-		const publishableNames = new Set(publishablePackages.map((p) => p.name));
-
-		for (const fixedGroup of changesetConfig.fixed) {
-			// Check if all publishable packages are in this fixed group
-			const allInGroup = [...publishableNames].every((name) => fixedGroup.includes(name));
-			if (allInGroup) {
-				return false;
-			}
+export const isMonorepoForTagging = (
+	workspaceRoot: string,
+): Effect.Effect<boolean, never, WorkspaceDiscovery | PublishabilityDetector | ChangesetConfig> =>
+	Effect.gen(function* () {
+		const publishable = yield* listPublishablePackages(workspaceRoot);
+		if (publishable.length <= 1) return false;
+		const fixed = yield* (yield* ChangesetConfig).fixed(workspaceRoot);
+		const publishableNames = new Set(publishable.map((p) => p.name));
+		for (const group of fixed) {
+			if ([...publishableNames].every((name) => group.includes(name))) return false;
 		}
-	}
-
-	// Multiple publishable packages not all in same fixed group → per-package tags
-	return true;
-}
+		return true;
+	});
 
 /**
  * Determine the tagging strategy for releases
@@ -87,9 +67,13 @@ export function isMonorepoForTagging(): boolean {
  * - Monorepo with independent/linked versioning → per-package tags: `@scope/pkg@1.0.0`
  *
  * @param publishResults - Results from publishing packages
+ * @param needsPerPackageTags - Whether the repo requires per-package tags (from {@link isMonorepoForTagging})
  * @returns Tag strategy with tags to create
  */
-export function determineTagStrategy(publishResults: PackagePublishResult[]): TagStrategyResult {
+export function determineTagStrategy(
+	publishResults: PackagePublishResult[],
+	needsPerPackageTags: boolean,
+): TagStrategyResult {
 	// Filter to only successful packages: those with at least one successful target,
 	// or version-only packages (empty targets array - nothing to fail)
 	const successfulPackages = publishResults.filter(
@@ -104,8 +88,7 @@ export function determineTagStrategy(publishResults: PackagePublishResult[]): Ta
 		};
 	}
 
-	// Check if this is a monorepo that needs per-package tags
-	const needsPerPackageTags = isMonorepoForTagging();
+	// needsPerPackageTags is passed in from the caller (computed via isMonorepoForTagging)
 
 	if (!needsPerPackageTags) {
 		// Single-package repo or all packages in same fixed group
