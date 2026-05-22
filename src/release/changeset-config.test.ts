@@ -108,3 +108,22 @@ describe("ChangesetConfig.isIgnored / ignorePatterns", () => {
 		expect(ignored).toBe(false);
 	});
 });
+
+describe("ChangesetConfig.fixed", () => {
+	let tmpDir: string;
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "cc-fixed-"));
+	});
+
+	it("returns the configured fixed groups", async () => {
+		writeConfig(tmpDir, { changelog: "@changesets/cli/changelog", fixed: [["@org/a", "@org/b"]] });
+		const fixed = await run(Effect.flatMap(ChangesetConfig, (c) => c.fixed(tmpDir)));
+		expect(fixed).toEqual([["@org/a", "@org/b"]]);
+	});
+
+	it("returns [] when fixed is absent", async () => {
+		writeConfig(tmpDir, { changelog: "@changesets/cli/changelog" });
+		const fixed = await run(Effect.flatMap(ChangesetConfig, (c) => c.fixed(tmpDir)));
+		expect(fixed).toEqual([]);
+	});
+});
