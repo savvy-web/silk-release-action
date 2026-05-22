@@ -1,6 +1,6 @@
 {
 	"$schema": "https://json-schema.org/draft/2020-12/schema",
-	"$id": "https://raw.githubusercontent.com/savvy-web/workflow-release-action/main/.github/silk-release.schema.json",
+	"$id": "https://raw.githubusercontent.com/savvy-web/silk-release-action/main/.github/silk-release.schema.json",
 	"title": "Silk Release Configuration",
 	"description": "Configuration file for Silk release workflow. The action searches for this config in order: (1) .github/silk-release.json in your repo, (2) SILK_RELEASE_SBOM_TEMPLATE environment variable (from repo or org variable).",
 	"type": "object",

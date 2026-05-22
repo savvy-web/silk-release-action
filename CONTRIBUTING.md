@@ -1,6 +1,6 @@
 # Contributing
 
-Thank you for considering contributing to `workflow-release-action`. This document explains how to set up your environment and submit changes.
+Thank you for considering contributing to `silk-release-action`. This document explains how to set up your environment and submit changes.
 
 ## Prerequisites
 
@@ -11,8 +11,8 @@ Thank you for considering contributing to `workflow-release-action`. This docume
 ## Setup
 
 ```bash
-git clone https://github.com/savvy-web/workflow-release-action.git
-cd workflow-release-action
+git clone https://github.com/savvy-web/silk-release-action.git
+cd silk-release-action
 pnpm install
 ```
 

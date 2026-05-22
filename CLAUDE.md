@@ -4,7 +4,7 @@ Guidance for Claude Code when working in this repository.
 
 ## Repository Overview
 
-Private repository for **shared GitHub Actions, reusable workflows, and GitHub project management automation** (`@savvy-web/workflow-release-action`).
+Private repository for **shared GitHub Actions, reusable workflows, and GitHub project management automation** (`@savvy-web/silk-release-action`).
 
 1. **Shared GitHub Actions** - Reusable composite actions for CI/CD
 2. **Reusable Workflows** - Standardized templates for PR validation, releases
@@ -19,7 +19,7 @@ Load design docs when working on the relevant subsystem:
 - `@.claude/design/release-action/integration.md` - Multi-registry publishing, OIDC auth, SBOM/NTIA compliance, publish summaries
 - `@.claude/design/release-action/testing.md` - Test strategy, mock factory patterns, coverage map, specialized testing patterns
 
-## Workflow Release Action
+## Silk Release Action
 
 TypeScript-based GitHub Action for automated release management with changesets. Entry points: `pre.ts`, `main.ts`, `post.ts`. Source layout: `src/release/` (phase orchestration, publishability, reporting), `src/schema/` (output schema and projections), `src/utils/` (utility modules), `src/types/` (shared types). JSON Schema artifacts at `silk-release-action.input.schema.json` and `silk-release-action.output.schema.json`.
 
@@ -63,13 +63,25 @@ For full integration details, token plumbing, and `SILK_GITHUB_PACKAGES_TOKEN`: 
 
 ### Integration Testing
 
-Use `savvy-web/workflow-integration` to test from feature branches:
+Use `savvy-web/silk-integration` to test from feature branches:
 
 1. Make changes and run tests: `pnpm ci:test`
 2. Build: `pnpm build` (updates `dist/main.js`)
 3. Push to feature branch
-4. Trigger: `gh workflow run release.yml --repo savvy-web/workflow-integration --ref main`
-5. Watch: `gh run list --repo savvy-web/workflow-integration --limit 1`
+4. Trigger: `gh workflow run release.yml --repo savvy-web/silk-integration --ref main`
+5. Watch: `gh run list --repo savvy-web/silk-integration --limit 1`
+
+### Dogfooding @savvy-web/github-action-effects
+
+This action is BUILT WITH `@savvy-web/github-action-effects`, currently resolved from the registry at `^2.0.0` (no link active). Use this procedure to dogfood a future pre-release of that library through this action before it publishes:
+
+1. **Build the library:** in `../github-action-effects` (on its `changeset-release/main` branch at the staging version) run `pnpm build` — produces `dist/npm`.
+2. **Link it:** from this repo run `pnpm link ../github-action-effects`. The `node_modules/@savvy-web/github-action-effects` symlink then resolves the local staging build. Verify the linked version by reading the symlinked `package.json` via `node:fs` (NOT `require(...package.json)` — the package's `exports` map does not expose `./package.json`), or with `pnpm why @savvy-web/github-action-effects`.
+3. **Keep the declared range correct** for the eventual unlinked install: this repo's `package.json` must keep the `@savvy-web/github-action-effects` range that matches the pre-release line being dogfooded. The link overrides resolution while it is in place.
+4. **Iterate:** edit source → `pnpm typecheck` → `pnpm build` (bundles the linked library into `dist/`) → commit → push to `dev`.
+5. **Run the integration repo:** the `dev` action is consumed by the integration repo at local path `../workflow-integration` (GitHub `savvy-web/silk-integration`). Spencer initiates release runs there; follow them with `gh run list --repo savvy-web/silk-integration` / `gh run watch --repo savvy-web/silk-integration`, diagnose failures, fix, rebuild, re-push.
+6. **Library-side failures:** if a failure traces to the LIBRARY, fix it in `../github-action-effects`, run `pnpm build` there, and the linked bundle picks up the change on the next `pnpm build` in this repo. Library edits land on `changeset-release/main` and ship with the next published version on merge — call them out.
+7. **Final step, only AFTER the dogfooded version publishes:** remove the `pnpm link` and pin the published range from the registry (`pnpm install`). This is the current state for 2.0.0 — the link is already removed and the registry copy is in use. Re-apply steps 1–6 only when dogfooding a new pre-release.
 
 ## Common Commands
 
@@ -213,7 +225,7 @@ Create in `.github/workflows/` with `workflow_call` trigger. Document required s
 **Path syntax:**
 
 - **Within this repository:** `./.github/workflows/...`
-- **From other repositories:** `savvy-web/workflow-release-action/.github/workflows/...@main`
+- **From other repositories:** `savvy-web/silk-release-action/.github/workflows/...@main`
 
 ## Turborepo Configuration
 

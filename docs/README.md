@@ -1,6 +1,6 @@
 # Documentation
 
-Comprehensive documentation for `workflow-release-action`.
+Comprehensive documentation for `silk-release-action`.
 
 ## Contents
 

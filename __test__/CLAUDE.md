@@ -1,6 +1,6 @@
 # __test__/CLAUDE.md
 
-Unit testing patterns and infrastructure for workflow-release-action.
+Unit testing patterns and infrastructure for silk-release-action.
 
 __See also:__ [Root CLAUDE.md](../CLAUDE.md) | [src/CLAUDE.md](../src/CLAUDE.md)
 

@@ -8,13 +8,20 @@
  * to touch `process.env.GITHUB_TOKEN` — which the action deliberately never sets.
  */
 
+import { Redacted } from "effect";
+
 /**
  * The GitHub App installation token — the action's primary GitHub identity,
  * used for repository and issue operations.
  *
- * @returns The App installation token, or an empty string if unavailable.
+ * @remarks
+ * Returned as a `Redacted<string>` so the secret stays wrapped at the boundary;
+ * the library's `GitHubClientLive.fromToken` takes `Redacted<string>` directly.
+ * Unwrap with `Redacted.value` only at the point a plain string is required.
+ *
+ * @returns The App installation token (empty `Redacted` when unavailable).
  */
-export const appToken = (): string => process.env.STATE_token ?? "";
+export const appToken = (): Redacted.Redacted<string> => Redacted.make(process.env.STATE_token ?? "");
 
 /**
  * The token for GitHub Packages and attestation operations. Prefers the

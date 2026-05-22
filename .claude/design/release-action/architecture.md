@@ -45,11 +45,11 @@ dependencies: []
 
 ## Overview
 
-The `workflow-release-action` is a TypeScript GitHub Action implementing a three-phase automated release workflow for monorepos and single-package repositories using changesets. It runs as a Node.js 24 action (`runs.using: node24`) with `pre`, `main`, and `post` lifecycle hooks, declared in `action.yml`.
+The `silk-release-action` is a TypeScript GitHub Action implementing a three-phase automated release workflow for monorepos and single-package repositories using changesets. It runs as a Node.js 24 action (`runs.using: node24`) with `pre`, `main`, and `post` lifecycle hooks, declared in `action.yml`.
 
 The action automates the full release lifecycle: detecting pending changes, managing a release branch and PR, validating builds and registry readiness, publishing to multiple registries (npm, JSR, GitHub Packages, custom), creating Git tags and GitHub releases with attestations, and closing linked issues. All operations produce GitHub Check Runs for rich CI feedback and post sticky comments on the release PR for at-a-glance status.
 
-Phase 3 is a pure Effect orchestration built on `@savvy-web/github-action-effects@1.2.0` library services. Phases 1 and 2 remain as a mix of Effect entry points (entry-point scripts, `src/release/validation.ts`) and imperative utility modules. The library ships the `Attest` and `Sbom` services, eliminating the old `src/services/attest/` directory entirely.
+Phase 3 is a pure Effect orchestration built on `@savvy-web/github-action-effects@2.0.0` library services. Phases 1 and 2 remain as a mix of Effect entry points (entry-point scripts, `src/release/validation.ts`) and imperative utility modules. The library ships the `Attest` and `Sbom` services, eliminating the old `src/services/attest/` directory entirely. The 2.0 layer shape changed the contracts this action adopts: `GitHubAppLive` and `ActionCacheLive` now require `HttpClient.HttpClient` (provided via `FetchHttpClient.layer`) and secret-bearing APIs take or decode to `Redacted<string>` (see [State Management](#state-management)).
 
 ## Current State
 
@@ -57,7 +57,7 @@ Phase 3 is a pure Effect orchestration built on `@savvy-web/github-action-effect
 
 Three lifecycle scripts correspond to the GitHub Actions `pre`, `main`, and `post` execution stages. All three are full Effect programs run via `Action.run` from `@savvy-web/github-action-effects`:
 
-- **`src/pre.ts`** — Pre-action setup. Provisions a GitHub App installation token via `GitHubToken.provision()` using the `app-client-id` and `app-private-key` inputs. `provision` persists the `InstallationToken` envelope (token, expiry, installation ID, and resolved App identity) to `ActionState` under an internal key. Also records the optional `github-token` input to `GithubPackagesTokenState` in `src/state.ts`. Failures here abort the workflow. The `PreLive` layer composes `GitHubAppLive` over `OctokitAuthAppLive` plus `NodeFileSystem.layer`.
+- **`src/pre.ts`** — Pre-action setup. Provisions a GitHub App installation token via `GitHubToken.provision()` using the `app-client-id` and `app-private-key` inputs. `provision` persists the `InstallationToken` envelope (token, expiry, installation ID, and resolved App identity) to `ActionState` under an internal key; under 2.0 the `InstallationToken.token` field decodes to `Redacted<string>`. Also records the optional `github-token` input to `GithubPackagesTokenState` in `src/state.ts`. Failures here abort the workflow. The `PreLive` layer composes `GitHubAppLive` over `OctokitAuthAppLive` plus `NodeFileSystem.layer`; because 2.0's `GitHubAppLive` requires `HttpClient.HttpClient`, both `pre.ts` and `post.ts` provide `FetchHttpClient.layer`.
 - **`src/main.ts`** — Main orchestrator. Auto-detects the package manager via `detectRepoType()`, reads action inputs, retrieves the token via `GitHubToken.client()`, and calls `detectWorkflowPhase()` to determine which phase to run. Routes execution to one of four phase handlers. Each phase emits its results through the `ReleaseOutput` schema (see `src/schema/`).
 - **`src/post.ts`** — Post-action cleanup. Logs total execution duration, then conditionally revokes the GitHub App installation token via `GitHubToken.dispose()`. Errors are emitted as warnings so they never fail the overall workflow.
 
@@ -83,14 +83,28 @@ Detection priority order:
 Triggers on push to `main` (non-release commits). Phase 1 is rewired onto the `ChangesetAnalyzer` service from `@savvy-web/github-action-effects` (replacing the old `get-changeset-status.ts` module). Publishability detection now flows through `PublishabilityDetectorAdaptiveLive` from `src/release/publishability.ts` (which delegates to the silk rules in silk mode). The remaining utility modules are:
 
 - **`check-release-branch.ts`** — Checks whether the `changeset-release/main` branch exists and whether an open PR exists from that branch to the target branch.
-- **`create-release-branch.ts`** — Creates a new branch from `origin/{targetBranch}`, runs the changeset version command, creates a signed API commit (see `create-api-commit.ts`), links issues found in changeset files via GraphQL mutations, and opens a PR with standard labels.
-- **`update-release-branch.ts`** — Recreates the branch from main rather than rebasing. Collects linked issues from changesets before running the version command. Creates an API commit with the main branch HEAD as parent. Handles PR reopening if the branch was previously deleted.
+- **`create-release-branch.ts`** — Creates a new branch from `origin/{targetBranch}`, runs the changeset version command, creates a signed API commit (see `create-api-commit.ts`), links issues found in changeset files via GraphQL mutations, and opens a PR with standard labels. The PR title and commit subject are resolved from the releasing packages via `release-summary-helpers.ts` (see [Release PR and commit titles](#release-pr-and-commit-titles)).
+- **`update-release-branch.ts`** — Recreates the branch from main rather than rebasing. Collects linked issues from changesets before running the version command. Creates an API commit with the main branch HEAD as parent. Handles PR reopening if the branch was previously deleted. Uses the same title/commit-subject resolution as `create-release-branch.ts`.
+
+#### Release PR and commit titles
+
+Both branch-management modules resolve the PR title and the commit subject from the packages that will release, using helpers in `release-summary-helpers.ts`. The flow is: `getPublishablePackages` (the publishable workspaces minus the changeset `ignore` list) → `getReleasingPackages` (the subset whose `package.json` changed in this version bump) → `resolveReleasePrTitle`. `formatReleasePackageList` renders the commit body.
+
+The title format keys off versioning topology rather than how many packages release this run. `resolveReleasePrTitle` takes `perPackageVersioning`, which is the same signal as `isMonorepoForTagging` so the PR title and the git tag strategy stay aligned:
+
+- `perPackageVersioning === false` (a single releasable package, or a fixed group sharing one version) → `release: <version>`, mirroring the commit title.
+- `perPackageVersioning === true` (multiple packages on independent versions) → `release: name@version, …` listing the releasing packages, even when only one releases. The shared npm scope is omitted when every releasable package is under one scope (mixed scopes keep full names), and the list collapses to `release: <count> packages` past `RELEASE_TITLE_MAX_LENGTH` (100).
+- Nothing releasing in a single-package repo → the root `package.json` version; otherwise the configured `pr-title-prefix`.
+
+The commit subject matches the PR title; the commit body is a bullet list of full (scoped) `name@version` from `formatReleasePackageList`, so the commit is an unambiguous record even when the title omits a shared scope. See `src/utils/release-summary-helpers.ts` for the resolution logic.
 
 ### Phase 2: Release Validation
 
 Triggers on push to the release branch. Creates all validation Check Runs upfront for immediate visibility. Phase 2 now routes through `src/release/validation.ts` (`runValidation`) — a pure Effect program — rather than a chain of imperative utility modules.
 
 **`src/release/validation.ts`** (`runValidation`) — Enumerates workspace packages, diffs versions against the target branch to discover which packages are being released, resolves publish targets via `resolvePublishableTargets` (the `PublishabilityDetectorAdaptiveLive` seam), groups targets by build directory, runs `PackagePublish.dryRun` per build directory, generates one SBOM per build directory via the `Sbom` service, applies `sbom-config` metadata, and assembles a `ValidationReport`. The report is build-centric: `ValidationPackageResult` carries builds, sizes, SBOMs, and registry targets. `strict-warnings` mode escalates warning-severity findings to `failure` for auto-merge gating.
+
+Phase 2 emits three per-step Check Runs — `Publish Validation`, `Release Notes Preview` and `SBOM Preview`. Their titles carry no decorative leading icons (the older `📦`/`📋`/`🔏` markers were removed); the only title decoration is the `🧪` marker prepended in dry-run mode (see [Dry-Run Mode](#dry-run-mode)).
 
 The remaining Phase-2 imperative modules handle check-run lifecycle:
 
@@ -122,7 +136,7 @@ The `determine-tag-strategy.ts` utility (still in `src/utils/`) decides between 
 For each npm target in a directory group:
 
 1. **Pack once** — `PackagePublish.pack(directory)` runs once for the group; the same tarball (same digest) is used for all targets.
-2. **Auth setup** — `PackagePublish.setupAuth` writes the token to `~/.npmrc` before the probe so authenticated registries (e.g. GitHub Packages) can be probed.
+2. **Auth setup** — `PackagePublish.setupAuth` (which takes a `Redacted<string>` token under 2.0) writes the token to `~/.npmrc` before the probe so authenticated registries (e.g. GitHub Packages) can be probed. `PackagePublishLive` now requires `ActionOutputs` so it can mask the registry token via `setSecret`.
 3. **Probe** — `NpmRegistry.getPublishedIntegrity` checks whether the version is already on the registry.
 4. **Decide** — Three outcomes, each rendered with the correct icon:
    - Version absent → publish tarball → `Step.success("published")`
@@ -295,7 +309,7 @@ When publishing to multiple registries, the action packs the tarball once and re
 
 ### Why Step.failure Is Non-Throwing?
 
-`@savvy-web/github-action-effects@1.2.0` introduced `Step.failure` as a non-throwing primitive. Unlike an Effect failure (which short-circuits), `Step.failure(label)` renders `❌ label` and spills the buffered step output to the log, but the Effect value continues propagating normally. This allows the orchestrator to record a failed outcome for a target, emit the correct icon in the log, and still process the remaining targets in the batch. Every failure path in `publishDirectoryGroup` and `runReleases` uses `Step.failure`; no failure path emits `✅`.
+`@savvy-web/github-action-effects` introduced `Step.failure` as a non-throwing primitive. Unlike an Effect failure (which short-circuits), `Step.failure(label)` renders `❌ label` and spills the buffered step output to the log, but the Effect value continues propagating normally. This allows the orchestrator to record a failed outcome for a target, emit the correct icon in the log, and still process the remaining targets in the batch. Every failure path in `publishDirectoryGroup` and `runReleases` uses `Step.failure`; no failure path emits `✅`.
 
 ### Why a Silk-Specific Publishability Helper?
 
@@ -323,6 +337,8 @@ GitHub Actions state passes data between `pre`, `main`, and `post` lifecycle hoo
 
 The GitHub App installation token is persisted by `GitHubToken.provision` (from `@savvy-web/github-action-effects`) under an internal key and read back via `GitHubToken.client()` / `GitHubToken.read()`. `process.env.GITHUB_TOKEN` is never written by the action.
 
+Under the 2.0 library the secret-bearing token APIs all take or decode to `Redacted<string>`: `GitHubApp.generateToken` / `revokeToken`, `GitHubClientLive.fromToken` / `fromApp`, `PackagePublish.setupAuth` and the decoded `InstallationToken.token` field. Wrapping tokens in `Redacted` keeps them out of logs and error renders.
+
 ### Error Handling Strategy
 
 Errors are handled differently depending on execution context:
@@ -339,11 +355,11 @@ The action uses three GitHub API communication patterns:
 
 - **REST API** (`octokit.rest.*`): Standard CRUD operations — Check Runs, branch queries, PR listing, file comparisons, release creation, asset uploads.
 - **GraphQL API**: Complex queries requiring nested data. Used for `closingIssuesReferences` on PRs (linked issues) and branch protection mutations.
-- **Library services**: `@savvy-web/github-action-effects@1.2.0` provides Effect services (`PullRequest`, `GitTag`, `CheckRun`, `GitHubRelease`, `GitHubArtifactMetadata`, `GitHubCommit`, `GitHubContent`, `NpmRegistry`, `Attest`, `Sbom`, `PackagePublish`, `RegistryClassifier`) that wrap all Phase-3 GitHub and registry interactions. No raw Octokit calls remain in `src/release/` modules.
+- **Library services**: `@savvy-web/github-action-effects@2.0.0` provides Effect services (`PullRequest`, `GitTag`, `CheckRun`, `GitHubRelease`, `GitHubArtifactMetadata`, `GitHubCommit`, `GitHubContent`, `NpmRegistry`, `Attest`, `Sbom`, `PackagePublish`, `RegistryClassifier`) that wrap all Phase-3 GitHub and registry interactions. No raw Octokit calls remain in `src/release/` modules.
 
 ### Dry-Run Mode
 
-When `dry-run: true` is set, the action executes a parallel path that validates without mutations: package manager commands run with `--dry-run` flags, Git branch and commit operations are skipped, Check Run names are prefixed with the test tube emoji, and registry publish commands use the dry-run flag. All validation logic runs identically to production mode.
+When `dry-run: true` is set, the action executes a parallel path that validates without mutations: package manager commands run with `--dry-run` flags, Git branch and commit operations are skipped, Check Run titles are prefixed with the `🧪` test-tube marker (the only title decoration — the per-step check-run names otherwise carry no icons), and registry publish commands use the dry-run flag. All validation logic runs identically to production mode.
 
 ## File Reference
 

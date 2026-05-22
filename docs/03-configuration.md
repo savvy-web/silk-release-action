@@ -11,7 +11,7 @@
 | `release-branch` | No | `changeset-release/main` | Name of the release branch |
 | `target-branch` | No | `main` | Target branch for the release PR |
 | `version-command` | No | `""` | Custom version command (defaults to auto-detected `{package-manager} ci:version`) |
-| `pr-title-prefix` | No | `chore: release` | Prefix for the release PR title |
+| `pr-title-prefix` | No | `chore: release` | Fallback title for the release PR and commit subject. Used only when no releasable package or version can be determined; otherwise the title is derived as `release: <version>` (see [How it works](./02-how-it-works.md)) |
 | `dry-run` | No | `"false"` | Run in dry-run mode (preview only, no actual changes) |
 | `phase` | No | `""` | Explicitly set the workflow phase, skipping automatic detection. Values: `branch-management`, `validation`, `publishing`, `close-issues`, `none` |
 | `npm-token` | No | `""` | NPM access token for publishing to npmjs.org. Only needed for first-time publish or when OIDC is not configured |

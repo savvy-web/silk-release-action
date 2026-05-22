@@ -16,26 +16,33 @@
 
 import { GitHubToken } from "@savvy-web/github-action-effects";
 import type {
+	ActionOutputs,
 	ActionState,
 	ActionStateTestState,
 	GitHubApp,
 	GitHubAppTestState,
 } from "@savvy-web/github-action-effects/testing";
-import { ActionStateTest, GitHubAppTest } from "@savvy-web/github-action-effects/testing";
-import { ConfigProvider, Effect, Layer } from "effect";
+import { ActionOutputsTest, ActionStateTest, GitHubAppTest } from "@savvy-web/github-action-effects/testing";
+import { ConfigProvider, Effect, Layer, Redacted } from "effect";
 import { describe, expect, it } from "vitest";
 import { post } from "../src/post.js";
 
 interface Fixtures {
 	stateState: ActionStateTestState;
 	appState: GitHubAppTestState;
-	layer: Layer.Layer<ActionState | GitHubApp>;
+	layer: Layer.Layer<ActionState | GitHubApp | ActionOutputs>;
 }
 
 const makeFixtures = (): Fixtures => {
 	const stateState = ActionStateTest.empty();
 	const appState = GitHubAppTest.empty();
-	const layer = Layer.mergeAll(ActionStateTest.layer(stateState), GitHubAppTest.layer(appState));
+	// 2.0: GitHubToken.provision masks the minted token via ActionOutputs.setSecret,
+	// so the shared fixture layer must satisfy ActionOutputs as well.
+	const layer = Layer.mergeAll(
+		ActionStateTest.layer(stateState),
+		GitHubAppTest.layer(appState),
+		ActionOutputsTest.layer(ActionOutputsTest.empty()),
+	);
 	return { stateState, appState, layer };
 };
 
@@ -59,7 +66,9 @@ describe("post", () => {
 		await provisionToken(fixtures);
 		await runPost(fixtures);
 
-		expect(fixtures.appState.revokeCalls).toContain("ghs_test_token_123");
+		// 2.0: revokeToken takes Redacted<string>, so the test layer records
+		// Redacted values — unwrap before asserting the token string.
+		expect(fixtures.appState.revokeCalls.map(Redacted.value)).toContain("ghs_test_token_123");
 	});
 
 	it("skips revocation when skip-token-revoke is true", async () => {
@@ -84,6 +93,6 @@ describe("post", () => {
 
 		// The duration log path runs without throwing; revocation still happens.
 		await runPost(fixtures);
-		expect(fixtures.appState.revokeCalls).toContain("ghs_test_token_123");
+		expect(fixtures.appState.revokeCalls.map(Redacted.value)).toContain("ghs_test_token_123");
 	});
 });

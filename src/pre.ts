@@ -14,6 +14,7 @@
  * State is grouped into Schema.Class bundles defined in `./state.ts`.
  */
 
+import { FetchHttpClient } from "@effect/platform";
 import { NodeFileSystem } from "@effect/platform-node";
 import {
 	Action,
@@ -23,7 +24,7 @@ import {
 	GitHubToken,
 	OctokitAuthAppLive,
 } from "@savvy-web/github-action-effects";
-import { Config, Effect, Layer } from "effect";
+import { Config, Effect, Layer, Redacted } from "effect";
 import { GithubPackagesTokenState, STATE_KEYS, StartTimeState } from "./state.js";
 
 /**
@@ -63,7 +64,9 @@ export const pre = Effect.gen(function* () {
 	}
 
 	// 5. Action outputs (exposed for subsequent workflow steps).
-	yield* outputs.set("token", token.token);
+	// `InstallationToken.token` is a `Redacted<string>` in 2.0; unwrap it for
+	// the plain-string output (the runtime masks it via `setSecret` upstream).
+	yield* outputs.set("token", Redacted.value(token.token));
 	yield* outputs.set("installation-id", String(token.installationId));
 	if (token.appSlug !== undefined) {
 		yield* outputs.set("app-slug", token.appSlug);
@@ -85,10 +88,14 @@ export const pre = Effect.gen(function* () {
  * `ActionsConfigProvider`).
  *
  * `GitHubToken.provision` needs a `GitHubApp` layer — composed here from
- * `GitHubAppLive` over `OctokitAuthAppLive`. `NodeFileSystem.layer` backs
- * `ActionStateLive`.
+ * `GitHubAppLive` over `OctokitAuthAppLive`. In 2.0 `GitHubAppLive` also
+ * requires `HttpClient.HttpClient`, provided here via `FetchHttpClient.layer`.
+ * `NodeFileSystem.layer` backs `ActionStateLive`.
  */
-export const PreLive = Layer.mergeAll(GitHubAppLive.pipe(Layer.provide(OctokitAuthAppLive)), NodeFileSystem.layer);
+export const PreLive = Layer.mergeAll(
+	GitHubAppLive.pipe(Layer.provide(OctokitAuthAppLive), Layer.provide(FetchHttpClient.layer)),
+	NodeFileSystem.layer,
+);
 
 /* v8 ignore next 3 -- entry-point guard, only runs in GitHub Actions */
 if (process.env.GITHUB_ACTIONS) {

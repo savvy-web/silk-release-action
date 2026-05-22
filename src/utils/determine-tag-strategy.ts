@@ -1,5 +1,6 @@
 import type { PackagePublishResult } from "../release/types.js";
-import { getAllWorkspacePackages, readChangesetConfig } from "./release-summary-helpers.js";
+import { isIgnoredPackage } from "./detect-repo-type.js";
+import { getAllWorkspacePackages, isPublishablePackage, readChangesetConfig } from "./release-summary-helpers.js";
 
 /**
  * Tag strategy result
@@ -46,9 +47,13 @@ export function isMonorepoForTagging(): boolean {
 	const allPackages = getAllWorkspacePackages();
 	const changesetConfig = readChangesetConfig();
 
-	// Filter to publishable packages
-	// A package is publishable if it has publish config OR is not private
-	const publishablePackages = allPackages.filter((pkg) => pkg.hasPublishConfig || pkg.targetCount > 0 || !pkg.private);
+	// Packages that can actually release: publishable AND not changeset-ignored
+	// (shared with the release-PR-title detection). Ignored example packages
+	// often carry publishConfig but must not count toward the tag strategy.
+	const ignorePatterns = changesetConfig?.ignore ?? [];
+	const publishablePackages = allPackages.filter(
+		(pkg) => isPublishablePackage(pkg) && !isIgnoredPackage(pkg.name, ignorePatterns),
+	);
 
 	// Single publishable package → single tag
 	if (publishablePackages.length <= 1) {

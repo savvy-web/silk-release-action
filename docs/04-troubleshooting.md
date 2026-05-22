@@ -9,7 +9,7 @@ The GitHub App needs the **Packages: Write** repository permission. Update the a
 Alternatively, pass a `github-token` with `packages: write` permission:
 
 ```yaml
-- uses: savvy-web/workflow-release-action@main
+- uses: savvy-web/silk-release-action@main
   with:
     app-client-id: ${{ vars.APP_CLIENT_ID }}
     app-private-key: ${{ secrets.APP_PRIVATE_KEY }}
@@ -23,7 +23,7 @@ OIDC trusted publishing to npm requires two things: the package must already exi
 For first-time publishes, or when OIDC trusted publishing has not yet been configured on npmjs.com, provide an npm token:
 
 ```yaml
-- uses: savvy-web/workflow-release-action@main
+- uses: savvy-web/silk-release-action@main
   with:
     app-client-id: ${{ vars.APP_CLIENT_ID }}
     app-private-key: ${{ secrets.APP_PRIVATE_KEY }}
@@ -55,7 +55,7 @@ The action uses context clues to determine which phase to run. If none match, it
 You can also set the phase explicitly:
 
 ```yaml
-- uses: savvy-web/workflow-release-action@main
+- uses: savvy-web/silk-release-action@main
   with:
     app-client-id: ${{ vars.APP_CLIENT_ID }}
     app-private-key: ${{ secrets.APP_PRIVATE_KEY }}
@@ -91,7 +91,7 @@ If you see a registry flagged as `skipped-identical (recovery)` on a fresh (non-
 The default version command is `{package-manager} ci:version`. If your project uses a different script, set the `version-command` input:
 
 ```yaml
-- uses: savvy-web/workflow-release-action@main
+- uses: savvy-web/silk-release-action@main
   with:
     app-client-id: ${{ vars.APP_CLIENT_ID }}
     app-private-key: ${{ secrets.APP_PRIVATE_KEY }}

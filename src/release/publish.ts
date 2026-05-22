@@ -34,7 +34,7 @@ import {
 	Step,
 	isJsrRegistry,
 } from "@savvy-web/github-action-effects";
-import { Config, Effect, Option } from "effect";
+import { Config, Effect, Option, Redacted } from "effect";
 import { PublishabilityDetector, TopologicalSorter, WorkspaceDiscovery, WorkspacePackage } from "workspaces-effect";
 
 import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
@@ -658,7 +658,7 @@ const publishDirectoryGroup = (
 						const token = pickToken(t.registry, npmToken, ghPkgsToken);
 						if (token !== null) {
 							yield* publishSvc
-								.setupAuth(t.registry, token)
+								.setupAuth(t.registry, Redacted.make(token))
 								.pipe(
 									Effect.catchAll((e: PackagePublishError) =>
 										Effect.logWarning(`setupAuth failed for ${t.registry}: ${e.message}`),

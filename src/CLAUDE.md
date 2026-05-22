@@ -1,6 +1,6 @@
 # src/CLAUDE.md
 
-Source code architecture and coding patterns for workflow-release-action.
+Source code architecture and coding patterns for silk-release-action.
 
 **See also:** [Root CLAUDE.md](../CLAUDE.md) | [**test**/CLAUDE.md](../__test__/CLAUDE.md)
 
@@ -17,7 +17,7 @@ TypeScript action implementing a three-phase release workflow using changesets:
 - **Schema** -- `schema/release-output.ts` (`ReleaseOutput` union), `schema/projections.ts` (scalar output projections), `schema/silk-release-config.ts` (`SilkReleaseConfig` for sbom-config input); JSON Schema artifacts at repo root
 - **Utility modules** -- `utils/*.ts` for individual operations
 - **Type definitions** -- `types/*.ts` for shared interfaces
-- **Attest/Sbom services** -- moved to `@savvy-web/github-action-effects@^1.2.0`; no longer in this repo
+- **Attest/Sbom services** -- moved to `@savvy-web/github-action-effects@^2.0.0`; no longer in this repo
 
 ## Coding Standards
 

@@ -133,8 +133,13 @@ function getChangesetIgnorePatterns(): string[] {
  * @param packageName - The package name to check
  * @param ignorePatterns - Array of ignore patterns from changeset config
  * @returns True if the package matches any ignore pattern
+ *
+ * @remarks
+ * Shared with the release-PR-title and tag-strategy publishability detection so
+ * a changeset-ignored package (e.g. an example package with `publishConfig` that
+ * is excluded from releases) is never counted as a package that can release.
  */
-function isIgnoredPackage(packageName: string, ignorePatterns: string[]): boolean {
+export function isIgnoredPackage(packageName: string, ignorePatterns: ReadonlyArray<string>): boolean {
 	return ignorePatterns.some((pattern) => matchesIgnorePattern(packageName, pattern));
 }
 

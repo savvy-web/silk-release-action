@@ -3,6 +3,7 @@
  * state that main.ts bridges into STATE_* env vars.
  */
 
+import { Redacted } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { appToken, packagesToken } from "../src/utils/tokens.js";
 
@@ -18,11 +19,12 @@ describe("token helpers", () => {
 
 	it("appToken returns the App installation token from state", () => {
 		process.env.STATE_token = "app-token-123";
-		expect(appToken()).toBe("app-token-123");
+		// appToken returns a Redacted<string> in 2.0; unwrap to assert the value.
+		expect(Redacted.value(appToken())).toBe("app-token-123");
 	});
 
-	it("appToken returns an empty string when no token is in state", () => {
-		expect(appToken()).toBe("");
+	it("appToken returns an empty Redacted string when no token is in state", () => {
+		expect(Redacted.value(appToken())).toBe("");
 	});
 
 	it("packagesToken prefers the workflow github-token", () => {

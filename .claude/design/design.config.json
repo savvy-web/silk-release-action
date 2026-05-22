@@ -2,9 +2,9 @@
 	"$schema": "https://spencerbegg.gs/schemas/design-config/1.0.0/schema.json",
 	"version": "1.0.0",
 	"project": {
-		"name": "savvy-web/workflow-release-action",
+		"name": "savvy-web/silk-release-action",
 		"type": "application",
-		"repository": "https://github.com/savvy-web/workflow-release-action",
+		"repository": "https://github.com/savvy-web/silk-release-action",
 		"maintainer": "C. Spencer Beggs"
 	},
 	"paths": {

@@ -8,7 +8,7 @@
  */
 
 import { GitHubToken } from "@savvy-web/github-action-effects";
-import { ActionStateTest, GitHubAppTest } from "@savvy-web/github-action-effects/testing";
+import { ActionOutputsTest, ActionStateTest, GitHubAppTest } from "@savvy-web/github-action-effects/testing";
 import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 import { resolveSignoff } from "../src/utils/commit-signoff.js";
@@ -20,7 +20,14 @@ describe("resolveSignoff", () => {
 
 		// pre phase: provision persists the token envelope (with App identity).
 		await GitHubToken.provision({ clientId: "test-client-id", privateKey: "test-private-key" }).pipe(
-			Effect.provide(Layer.mergeAll(GitHubAppTest.layer(appState), ActionStateTest.layer(stateState))),
+			Effect.provide(
+				Layer.mergeAll(
+					GitHubAppTest.layer(appState),
+					ActionStateTest.layer(stateState),
+					// 2.0: provision masks the minted token via ActionOutputs.setSecret.
+					ActionOutputsTest.layer(ActionOutputsTest.empty()),
+				),
+			),
 			Effect.asVoid,
 			Effect.runPromise,
 		);
