@@ -24,7 +24,10 @@ import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 import { WorkspacePackage } from "workspaces-effect";
 import { ChangesetConfig, ChangesetConfigLive } from "../../src/release/changeset-config.js";
-import { SilkPublishabilityDetectorLive } from "../../src/release/publishability.js";
+import {
+	PublishabilityDetectorAdaptiveLive,
+	SilkPublishabilityDetectorLive,
+} from "../../src/release/publishability.js";
 import { resolvePublishableTargets } from "../../src/release/resolve-targets.js";
 
 /**
@@ -164,5 +167,49 @@ describe("publishability fixture harness", () => {
 		const { publishTargets, versionable } = await Effect.runPromise(resolveFixture("private-target-built-private"));
 		expect(publishTargets).toHaveLength(0);
 		expect(versionable).toBe(false);
+	});
+});
+
+/** Resolve one sub-package of a workspace fixture against the fixture root. */
+const resolveWorkspacePackage = (workspace: string, subPath: string, name: string) =>
+	Effect.gen(function* () {
+		const root = fileURLToPath(new URL(`fixtures/${workspace}`, import.meta.url));
+		const dir = fileURLToPath(new URL(`fixtures/${workspace}/${subPath}`, import.meta.url));
+		const pkg = new WorkspacePackage({
+			name,
+			version: "1.0.0",
+			path: dir,
+			packageJsonPath: fileURLToPath(new URL(`fixtures/${workspace}/${subPath}/package.json`, import.meta.url)),
+			relativePath: subPath,
+		});
+		return yield* resolvePublishableTargets(pkg, root);
+	}).pipe(
+		Effect.provide(
+			Layer.mergeAll(PublishabilityDetectorAdaptiveLive.pipe(Layer.provide(ChangesetConfigLive)), ChangesetConfigLive),
+		),
+	);
+
+describe("changeset ignore (ignore-monorepo fixture)", () => {
+	it("resolves the main package to exactly one targetGroup / one target", async () => {
+		const targets = await Effect.runPromise(
+			resolveWorkspacePackage("ignore-monorepo", "package", "@fixture/ignore-main"),
+		);
+		expect(targets).toHaveLength(1);
+		expect(targets[0].directory).toBe("dist/npm");
+		expect(targets[0].registry).toBe("https://registry.npmjs.org/");
+	});
+
+	it("excludes a @libraries/* example package despite its publishConfig.targets", async () => {
+		const targets = await Effect.runPromise(
+			resolveWorkspacePackage("ignore-monorepo", "examples/lib", "@libraries/example"),
+		);
+		expect(targets).toHaveLength(0);
+	});
+
+	it("excludes a @rspress/* example package despite its publishConfig.targets", async () => {
+		const targets = await Effect.runPromise(
+			resolveWorkspacePackage("ignore-monorepo", "examples/site", "@rspress/example"),
+		);
+		expect(targets).toHaveLength(0);
 	});
 });
