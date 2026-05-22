@@ -56,11 +56,12 @@ const runAdaptive = <A>(
 	eff: Effect.Effect<A, never, PublishabilityDetector>,
 	mode: "silk" | "vanilla" | "none",
 	versionPrivate = false,
+	ignore: string[] = [],
 ): Promise<A> =>
 	Effect.runPromise(
 		Effect.provide(
 			eff,
-			PublishabilityDetectorAdaptiveLive.pipe(Layer.provide(mockChangesetConfig(mode, versionPrivate))),
+			PublishabilityDetectorAdaptiveLive.pipe(Layer.provide(mockChangesetConfig(mode, versionPrivate, ignore))),
 		),
 	);
 
@@ -445,6 +446,22 @@ describe("PublishabilityDetectorAdaptiveLive — silk mode dispatches to silk ru
 		const targets = await runAdaptive(
 			Effect.flatMap(PublishabilityDetector, (d) => d.detect(makeWsPkg(tmpDir, "x"), tmpDir)),
 			"silk",
+		);
+		expect(targets.length).toBe(0);
+	});
+
+	it("silk mode: ignored package resolves to no targets despite publishConfig.targets", async () => {
+		writePkg(tmpDir, {
+			name: "@libraries/x",
+			version: "1.0.0",
+			private: true,
+			publishConfig: { targets: [{ protocol: "npm", registry: "https://registry.npmjs.org/", access: "public" }] },
+		});
+		const targets = await runAdaptive(
+			Effect.flatMap(PublishabilityDetector, (d) => d.detect(makeWsPkg(tmpDir, "@libraries/x"), tmpDir)),
+			"silk",
+			false,
+			["@libraries/*"],
 		);
 		expect(targets.length).toBe(0);
 	});

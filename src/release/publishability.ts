@@ -214,6 +214,9 @@ export const SilkPublishabilityDetectorLive = Layer.succeed(PublishabilityDetect
  *
  * Uses Option A (per-call dispatch via ChangesetConfig yield) rather than
  * Layer.unwrapEffect to handle the per-call mode lookup correctly.
+ *
+ * Packages listed in the changeset `ignore` field short-circuit to `[]`
+ * regardless of mode, so ignore handling is consistent across all consumers.
  */
 export const PublishabilityDetectorAdaptiveLive = Layer.effect(
 	PublishabilityDetector,
@@ -225,6 +228,7 @@ export const PublishabilityDetectorAdaptiveLive = Layer.effect(
 		return {
 			detect: (pkg: WorkspacePackage, root: string): Effect.Effect<ReadonlyArray<PublishTarget>> =>
 				Effect.gen(function* () {
+					if (yield* config.isIgnored(pkg.name, root)) return [];
 					const mode = yield* config.mode(root);
 					if (mode === "none") return [];
 					if (mode === "silk") {
