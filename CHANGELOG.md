@@ -1,5 +1,11 @@
 # @savvy-web/silk-release-action
 
+## 1.2.1
+
+### Bug Fixes
+
+* [`15f9a76`](https://github.com/savvy-web/silk-release-action/commit/15f9a7695bdc6198e308244c2181b8510964379c) Fix release PR titles and version-bump commits showing the previous version (e.g. `release: 0.20.5` for a release that publishes `0.20.6`). Phase 1 now refreshes workspace discovery after `changeset version` runs, so the title and commit report the version that will actually be released rather than a pre-bump snapshot cached by `WorkspaceDiscovery`.
+
 ## 1.2.0
 
 ### Bug Fixes
