@@ -71,17 +71,71 @@ Use `savvy-web/silk-integration` to test from feature branches:
 4. Trigger: `gh workflow run release.yml --repo savvy-web/silk-integration --ref main`
 5. Watch: `gh run list --repo savvy-web/silk-integration --limit 1`
 
-### Dogfooding @savvy-web/github-action-effects
+### Dogfooding First-Party Dependencies
 
-This action is BUILT WITH `@savvy-web/github-action-effects`, currently resolved from the registry at `^2.0.0` (no link active). Use this procedure to dogfood a future pre-release of that library through this action before it publishes:
+We author every dependency in the table below, so a bug or missing API in one can be fixed **in its own repo** and dogfooded through this action before publishing. The action is a **bundled** artifact — `pnpm build` inlines every dependency into `dist/{main,pre,post}.js` — so once a local library build is linked and this repo is rebuilt, the change is baked into the committed `dist`. The integration repo runs that committed `dist`, **not** `node_modules`.
 
-1. **Build the library:** in `../github-action-effects` (on its `changeset-release/main` branch at the staging version) run `pnpm build` — produces `dist/npm`.
-2. **Link it:** from this repo run `pnpm link ../github-action-effects`. The `node_modules/@savvy-web/github-action-effects` symlink then resolves the local staging build. Verify the linked version by reading the symlinked `package.json` via `node:fs` (NOT `require(...package.json)` — the package's `exports` map does not expose `./package.json`), or with `pnpm why @savvy-web/github-action-effects`.
-3. **Keep the declared range correct** for the eventual unlinked install: this repo's `package.json` must keep the `@savvy-web/github-action-effects` range that matches the pre-release line being dogfooded. The link overrides resolution while it is in place.
-4. **Iterate:** edit source → `pnpm typecheck` → `pnpm build` (bundles the linked library into `dist/`) → commit → push to `dev`.
-5. **Run the integration repo:** the `dev` action is consumed by the integration repo at local path `../workflow-integration` (GitHub `savvy-web/silk-integration`). Spencer initiates release runs there; follow them with `gh run list --repo savvy-web/silk-integration` / `gh run watch --repo savvy-web/silk-integration`, diagnose failures, fix, rebuild, re-push.
-6. **Library-side failures:** if a failure traces to the LIBRARY, fix it in `../github-action-effects`, run `pnpm build` there, and the linked bundle picks up the change on the next `pnpm build` in this repo. Library edits land on `changeset-release/main` and ship with the next published version on merge — call them out.
-7. **Final step, only AFTER the dogfooded version publishes:** remove the `pnpm link` and pin the published range from the registry (`pnpm install`). This is the current state for 2.0.0 — the link is already removed and the registry copy is in use. Re-apply steps 1–6 only when dogfooding a new pre-release.
+| Package | Repo | Local checkout |
+| ------- | ---- | -------------- |
+| `@savvy-web/github-action-effects` | `savvy-web/github-action-effects` | `../github-action-effects` |
+| `@savvy-web/github-action-builder` | `savvy-web/github-action-builder` | `../github-action-builder` |
+| `@savvy-web/silk-effects` | `savvy-web/silk-effect` | clone as needed |
+| `workspaces-effect` | `spencerbeggs/workspaces-effect` | `../../spencerbeggs/workspaces-effect` |
+| `json-schema-effect` | `spencerbeggs/json-schema-effect` | `../../spencerbeggs/json-schema-effect` |
+
+`@savvy-web/silk-effects` itself depends on `workspaces-effect` and `json-schema-effect`, so those resolve **both directly and transitively** — which decides the linking mechanism below.
+
+**Two ways to link a local library build:**
+
+- **Direct-only dependency → `pnpm link`.** e.g. `pnpm link ../github-action-effects` symlinks `node_modules/@savvy-web/github-action-effects` to the local build. Verify the linked `package.json` via `node:fs` (NOT `require(...package.json)` — the `exports` map does not expose `./package.json`), or `pnpm why <pkg>`.
+- **Also a transitive dependency → `pnpm-workspace.yaml` override.** A bare `pnpm link` redirects only the direct import, leaving the transitive copy (e.g. `workspaces-effect` pulled in by `silk-effects`) on the registry version and bundling **two** copies. A `link:` override forces every resolution to one local copy:
+
+  ```yaml
+  # pnpm-workspace.yaml
+  overrides:
+    workspaces-effect: "link:../../spencerbeggs/workspaces-effect/dist/dev"
+  ```
+
+  then `pnpm install`. `dist/dev` is the rslib-builder link target (`publishConfig.directory` + `linkDirectory: true`). Effect resolves services by the tag's string id, so the one provided layer is shared even across duplicate copies — but the override keeps the bundle to a single copy. Verify every resolution points at the link: `find node_modules -name workspaces-effect`.
+
+**Procedure (either mechanism):**
+
+1. **Build the library:** in its repo run `pnpm ci:build` (produces `dist/dev` link target plus `dist/npm` / `dist/github`).
+2. **Link it** (link or override) and `pnpm install`.
+3. **Keep the declared range correct** in this repo's `package.json` for the eventual unlinked install — the link/override overrides resolution only while in place.
+4. **Iterate:** edit library source → `pnpm ci:build` there → `pnpm typecheck` + `pnpm test` here → `pnpm build` here (bundles the linked lib into `dist/`) → commit the full state (`src` + `dist` + changeset + the `pnpm-workspace.yaml` override + `pnpm-lock.yaml`) → push `dev`.
+5. **Library edits ship separately:** they land on the library's own branch and release with its next published version — call them out.
+6. **Run the integration repo:** the `dev` action is consumed by `savvy-web/silk-integration` (pins `@dev`). Spencer triggers release runs there; follow with `gh run list --repo savvy-web/silk-integration` / `gh run watch`, diagnose, fix, rebuild, re-push.
+7. **Final step, only AFTER the dogfooded version publishes:** remove the link/override, pin the published range, `pnpm install`.
+
+**Committing while a link/override is active:** commit the **full dogfood state** to `dev` — `src` + rebuilt `dist` + changeset **and** the `pnpm-workspace.yaml` override + `pnpm-lock.yaml`. The override holds a machine-specific link path, so `dev` only installs cleanly with the sibling repos checked out at the paths in the table above; that is the accepted dogfooding trade-off, and the cleanup in step 7 reverts it. No CI runs on a plain `dev` push, so the committed `dev` source may reference an unpublished library API until it publishes — expected during dogfooding. Commits must be GPG-signed with the GitHub-verified key for `C. Spencer Beggs <spencer@savvyweb.systems>` or the signature ruleset rejects them.
+
+**Currently active:** `workspaces-effect` is linked via override to dogfood `WorkspaceDiscovery.refresh()` (the release-title version fix). `@savvy-web/github-action-effects` is unlinked at registry `^2.0.0`.
+
+## Development & Release Cycle
+
+### The `dev` branch convention
+
+All in-progress feature work lands on a long-lived **`dev`** branch, never directly on `main`. `main` always reflects the last released state.
+
+The shared release workflow at `savvy-web/.github/.github/workflows/release.yml` has a matching **`dev` branch**. Consumer repos pin their calling workflow to it (`uses: savvy-web/.github/.github/workflows/release.yml@dev`) so they exercise in-progress workflow changes before they reach `main`. This repo's own `release.yml` and the end-to-end test repo `savvy-web/silk-integration` both pin `@dev` (see [Integration Testing](#integration-testing) and the dogfooding procedure above — Spencer initiates the integration runs).
+
+### Flow: `dev` → `main` → release
+
+1. Feature work accumulates on `dev`; merge it into `main` when ready.
+2. The push to `main` triggers **Phase 1** — changeset detection creates/updates `changeset-release/main` and the release PR.
+3. Pushes to the release branch trigger **Phase 2** validation (build, publish dry-runs, release-notes preview, sticky comment).
+4. Merging the release PR triggers **Phase 3** — publishing, Git tags, and a published GitHub release.
+5. The published release fires `release-sync.yml` (below), which closes the loop by resetting `dev` back to `main`.
+
+### `release-sync.yml` — post-release housekeeping
+
+Triggered by `release: [published]` (and `workflow_dispatch` with a `tag` input + `dry-run` for rehearsal). Runs as the GitHub App bot so its pushes can bypass protection and won't recurse (no workflow triggers on tag/`dev` pushes). On a **stable SemVer 2.0.0 release `>= 1.0.0`** (bare `MAJOR.MINOR.PATCH` — no leading `v`, no `-prerelease`, no `+build`) it:
+
+1. Moves (or creates) the **`v<major>`** alias tag (e.g. `v1`) at the released commit.
+2. **Hard-resets `dev` to `main` HEAD** — a genuine clobber, so any `dev` commit not yet in `main` is discarded. This is safe by design: `dev` work always lands in `main` before a release.
+
+Each push is guarded: if the remote `v<major>` tag or `dev` already points at its target commit, that push is skipped, so no ref-update events fire for listeners when there is nothing to change. Sub-`1.0.0`, prerelease, build-metadata, and non-SemVer tags are ignored (no-op).
 
 ## Common Commands
 
@@ -185,6 +239,7 @@ Workflows live in `.github/workflows/`:
 | **Claude Code** | `claude.yml` | Enables @claude mentions in issues/PRs |
 | **Project Listener** | `project-listener.yml` | Reusable workflow for adding items to GitHub Projects |
 | **Release** | `release.yml` | Release workflow for this repository |
+| **Release Sync** | `release-sync.yml` | On a published stable release (`>= 1.0.0`): moves the `v<major>` alias tag and hard-resets `dev` to `main` |
 
 This repository uses the **simple release workflow** (private repo, no NPM packages).
 

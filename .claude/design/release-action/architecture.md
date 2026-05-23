@@ -23,6 +23,7 @@ dependencies: []
   - [Phase 2: Release Validation](#phase-2-release-validation)
   - [Phase 3: Release Publishing](#phase-3-release-publishing)
   - [Phase 3a: Issue Closing](#phase-3a-issue-closing)
+  - [Post-Release Housekeeping (out of action)](#post-release-housekeeping-out-of-action)
   - [Module Dependency Graph](#module-dependency-graph)
   - [Shared Infrastructure](#shared-infrastructure)
   - [Schema Layer](#schema-layer)
@@ -151,6 +152,10 @@ After `runPublishTargets`, `main.ts` checks whether the publish results warrant 
 ### Phase 3a: Issue Closing
 
 **`close-linked-issues.ts`** — Queries the merged PR's `closingIssuesReferences` via GraphQL (up to 50 issues). For each linked issue, posts a comment noting the release and closes the issue. Creates a Check Run summarizing results.
+
+### Post-Release Housekeeping (out of action)
+
+The published GitHub release this phase creates is consumed by a **repo-local workflow**, not by the action itself: `.github/workflows/release-sync.yml` listens on `release: [published]` and, for stable SemVer `>= 1.0.0` tags, moves the `v<major>` alias tag to the released commit and hard-resets `dev` to `main`. See **CLAUDE.md → Development & Release Cycle** for the full `dev → main → release` loop.
 
 ### Module Dependency Graph
 

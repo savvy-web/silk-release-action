@@ -36,7 +36,8 @@ import {
 } from "@savvy-web/github-action-effects";
 import type { ConfigError } from "effect";
 import { Config, Duration, Effect } from "effect";
-import type { PublishabilityDetector, WorkspaceDiscovery } from "workspaces-effect";
+import type { PublishabilityDetector } from "workspaces-effect";
+import { WorkspaceDiscovery } from "workspaces-effect";
 import type { ChangesetConfig } from "../release/changeset-config.js";
 import { resolveSignoff } from "./commit-signoff.js";
 import { isSinglePackage } from "./detect-repo-type.js";
@@ -261,6 +262,13 @@ export const createReleaseBranch = (
 			.join("\n");
 		yield* Effect.logInfo("Version changes:");
 		yield* Effect.logInfo(versionSummary);
+
+		// `changeset version` just rewrote package.json on disk. WorkspaceDiscovery
+		// caches the package list (including versions) per root for the layer's
+		// lifetime and may have been populated before the bump, so refresh it
+		// before reading versions for the title/commit — otherwise they report the
+		// pre-bump version (see workspaces-effect WorkspaceDiscovery.refresh).
+		yield* (yield* WorkspaceDiscovery).refresh();
 
 		// Title the release PR from the packages that will release: a single
 		// package (or a locked group sharing one version) gets `release:
