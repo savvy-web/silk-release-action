@@ -109,6 +109,7 @@ const makeWorkspaceDiscoveryLayer = (packages: WorkspacePackage[]): Layer.Layer<
 		},
 		importerMap: (_cwd?: string) =>
 			Effect.succeed(new Map(packages.map((p) => [p.relativePath, p])) as ReadonlyMap<string, WorkspacePackage>),
+		refresh: () => Effect.void,
 	});
 
 /** Build a PublishabilityDetector test layer returning targets per package name. */

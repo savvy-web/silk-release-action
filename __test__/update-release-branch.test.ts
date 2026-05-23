@@ -42,6 +42,7 @@ const workspaceDiscoveryStub = Layer.succeed(WorkspaceDiscovery, {
 	listPackages: () => Effect.succeed([]),
 	getPackage: () => Effect.die("not implemented"),
 	importerMap: () => Effect.die("not implemented"),
+	refresh: () => Effect.void,
 });
 
 /** Minimal PublishabilityDetector stub: no publish targets for any package. */

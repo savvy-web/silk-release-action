@@ -25,6 +25,7 @@ const makeDiscoveryLayer = (packages: WsPkgStub[]): Layer.Layer<WorkspaceDiscove
 		listPackages: () => Effect.succeed(packages as never),
 		getPackage: () => Effect.die("not implemented"),
 		importerMap: () => Effect.die("not implemented"),
+		refresh: () => Effect.void,
 	});
 
 /**

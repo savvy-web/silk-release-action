@@ -97,6 +97,7 @@ const workspaceDiscoveryLayer = Layer.succeed(WorkspaceDiscovery, {
 	getPackage: (name: string, _cwd?: string) =>
 		Effect.fail(new PackageNotFoundError({ name, available: [] })) as Effect.Effect<never, PackageNotFoundError>,
 	importerMap: (_cwd?: string) => Effect.succeed(new Map()),
+	refresh: () => Effect.void,
 });
 
 /**
