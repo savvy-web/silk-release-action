@@ -35,12 +35,12 @@
 
 ### Breaking Changes
 
-* [`0f91109`](https://github.com/savvy-web/workflow-release-action/commit/0f91109f5866c58fe02cb00c6412e7eda9d3f7c4) Action inputs renamed: `app-id` → `app-client-id`, `private-key` → `app-private-key`. Update your workflow `with:` blocks accordingly.
+* [`0f91109`](https://github.com/savvy-web/silk-release-action/commit/0f91109f5866c58fe02cb00c6412e7eda9d3f7c4) Action inputs renamed: `app-id` → `app-client-id`, `private-key` → `app-private-key`. Update your workflow `with:` blocks accordingly.
 * Action outputs restructured: \~22 ad-hoc outputs replaced by a schema-defined `result` JSON output plus five scalar convenience outputs (`phase`, `status`, `succeeded`, `package-count`, `release-pr-number`). Callers reading removed output names receive empty strings. The output schema is published as `silk-release-action.output.schema.json`.
 
 ### Features
 
-* [`0f91109`](https://github.com/savvy-web/workflow-release-action/commit/0f91109f5866c58fe02cb00c6412e7eda9d3f7c4) **`strict-warnings` input** (boolean, default `false`) — escalates warning-level findings to check failures, allowing teams to enforce zero-warnings policies.
+* [`0f91109`](https://github.com/savvy-web/silk-release-action/commit/0f91109f5866c58fe02cb00c6412e7eda9d3f7c4) **`strict-warnings` input** (boolean, default `false`) — escalates warning-level findings to check failures, allowing teams to enforce zero-warnings policies.
 * **`result` output** carries machine-readable release outcome across all three phases with three orthogonal flags (`noop`, `succeeded`, `hasFailures`) and a phase-specific payload block.
 * **Self-recovering publish chain** — if a registry publish fails mid-run, a re-run detects already-published packages and marks them `skipped-identical (recovery)`, then completes the remaining registries without duplicating work.
 * **Step-buffered publish logging** — each package/registry step emits `✅ pack …: 122 kB · 10 files` on success or `❌ … : publish-failed` on failure. Failures are reported honestly; a failed step no longer shows a success marker.
@@ -54,7 +54,7 @@
 
 ### Bug Fixes
 
-* [`0f91109`](https://github.com/savvy-web/workflow-release-action/commit/0f91109f5866c58fe02cb00c6412e7eda9d3f7c4) **Single-root-workspace detection** — single-package repositories (no `packages/` glob) are now correctly detected as publishable rather than classified as monorepos with zero packages.
+* [`0f91109`](https://github.com/savvy-web/silk-release-action/commit/0f91109f5866c58fe02cb00c6412e7eda9d3f7c4) **Single-root-workspace detection** — single-package repositories (no `packages/` glob) are now correctly detected as publishable rather than classified as monorepos with zero packages.
 * **`sbom-config` input parsing** — the input is now read via the Actions config provider, preventing the hyphen-to-underscore env key mangling that caused SBOM metadata to be silently ignored.
 * **SBOM attestation content** — attestations now attest the real SBOM document; previously the attested content was an empty dependency list.
 * **Attestation deduplication** — one attestation is created per build directory; re-runs reuse existing attestations rather than creating duplicates.
@@ -66,13 +66,13 @@
 
 ### Bug Fixes
 
-* [`87d48fd`](https://github.com/savvy-web/workflow-release-action/commit/87d48fdaad7e02a9585ee0f86f9150955201a4e9) Fix merge base checkout failure in Phase 2 validation by using `git checkout --force` and removing `silent: true` to surface git errors in logs
+* [`87d48fd`](https://github.com/savvy-web/silk-release-action/commit/87d48fdaad7e02a9585ee0f86f9150955201a4e9) Fix merge base checkout failure in Phase 2 validation by using `git checkout --force` and removing `silent: true` to surface git errors in logs
 
 ## 0.2.2
 
 ### Dependencies
 
-* [`93e6efc`](https://github.com/savvy-web/workflow-release-action/commit/93e6efc5b44b3e3ed7852da40076b6b66dbe0dc4) @savvy-web/changesets: ^0.3.0 → ^0.4.1
+* [`93e6efc`](https://github.com/savvy-web/silk-release-action/commit/93e6efc5b44b3e3ed7852da40076b6b66dbe0dc4) @savvy-web/changesets: ^0.3.0 → ^0.4.1
 * @savvy-web/commitlint: ^0.3.4 → ^0.4.0
 * @savvy-web/github-action-builder: ^0.1.4 → ^0.2.0
 * @savvy-web/lint-staged: ^0.4.6 → ^0.5.0
@@ -82,7 +82,7 @@
 
 ### Bug Fixes
 
-* [`6ee65c1`](https://github.com/savvy-web/workflow-release-action/commit/6ee65c159141a591bf70388043b03423cd24e4d9) Staged publish flow with diagnostic logging to prevent half-publishes and improve debuggability.
+* [`6ee65c1`](https://github.com/savvy-web/silk-release-action/commit/6ee65c159141a591bf70388043b03423cd24e4d9) Staged publish flow with diagnostic logging to prevent half-publishes and improve debuggability.
 
 - Add diagnostic `debug()` logging to built package.json name resolution in both pre-validation and publish loops, making it visible in CI debug logs when the source name is used as fallback
 - Implement staged pack-then-publish with abort gate: if any ready target fails to pack, the entire package is aborted before any publishing occurs, preventing partial registry state
@@ -93,7 +93,7 @@
 
 ### Bug Fixes
 
-* [`9be311c`](https://github.com/savvy-web/workflow-release-action/commit/9be311c1216b5bb4aa4c66562f80addc0bbafcc4) Use per-target built package name for registry version checks and SBOM validation.
+* [`9be311c`](https://github.com/savvy-web/silk-release-action/commit/9be311c1216b5bb4aa4c66562f80addc0bbafcc4) Use per-target built package name for registry version checks and SBOM validation.
 
 When a package publishes to multiple registries with different names (e.g., `my-pkg` for npm vs `@scope/my-pkg` for GitHub Packages), the release action now reads the built `package.json` in each target's directory to resolve the authoritative package name. This fixes incorrect version existence checks on registries where the published name differs from the source name, and removes the spurious "Package name mismatch" warning during Phase 2 pre-validation.
 
@@ -101,14 +101,14 @@ When a package publishes to multiple registries with different names (e.g., `my-
 
 ### Bug Fixes
 
-* [`047f85e`](https://github.com/savvy-web/workflow-release-action/commit/047f85eb59f1ab19569c3229d6f03aa16efdc7f3) Support @savvy-web/vitest
+* [`047f85e`](https://github.com/savvy-web/silk-release-action/commit/047f85eb59f1ab19569c3229d6f03aa16efdc7f3) Support @savvy-web/vitest
 * Fix circular dependencies from @savvy-web/github-action-builder
 
 ## 0.1.3
 
 ### Features
 
-* [`eb6a7a7`](https://github.com/savvy-web/workflow-release-action/commit/eb6a7a7f65c973e63bbf884c1d7ea3715eab4215) Support for @savvy-web/changesets
+* [`eb6a7a7`](https://github.com/savvy-web/silk-release-action/commit/eb6a7a7f65c973e63bbf884c1d7ea3715eab4215) Support for @savvy-web/changesets
 
 ## 0.1.2
 
@@ -166,7 +166,7 @@ When a package publishes to multiple registries with different names (e.g., `my-
 
   ```json
   {
-    "$schema": "https://raw.githubusercontent.com/savvy-web/workflow-release-action/main/.github/silk-release.schema.json"
+    "$schema": "https://raw.githubusercontent.com/savvy-web/silk-release-action/main/.github/silk-release.schema.json"
   }
   ```
 
@@ -259,7 +259,7 @@ When a package publishes to multiple registries with different names (e.g., `my-
   **Root Causes:**
 
   1. The `check-changesets` job was preventing publish from running after release PR merges
-  2. Needed simple semver tags (`1.3.2`) instead of scoped package tags (`@savvy-web/workflow-release-action@1.3.2`)
+  2. Needed simple semver tags (`1.3.2`) instead of scoped package tags (`@savvy-web/silk-release-action@1.3.2`)
   3. Manual tag creation was always running, even for multi-package repos where it shouldn't
 
   **Changes:**
@@ -294,7 +294,7 @@ When a package publishes to multiple registries with different names (e.g., `my-
   1. **When changesets exist:** Creates release PR with version bumps
   2. **When release PR merges:**
      * Changesets detects version changes and runs publish
-     * Changesets creates scoped tag (`@savvy-web/workflow-release-action@1.3.2`)
+     * Changesets creates scoped tag (`@savvy-web/silk-release-action@1.3.2`)
      * Workflow creates simple tag (`1.3.2`) and GitHub release with CHANGELOG content
 
 ## 1.3.1
@@ -368,7 +368,7 @@ When a package publishes to multiple registries with different names (e.g., `my-
 
   * Simplified `release.yml` to use new `release-simple.yml` reusable workflow
   * All workflows and actions now use local paths (`./.github/...`) instead of full GitHub URLs
-  * Other repositories calling these workflows should use full URLs (`savvy-web/workflow-release-action/.github/workflows/...@main`)
+  * Other repositories calling these workflows should use full URLs (`savvy-web/silk-release-action/.github/workflows/...@main`)
 
 ## 1.2.0
 
@@ -382,7 +382,7 @@ When a package publishes to multiple registries with different names (e.g., `my-
   * Parses the `$schema` field to extract the version (e.g., `https://biomejs.dev/schemas/2.3.14/schema.json` → `2.3.14`)
   * Optional `version` input to override auto-detection and specify version explicitly
   * Falls back to `latest` with a warning if no config file or version is found
-  * Can be used independently: `uses: savvy-web/workflow-release-action/.github/actions/biome@main`
+  * Can be used independently: `uses: savvy-web/silk-release-action/.github/actions/biome@main`
   * Outputs detected version and config file for downstream steps
   * Comprehensive README documentation with examples and troubleshooting
 
