@@ -74,8 +74,8 @@ importers:
         specifier: ^0.7.1
         version: 0.7.1(@effect/cluster@0.58.2(@effect/platform@0.96.1(effect@3.21.2))(@effect/rpc@0.75.1(@effect/platform@0.96.1(effect@3.21.2))(effect@3.21.2))(@effect/sql@0.51.1(@effect/experimental@0.60.0(@effect/platform@0.96.1(effect@3.21.2))(effect@3.21.2))(@effect/platform@0.96.1(effect@3.21.2))(effect@3.21.2))(@effect/workflow@0.18.1(@effect/experimental@0.60.0(@effect/platform@0.96.1(effect@3.21.2))(effect@3.21.2))(@effect/platform@0.96.1(effect@3.21.2))(@effect/rpc@0.75.1(@effect/platform@0.96.1(effect@3.21.2))(effect@3.21.2))(effect@3.21.2))(effect@3.21.2))(@effect/rpc@0.75.1(@effect/platform@0.96.1(effect@3.21.2))(effect@3.21.2))(@effect/sql@0.51.1(@effect/experimental@0.60.0(@effect/platform@0.96.1(effect@3.21.2))(effect@3.21.2))(@effect/platform@0.96.1(effect@3.21.2))(effect@3.21.2))(@types/node@25.9.1)(@typescript/native-preview@7.0.0-dev.20260522.1)(typescript@6.0.3)
       '@savvy-web/lint-staged':
-        specifier: ^1.2.0
-        version: 1.2.0(c4b9be09f2abc07428186e39fe962d5f)
+        specifier: ^1.2.1
+        version: 1.2.1(c4b9be09f2abc07428186e39fe962d5f)
       '@savvy-web/vitest':
         specifier: ^1.3.2
         version: 1.3.2(0eaa559409830562a3e819d0f9e2c5ff)
@@ -1101,8 +1101,8 @@ packages:
       '@effect/platform-node': '>=0.106.0'
       effect: '>=3.21.0'
 
-  '@savvy-web/lint-staged@1.2.0':
-    resolution: {integrity: sha512-1W1RpPyyjYLgyN4Snorv0ibI5gmkG/i7IAhXd1ULgXJk1epOPdhBKbysuS0hB1kFVxzkOBJFp30+7plszO0NXA==}
+  '@savvy-web/lint-staged@1.2.1':
+    resolution: {integrity: sha512-71Ek0v55vSX1gV6c4XTmuEBRtayOyMvBKI34cGAt5OTJXsIKfms5jA+niEP3Ey9mjcVofQcTJR9xbB9dICcafw==}
     engines: {node: '>=24.0.0'}
     hasBin: true
     peerDependencies:
@@ -1113,7 +1113,7 @@ packages:
       lint-staged: ^17.0.5
       markdownlint-cli2: ^0.22.1
       markdownlint-cli2-formatter-codequality: ^0.0.7
-      turbo: ^2.9.15
+      turbo: ^2.9.16
       typescript: ^6.0.0
     peerDependenciesMeta:
       '@biomejs/biome':
@@ -4739,7 +4739,7 @@ snapshots:
       - supports-color
       - xmlbuilder2
 
-  '@savvy-web/lint-staged@1.2.0(c4b9be09f2abc07428186e39fe962d5f)':
+  '@savvy-web/lint-staged@1.2.1(c4b9be09f2abc07428186e39fe962d5f)':
     dependencies:
       '@effect/cli': 0.75.1(@effect/platform@0.96.1(effect@3.21.2))(@effect/printer-ansi@0.49.0(@effect/typeclass@0.40.0(effect@3.21.2))(effect@3.21.2))(@effect/printer@0.49.0(@effect/typeclass@0.40.0(effect@3.21.2))(effect@3.21.2))(effect@3.21.2)
       '@effect/platform': 0.96.1(effect@3.21.2)
