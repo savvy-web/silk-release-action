@@ -44,7 +44,7 @@ inputs:
   phase:
     description: |
       Explicitly set the workflow phase to run, skipping automatic detection.
-      Useful when phase was already determined by workflow-control-action.
+      Useful when phase was already determined by silk-router-action.
       Valid values: branch-management, validation, publishing, close-issues, none
     required: false
     default: ""

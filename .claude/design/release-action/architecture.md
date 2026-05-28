@@ -72,7 +72,7 @@ The phase router determines which phase to execute based on GitHub event context
 
 Detection priority order:
 
-1. **Explicit phase** — If the `phase` input is provided, skip detection and use it directly. This supports the `workflow-control-action` pattern where phase is pre-determined.
+1. **Explicit phase** — If the `phase` input is provided, skip detection and use it directly. This supports the `silk-router-action` pattern where phase is pre-determined.
 2. **Phase 3a (close-issues)** — `pull_request` event where the release PR (`changeset-release/main` to `main`) was merged. Detected from event payload without API calls.
 3. **Phase 3 (publishing)** — Push to main with a release commit. Detection uses a two-strategy approach with retry logic: primary queries `listPullRequestsAssociatedWithCommit`; fallback queries recently closed PRs from the release branch and matches `merge_commit_sha`. 3 attempts with 5-second delays handle GitHub API eventual consistency.
 4. **Phase 2 (validation)** — Push to the release branch (`changeset-release/main`).
