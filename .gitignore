@@ -31,6 +31,7 @@ pnpm-release.json
 # Temporary api-extractor files created during build
 .claude/settings.local.json
 .claude/plans
+.claude/cache
 .claude/agents
 .claude/skills
 CLAUDE.local.md
