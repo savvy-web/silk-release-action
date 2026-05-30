@@ -1,5 +1,13 @@
 # @savvy-web/silk-release-action
 
+## 1.2.4
+
+### Bug Fixes
+
+* [`e74bbd7`](https://github.com/savvy-web/silk-release-action/commit/e74bbd76524fc2dd1c46a6c01edd8b3b91836abb) When Phase 1 runs on a push to `main` and `changeset version` produces no changes (no pending changesets), the action previously attempted to open or update a release PR against an identical branch, causing GitHub to reject it with `Validation Failed: No commits between main and changeset-release/main`. The run would fail.
+
+The action now detects the no-op case in the update flow and treats it the same as the existing create-flow cleanup: it closes any open release PR and deletes the release branch, then finishes with a neutral status rather than an error.
+
 ## 1.2.3
 
 ### Bug Fixes
