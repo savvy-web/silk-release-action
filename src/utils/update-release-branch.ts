@@ -4,11 +4,15 @@
  * @remarks
  * Strategy: recreate the release branch from main on every push, then
  * re-run `changeset version` on top. If there are version changes, a
- * verified commit is created via {@link GitCommit}; if not, the release
- * branch ref is fast-forwarded to main's tip. PRs are reopened when a
- * prior force-push closed them, titles are refreshed, and bodies are
+ * verified commit is created via {@link GitCommit}; PRs are reopened when
+ * a prior force-push closed them, titles are refreshed, and bodies are
  * augmented with a "Linked Issues" section harvested from the changeset
  * commits in the remote target-branch history.
+ *
+ * If `changeset version` produces no changes the release branch has
+ * nothing to release — it would be identical to main, an invalid state.
+ * Rather than fail trying to open a PR with no commits, this stage closes
+ * any open release PR and deletes the release branch.
  */
 
 import { FileSystem } from "@effect/platform";
@@ -18,6 +22,7 @@ import type {
 	ActionState,
 	CheckRunError,
 	CommandRunnerError,
+	GitBranchError,
 	GitCommitError,
 	GitHubClientError,
 	GitHubIssueError,
@@ -28,6 +33,7 @@ import {
 	ActionOutputs,
 	CheckRun,
 	CommandRunner,
+	GitBranch,
 	GitCommit,
 	GitHubClient,
 	GitHubIssue,
@@ -71,6 +77,11 @@ export interface LinkedIssue {
 export interface UpdateReleaseBranchResult {
 	success: boolean;
 	hadConflicts: boolean;
+	/**
+	 * True when this run found nothing to release and therefore closed any
+	 * release PR and deleted the release branch. See {@link updateReleaseBranch}.
+	 */
+	deleted: boolean;
 	prNumber: number | null;
 	checkId: number;
 	versionSummary: string;
@@ -167,6 +178,7 @@ export const updateReleaseBranch = (
 	| CheckRunError
 	| CommandRunnerError
 	| ConfigError.ConfigError
+	| GitBranchError
 	| GitCommitError
 	| GitHubClientError
 	| GitHubIssueError
@@ -178,6 +190,7 @@ export const updateReleaseBranch = (
 	| CheckRun
 	| CommandRunner
 	| FileSystem.FileSystem
+	| GitBranch
 	| GitCommit
 	| GitHubClient
 	| GitHubIssue
@@ -192,6 +205,7 @@ export const updateReleaseBranch = (
 		const runner = yield* CommandRunner;
 		const gitCommit = yield* GitCommit;
 		const client = yield* GitHubClient;
+		const branches = yield* GitBranch;
 		const pr = yield* PullRequest;
 		const issues = yield* GitHubIssue;
 		const fs = yield* FileSystem.FileSystem;
@@ -275,6 +289,10 @@ export const updateReleaseBranch = (
 
 		let versionSummary = "";
 		let prTitle = prTitlePrefix;
+		// When `changeset version` yields nothing the release branch has no
+		// commits beyond main: an invalid state. We close any release PR and
+		// delete the branch, then skip the reopen/update/create-PR steps below.
+		let branchDeleted = false;
 
 		if (hasChanges) {
 			versionSummary = changedFiles
@@ -343,13 +361,42 @@ export const updateReleaseBranch = (
 				yield* Effect.logInfo(`[DRY RUN] Would create API commit with message: ${commitMessage}`);
 			}
 		} else {
-			yield* Effect.logInfo("No version changes from changesets");
-			const newSha = yield* updateBranchToRef({ releaseBranch, sourceBranch: targetBranch });
-			yield* Effect.logInfo(`✓ Updated '${releaseBranch}' to match '${targetBranch}' (${newSha})`);
+			yield* Effect.logInfo(
+				`No version changes from changesets — '${releaseBranch}' would be identical to '${targetBranch}', nothing to release`,
+			);
+			branchDeleted = true;
+			if (!dryRun) {
+				// Close the release PR (if open) before deleting its branch so the
+				// PR records a clean "closed" rather than the auto-close GitHub emits
+				// when a head branch disappears. Already-closed PRs are left as-is.
+				if (prNumber !== null && !prWasClosed) {
+					const closed = yield* Effect.either(pr.update(prNumber, { state: "closed" }));
+					if (closed._tag === "Right") {
+						yield* Effect.logInfo(`✓ Closed stale release PR #${prNumber} (nothing to release)`);
+					} else {
+						yield* Effect.logWarning(`Could not close release PR #${prNumber}: ${closed.left.reason}`);
+					}
+				} else if (prNumber !== null && prWasClosed) {
+					yield* Effect.logInfo(`Release PR #${prNumber} is already closed`);
+				}
+
+				// Delete the release branch — it is in an invalid state.
+				const deleted = yield* Effect.either(branches.delete(releaseBranch));
+				if (deleted._tag === "Right") {
+					yield* Effect.logInfo(`✓ Deleted release branch '${releaseBranch}'`);
+				} else {
+					yield* Effect.logWarning(`Could not delete release branch '${releaseBranch}': ${deleted.left.reason}`);
+				}
+			} else {
+				yield* Effect.logInfo(
+					`[DRY RUN] Would close any open release PR and delete '${releaseBranch}' (nothing to release)`,
+				);
+			}
+			prNumber = null;
 		}
 
 		// ---------- Reopen PR if it was closed ----------
-		if (prWasClosed && prNumber !== null && !dryRun) {
+		if (!branchDeleted && prWasClosed && prNumber !== null && !dryRun) {
 			const reopen = yield* Effect.either(pr.update(prNumber, { state: "open" }));
 			if (reopen._tag === "Right") {
 				yield* Effect.logInfo(`✓ Reopened PR #${prNumber}`);
@@ -358,12 +405,12 @@ export const updateReleaseBranch = (
 				yield* Effect.logInfo("Will create a new PR instead");
 				prNumber = null;
 			}
-		} else if (prWasClosed && prNumber !== null && dryRun) {
+		} else if (!branchDeleted && prWasClosed && prNumber !== null && dryRun) {
 			yield* Effect.logInfo(`[DRY RUN] Would reopen PR #${prNumber}`);
 		}
 
 		// ---------- Update PR title for existing open PRs ----------
-		if (prNumber !== null && !prWasClosed && !dryRun) {
+		if (!branchDeleted && prNumber !== null && !prWasClosed && !dryRun) {
 			const update = yield* Effect.either(pr.update(prNumber, { title: prTitle }));
 			if (update._tag === "Right") {
 				yield* Effect.logInfo(`✓ Updated PR #${prNumber} title to: ${prTitle}`);
@@ -373,7 +420,7 @@ export const updateReleaseBranch = (
 		}
 
 		// ---------- Create new PR if none exists ----------
-		if (prNumber === null && !dryRun) {
+		if (!branchDeleted && prNumber === null && !dryRun) {
 			const prBody = buildPrBody({ versionSummary, linkedIssues, owner, repo, runId });
 			const create = (): Effect.Effect<{ number: number; url: string }, PullRequestError, PullRequest> =>
 				pr.create({ title: prTitle, body: prBody, head: releaseBranch, base: targetBranch });
@@ -418,10 +465,11 @@ export const updateReleaseBranch = (
 		}
 
 		// ---------- Check run + job summary ----------
+		const strategy = branchDeleted ? "Deleted (nothing to release)" : "Recreate from main";
 		const checkStatusTable = summaryWriter.keyValueTable([
 			{ key: "Branch", value: `\`${releaseBranch}\`` },
 			{ key: "Base", value: `\`${targetBranch}\`` },
-			{ key: "Strategy", value: "Recreate from main" },
+			{ key: "Strategy", value: strategy },
 			{ key: "Version Changes", value: hasChanges ? "✅ Yes" : "❌ No" },
 			{ key: "Linked Issues", value: linkedIssues.length > 0 ? `${linkedIssues.length} issue(s)` : "_None_" },
 			{
@@ -452,16 +500,21 @@ export const updateReleaseBranch = (
 		const checkDetails = summaryWriter.build(checkSections);
 
 		const checkTitle = dryRun ? "🧪 Update Release Branch (Dry Run)" : "Update Release Branch";
+		const checkConclusionTitle = branchDeleted
+			? "Release branch deleted (nothing to release)"
+			: hasChanges
+				? "Release branch recreated from main with version changes"
+				: "Release branch synced with main";
 		const { id: checkId } = yield* checks.create(checkTitle, sha);
-		yield* checks.complete(checkId, "success", {
-			title: hasChanges ? "Release branch recreated from main with version changes" : "Release branch synced with main",
+		yield* checks.complete(checkId, branchDeleted ? "neutral" : "success", {
+			title: checkConclusionTitle,
 			summary: checkDetails,
 		});
 
 		const jobStatusTable = summaryWriter.keyValueTable([
 			{ key: "Branch", value: `\`${releaseBranch}\`` },
 			{ key: "Base", value: `\`${targetBranch}\`` },
-			{ key: "Strategy", value: "Recreate from main" },
+			{ key: "Strategy", value: strategy },
 			{ key: "Version Changes", value: hasChanges ? "✅ Yes" : "❌ No" },
 			{ key: "Linked Issues", value: linkedIssues.length > 0 ? `${linkedIssues.length} issue(s)` : "_None_" },
 			{ key: "PR", value: prNumber ? `#${prNumber}` : "_N/A_" },
@@ -469,9 +522,11 @@ export const updateReleaseBranch = (
 		const jobSections: Array<{ heading?: string; level?: 2 | 3; content: string }> = [
 			{
 				heading: checkTitle,
-				content: hasChanges
-					? "✅ Release branch recreated from main with version changes"
-					: "✅ Release branch synced with main (no version changes)",
+				content: branchDeleted
+					? `🗑️ Release branch deleted — no changesets to release (would be identical to \`${targetBranch}\`)`
+					: hasChanges
+						? "✅ Release branch recreated from main with version changes"
+						: "✅ Release branch synced with main (no version changes)",
 			},
 			{ heading: "Update Summary", level: 3, content: jobStatusTable },
 		];
@@ -494,6 +549,7 @@ export const updateReleaseBranch = (
 		return {
 			success: true,
 			hadConflicts: false,
+			deleted: branchDeleted,
 			prNumber,
 			checkId,
 			versionSummary,
@@ -695,35 +751,6 @@ export const updateReleaseBranch = (
 				// GitCommit.updateRef prefixes "heads/" itself — pass the bare branch name.
 				yield* gitCommit.updateRef(args.releaseBranch, commitSha, true);
 				yield* Effect.logInfo(`✓ Created verified commit: ${commitSha}`);
-			});
-		}
-
-		/**
-		 * Fast-forward (or force-update) the release branch ref to match the
-		 * source branch ref via the Git Data API.
-		 */
-		function updateBranchToRef(args: {
-			releaseBranch: string;
-			sourceBranch: string;
-		}): Effect.Effect<string, GitCommitError | GitHubClientError, GitCommit | GitHubClient> {
-			return Effect.gen(function* () {
-				const srcRef = yield* client.rest<RefResponse>("git.getRef.src", (octokit) =>
-					(
-						octokit as {
-							rest: {
-								git: {
-									getRef: (params: { owner: string; repo: string; ref: string }) => Promise<{ data: RefResponse }>;
-								};
-							};
-						}
-					).rest.git.getRef({ owner, repo, ref: `heads/${args.sourceBranch}` }),
-				);
-				const sourceSha = srcRef.object.sha;
-				yield* Effect.logInfo(`Updating ${args.releaseBranch} to ${args.sourceBranch} (${sourceSha})`);
-				// GitCommit.updateRef prefixes "heads/" itself — pass the bare branch name.
-				yield* gitCommit.updateRef(args.releaseBranch, sourceSha, true);
-				yield* Effect.logInfo(`✓ Updated ${args.releaseBranch} to ${sourceSha}`);
-				return sourceSha;
 			});
 		}
 	});

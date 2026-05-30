@@ -7,6 +7,10 @@
  * and linked-issue harvesting. The still-raw `client.rest` calls (`git.getRef`)
  * are satisfied through `GitHubClientTest` recorded responses; issue details
  * are seeded via `GitHubIssueTest`.
+ *
+ * The no-version-change path closes any release PR and deletes the release
+ * branch via the `GitBranch` library service, asserted through
+ * `GitBranchTest`'s recorded `branches` map.
  */
 
 import { FileSystem } from "@effect/platform";
@@ -14,6 +18,7 @@ import type {
 	ActionOutputsTestState,
 	ActionStateTestState,
 	CheckRunTestState,
+	GitBranchTestState,
 	GitCommitTestState,
 	GitHubClientTestState,
 	GitHubIssueTestState,
@@ -25,6 +30,7 @@ import {
 	ActionStateTest,
 	CheckRunTest,
 	CommandRunnerTest,
+	GitBranchTest,
 	GitCommitTest,
 	GitHubClientTest,
 	GitHubIssueTest,
@@ -67,6 +73,7 @@ interface Fixtures {
 	stateState: ActionStateTestState;
 	checkRunState: CheckRunTestState;
 	commitState: GitCommitTestState;
+	branchState: GitBranchTestState;
 	prState: PullRequestTestState;
 	issueState: GitHubIssueTestState;
 	clientState: GitHubClientTestState;
@@ -83,6 +90,8 @@ const makeFixtures = (
 			body?: string;
 			merged?: boolean;
 		}>;
+		/** Branches to seed into GitBranchTest (name → sha). Defaults to the release branch. */
+		branches?: Array<[string, string]>;
 		linkedIssues?: Array<[number, Array<{ number: number; title: string }>]>;
 		issueDetails?: Array<{ number: number; title: string; state: string; htmlUrl?: string; nodeId?: string }>;
 		restResponses?: Array<[string, unknown]>;
@@ -134,11 +143,17 @@ const makeFixtures = (
 		repo: { owner: "owner", repo: "repo" },
 	};
 
+	const branchState = GitBranchTest.empty();
+	for (const [name, sha] of params.branches ?? [[RELEASE_BRANCH, "deadbeef"]]) {
+		branchState.branches.set(name, sha);
+	}
+
 	return {
 		outputsState: ActionOutputsTest.empty(),
 		stateState: ActionStateTest.empty(),
 		checkRunState: CheckRunTest.empty(),
 		commitState: GitCommitTest.empty(),
+		branchState,
 		prState,
 		issueState: issue.state,
 		clientState,
@@ -151,8 +166,10 @@ const makeFixtures = (
  * @remarks
  * `commandResponses` keys are `"<command> <args...>"`; unrecorded commands
  * succeed with empty output. A `git status --porcelain` of empty stdout drives
- * the no-version-change branch, which only needs a `git.getRef.src` REST
- * response (recorded via `restResponses`).
+ * the no-version-change branch (close PR + delete branch). A non-empty status
+ * drives the version-change branch; an empty `git status --porcelain -z` keeps
+ * the API-commit path a no-op (`files.length === 0`), so only the `git.getRef`
+ * REST response is needed to reach the PR reopen/title/create steps.
  */
 const runStage = (
 	f: Fixtures,
@@ -180,6 +197,7 @@ const runStage = (
 		CommandRunnerTest.layer(
 			new Map(commandResponses.map(([key, stdout]) => [key, { exitCode: 0, stdout, stderr: "" }])),
 		),
+		GitBranchTest.layer(f.branchState),
 		GitCommitTest.layer(f.commitState),
 		GitHubClientTest.layer(f.clientState),
 		GitHubIssueTest.layer(f.issueState),
@@ -209,18 +227,29 @@ const runStage = (
 	);
 };
 
-/** A `git status --porcelain` with empty stdout drives the no-change branch. */
+/** A `git status --porcelain` with empty stdout drives the no-change (cleanup) branch. */
 const noVersionChange: Array<[string, string]> = [["git status --porcelain", ""]];
 
-/** `git.getRef.src` REST response consumed by the no-change `updateBranchToRef`. */
-const refResponse: Array<[string, unknown]> = [["git.getRef.src", { object: { sha: "deadbeef" } }]];
+/**
+ * Commands that drive the version-change branch: a non-empty porcelain status
+ * plus an empty `-z` status so the API-commit path is a no-op and control
+ * reaches the PR reopen/title/create steps.
+ */
+const versionChange: Array<[string, string]> = [
+	["git status --porcelain", "M package.json\nM CHANGELOG.md"],
+	["git status --porcelain -z", ""],
+];
+
+/** `git.getRef` REST response consumed by `commitChangesOntoTarget` on the version-change path. */
+const refResponse: Array<[string, unknown]> = [["git.getRef", { object: { sha: "deadbeef" } }]];
 
 describe("updateReleaseBranch", () => {
 	it("creates a release PR when none exists and applies the automated/release labels", async () => {
 		const f = makeFixtures({ restResponses: refResponse });
 
-		const result = await runStage(f, noVersionChange);
+		const result = await runStage(f, versionChange);
 
+		expect(result.deleted).toBe(false);
 		const created = f.prState.prs.find((pr) => pr.head === RELEASE_BRANCH);
 		expect(created).toBeDefined();
 		expect(result.prNumber).toBe(created?.number);
@@ -235,7 +264,7 @@ describe("updateReleaseBranch", () => {
 			restResponses: refResponse,
 		});
 
-		const result = await runStage(f, noVersionChange);
+		const result = await runStage(f, versionChange);
 
 		expect(result.prNumber).toBe(42);
 		expect(f.prState.prs).toHaveLength(1); // no new PR created
@@ -248,7 +277,7 @@ describe("updateReleaseBranch", () => {
 			restResponses: refResponse,
 		});
 
-		const result = await runStage(f, noVersionChange);
+		const result = await runStage(f, versionChange);
 
 		expect(result.prNumber).toBe(7);
 		expect(f.prState.prs).toHaveLength(1);
@@ -271,7 +300,7 @@ describe("updateReleaseBranch", () => {
 		const result = await runStage(
 			f,
 			[
-				["git status --porcelain", ""],
+				...versionChange,
 				[
 					"git log origin/main --diff-filter=A --follow --reverse --format=%H%n%B%n---END--- -- .changeset/feat.md",
 					"sha111\nfeat: add thing (#123)\n---END---\n",
@@ -281,5 +310,45 @@ describe("updateReleaseBranch", () => {
 		);
 
 		expect(result.linkedIssues.map((i: LinkedIssue) => i.number)).toContain(55);
+	});
+
+	it("closes the open release PR and deletes the branch when there are no version changes", async () => {
+		const f = makeFixtures({
+			prs: [{ number: 42, head: RELEASE_BRANCH, base: TARGET_BRANCH, state: "open" }],
+		});
+
+		const result = await runStage(f, noVersionChange);
+
+		expect(result.deleted).toBe(true);
+		expect(result.prNumber).toBeNull();
+		// The open PR is explicitly closed before the branch is removed.
+		expect(f.prState.prs.find((pr) => pr.number === 42)?.state).toBe("closed");
+		// The invalid release branch is deleted.
+		expect(f.branchState.branches.has(RELEASE_BRANCH)).toBe(false);
+	});
+
+	it("leaves an already-closed PR closed and still deletes the branch when there are no version changes", async () => {
+		const f = makeFixtures({
+			prs: [{ number: 7, head: RELEASE_BRANCH, base: TARGET_BRANCH, state: "closed", merged: false }],
+		});
+
+		const result = await runStage(f, noVersionChange);
+
+		expect(result.deleted).toBe(true);
+		expect(result.prNumber).toBeNull();
+		expect(f.prState.prs.find((pr) => pr.number === 7)?.state).toBe("closed");
+		expect(f.branchState.branches.has(RELEASE_BRANCH)).toBe(false);
+	});
+
+	it("deletes the branch and creates no PR when there are no version changes and no PR exists", async () => {
+		const f = makeFixtures();
+
+		const result = await runStage(f, noVersionChange);
+
+		expect(result.deleted).toBe(true);
+		expect(result.prNumber).toBeNull();
+		// No PR was created during cleanup.
+		expect(f.prState.prs).toHaveLength(0);
+		expect(f.branchState.branches.has(RELEASE_BRANCH)).toBe(false);
 	});
 });
