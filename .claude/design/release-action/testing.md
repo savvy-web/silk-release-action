@@ -4,8 +4,8 @@ category: testing
 status: current
 completeness: 90
 created: 2026-02-07
-updated: 2026-05-21
-last-synced: 2026-05-21
+updated: 2026-05-30
+last-synced: 2026-05-30
 module: release-action
 related:
   - architecture.md
@@ -91,7 +91,7 @@ Key test layers:
 - **`GitHubClientTest`** — records REST API calls; inject canned responses
 - **`GitHubAppTest`** — records App identity calls
 - **`CheckRunTest`** — records check-run create/update calls
-- **`GitBranchTest`** — records branch create/update calls
+- **`GitBranchTest`** — records branch create/update/delete calls
 - **`PullRequestTest`** — records PR list/update calls; inject canned PR lists
 - **`CommandRunnerTest`** — records exec calls; inject exit codes and stdout/stderr
 - **`PackagePublishTest`** — records pack/publish/setupAuth calls; inject pack results

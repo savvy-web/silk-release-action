@@ -4,8 +4,8 @@ category: architecture
 status: current
 completeness: 95
 created: 2026-02-07
-updated: 2026-05-22
-last-synced: 2026-05-22
+updated: 2026-05-30
+last-synced: 2026-05-30
 module: release-action
 related:
   - integration.md
@@ -85,7 +85,7 @@ Triggers on push to `main` (non-release commits). Phase 1 is rewired onto the `C
 
 - **`check-release-branch.ts`** — Checks whether the `changeset-release/main` branch exists and whether an open PR exists from that branch to the target branch.
 - **`create-release-branch.ts`** — Creates a new branch from `origin/{targetBranch}`, runs the changeset version command, creates a signed API commit (see `create-api-commit.ts`), links issues found in changeset files via GraphQL mutations, and opens a PR with standard labels. The PR title and commit subject are resolved from the releasing packages via `release-summary-helpers.ts` (see [Release PR and commit titles](#release-pr-and-commit-titles)).
-- **`update-release-branch.ts`** — Recreates the branch from main rather than rebasing. Collects linked issues from changesets before running the version command. Creates an API commit with the main branch HEAD as parent. Handles PR reopening if the branch was previously deleted. Uses the same title/commit-subject resolution as `create-release-branch.ts`.
+- **`update-release-branch.ts`** — Recreates the branch from main rather than rebasing. Collects linked issues from changesets before running the version command. Creates an API commit with the main branch HEAD as parent. Handles PR reopening if the branch was previously deleted. Uses the same title/commit-subject resolution as `create-release-branch.ts`. When `changeset version` produces no changes the branch would be identical to main — an invalid "nothing to release" state — so this flow closes any open release PR (via `PullRequest.update`), deletes the release branch (via `GitBranch.delete`) and skips the reopen/title-update/create-PR steps (guarded by an internal `branchDeleted` flag), emitting a `neutral` check-run conclusion. `UpdateReleaseBranchResult.deleted` signals this to `main.ts`, which reports `updated: false` and a null release PR. This mirrors the create flow, which already deletes its freshly-cut branch when the version command is a no-op.
 
 #### Release PR and commit titles
 
@@ -308,6 +308,8 @@ Using the GitHub REST API to create commits instead of `git push` provides:
 ### Why Recreate vs Rebase?
 
 The `update-release-branch.ts` module recreates the release branch from main instead of performing a `git rebase`. The release branch contains only machine-generated changes (changeset version bumps and CHANGELOG updates). Recreation is atomic; there is never a reason to preserve manual commits on it.
+
+The corollary: if recreation followed by `changeset version` yields no changes, the branch is byte-identical to main. There is no PR to open — GitHub rejects PR creation with "No commits between main and changeset-release/main", which previously failed the run. The update flow now treats this as the "nothing to release" terminal state and tears the branch down (close PR, delete branch) rather than trying to sync it forward, matching how the create flow handles a no-op version command.
 
 ### Why a Five-Step Phase-3 Flow?
 
