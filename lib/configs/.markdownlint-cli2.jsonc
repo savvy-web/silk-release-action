@@ -11,9 +11,10 @@
 		"**/.coverage",
 		"**/dist",
 		"**/CHANGELOG.md",
-		"**/.claude/plans"
+		"**/.claude/plans",
+		"**/docs/superpowers"
 	],
-	"customRules": ["@savvy-web/changesets/markdownlint"],
+	"customRules": ["@savvy-web/silk/changesets/markdownlint"],
 	"config": {
 		"default": true,
 		"MD001": true,
