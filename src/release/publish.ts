@@ -227,15 +227,16 @@ const detectFromCommit = (): Effect.Effect<ReadonlyArray<DetectedRelease>, never
 
 		const baseSha = parents[0]?.sha ?? "";
 
-		const comparison = yield* commits
-			.compare(baseSha, sha)
-			.pipe(
-				Effect.catchAll(() =>
-					Effect.succeed({ commits: [], files: [] as ReadonlyArray<{ filename: string; status: string }> }),
-				),
-			);
+		// Use the single-commit file list (paginated by file) rather than the
+		// compare endpoint: a squash-merged release PR is one commit, and the
+		// compare API paginates by commit, so it caps a one-commit comparison at
+		// its first 300 files — silently dropping packages whose `package.json`
+		// sorts past #300. `changedFiles` paginates `getCommit` and returns them all.
+		const changedFiles = yield* commits
+			.changedFiles(sha)
+			.pipe(Effect.catchAll(() => Effect.succeed([] as ReadonlyArray<{ filename: string; status: string }>)));
 
-		const modifiedPkgJsonFiles = comparison.files.filter(
+		const modifiedPkgJsonFiles = changedFiles.filter(
 			(f) => f.filename.endsWith("package.json") && (f.status === "modified" || f.status === "changed"),
 		);
 

@@ -232,7 +232,7 @@ const changesetConfigDefaultLayer = Layer.succeed(ChangesetConfig, {
  * Build test layers that simulate `detectFromCommit` responses.
  *
  * - `GitHubCommitTest` seeds the `get(sha)` commit (with its parent SHA) and
- *   the `compare(baseSha, sha)` comparison whose `files` drive detection.
+ *   the `changedFiles(sha)` file list that drives detection.
  * - `GitHubContentTest` seeds the base-branch `package.json` text, keyed by
  *   `` `${baseSha}:${filename}` ``, so the base-branch version resolves.
  *
@@ -259,10 +259,7 @@ const makeLayerForCommit = (
 		author: "Test Author",
 		parents: [{ sha: baseSha }],
 	});
-	commitState.comparisons.set(`${baseSha}...${sha}`, {
-		commits: [],
-		files: [{ filename: pkg.filename, status: "modified" }],
-	});
+	commitState.changedFiles.set(sha, [{ filename: pkg.filename, status: "modified" }]);
 
 	const contentState: GitHubContentTestState = GitHubContentTest.empty();
 	contentState.files.set(`${baseSha}:${pkg.filename}`, JSON.stringify({ name: pkg.name, version: pkg.oldVersion }));
@@ -282,8 +279,8 @@ const makeLayerForCommit = (
 
 describe("detectReleases", () => {
 	describe("detection via GitHubCommitTest (detectFromCommit)", () => {
-		it("detects packages from the commit comparison's modified package.json files", async () => {
-			// Arrange: seed a commit + comparison whose files drive the detection.
+		it("detects packages from the commit's modified package.json files", async () => {
+			// Arrange: seed a commit + its changed files that drive the detection.
 			const sha = "headsha-commit";
 			const baseSha = "parentsha-commit";
 			const { layer: ghLayer, tmpCwd } = makeLayerForCommit(sha, baseSha, {
@@ -316,7 +313,7 @@ describe("detectReleases", () => {
 				else process.env.GITHUB_SHA = savedSha;
 			}
 
-			// Assert: the seeded comparison files drove the detected release.
+			// Assert: the seeded changed files drove the detected release.
 			expect(detected).toHaveLength(1);
 			expect(detected[0]?.name).toBe("@test/commit-pkg");
 			expect(detected[0]?.version).toBe("3.0.0");
