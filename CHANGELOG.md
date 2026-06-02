@@ -1,5 +1,11 @@
 # @savvy-web/silk-release-action
 
+## 1.2.6
+
+### Other
+
+* [`418105f`](https://github.com/savvy-web/silk-release-action/commit/418105fe272a1457190f992669d475d097407b63) Upgrade to `@savvy-web/silk` standards
+
 ## 1.2.4
 
 ### Bug Fixes
