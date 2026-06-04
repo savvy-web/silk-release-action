@@ -2,9 +2,4 @@ packages:
   - .
 autoInstallPeers: true
 configDependencies:
-  "@savvy-web/pnpm-plugin-silk": 0.13.4+sha512-WNNQ5wNiBHfihbxFtX6oti+fxJb0AXHCVosdBCwFFyNXKk9YAWLM3Qa+9Z9b1x1bFedFBTsXjoDQk/kWAlddyg==
-overrides:
-  "@savvy-web/github-action-effects": link:../systems/packages/github-action-effects/dist/dev
-publicHoistPattern:
-  - "@savvy-web/cli"
-  - "@savvy-web/mcp"
+  "@savvy-web/pnpm-plugin-silk": 0.14.5+sha512-bA2uq4Z7cQ2tIUN96J3MjE1arvv1IpDYzwdxlXaaUB0YJud5PlYBjIZ+9dNzvc34KpcfaLIN0AhuIRrg0BFkLA==
