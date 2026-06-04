@@ -53,7 +53,7 @@ This precedence fixed a regression where a public source package (`private: fals
 
 Ignored packages are excluded from detection entirely, not just from publishing: Phase-2 `detectReleasedPackages` and Phase-3 `detectReleases` both drop changeset-ignored names via `ChangesetConfig.isIgnored`, so they never appear in validation or publish output — not even as version-only rows.
 
-The implementation reads raw `package.json` from disk (not the typed `WorkspacePackage`) so it can see `publishConfig.targets`, which is not surfaced by the typed `PublishConfig` schema in `workspaces-effect`. The same rules are encoded identically in `pnpm-config-dependency-action` and the silk `changesets` package.
+The implementation reads raw `package.json` from disk (not the typed `WorkspacePackage`) so it can see `publishConfig.targets`, which is not surfaced by the typed `PublishConfig` schema in `workspaces-effect`. The same rules are encoded identically in `silk-update-action` and the silk `changesets` package.
 
 ### Registry Infrastructure
 
