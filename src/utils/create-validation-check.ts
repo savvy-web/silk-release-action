@@ -9,6 +9,33 @@ import { Effect } from "effect";
 import type { ValidationResult } from "../types/shared-types.js";
 import { summaryWriter } from "./summary-writer.js";
 
+/**
+ * GitHub Checks API hard limit on `output.summary` (and `output.text`), in
+ * UTF-8 BYTES (the API rejects with "summary exceeds a maximum bytesize of
+ * 65535" — note bytes, not characters; multi-byte chars like ✅/❌/🦋/│ count
+ * as several bytes each).
+ */
+export const GITHUB_CHECK_SUMMARY_LIMIT = 65535;
+
+/**
+ * Cap a check-run summary to GitHub's 65535-BYTE limit (UTF-8). Over-limit
+ * input is truncated on a byte budget — without splitting a multi-byte char —
+ * with a trailing notice, so the check still posts instead of failing the whole
+ * phase with a 422. Truncating by `string.length` (characters) is wrong: a
+ * summary full of emoji/box-drawing glyphs can be under the char count yet over
+ * the byte limit.
+ */
+export const capCheckSummary = (summary: string): string => {
+	if (Buffer.byteLength(summary, "utf8") <= GITHUB_CHECK_SUMMARY_LIMIT) return summary;
+	const notice = "\n\n_…summary truncated (exceeded GitHub's 65535-byte check limit)._";
+	const budget = GITHUB_CHECK_SUMMARY_LIMIT - Buffer.byteLength(notice, "utf8");
+	// Take the first `budget` bytes, then drop a trailing partial multi-byte
+	// sequence (decoded as U+FFFD) so the output is valid UTF-8 within budget.
+	let truncated = Buffer.from(summary, "utf8").subarray(0, budget).toString("utf8");
+	if (truncated.endsWith("�")) truncated = truncated.slice(0, -1);
+	return `${truncated}${notice}`;
+};
+
 export interface UnifiedValidationResult {
 	success: boolean;
 	validations: ValidationResult[];
@@ -85,7 +112,7 @@ export const createValidationCheck = (
 		const { id: checkId, htmlUrl } = yield* checks.create(checkTitle, sha);
 		yield* checks.complete(checkId, success ? "success" : "failure", {
 			title: checkSummary,
-			summary: checkDetails,
+			summary: capCheckSummary(checkDetails),
 		});
 
 		const jobSections: Array<{ heading?: string; level?: 2 | 3; content: string }> = [

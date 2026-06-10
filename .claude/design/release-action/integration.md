@@ -4,8 +4,8 @@ category: integration
 status: current
 completeness: 92
 created: 2026-02-07
-updated: 2026-05-22
-last-synced: 2026-05-22
+updated: 2026-06-10
+last-synced: 2026-06-10
 module: release-action
 related:
   - architecture.md
@@ -23,6 +23,7 @@ dependencies:
   - [Token Plumbing](#token-plumbing)
   - [Attestation System](#attestation-system)
   - [SBOM and Compliance System](#sbom-and-compliance-system)
+  - [Release Assets (Group-Keyed)](#release-assets-group-keyed)
   - [Publish Summary Generation](#publish-summary-generation)
   - [Type System](#type-system)
 - [Rationale](#rationale)
@@ -32,7 +33,9 @@ dependencies:
 
 The release action supports publishing to multiple registries simultaneously with OIDC-first authentication, SBOM generation, and NTIA compliance validation. This document covers the registry infrastructure, authentication model, SBOM/compliance system, and the type system that ties them together.
 
-Phase 3 is a self-recovering publish chain built on `@savvy-web/github-action-effects@2.0.0` library services. The old imperative registry modules (`registry-auth.ts`, `registry-utils.ts`, `pre-validate-target.ts`, `dry-run-publish.ts`, `resolve-targets.ts`, `publish-packages.ts`, `publish-target.ts`) are deleted. The `Attest` and `Sbom` services from the old `src/services/attest/` directory are now part of the library; that directory no longer exists in this repo. See `src/release/publish.ts` and `src/release/releases.ts` for the current Effect orchestration.
+Phase 3 is a self-recovering publish chain built on `@savvy-web/github-action-effects` (`^2.1.3`) library services. The old imperative registry modules (`registry-auth.ts`, `registry-utils.ts`, `pre-validate-target.ts`, `dry-run-publish.ts`, `resolve-targets.ts`, `publish-packages.ts`, `publish-target.ts`) are deleted. The `Attest` and `Sbom` services from the old `src/services/attest/` directory are now part of the library; that directory no longer exists in this repo. See `src/release/publish.ts` and `src/release/releases.ts` for the current Effect orchestration.
+
+Publish and release operate on the `@savvy-web/bundler` per-byte-group prod layout (requires `@savvy-web/silk-effects ^1.0.0`): each package's `publishConfig.targets` is a Record map resolved through a `dist/prod/targets.json` binding into `dist/prod/<group>/pkg` build directories, one per byte-variant group. Registries that share bytes share a group, so `npm: true` + `github: true` collapse into a single tarball deployed to both registries.
 
 ## Current State
 
@@ -73,6 +76,15 @@ Authentication and publishing are handled by library services in Phase 3:
 - **`PackagePublish`** (library) — `pack(directory)` runs npm pack once per build directory; `publishTarball(path, opts)` publishes the pre-packed tarball; `setupAuth(registry, token)` writes auth to `~/.npmrc`. OIDC for npm and JSR is handled inside the library's `PackagePublish.publishTarball` implementation via `pnpm dlx npm` (fetches npm 11.x which supports OIDC trusted publishing; Node 24 ships npm 10.x which does not).
 - **`NpmRegistry`** (library) — `getPublishedIntegrity(name, version, opts)` probes a registry for an existing version's tarball digest. Returns `Option.none()` when absent, `Option.some(digest)` when present. Used by `publishDirectoryGroup` before deciding whether to publish, skip, or abort.
 
+##### Token-auth publishing fallback
+
+`publishTarball` takes a `tokenAuth` flag. The decision in `publishDirectoryGroup`:
+
+- **GitHub Packages** — published with `tokenAuth: true` from the first attempt. npm 11.5+ still auto-attempts the OIDC `/-/npm/v1/oidc/token/exchange` POST whenever the Actions OIDC env is present (even without `--provenance`), which GitHub Packages does not support — it 404s and ignores the configured `_authToken`. Stripping the OIDC env and authenticating with the token avoids the failed exchange.
+- **npm public registry** — prefers trusted publishing (OIDC). When that fails and a token is available it retries once with `tokenAuth: true`: an unconfigured package (no trusted publisher yet) cannot bootstrap the OIDC exchange (it 404s "package not found"), so the first-time publish needs the token. Once the package exists and trusted publishing is configured, the first attempt succeeds and the retry never fires.
+
+Failures surface npm's actual error (e.g. `ENEEDAUTH`, `E404`) rather than an opaque exit code, and the resolved auth-token key plus target `.npmrc` are logged (never the token) for auth debugging.
+
 Phase 2 dry-run validation uses `PackagePublish.dryRun` from the library, which runs `npm publish --dry-run` (via `pnpm dlx npm`) against each target registry.
 
 #### Configuration Loading (`load-release-config.ts`)
@@ -99,7 +111,7 @@ Under the 2.0 library all three identities are carried as `Redacted<string>` thr
 
 ### Attestation System
 
-The `Attest` and `Sbom` services are now part of `@savvy-web/github-action-effects@2.0.0`. The old `src/services/attest/` directory no longer exists in this repo; the library's published surface (`Attest`, `Sbom`, `SigstoreSigner`, `OidcTokenIssuer`) is consumed directly in `src/release/publish.ts` and `src/release/releases.ts`.
+The `Attest` and `Sbom` services are now part of `@savvy-web/github-action-effects` (`^2.1.3`). The old `src/services/attest/` directory no longer exists in this repo; the library's published surface (`Attest`, `Sbom`, `SigstoreSigner`, `OidcTokenIssuer`) is consumed directly in `src/release/publish.ts` and `src/release/releases.ts`.
 
 **Key properties of the current attestation flow:**
 
@@ -126,6 +138,12 @@ SBOM generation is handled by the `Sbom` service from `@savvy-web/github-action-
 **`detect-copyright-year.ts`** — Determines copyright start year with three-level precedence: config override (`copyright.startYear` in `silk-release.json`), npm registry first publication date (`npm view <pkg> time`), current year fallback.
 
 The Phase-2 SBOM preview and Phase-3 SBOM assets are both built from the same `Sbom.generate` call output — Phase 2 generates and saves the SBOM to disk; Phase 3 reads it back for the release asset upload.
+
+### Release Assets (Group-Keyed)
+
+`runReleases` uploads release assets keyed by byte-group rather than the old directory-prefix naming (`getDirectoryPrefix` is gone). Per group it uploads `<name>-<version>.<group>.tgz` (the publish tarball), `<name>-<version>.<group>.sbom.json`, `<name>-<version>.<group>.api.json` and an unattested `<name>-<version>.<group>.meta.tgz` doc bundle. `src/utils/group-id.ts` (`getGroupId`, `insertGroupToken`) is the only naming authority. All uploads are idempotent — a re-run reuses an asset already attached to the release by name.
+
+The `meta.tgz` bundle (`tarMetaFolder` in `src/release/meta-archive.ts`) packs the bundler's sibling `meta/` folder — `<unscoped>.api.json` + `tsconfig.json` + `package.json` — plus the generated SBOM, which `copySbomIntoMeta` copies into `meta/` first. It is unattested and exists purely for downstream documentation builders. API-reference docs are read from the `meta/` folder (`findApiDocFile` / `metaDirFor`), not the publish dir.
 
 ### Publish Summary Generation
 
@@ -200,8 +218,10 @@ Packing once ensures every registry receives identical content with the same SHA
 
 | File | Description |
 | --- | --- |
-| `src/release/publish.ts` | detectReleases, runBuildAndSbom, runPublishTargets, publishDirectoryGroup |
-| `src/release/releases.ts` | runReleases: tags, GitHub releases, SBOM assets, attestations |
+| `src/release/publish.ts` | detectReleases, runBuildAndSbom, runPublishTargets, publishDirectoryGroup (token-auth fallback) |
+| `src/release/releases.ts` | runReleases: tags, GitHub releases, group-keyed tarball/SBOM/API-doc/meta.tgz assets, attestations |
+| `src/release/meta-archive.ts` | tarMetaFolder: packs a bundler `meta/` folder into a `…<group>.meta.tgz` doc bundle |
+| `src/utils/group-id.ts` | getGroupId, insertGroupToken — byte-group asset naming |
 | `src/release/layers.ts` | ReleaseLive layer composition |
 | `src/release/types.ts` | TargetPublishResult, ValidationFinding, ValidationPackageResult, etc. |
 

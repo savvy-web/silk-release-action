@@ -25,7 +25,7 @@ When the release branch is updated (from Phase 1 or manual commits), the action 
 1. Extracts issue references from commit messages and links them to the release
 2. Runs `pnpm build` (or the configured package manager) to verify all packages compile
 3. Performs a dry-run publish to each configured registry (npm, JSR, GitHub Packages, custom)
-4. Generates a preview of CHANGELOG entries that will be created
+4. Generates a Release Notes Preview check on the PR showing the CHANGELOG entries each package will publish
 5. Creates a unified check run on the PR showing all validation results
 6. Posts or updates a sticky comment on the release PR with a structured validation summary
 

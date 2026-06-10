@@ -110,7 +110,7 @@ We author every dependency in the table below, so a bug or missing API in one ca
 
 **Committing while a link/override is active:** commit the **full dogfood state** to `dev` — `src` + rebuilt `dist` + changeset **and** the `pnpm-workspace.yaml` override + `pnpm-lock.yaml`. The override holds a machine-specific link path, so `dev` only installs cleanly with the sibling repos checked out at the paths in the table above; that is the accepted dogfooding trade-off, and the cleanup in step 7 reverts it. No CI runs on a plain `dev` push, so the committed `dev` source may reference an unpublished library API until it publishes — expected during dogfooding. Commits must be GPG-signed with the GitHub-verified key for `C. Spencer Beggs <spencer@savvyweb.systems>` or the signature ruleset rejects them.
 
-**Currently active:** `workspaces-effect` is linked via override to dogfood `WorkspaceDiscovery.refresh()` (the release-title version fix). `@savvy-web/github-action-effects` is unlinked at registry `^2.0.0`.
+**Currently active:** no dogfood link or override is active. All first-party dependencies are pinned to registry versions: `@savvy-web/silk-effects ^1.0.0`, `@savvy-web/github-action-effects ^2.1.3`, and `workspaces-effect ^1.2.0`. The per-byte-group prod layout work depends on `silk-effects ^1.0.0` (publishability/target resolution) and `github-action-effects ^2.1.3`.
 
 ## Development & Release Cycle
 

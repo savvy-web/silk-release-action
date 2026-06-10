@@ -4,8 +4,8 @@ category: testing
 status: current
 completeness: 90
 created: 2026-02-07
-updated: 2026-05-30
-last-synced: 2026-05-30
+updated: 2026-06-10
+last-synced: 2026-06-10
 module: release-action
 related:
   - architecture.md
@@ -41,7 +41,7 @@ The project uses Vitest 4.0.8 with a comprehensive test suite covering Phase-3 E
 
 Phase-3 code (`src/release/`) is tested using Effect service test layers provided by `@savvy-web/github-action-effects/testing`. There are no hand-rolled Octokit factories; the old `createMockOctokit()` / `MockOctokit` patterns from `__test__/utils/test-types.ts` were removed in the migration. For imperative utility modules (Phase 1/2), tests use `vi.mock()` for external dependencies and the environment helpers from `__test__/utils/github-mocks.ts`.
 
-The publishability rules have dedicated integration tests in `__test__/integration/publishability.int.test.ts` backed by 11 fixture workspaces in `__test__/integration/fixtures/`.
+The publishability rules have dedicated integration tests in `__test__/integration/publishability.int.test.ts` backed by the fixture workspaces in `__test__/integration/fixtures/`.
 
 ## Current State
 
@@ -221,11 +221,12 @@ vi.mocked(getWorkspacePackagesSync).mockReturnValue([
 
 #### Publishability Integration Tests
 
-`__test__/integration/publishability.int.test.ts` uses 11 real fixture workspaces to verify the full silk publishability matrix against the `SilkPublishabilityDetectorLive` layer without any mocking. Each fixture is a minimal workspace with a real `package.json` in `__test__/integration/fixtures/`:
+`__test__/integration/publishability.int.test.ts` uses real fixture workspaces to verify the full silk publishability matrix against the `SilkPublishabilityDetectorLive` layer without any mocking. Each fixture is a minimal workspace with a real `package.json` in `__test__/integration/fixtures/`:
 
 | Fixture | What it covers |
 | ------- | -------------- |
 | `public-package` | `private: false` — default npm target |
+| `public-multi-target` | `private: false`, `publishConfig.targets` Record map (multiple) |
 | `private-fully-private` | `private: true`, no publishConfig — not publishable |
 | `private-versiononly` | `private: true`, no targets — version-only |
 | `private-access-public` | `private: true`, `publishConfig.access: "public"` |
@@ -236,6 +237,7 @@ vi.mocked(getWorkspacePackagesSync).mockReturnValue([
 | `private-target-built-private` | `private: true`, target with non-public access |
 | `private-target-with-directory` | `private: true`, target with explicit `directory` |
 | `private-mixed-access` | `private: true`, mix of targets with different access levels |
+| `ignore-monorepo` | changeset-ignored package — excluded from detection entirely |
 
 #### GitHub Context Mocking
 
@@ -256,6 +258,8 @@ Co-located tests live in `src/release/*.test.ts`. Integration tests live in `__t
 | --------- | ------------ | -------- |
 | `src/release/publish.test.ts` | `src/release/publish.ts` | Phase 3 |
 | `src/release/releases.test.ts` | `src/release/releases.ts` | Phase 3 |
+| `src/release/meta-archive.test.ts` | `src/release/meta-archive.ts` | Phase 3 |
+| `src/utils/group-id.test.ts` | `src/utils/group-id.ts` | Phase 3 |
 | `src/release/validation.test.ts` | `src/release/validation.ts` | Phase 2 |
 | `src/release/report.test.ts` | `src/release/report.ts` | Phase 2/3 |
 | `src/release/publishability.test.ts` | `src/release/publishability.ts` | Phase 2/3 |

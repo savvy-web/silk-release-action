@@ -32,6 +32,7 @@ import {
 	PullRequest,
 	Sbom,
 	Step,
+	isGitHubPackagesRegistry,
 	isJsrRegistry,
 } from "@savvy-web/github-action-effects";
 import { Config, Effect, Option, Redacted } from "effect";
@@ -704,17 +705,50 @@ const publishDirectoryGroup = (
 								`[publish] ${t.registry}: ${packResult.name}@${packResult.version} not on registry; publishing tarball`,
 							);
 
-							const publishOutcome = yield* publishSvc
+							// GitHub Packages never supports npm's tokenless OIDC trusted publishing —
+							// npm 11.5+ still attempts the `/-/npm/v1/oidc/token/exchange` POST
+							// whenever the Actions OIDC env is present (even without --provenance) and
+							// 404s, ignoring the configured _authToken. Publish GitHub Packages with
+							// token auth (OIDC env stripped) from the first attempt.
+							const isGhPkgs = isGitHubPackagesRegistry(t.registry);
+							let publishOutcome = yield* publishSvc
 								.publishTarball(packResult.tarballPath, {
 									registry: t.registry,
 									access: t.access,
 									provenance: t.provenance,
 									packageManager,
+									tokenAuth: isGhPkgs,
 								})
 								.pipe(
 									Effect.map(() => ({ ok: true as const })),
 									Effect.catchAll((e: PackagePublishError) => Effect.succeed({ ok: false as const, error: e.message })),
 								);
+
+							// Token-auth fallback for the npm registry. Trusted publishing (the OIDC
+							// path npm auto-takes) cannot bootstrap a package that has no trusted
+							// publisher configured yet — the exchange 404s ("package not found"). When
+							// it fails and a token is available, retry once with classic token auth
+							// (OIDC env stripped). Once the package exists and trusted publishing is
+							// configured, the first attempt succeeds and this retry never fires.
+							if (!publishOutcome.ok && !isGhPkgs && token !== null) {
+								yield* Effect.logWarning(
+									`[publish] ${t.registry}: trusted-publishing publish failed for ${packResult.name}@${packResult.version} (${publishOutcome.error}); retrying with token auth`,
+								);
+								publishOutcome = yield* publishSvc
+									.publishTarball(packResult.tarballPath, {
+										registry: t.registry,
+										access: t.access,
+										provenance: false,
+										packageManager,
+										tokenAuth: true,
+									})
+									.pipe(
+										Effect.map(() => ({ ok: true as const })),
+										Effect.catchAll((e: PackagePublishError) =>
+											Effect.succeed({ ok: false as const, error: e.message }),
+										),
+									);
+							}
 
 							if (!publishOutcome.ok) {
 								yield* Effect.logError(

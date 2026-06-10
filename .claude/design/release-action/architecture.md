@@ -4,8 +4,8 @@ category: architecture
 status: current
 completeness: 95
 created: 2026-02-07
-updated: 2026-05-30
-last-synced: 2026-05-30
+updated: 2026-06-10
+last-synced: 2026-06-10
 module: release-action
 related:
   - integration.md
@@ -22,6 +22,8 @@ dependencies: []
   - [Phase 1: Release Branch Management](#phase-1-release-branch-management)
   - [Phase 2: Release Validation](#phase-2-release-validation)
   - [Phase 3: Release Publishing](#phase-3-release-publishing)
+    - [Per-byte-group prod layout](#per-byte-group-prod-layout)
+    - [Group-keyed release assets](#group-keyed-release-assets)
   - [Phase 3a: Issue Closing](#phase-3a-issue-closing)
   - [Post-Release Housekeeping (out of action)](#post-release-housekeeping-out-of-action)
   - [Module Dependency Graph](#module-dependency-graph)
@@ -50,7 +52,9 @@ The `silk-release-action` is a TypeScript GitHub Action implementing a three-pha
 
 The action automates the full release lifecycle: detecting pending changes, managing a release branch and PR, validating builds and registry readiness, publishing to multiple registries (npm, JSR, GitHub Packages, custom), creating Git tags and GitHub releases with attestations, and closing linked issues. All operations produce GitHub Check Runs for rich CI feedback and post sticky comments on the release PR for at-a-glance status.
 
-Phase 3 is a pure Effect orchestration built on `@savvy-web/github-action-effects@2.0.0` library services. Phases 1 and 2 remain as a mix of Effect entry points (entry-point scripts, `src/release/validation.ts`) and imperative utility modules. The library ships the `Attest` and `Sbom` services, eliminating the old `src/services/attest/` directory entirely. The 2.0 layer shape changed the contracts this action adopts: `GitHubAppLive` and `ActionCacheLive` now require `HttpClient.HttpClient` (provided via `FetchHttpClient.layer`) and secret-bearing APIs take or decode to `Redacted<string>` (see [State Management](#state-management)).
+Phase 3 is a pure Effect orchestration built on `@savvy-web/github-action-effects` (`^2.1.3`) library services. Phases 1 and 2 remain as a mix of Effect entry points (entry-point scripts, `src/release/validation.ts`) and imperative utility modules. The library ships the `Attest` and `Sbom` services, eliminating the old `src/services/attest/` directory entirely. The 2.0 layer shape changed the contracts this action adopts: `GitHubAppLive` and `ActionCacheLive` now require `HttpClient.HttpClient` (provided via `FetchHttpClient.layer`) and secret-bearing APIs take or decode to `Redacted<string>` (see [State Management](#state-management)).
+
+Publish and release target the `@savvy-web/bundler` per-byte-group prod layout (requires `@savvy-web/silk-effects ^1.0.0`). Each package's `publishConfig.targets` is a Record map (binding-driven; the legacy array form is gone) and the build emits `dist/prod/<group>/pkg` directories, one per byte-variant group. `npm: true` + `github: true` collapse into a single tarball deployed to both registries. See [Per-byte-group prod layout](#per-byte-group-prod-layout).
 
 ## Current State
 
@@ -105,7 +109,9 @@ Triggers on push to the release branch. Creates all validation Check Runs upfron
 
 **`src/release/validation.ts`** (`runValidation`) — Enumerates workspace packages, diffs versions against the target branch to discover which packages are being released (`detectReleasedPackages` drops changeset-ignored names entirely via `ChangesetConfig.isIgnored`, so they never appear, not even as version-only rows), resolves publish targets via `resolvePublishableTargets` (the `PublishabilityDetectorAdaptiveLive` seam), groups targets by build directory, runs `PackagePublish.dryRun` per build directory, generates one SBOM per build directory via the `Sbom` service, applies `sbom-config` metadata, and assembles a `ValidationReport`. The report is build-centric: `ValidationPackageResult` carries builds, sizes, SBOMs, and registry targets. `strict-warnings` mode escalates warning-severity findings to `failure` for auto-merge gating.
 
-Phase 2 emits three per-step Check Runs — `Publish Validation`, `Release Notes Preview` and `SBOM Preview`. Their titles carry no decorative leading icons (the older `📦`/`📋`/`🔏` markers were removed); the only title decoration is the `🧪` marker prepended in dry-run mode (see [Dry-Run Mode](#dry-run-mode)).
+Phase 2 emits three per-step Check Runs — `Publish Validation`, `Release Notes Preview` and `SBOM Preview`. Their titles carry no decorative leading icons (the older `📦`/`📋`/`🔏` markers were removed); the only title decoration is the `🧪` marker prepended in dry-run mode (see [Dry-Run Mode](#dry-run-mode)). Dry-run and SBOM step labels key off the byte-group id (`getGroupId`) rather than the now-uniform `pkg` directory basename.
+
+Every check-run summary is passed through `capCheckSummary` (`src/utils/create-validation-check.ts`) before completion. This caps the summary at GitHub's 65535-**byte** limit (UTF-8 bytes, not characters — emoji and box-drawing glyphs each count as several bytes), truncating on a byte budget without splitting a multi-byte sequence and appending a truncation notice. Without it large monorepos 422'd the check completion. Release-notes CHANGELOG content is the main size driver, so `main.ts` `stripReleaseNotes` omits per-package `releaseNotes` from the structured `result` output and the embedded JSON block — the full notes live only in the Release Notes Preview check (see [Schema Layer](#schema-layer)).
 
 The remaining Phase-2 imperative modules handle check-run lifecycle:
 
@@ -127,7 +133,7 @@ Triggers on merge of the release PR to main. Phase 3 is a pure Effect orchestrat
 1. **`detectReleases`** (`src/release/publish.ts`) — Detects released packages from the merged PR's file diff (PR-first) or commit diff (fallback), then drops changeset-ignored names entirely via `ChangesetConfig.isIgnored`. Wrapped in `Step.withStep`.
 2. **`runBuildAndSbom`** (`src/release/publish.ts`) — Runs `ci:build` once, then generates one CycloneDX SBOM per package via `Sbom.generate`. Aborts the phase if the build fails. Returns `BuildSbomResult` including per-package SBOM paths.
 3. **`runPublishTargets`** (`src/release/publish.ts`) — Publishes packages. Discovers workspace packages, resolves publish targets via `PublishabilityDetector`, sorts topologically via `TopologicalSorter`, and calls `publishDirectoryGroup` for each unique build directory. The publish orchestrator aborts before any releases if fewer than half the targets published (i.e., N/2 or 0/N).
-4. **`runReleases`** (`src/release/releases.ts`) — Creates Git tags (sha-aware idempotency) and GitHub releases, uploads SBOM and tarball assets, creates SLSA provenance and SBOM attestations (idempotent: checks `Attest.listForSubject` before writing). One attestation per build directory, not per target.
+4. **`runReleases`** (`src/release/releases.ts`) — Creates Git tags (sha-aware idempotency) and GitHub releases, uploads group-keyed tarball, SBOM, API-doc and `meta.tgz` assets, creates SLSA provenance and SBOM attestations (idempotent: checks `Attest.listForSubject` before writing). One attestation per build directory, not per target. Asset names are keyed by byte-group via `src/utils/group-id.ts` (see [Group-keyed release assets](#group-keyed-release-assets)).
 5. **`buildPublishSummary`** (`src/release/report.ts`) — Generates the sticky-comment publish summary and Check Run output.
 
 The `determine-tag-strategy.ts` utility (still in `src/utils/`) decides between single-tag and per-package tag strategies and runs between steps 3 and 4. `main.ts` resolves the per-package-tags boolean via `yield* isMonorepoForTagging(process.cwd())` (Effect, through the single detector + `ChangesetConfig.fixed`) and passes it to the pure `determineTagStrategy(publishResults, needsPerPackageTags)`.
@@ -148,6 +154,16 @@ For each npm target in a directory group:
 #### Abort-before-releases gate
 
 After `runPublishTargets`, `main.ts` checks whether the publish results warrant creating GitHub releases. The rule: if fewer than half the targets published (i.e., every target failed or was mismatched), the release step is skipped and the workflow fails. A fully-recovered run (all targets were `skipped-identical`) proceeds to release creation normally.
+
+#### Per-byte-group prod layout
+
+Publish and release operate on the `@savvy-web/bundler` prod layout. Each package's `publishConfig.targets` is a Record map resolved through a `dist/prod/targets.json` binding (the resolution lives in the `PublishabilityDetector` from `@savvy-web/silk-effects ^1.0.0` / `workspaces-effect`, not in this repo), and the build emits one `dist/prod/<group>/pkg` directory per byte-variant group with a sibling `dist/prod/<group>/meta` folder. Registries whose bytes are identical share one group — `npm: true` + `github: true` collapse into a single `dist/prod/<group>/pkg` tarball deployed to both. The orchestrators still pack once per build directory; the per-group layout means a build directory now corresponds to a byte-group rather than a single per-registry publish dir. `src/utils/group-id.ts` derives the group id from a build directory (`getGroupId("dist/prod/npm/pkg") === "npm"`) for asset naming and step labels.
+
+#### Group-keyed release assets
+
+Release assets are keyed by byte-group rather than the old directory-prefix scheme (`getDirectoryPrefix` is gone). For each group `runReleases` uploads `<name>-<version>.<group>.tgz`, `<name>-<version>.<group>.sbom.json`, `<name>-<version>.<group>.api.json` and an unattested `<name>-<version>.<group>.meta.tgz`. `src/utils/group-id.ts` provides `insertGroupToken(fileName, group, ext?)`, which inserts the group token before the final extension or, given a compound `ext` (`.meta.tgz`, `.sbom.json`, `.api.json`), strips the trailing extension and appends `.<group><ext>`.
+
+The `meta.tgz` doc bundle packs the bundler's `meta/` folder (`<unscoped>.api.json` + `tsconfig.json` + `package.json`) plus the copied SBOM via `tarMetaFolder` in `src/release/meta-archive.ts`, for downstream documentation builders. API-reference docs (`findApiDocFile`) read from the sibling `meta/` folder (`metaDirFor`), not the publish dir.
 
 ### Phase 3a: Issue Closing
 
@@ -270,7 +286,7 @@ main.ts
 
 The `src/schema/` directory contains the structured output contract and input config schema.
 
-- **`src/schema/release-output.ts`** — Defines `ReleaseOutput` as a `Schema.Union` of three phase structs discriminated by the `phase` literal: `BranchManagementOutput`, `ValidationOutput`, `PublishingOutput`. Each struct carries orthogonal machine flags (`noop`, `succeeded`, `hasFailures`) plus a derived human-readable `status`. The action emits a Schema-encoded instance as the single `result` action output plus five scalar mirrors (`phase`, `status`, `succeeded`, `package-count`, `release-pr-number`). Action manifest outputs collapsed from ~22 to 9 total.
+- **`src/schema/release-output.ts`** — Defines `ReleaseOutput` as a `Schema.Union` of three phase structs discriminated by the `phase` literal: `BranchManagementOutput`, `ValidationOutput`, `PublishingOutput`. Each struct carries orthogonal machine flags (`noop`, `succeeded`, `hasFailures`) plus a derived human-readable `status`. The action emits a Schema-encoded instance as the single `result` action output plus five scalar mirrors (`phase`, `status`, `succeeded`, `package-count`, `release-pr-number`). Action manifest outputs collapsed from ~22 to 9 total. The per-package `ValidationPublishPackage.releaseNotes` field is `Schema.optional` — populated in-memory for the Release Notes Preview check but stripped before serialization (it dominated the payload size and pushed check summaries past the byte limit), so it is absent from the emitted `result` and from `silk-release-action.output.schema.json`'s `required` list.
 - **`src/schema/projections.ts`** — Three pure projection functions (`toBranchManagementOutput`, `toValidationOutput`, `toPublishingOutput`). Each takes an explicit input interface as the deliberate seam between internal pipeline types and the published contract.
 - **`src/schema/silk-release-config.ts`** — `SilkReleaseConfig` Effect schema for the `sbom-config` action input (and `.github/silk-release.json`). The `INPUT_SCHEMA_URL` constant points to the hosted JSON Schema at the `savvy-web/silk-release-action` rename target.
 
@@ -371,7 +387,7 @@ The action uses three GitHub API communication patterns:
 
 - **REST API** (`octokit.rest.*`): Standard CRUD operations — Check Runs, branch queries, PR listing, file comparisons, release creation, asset uploads.
 - **GraphQL API**: Complex queries requiring nested data. Used for `closingIssuesReferences` on PRs (linked issues) and branch protection mutations.
-- **Library services**: `@savvy-web/github-action-effects@2.0.0` provides Effect services (`PullRequest`, `GitTag`, `CheckRun`, `GitHubRelease`, `GitHubArtifactMetadata`, `GitHubCommit`, `GitHubContent`, `NpmRegistry`, `Attest`, `Sbom`, `PackagePublish`, `RegistryClassifier`) that wrap all Phase-3 GitHub and registry interactions. No raw Octokit calls remain in `src/release/` modules.
+- **Library services**: `@savvy-web/github-action-effects` (`^2.1.3`) provides Effect services (`PullRequest`, `GitTag`, `CheckRun`, `GitHubRelease`, `GitHubArtifactMetadata`, `GitHubCommit`, `GitHubContent`, `NpmRegistry`, `Attest`, `Sbom`, `PackagePublish`, `RegistryClassifier`) that wrap all Phase-3 GitHub and registry interactions. No raw Octokit calls remain in `src/release/` modules.
 
 ### Dry-Run Mode
 
@@ -388,8 +404,9 @@ When `dry-run: true` is set, the action executes a parallel path that validates 
 | `src/schema/release-output.ts` | ReleaseOutput Schema.Union, phase structs, ReleaseFlags, deriveStatus |
 | `src/schema/projections.ts` | toBranchManagementOutput, toValidationOutput, toPublishingOutput |
 | `src/schema/silk-release-config.ts` | SilkReleaseConfig Effect schema; INPUT_SCHEMA_URL |
-| `src/release/publish.ts` | detectReleases, runBuildAndSbom, runPublishTargets, publishDirectoryGroup |
-| `src/release/releases.ts` | runReleases: tags, GitHub releases, SBOM/attestation uploads |
+| `src/release/publish.ts` | detectReleases, runBuildAndSbom, runPublishTargets, publishDirectoryGroup (token-auth fallback for GitHub Packages / first npm publish) |
+| `src/release/releases.ts` | runReleases: tags, GitHub releases, group-keyed tarball/SBOM/API-doc/meta.tgz uploads, attestations; metaDirFor, findApiDocFile, copySbomIntoMeta |
+| `src/release/meta-archive.ts` | tarMetaFolder: packs a bundler `meta/` folder into a `…<group>.meta.tgz` doc bundle |
 | `src/release/validation.ts` | runValidation: Phase-2 dry-run + SBOM + ValidationReport |
 | `src/release/report.ts` | buildValidationComment, buildPublishSummary, buildChecksTable, buildFindingsTable |
 | `src/release/publishability.ts` | SilkPublishabilityDetectorLive, PublishabilityDetectorAdaptiveLive |
@@ -404,7 +421,8 @@ When `dry-run: true` is set, the action executes a parallel path that validates 
 | `src/utils/commit-signoff.ts` | DCO Signed-off-by trailer via GitHubToken.botIdentity |
 | `src/utils/create-api-commit.ts` | GitHub API commits (auto-signed by App) |
 | `src/utils/create-release-branch.ts` | Create release branch, version, commit, and PR |
-| `src/utils/create-validation-check.ts` | Unified Check Run aggregating all validations |
+| `src/utils/create-validation-check.ts` | Unified Check Run aggregating all validations; capCheckSummary (65535-byte UTF-8 cap) |
+| `src/utils/group-id.ts` | getGroupId (byte-group from build dir), insertGroupToken (group-keyed asset names) |
 | `src/utils/count-changesets.ts` | Count changesets per package |
 | `src/utils/derive-check-conclusion.ts` | Check-run conclusion from findings with strict-warnings support |
 | `src/utils/detect-repo-type.ts` | Monorepo/single-repo and package manager detection; exports matchesIgnorePattern (shared changeset-ignore matcher) |

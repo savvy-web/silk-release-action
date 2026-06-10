@@ -626,17 +626,7 @@
 		},
 		"ValidationPublishPackage": {
 			"type": "object",
-			"required": [
-				"name",
-				"version",
-				"baseVersion",
-				"bumpType",
-				"changesetCount",
-				"ready",
-				"versionOnly",
-				"builds",
-				"releaseNotes"
-			],
+			"required": ["name", "version", "baseVersion", "bumpType", "changesetCount", "ready", "versionOnly", "builds"],
 			"properties": {
 				"name": {
 					"type": "string",

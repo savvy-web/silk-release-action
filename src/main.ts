@@ -77,7 +77,7 @@ import { checkReleaseBranch } from "./utils/check-release-branch.js";
 import { cleanupValidationChecks } from "./utils/cleanup-validation-checks.js";
 import { closeLinkedIssues } from "./utils/close-linked-issues.js";
 import { createReleaseBranch } from "./utils/create-release-branch.js";
-import { createValidationCheck } from "./utils/create-validation-check.js";
+import { capCheckSummary, createValidationCheck } from "./utils/create-validation-check.js";
 import { deriveCheckConclusion } from "./utils/derive-check-conclusion.js";
 import type { WorkflowPhase } from "./utils/detect-workflow-phase.js";
 import { detectWorkflowPhase } from "./utils/detect-workflow-phase.js";
@@ -132,6 +132,25 @@ const detectPackageManager = Effect.gen(function* () {
 	if (yield* exists("bun.lock")) return "bun" as const;
 
 	return "npm" as const;
+});
+
+/**
+ * Return a copy of a {@link ValidationOutput} with per-package `releaseNotes`
+ * omitted. Release-notes CHANGELOG content is rendered in the dedicated Release
+ * Notes Preview check; the machine-readable structured output (the `result`
+ * action output and the embedded JSON block) does not carry it — the full notes
+ * for every package otherwise dominate the payload and can push the unified
+ * check summary past GitHub's 65535-byte limit.
+ */
+const stripReleaseNotes = (output: ValidationOutput): ValidationOutput => ({
+	...output,
+	validation: {
+		...output.validation,
+		publish: {
+			...output.validation.publish,
+			packages: output.validation.publish.packages.map(({ releaseNotes: _omit, ...rest }) => rest),
+		},
+	},
 });
 
 /**
@@ -573,7 +592,7 @@ const runValidation = Effect.gen(function* () {
 						return "";
 					}
 					yield* checksSvc
-						.complete(created.id, conclusion, { title, summary })
+						.complete(created.id, conclusion, { title, summary: capCheckSummary(summary) })
 						.pipe(Effect.catchAll((e) => Effect.logWarning(`Failed to complete check run "${title}": ${e.message}`)));
 					return created.htmlUrl;
 				});
@@ -641,7 +660,7 @@ const runValidation = Effect.gen(function* () {
 				"<summary>📦 Full structured output (<code>result</code> action output)</summary>",
 				"",
 				"```json",
-				JSON.stringify(provisionalOutput, null, 2),
+				JSON.stringify(stripReleaseNotes(provisionalOutput), null, 2),
 				"```",
 				"",
 				"</details>",
@@ -721,8 +740,10 @@ const runValidation = Effect.gen(function* () {
 				yield* Effect.logInfo("Sticky comment update skipped — no open PR found for release branch");
 			}
 
-			// Emit the structured `result` action output for Phase 2.
-			yield* emitReleaseOutput(outputs, validationOutput, {
+			// Emit the structured `result` action output for Phase 2. Release notes are
+			// stripped here — they live in the Release Notes Preview check, not the
+			// machine-readable payload (see stripReleaseNotes).
+			yield* emitReleaseOutput(outputs, stripReleaseNotes(validationOutput), {
 				packageCount: reportPackages.length,
 				// Phase 2 runs on a push to the release branch; the release PR number is not
 				// in the event payload and resolving it would need an extra API lookup, so

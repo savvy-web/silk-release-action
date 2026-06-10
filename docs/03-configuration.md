@@ -34,11 +34,13 @@
 | `release-pr-number` | Release PR number, when one is involved (empty otherwise) |
 
 The `result` output is a phase-discriminated JSON object validated by
-`https://json.schemastore.org/silk-release-action.schema.json`. It carries the
+`https://raw.githubusercontent.com/savvy-web/silk-release-action/main/silk-release-action.output.schema.json`. It carries the
 machine-readable contract: the three orthogonal flags (`noop`, `succeeded`,
 `hasFailures`), a `dryRun` marker, and exactly one phase payload block. Read fields with the `fromJSON()` expression function — e.g.
 `${{ fromJSON(steps.release.outputs.result).status }}` — and branch on
 `schemaVersion` for forward compatibility.
+
+The serialized payload does not include per-package release notes. The validation phase still computes the next CHANGELOG entries, but it surfaces them in the dedicated Release Notes Preview check rather than in `result`. To read release notes from a workflow, fetch the GitHub release body after Phase 3, or read the Release Notes Preview check on the release PR.
 
 ## Authentication model
 
@@ -46,14 +48,18 @@ The action uses a tiered approach for multi-registry publishing:
 
 | Registry | Method | Configuration |
 | --- | --- | --- |
-| npm | OIDC trusted publishing | No token needed (requires package to exist). Fallback: `npm-token` input |
+| npm | OIDC trusted publishing, with token-auth fallback | No token needed once trusted publishing is configured. Provide `npm-token` for first-time publishes or as a fallback |
 | JSR | OIDC trusted publishing | No configuration needed |
-| GitHub Packages | GitHub App token | Uses the generated token automatically |
+| GitHub Packages | Token auth | Uses the generated GitHub App token (or the `github-token` input) automatically |
 | Custom registries | `custom-registries` input | Format: `https://registry.example.com/_authToken=<token>` |
 
-### npm OIDC setup
+### npm trusted publishing and token fallback
 
-For OIDC trusted publishing to npm, your workflow needs `id-token: write` permission and the package must already exist on npmjs.com with your repository trusted. For first-time publishes, use the `npm-token` input.
+For OIDC trusted publishing to npm, your workflow needs `id-token: write` permission and the package must already exist on npmjs.com with your repository trusted. The action attempts trusted publishing first. When trusted publishing fails — which is always the case for a first-time publish, since npm cannot bootstrap a package that has no trusted publisher configured yet — and an `npm-token` is available, the action retries the same tarball with classic token auth. Provide the `npm-token` input for first-time publishes and for any package that has not yet been configured for trusted publishing.
+
+### GitHub Packages auth
+
+GitHub Packages does not support npm's tokenless OIDC trusted publishing, so the action authenticates with the GitHub App token (or the `github-token` input) from the first attempt rather than letting npm's auto-attempted OIDC exchange fail.
 
 ### Custom registry format
 

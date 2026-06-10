@@ -4,20 +4,20 @@ Source code architecture and coding patterns for silk-release-action.
 
 **See also:** [Root CLAUDE.md](../CLAUDE.md) | [**test**/CLAUDE.md](../__test__/CLAUDE.md)
 
-**For full architecture documentation:** `@../.claude/design/release-action/architecture.md` -- covers all entry points, phase detection, module dependency graph, shared infrastructure, Attest service, Schema layer, and token plumbing.
+**For full architecture documentation:** `@../.claude/design/release-action/architecture.md` -- covers all entry points, phase detection, module dependency graph, shared infrastructure, the per-byte-group prod layout (`dist/prod/<group>/pkg`), group-keyed release assets, Attest service, Schema layer, and token plumbing.
 
-**For integration/publishing details:** `@../.claude/design/release-action/integration.md` -- covers registry infrastructure, SBOM generation, and publish summaries.
+**For integration/publishing details:** `@../.claude/design/release-action/integration.md` -- covers registry infrastructure, token-auth publishing fallback, group-keyed release assets, SBOM generation, and publish summaries.
 
 ## Architecture Overview
 
 TypeScript action implementing a three-phase release workflow using changesets:
 
 - **Entry points** -- `main.ts` (phase routing), `pre.ts` (App token provisioning via `GitHubToken.provision()`), `post.ts` (cleanup/revocation via `GitHubToken.dispose()`), `state.ts` (shared action state)
-- **Release module** -- `release/` (phase orchestration): `publish.ts` (Phase-3 publish chain), `releases.ts` (GitHub releases), `validation.ts` (Phase-2 validation), `report.ts` (comment/summary renderers), `publishability.ts` (silkDetect logic), `changeset-config.ts` (ChangesetConfig service), `types.ts`, `layers.ts`, `errors.ts`, `resolve-targets.ts`; co-located `*.test.ts` for each module
-- **Schema** -- `schema/release-output.ts` (`ReleaseOutput` union), `schema/projections.ts` (scalar output projections), `schema/silk-release-config.ts` (`SilkReleaseConfig` for sbom-config input); JSON Schema artifacts at repo root
-- **Utility modules** -- `utils/*.ts` for individual operations
+- **Release module** -- `release/` (phase orchestration): `publish.ts` (Phase-3 publish chain, token-auth fallback), `releases.ts` (GitHub releases, group-keyed asset names), `validation.ts` (Phase-2 validation, check-summary byte-capping), `report.ts` (comment/summary renderers), `publishability.ts` (silkDetect logic), `changeset-config.ts` (ChangesetConfig service), `meta-archive.ts` (`tarMetaFolder` — packs the bundler `meta/` folder into the group `meta.tgz` API-docs bundle), `attest-helpers.ts`, `resolve-targets.ts` (resolves per-package targets from each `dist/prod/targets.json` binding), `types.ts`, `layers.ts`, `errors.ts`; co-located `*.test.ts` for each module
+- **Schema** -- `schema/release-output.ts` (`ReleaseOutput` union; release notes no longer carried in structured output), `schema/projections.ts` (scalar output projections), `schema/silk-release-config.ts` (`SilkReleaseConfig` for sbom-config input); JSON Schema artifacts at repo root
+- **Utility modules** -- `utils/*.ts` for individual operations, including `group-id.ts` (`getGroupId`, `insertGroupToken` — derive the byte-group id from a `dist/prod/<group>/pkg` directory for group-keyed asset names) and `create-validation-check.ts` (check-summary byte-capping)
 - **Type definitions** -- `types/*.ts` for shared interfaces
-- **Attest/Sbom services** -- moved to `@savvy-web/github-action-effects@^2.0.0`; no longer in this repo
+- **Attest/Sbom services** -- moved to `@savvy-web/github-action-effects@^2.1.3`; no longer in this repo
 
 ## Coding Standards
 

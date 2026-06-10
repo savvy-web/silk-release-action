@@ -12,12 +12,14 @@
  * upload state machines executed the correct calls.
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CommandRunner, CommandRunnerError } from "@savvy-web/github-action-effects";
 import {
 	ActionLoggerTest,
 	AttestTest,
+	CommandRunnerTest,
 	GitHubArtifactMetadataTest,
 	GitHubClientTest,
 	GitHubReleaseTest,
@@ -28,8 +30,9 @@ import {
 import { Effect, Layer, LogLevel, Logger } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { PackageNotFoundError, WorkspaceDiscovery } from "workspaces-effect";
+import { getGroupId, insertGroupToken } from "../utils/group-id.js";
 import type { ReleasesInputArgs, ReleasesReport } from "./releases.js";
-import { runReleases } from "./releases.js";
+import { copySbomIntoMeta, findApiDocFile, metaDirFor, runReleases } from "./releases.js";
 import type { PackagePublishResult, TagInfo } from "./types.js";
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
@@ -151,6 +154,7 @@ describe("runReleases", () => {
 				makeGhClientLayer(),
 				GitHubArtifactMetadataTest.empty().layer,
 				workspaceDiscoveryLayer,
+				CommandRunnerTest.empty(),
 			);
 
 			// Act
@@ -284,6 +288,7 @@ describe("runReleases", () => {
 				makeGhClientLayer(),
 				GitHubArtifactMetadataTest.empty().layer,
 				workspaceDiscoveryLayer,
+				CommandRunnerTest.empty(),
 			);
 
 			// Act
@@ -367,6 +372,7 @@ describe("runReleases", () => {
 				makeGhClientLayer(),
 				GitHubArtifactMetadataTest.empty().layer,
 				workspaceDiscoveryLayer,
+				CommandRunnerTest.empty(),
 			);
 
 			// Act
@@ -451,6 +457,7 @@ describe("runReleases", () => {
 				makeGhClientLayer(),
 				GitHubArtifactMetadataTest.empty().layer,
 				workspaceDiscoveryLayer,
+				CommandRunnerTest.empty(),
 			);
 
 			let result: ReleasesReport;
@@ -508,6 +515,7 @@ describe("runReleases", () => {
 				makeGhClientLayer(),
 				GitHubArtifactMetadataTest.empty().layer,
 				workspaceDiscoveryLayer,
+				CommandRunnerTest.empty(),
 			);
 
 			// Act
@@ -541,11 +549,19 @@ describe("runReleases", () => {
 
 		it("uploads SBOM and API-doc assets and includes them in AssetInfo[]", async () => {
 			// Arrange: write real files so existsSync / readFileSync succeed.
-			const tarballPath = join(tmpDir, "pkg.tgz");
-			const sbomPath = join(tmpDir, "pkg.sbom.json");
-			// API Extractor names the file after the unscoped package name.
+			// The bundler emits <unscoped>.api.json into dist/prod/<group>/meta/,
+			// sitting beside the pkg/ dir. We mirror that layout inside tmpDir:
+			//   tmpDir/pkg/   ← target.directory (the "pkg" output folder)
+			//   tmpDir/meta/  ← sibling meta folder where api.json lives
+			const pkgDir = join(tmpDir, "pkg");
+			const metaDir = join(tmpDir, "meta");
+			mkdirSync(pkgDir, { recursive: true });
+			mkdirSync(metaDir, { recursive: true });
+
+			const tarballPath = join(pkgDir, "pkg.tgz");
+			const sbomPath = join(pkgDir, "pkg.sbom.json");
 			// pkg-d is the unscoped name of @test/pkg-d.
-			const apiDocPath = join(tmpDir, "pkg-d.api.json");
+			const apiDocPath = join(metaDir, "pkg-d.api.json");
 
 			writeFileSync(tarballPath, Buffer.from("fake tarball"));
 			writeFileSync(sbomPath, JSON.stringify({ bomFormat: "CycloneDX" }));
@@ -560,9 +576,11 @@ describe("runReleases", () => {
 			]);
 
 			// Override the directory so findApiDocFile resolves the .api.json file.
+			// target.directory must point at the pkg/ dir; metaDirFor will derive
+			// the sibling meta/ folder from it.
 			const firstTarget = publishResult.packages[0]?.targets[0];
 			if (firstTarget) {
-				firstTarget.target.directory = tmpDir;
+				firstTarget.target.directory = pkgDir;
 			}
 
 			const tags: TagInfo[] = [makeTag("v4.0.0", "@test/pkg-d", "4.0.0")];
@@ -584,6 +602,7 @@ describe("runReleases", () => {
 				makeGhClientLayer(),
 				GitHubArtifactMetadataTest.empty().layer,
 				workspaceDiscoveryLayer,
+				CommandRunnerTest.empty(),
 			);
 
 			// Act
@@ -602,18 +621,159 @@ describe("runReleases", () => {
 			// Assert: three assets were uploaded — tarball, SBOM, API doc
 			expect(releaseState.uploadCalls).toHaveLength(3);
 			const uploadedNames = releaseState.uploadCalls.map((c) => c.name);
-			expect(uploadedNames).toContain("pkg.tgz");
-			expect(uploadedNames.some((n) => n.endsWith(".sbom.json"))).toBe(true);
-			expect(uploadedNames.some((n) => n.endsWith(".api.json"))).toBe(true);
+			const group = getGroupId(pkgDir);
+			const expectedTarball = insertGroupToken("pkg.tgz", group);
+			const expectedSbom = insertGroupToken("pkg.tgz", group, ".sbom.json");
+			const expectedApiDoc = insertGroupToken("pkg.tgz", group, ".api.json");
+			expect(uploadedNames).toContain(expectedTarball);
+			expect(uploadedNames).toContain(expectedSbom);
+			expect(uploadedNames).toContain(expectedApiDoc);
 
 			// Assert: result AssetInfo[] contains all three assets
 			const release = result.releases[0];
 			expect(release).toBeDefined();
 			if (!release) return;
 			const assetNames = release.assets.map((a) => a.name);
-			expect(assetNames).toContain("pkg.tgz");
-			expect(assetNames.some((n) => n.endsWith(".sbom.json"))).toBe(true);
-			expect(assetNames.some((n) => n.endsWith(".api.json"))).toBe(true);
+			expect(assetNames).toContain(expectedTarball);
+			expect(assetNames).toContain(expectedSbom);
+			expect(assetNames).toContain(expectedApiDoc);
+		});
+	});
+
+	describe("group-keyed meta.tgz doc bundle", () => {
+		let tmpDir: string;
+
+		beforeEach(() => {
+			tmpDir = mkdtempSync(join(tmpdir(), "releases-meta-test-"));
+		});
+
+		afterEach(() => {
+			rmSync(tmpDir, { recursive: true, force: true });
+		});
+
+		it("packs the group meta/ folder and uploads it as an unattested .npm.meta.tgz asset", async () => {
+			// Arrange: mirror the bundler prod layout dist/prod/npm/{pkg,meta}.
+			// target.directory points at the pkg/ dir; metaDirFor derives the
+			// sibling meta/ folder. The tarball is a real file so the upload
+			// loop runs; the meta/ folder holds at least one file so the
+			// archiver has content to pack.
+			const pkgDir = join(tmpDir, "dist", "prod", "npm", "pkg");
+			const metaDir = join(tmpDir, "dist", "prod", "npm", "meta");
+			mkdirSync(pkgDir, { recursive: true });
+			mkdirSync(metaDir, { recursive: true });
+
+			const tarballPath = join(pkgDir, "savvy-web-pkg-meta-9.0.0.tgz");
+			writeFileSync(tarballPath, Buffer.from("fake tarball"));
+			writeFileSync(join(metaDir, "pkg-meta.api.json"), JSON.stringify({ metadata: {} }));
+			writeFileSync(join(metaDir, "tsconfig.json"), JSON.stringify({ compilerOptions: {} }));
+
+			const { layer: tagLayer } = GitTagTest.empty();
+			const attestLayer = AttestTest.empty();
+
+			// Custom GitHubRelease layer that records the content-type passed to
+			// uploadAsset (GitHubReleaseTest.empty only records id + name).
+			const { GitHubRelease } = await import("@savvy-web/github-action-effects");
+			const uploadCalls: Array<{ name: string; contentType: string }> = [];
+			const releaseData: import("@savvy-web/github-action-effects").ReleaseData = {
+				id: 99,
+				tag: "v9.0.0",
+				name: "v9.0.0",
+				body: "",
+				draft: false,
+				prerelease: false,
+				uploadUrl: "https://uploads.github.com/releases/99/assets",
+			};
+			const recordingReleaseLayer = Layer.succeed(GitHubRelease, {
+				create: () => Effect.succeed(releaseData),
+				uploadAsset: (releaseId: number, name: string, _data: Uint8Array | string, contentType: string) => {
+					uploadCalls.push({ name, contentType });
+					const asset: import("@savvy-web/github-action-effects").ReleaseAsset = {
+						id: uploadCalls.length,
+						name,
+						url: `https://github.com/test-owner/test-repo/releases/assets/${uploadCalls.length}`,
+						size: 8,
+					};
+					void releaseId;
+					return Effect.succeed(asset);
+				},
+				getByTag: (tag: string) => Effect.succeed({ ...releaseData, tag }),
+				list: () => Effect.succeed([releaseData]),
+				updateRelease: (releaseId: number) => Effect.succeed({ ...releaseData, id: releaseId }),
+				listReleaseAssets: () => Effect.succeed([]),
+			});
+
+			// CommandRunner whose execCapture("tar", …) actually writes the
+			// output tarball to its -czf <outPath> arg (args[1]) so the
+			// post-tar existsSync(metaOut) guard passes and the upload fires.
+			const recordingRunnerLayer = Layer.succeed(
+				CommandRunner,
+				CommandRunner.of({
+					exec: (command: string, args: ReadonlyArray<string> = []) =>
+						Effect.fail(
+							new CommandRunnerError({ command, args: [...args], exitCode: 1, stderr: "", reason: "not implemented" }),
+						),
+					execCapture: (command: string, args: ReadonlyArray<string> = []) =>
+						Effect.sync(() => {
+							const outPath = args[1];
+							if (command === "tar" && outPath) writeFileSync(outPath, "fake-tgz");
+							return { exitCode: 0, stdout: "", stderr: "" };
+						}),
+					execJson: <A, _I>(command: string, args: ReadonlyArray<string> = []) =>
+						Effect.fail(
+							new CommandRunnerError({ command, args: [...args], exitCode: 1, stderr: "", reason: "not implemented" }),
+						) as Effect.Effect<A, CommandRunnerError>,
+					execLines: (command: string, args: ReadonlyArray<string> = []) =>
+						Effect.fail(
+							new CommandRunnerError({ command, args: [...args], exitCode: 1, stderr: "", reason: "not implemented" }),
+						),
+				}),
+			);
+
+			const publishResult = makePublishPackagesResult([makePublishResult("@test/pkg-meta", "9.0.0", tarballPath)]);
+			const firstTarget = publishResult.packages[0]?.targets[0];
+			if (firstTarget) firstTarget.target.directory = pkgDir;
+
+			const tags: TagInfo[] = [makeTag("v9.0.0", "@test/pkg-meta", "9.0.0")];
+
+			const args: ReleasesInputArgs = {
+				tags,
+				publishResult,
+				packageManager: "pnpm",
+				dryRun: false,
+			};
+
+			const layers = Layer.mergeAll(
+				loggerLayer,
+				tagLayer,
+				recordingReleaseLayer,
+				attestLayer,
+				oidcLayer,
+				sigstoreLayer,
+				makeGhClientLayer(),
+				GitHubArtifactMetadataTest.empty().layer,
+				workspaceDiscoveryLayer,
+				recordingRunnerLayer,
+			);
+
+			// Act
+			const result: ReleasesReport = await Effect.runPromise(
+				runReleases(args).pipe(Effect.provide(layers)) as Effect.Effect<ReleasesReport>,
+			);
+
+			// Assert: a group-keyed meta.tgz asset was uploaded as application/gzip.
+			expect(result.success).toBe(true);
+			const metaUpload = uploadCalls.find((c) => /\.npm\.meta\.tgz$/.test(c.name));
+			expect(metaUpload).toBeDefined();
+			expect(metaUpload?.contentType).toBe("application/gzip");
+
+			// Assert: it surfaces in the release's AssetInfo[] (and carries no
+			// attestation — only the primary tarball is attested).
+			const release = result.releases[0];
+			expect(release).toBeDefined();
+			if (!release) return;
+			const metaAsset = release.assets.find((a) => /\.npm\.meta\.tgz$/.test(a.name));
+			expect(metaAsset).toBeDefined();
+			expect(metaAsset?.attestationUrl).toBeUndefined();
 		});
 	});
 
@@ -682,6 +842,7 @@ describe("runReleases", () => {
 				makeGhClientLayer(),
 				artifactLayer,
 				workspaceDiscoveryLayer,
+				CommandRunnerTest.empty(),
 			);
 
 			// Act
@@ -693,7 +854,8 @@ describe("runReleases", () => {
 			expect(result.success).toBe(true);
 			expect(tagState.createCalls).toHaveLength(1);
 			expect(releaseState.createCalls).toHaveLength(1);
-			expect(releaseState.uploadCalls.map((c) => c.name)).toContain("pkg.tgz");
+			const expectedTarballName = insertGroupToken("pkg.tgz", getGroupId(tmpDir));
+			expect(releaseState.uploadCalls.map((c) => c.name)).toContain(expectedTarballName);
 
 			// Assert: a storage record was created via GitHubArtifactMetadata
 			expect(artifactState.calls).toHaveLength(1);
@@ -720,12 +882,14 @@ describe("runReleases", () => {
 			const { layer: artifactLayer } = GitHubArtifactMetadataTest.empty();
 
 			// GitHubReleaseTest.create assigns the first release id 1 (size + 1
-			// over an empty map). Pre-seed an asset named "pkg.tgz" under that
-			// id so the idempotent-reuse path in processOneTag is taken.
+			// over an empty map). Pre-seed the group-keyed asset name so the
+			// idempotent-reuse path in processOneTag is taken.
+			// makePublishResult sets directory to /tmp/dist/@test/pkg-e, so
+			// getGroupId resolves to "pkg-e" and the tarball name is "pkg.pkg-e.tgz".
 			releaseState.assets.set(1, [
 				{
 					id: 9,
-					name: "pkg.tgz",
+					name: "pkg.pkg-e.tgz",
 					url: "https://github.com/test-owner/test-repo/releases/assets/9",
 					size: 4096,
 				},
@@ -751,6 +915,7 @@ describe("runReleases", () => {
 				makeGhClientLayer(),
 				artifactLayer,
 				workspaceDiscoveryLayer,
+				CommandRunnerTest.empty(),
 			);
 
 			// Act
@@ -769,10 +934,80 @@ describe("runReleases", () => {
 			const release = result.releases[0];
 			expect(release).toBeDefined();
 			if (!release) return;
-			const tarballAsset = release.assets.find((a) => a.name === "pkg.tgz");
+			const tarballAsset = release.assets.find((a) => a.name === "pkg.pkg-e.tgz");
 			expect(tarballAsset).toBeDefined();
 			expect(tarballAsset?.downloadUrl).toBe("https://github.com/test-owner/test-repo/releases/assets/9");
 			expect(tarballAsset?.size).toBe(4096);
 		});
+	});
+});
+
+describe("meta-folder api lookup", () => {
+	const createdDirs: string[] = [];
+
+	afterEach(() => {
+		for (const dir of createdDirs) {
+			rmSync(dir, { recursive: true, force: true });
+		}
+		createdDirs.length = 0;
+	});
+
+	it("resolves <unscoped>.api.json from the sibling meta/ folder", () => {
+		const root = mkdtempSync(join(tmpdir(), "rel-"));
+		createdDirs.push(root);
+		const pkgDir = join(root, "dist", "prod", "npm", "pkg");
+		const metaDir = join(root, "dist", "prod", "npm", "meta");
+		mkdirSync(pkgDir, { recursive: true });
+		mkdirSync(metaDir, { recursive: true });
+		writeFileSync(join(metaDir, "templates.api.json"), "{}", "utf-8");
+		expect(metaDirFor(pkgDir)).toBe(metaDir);
+		expect(findApiDocFile(pkgDir, "@savvy-web/templates")).toBe(join(metaDir, "templates.api.json"));
+	});
+
+	it("returns undefined when the meta api.json is absent", () => {
+		const root = mkdtempSync(join(tmpdir(), "rel-"));
+		createdDirs.push(root);
+		const pkgDir = join(root, "dist", "prod", "npm", "pkg");
+		mkdirSync(pkgDir, { recursive: true });
+		expect(findApiDocFile(pkgDir, "@savvy-web/templates")).toBeUndefined();
+	});
+});
+
+describe("copySbomIntoMeta", () => {
+	const createdDirs: string[] = [];
+
+	afterEach(() => {
+		for (const dir of createdDirs) {
+			rmSync(dir, { recursive: true, force: true });
+		}
+		createdDirs.length = 0;
+	});
+
+	it("copies the SBOM into the group's meta/ folder as <unscoped>.sbom.json", () => {
+		const root = mkdtempSync(join(tmpdir(), "rel-meta-"));
+		createdDirs.push(root);
+		const pkgDir = join(root, "dist", "prod", "npm", "pkg");
+		const metaDir = join(root, "dist", "prod", "npm", "meta");
+		mkdirSync(pkgDir, { recursive: true });
+		mkdirSync(metaDir, { recursive: true });
+		const sbomPath = join(root, "templates.sbom.json");
+		writeFileSync(sbomPath, '{"bomFormat":"CycloneDX"}', "utf-8");
+
+		copySbomIntoMeta(sbomPath, pkgDir);
+
+		const dest = join(metaDir, "templates.sbom.json");
+		expect(existsSync(dest)).toBe(true);
+		expect(readFileSync(dest, "utf-8")).toBe('{"bomFormat":"CycloneDX"}');
+	});
+
+	it("is a no-op when the meta folder does not exist (non-bundler package)", () => {
+		const root = mkdtempSync(join(tmpdir(), "rel-meta-"));
+		createdDirs.push(root);
+		const pkgDir = join(root, "dist", "dev", "pkg");
+		mkdirSync(pkgDir, { recursive: true });
+		const sbomPath = join(root, "x.sbom.json");
+		writeFileSync(sbomPath, "{}", "utf-8");
+		expect(() => copySbomIntoMeta(sbomPath, pkgDir)).not.toThrow();
+		expect(existsSync(join(root, "dist", "dev", "meta", "x.sbom.json"))).toBe(false);
 	});
 });

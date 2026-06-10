@@ -16,7 +16,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { basename, isAbsolute, join, relative } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 
 import type { PackagePublishError, ResolvedDependency, SbomError, SbomInput } from "@savvy-web/github-action-effects";
 import {
@@ -35,6 +35,7 @@ import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
 import type { EnhancedCycloneDXDocument, ResolvedSBOMMetadata, SBOMMetadataConfig } from "../types/sbom-config.js";
 import { countChangesetsPerPackage } from "../utils/count-changesets.js";
 import { extractReleaseNotes } from "../utils/extract-release-notes.js";
+import { getGroupId } from "../utils/group-id.js";
 import { inferSBOMMetadata, resolveSBOMMetadata } from "../utils/infer-sbom-metadata.js";
 import type { ConfigSource } from "../utils/load-release-config.js";
 import { loadSBOMConfig } from "../utils/load-release-config.js";
@@ -588,7 +589,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 			const buildResults: PackageBuildResult[] = [];
 
 			for (const build of builds) {
-				const distDir = basename(build.directory);
+				const group = getGroupId(build.directory);
 
 				// ── Per-build dry-run (one per directory) ──────────────────────
 				// The tarball is a property of the directory: identical across the
@@ -598,7 +599,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 				const sizingTarget = build.targets[0];
 
 				const dryRunOutcome = yield* logger.group(
-					`Dry-run · ${pkg.name} · ${distDir}`,
+					`Dry-run · ${pkg.name} · ${group}`,
 					Effect.gen(function* () {
 						yield* Effect.logDebug(`cwd: ${build.absoluteDirectory}`);
 
@@ -648,7 +649,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 													? `✅ dry-run passed — ${result.fileCount} file(s)`
 													: "✅ dry-run passed",
 											)
-										: Effect.logWarning(`dry-run failed for ${pkg.name} · ${distDir}: ${result.output}`),
+										: Effect.logWarning(`dry-run failed for ${pkg.name} · ${group}: ${result.output}`),
 								),
 							);
 					}),
@@ -703,10 +704,10 @@ export const runValidation = (args: ValidationInputArgs) =>
 				const sbomMetadata = toSbomMetadataInput(resolved);
 
 				const sbomOutcome = yield* logger.group(
-					`SBOM · ${pkg.name} · ${distDir}`,
+					`SBOM · ${pkg.name} · ${group}`,
 					Effect.gen(function* () {
 						yield* Effect.logDebug(
-							`workspace package: ${pkg.name}@${pkg.version} · dist-dir: ${distDir} · ${dependencies.length} dep(s)`,
+							`workspace package: ${pkg.name}@${pkg.version} · group: ${group} · ${dependencies.length} dep(s)`,
 						);
 
 						return yield* sbomSvc
@@ -767,7 +768,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 								),
 								Effect.catchAll((e: SbomError) =>
 									Effect.gen(function* () {
-										yield* Effect.logWarning(`SBOM generation failed for ${pkg.name} · ${distDir}: ${e.message}`);
+										yield* Effect.logWarning(`SBOM generation failed for ${pkg.name} · ${group}: ${e.message}`);
 										return {
 											ok: false as const,
 											sbom: null as BuildSbom | null,

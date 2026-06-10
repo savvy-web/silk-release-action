@@ -15,10 +15,11 @@
  * @module release/releases
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { copyFileSync, existsSync, readFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import type {
 	AttestError,
+	CommandRunner,
 	GitHubArtifactMetadataError,
 	GitHubClientError,
 	GitHubReleaseError,
@@ -40,8 +41,10 @@ import {
 import { Effect } from "effect";
 
 import { WorkspaceDiscovery } from "workspaces-effect";
+import { getGroupId, insertGroupToken } from "../utils/group-id.js";
 import { buildProvenancePredicate } from "./attest-helpers.js";
 import { ReleasesError } from "./errors.js";
+import { tarMetaFolder } from "./meta-archive.js";
 import { getPackagePageUrl } from "./report.js";
 import type { AssetInfo, PackagePublishResult, PublishPackagesResult, ReleaseInfo, TagInfo } from "./types.js";
 
@@ -119,16 +122,6 @@ function extractReleaseNotes(changelogPath: string, version: string): string | u
 }
 
 /**
- * Return the last segment of a directory path.
- *
- * E.g. `"dist/npm"` → `"npm"`.
- */
-function getDirectoryPrefix(directory: string): string {
-	const parts = directory.split("/").filter(Boolean);
-	return parts[parts.length - 1] ?? "dist";
-}
-
-/**
  * Return the unscoped package name.
  *
  * @example
@@ -142,19 +135,44 @@ function getUnscopedName(packageName: string): string {
 }
 
 /**
- * Find the API Extractor doc file (`<unscopedName>.api.json`) in a target
- * directory.
+ * Resolve the bundler's `meta/` folder that sits beside a `dist/prod/<group>/pkg`
+ * build directory. `…/<group>/pkg` → `…/<group>/meta`.
  *
- * Ports `findApiDocFile` from `create-github-releases.ts` verbatim.
+ * Trailing slashes are tolerated, so `…/<group>/pkg/` maps to `…/<group>/meta`.
+ */
+export function metaDirFor(buildDirectory: string): string {
+	const normalized = buildDirectory.replace(/\/+$/, "");
+	return join(dirname(normalized), "meta");
+}
+
+/**
+ * Copy a generated SBOM file into the group's `meta/` folder (beside its `pkg/`
+ * build dir) so the `…{group}.meta.tgz` doc bundle includes it. No-op when the
+ * meta folder is absent (a non-bundler package) or the source is missing. The
+ * copy keeps the SBOM's basename (`<unscoped>.sbom.json`).
+ */
+export function copySbomIntoMeta(sbomPath: string, buildDirectory: string): void {
+	const metaDir = metaDirFor(buildDirectory);
+	if (!existsSync(sbomPath) || !existsSync(metaDir)) return;
+	copyFileSync(sbomPath, join(metaDir, basename(sbomPath)));
+}
+
+/**
+ * Find the API Extractor doc file (`<unscopedName>.api.json`) in the sibling
+ * `meta/` folder beside the build directory.
  *
- * @param directory - Target directory to search (may be undefined)
+ * The `@savvy-web/bundler` prod layout emits `<unscoped>.api.json` into
+ * `dist/prod/<group>/meta/` (not `dist/prod/<group>/pkg/`), so we resolve
+ * the sibling folder via `metaDirFor` before searching.
+ *
+ * @param directory - Build directory (`dist/prod/<group>/pkg`); may be undefined
  * @param packageName - Full package name used to derive the unscoped file name
  * @returns Absolute path to the `.api.json` file, or `undefined` if not found
  */
-function findApiDocFile(directory: string | undefined, packageName: string): string | undefined {
+export function findApiDocFile(directory: string | undefined, packageName: string): string | undefined {
 	if (!directory) return undefined;
 	const unscopedName = getUnscopedName(packageName);
-	const apiFilePath = join(directory, `${unscopedName}.api.json`);
+	const apiFilePath = join(metaDirFor(directory), `${unscopedName}.api.json`);
 	return existsSync(apiFilePath) ? apiFilePath : undefined;
 }
 
@@ -352,6 +370,7 @@ const processOneTag = (
 	| GitHubClient
 	| SigstoreSigner
 	| WorkspaceDiscovery
+	| CommandRunner
 > =>
 	Effect.gen(function* () {
 		yield* Effect.logDebug(`runReleases: processing ${tag.name}`);
@@ -482,8 +501,6 @@ const processOneTag = (
 				continue;
 			}
 
-			const uniqueDirectories = new Set(targetsWithTarballs.map((t) => t.target.directory));
-			const needsPrefix = uniqueDirectories.size > 1;
 			const uploadedPaths = new Set<string>();
 
 			// Accumulate SBOM / API-doc URLs so we can replace placeholder cells.
@@ -507,10 +524,9 @@ const processOneTag = (
 					continue;
 				}
 
+				const group = getGroupId(targetResult.target.directory);
 				const originalFileName = basename(artifactPath);
-				const fileName = needsPrefix
-					? `${getDirectoryPrefix(targetResult.target.directory)}-${originalFileName}`
-					: originalFileName;
+				const fileName = insertGroupToken(originalFileName, group);
 
 				// ── Tarball upload (idempotent) ─────────────────────────────────────
 				const existing = existingAssetsByName.get(fileName);
@@ -566,9 +582,35 @@ const processOneTag = (
 					}
 				}
 
+				// ── SBOM meta copy ──────────────────────────────────────────────────
+				if (targetResult.sbomPath) {
+					copySbomIntoMeta(targetResult.sbomPath, targetResult.target.directory);
+				}
+
+				// ── Meta bundle (api + tsconfig + sbom) — unattested doc-builder asset ──
+				const metaDir = metaDirFor(targetResult.target.directory);
+				if (existsSync(metaDir)) {
+					const metaName = insertGroupToken(originalFileName, group, ".meta.tgz");
+					if (!existingAssetsByName.has(metaName)) {
+						const metaOut = join(dirname(metaDir), metaName);
+						yield* tarMetaFolder(metaDir, metaOut).pipe(
+							Effect.catchAll((e) => Effect.logWarning(`runReleases: meta tar failed for ${metaName}: ${String(e)}`)),
+						);
+						if (existsSync(metaOut)) {
+							const metaAsset = yield* releaseSvc
+								.uploadAsset(releaseData.id, metaName, readFileSync(metaOut), "application/gzip")
+								.pipe(Effect.catchAll(() => Effect.succeed(null)));
+							if (metaAsset !== null) {
+								existingAssetsByName.set(metaName, { url: metaAsset.url, size: metaAsset.size });
+								assets.push({ name: metaName, downloadUrl: metaAsset.url, size: metaAsset.size });
+							}
+						}
+					}
+				}
+
 				// ── SBOM upload ─────────────────────────────────────────────────────
 				if (targetResult.sbomPath && existsSync(targetResult.sbomPath)) {
-					const sbomFileName = basename(targetResult.sbomPath);
+					const sbomFileName = insertGroupToken(originalFileName, group, ".sbom.json");
 					const sbomExisting = existingAssetsByName.get(sbomFileName);
 
 					if (sbomExisting) {
@@ -605,9 +647,7 @@ const processOneTag = (
 				// ── API doc upload ──────────────────────────────────────────────────
 				const apiDocPath = findApiDocFile(targetResult.target.directory, pkg.name);
 				if (apiDocPath) {
-					const apiDocFileName = needsPrefix
-						? `${getDirectoryPrefix(targetResult.target.directory)}-${basename(apiDocPath)}`
-						: basename(apiDocPath);
+					const apiDocFileName = insertGroupToken(originalFileName, group, ".api.json");
 					const apiExisting = existingAssetsByName.get(apiDocFileName);
 
 					if (apiExisting) {
@@ -651,12 +691,17 @@ const processOneTag = (
 			// single package commonly has multiple targets (one row each)
 			// sharing the same SBOM/API doc upload.
 			const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+			// `$` in a String.replace replacement string is a backreference
+			// sigil (`$1`, `$&`, `$$`); a literal `$` must be doubled. Asset
+			// URLs do not contain `$` today, but escape defensively in case a
+			// future GitHub URL scheme does.
+			const escapeRepl = (s: string) => s.replace(/\$/g, "$$$$");
 
 			for (const [pkgName, sbomUrl] of sbomAssetUrls) {
 				const escapedPkg = escapeRe(pkgName);
 				releaseNotes = releaseNotes.replace(
 					new RegExp(`(\\| [^|\\n]+ \\| [^|\\n]*${escapedPkg}@[^|\\n]+ \\|) 📦 \\|`, "g"),
-					`$1 [📦](${sbomUrl}) |`,
+					`$1 [📦](${escapeRepl(sbomUrl)}) |`,
 				);
 			}
 
@@ -664,7 +709,7 @@ const processOneTag = (
 				const escapedPkg = escapeRe(pkgName);
 				releaseNotes = releaseNotes.replace(
 					new RegExp(`(\\| [^|\\n]+ \\| [^|\\n]*${escapedPkg}@[^|\\n]+ \\|(?: [^|\\n]+ \\|)?) 📄 \\|`, "g"),
-					`$1 [📄](${apiDocUrl}) |`,
+					`$1 [📄](${escapeRepl(apiDocUrl)}) |`,
 				);
 			}
 		}
@@ -732,6 +777,7 @@ export const runReleases = (
 	| SigstoreSigner
 	| ActionLogger
 	| WorkspaceDiscovery
+	| CommandRunner
 > =>
 	Step.withStep(
 		"Create releases",

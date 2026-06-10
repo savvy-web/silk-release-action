@@ -19,6 +19,7 @@ import type {
 import { ActionEnvironment, ActionOutputs, CheckRun, CommandRunner } from "@savvy-web/github-action-effects";
 import type { ConfigError } from "effect";
 import { Config, Effect } from "effect";
+import { capCheckSummary } from "./create-validation-check.js";
 import { summaryWriter } from "./summary-writer.js";
 
 export interface BuildValidationResult {
@@ -173,7 +174,7 @@ export const validateBuilds = (
 		const checkRun = yield* checks.create(checkTitle, sha);
 		yield* checks.complete(checkRun.id, success ? "success" : "failure", {
 			title: checkSummary,
-			summary: checkDetails,
+			summary: capCheckSummary(checkDetails),
 			annotations: annotations.slice(0, 50),
 		});
 		yield* Effect.logInfo(`Created check run: ${checkRun.htmlUrl}`);
