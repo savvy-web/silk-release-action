@@ -691,12 +691,17 @@ const processOneTag = (
 			// single package commonly has multiple targets (one row each)
 			// sharing the same SBOM/API doc upload.
 			const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+			// `$` in a String.replace replacement string is a backreference
+			// sigil (`$1`, `$&`, `$$`); a literal `$` must be doubled. Asset
+			// URLs do not contain `$` today, but escape defensively in case a
+			// future GitHub URL scheme does.
+			const escapeRepl = (s: string) => s.replace(/\$/g, "$$$$");
 
 			for (const [pkgName, sbomUrl] of sbomAssetUrls) {
 				const escapedPkg = escapeRe(pkgName);
 				releaseNotes = releaseNotes.replace(
 					new RegExp(`(\\| [^|\\n]+ \\| [^|\\n]*${escapedPkg}@[^|\\n]+ \\|) 📦 \\|`, "g"),
-					`$1 [📦](${sbomUrl}) |`,
+					`$1 [📦](${escapeRepl(sbomUrl)}) |`,
 				);
 			}
 
@@ -704,7 +709,7 @@ const processOneTag = (
 				const escapedPkg = escapeRe(pkgName);
 				releaseNotes = releaseNotes.replace(
 					new RegExp(`(\\| [^|\\n]+ \\| [^|\\n]*${escapedPkg}@[^|\\n]+ \\|(?: [^|\\n]+ \\|)?) 📄 \\|`, "g"),
-					`$1 [📄](${apiDocUrl}) |`,
+					`$1 [📄](${escapeRepl(apiDocUrl)}) |`,
 				);
 			}
 		}

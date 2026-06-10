@@ -35,6 +35,11 @@ export function getGroupId(directory: string): string {
  *   pass the matching `ext` argument; calling without `ext` on such a name
  *   inserts the token before the last component only (e.g. `templates.api.json`
  *   becomes `templates.api.github.json`).
+ *
+ *   The trailing-`.tgz` strip is the catch-all: when `ext` is given but
+ *   `fileName` ends in neither `ext` nor `.tgz`, nothing is stripped and the
+ *   result is `${fileName}.${group}${ext}`. All current callers pass a tarball
+ *   stem as `fileName`, so that branch is unreachable in practice.
  */
 export function insertGroupToken(fileName: string, group: string, ext?: string): string {
 	if (ext !== undefined) {
