@@ -534,7 +534,12 @@ const ValidationPublishPackage = Schema.Struct({
 		title: "Builds",
 		description: "The unique output directories this package produces, one entry per build.",
 	}),
-	releaseNotes: ValidationReleaseNotes,
+	// Optional in the machine-readable output: the full CHANGELOG content is rendered in the
+	// dedicated Release Notes Preview check, not duplicated into the `result` payload / the
+	// embedded JSON block (where it otherwise dominates the size and can exceed the
+	// check-summary byte limit). Populated in-memory for the preview check, stripped before
+	// serialization.
+	releaseNotes: Schema.optional(ValidationReleaseNotes),
 }).annotations({
 	identifier: "ValidationPublishPackage",
 	title: "Released package",

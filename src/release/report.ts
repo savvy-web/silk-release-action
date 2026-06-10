@@ -609,20 +609,27 @@ function renderReleaseNotesSection(pkg: ValidationPayload["publish"]["packages"]
 
 	const notes = pkg.releaseNotes;
 	let body: string;
-	switch (notes.status) {
-		case "found":
-			body = notes.content;
-			break;
-		case "no-changelog":
-			body = "_⚠️ No `CHANGELOG.md` found for this package._";
-			break;
-		case "version-not-found":
-			body = `_⚠️ Could not locate the \`${pkg.version}\` section in \`CHANGELOG.md\`._\n\n_Reason:_ ${notes.reason}`;
-			break;
-		case "error":
-			body = `_⚠️ Failed to read \`CHANGELOG.md\`:_ ${notes.message}`;
-			break;
-	}
+	// `releaseNotes` is optional in the schema (stripped from the serialized
+	// structured output). The Release Notes Preview check is rendered from the
+	// in-memory payload where it is always populated; this guard satisfies the
+	// optional type for the stripped form (never rendered through here).
+	if (notes === undefined) {
+		body = "_No release notes captured._";
+	} else
+		switch (notes.status) {
+			case "found":
+				body = notes.content;
+				break;
+			case "no-changelog":
+				body = "_⚠️ No `CHANGELOG.md` found for this package._";
+				break;
+			case "version-not-found":
+				body = `_⚠️ Could not locate the \`${pkg.version}\` section in \`CHANGELOG.md\`._\n\n_Reason:_ ${notes.reason}`;
+				break;
+			case "error":
+				body = `_⚠️ Failed to read \`CHANGELOG.md\`:_ ${notes.message}`;
+				break;
+		}
 
 	return [heading, transition, body].join("\n\n");
 }
@@ -658,7 +665,7 @@ export function buildReleaseNotesPreviewSummary(validation: ValidationPayload): 
 	}
 
 	const notesIcon = (notes: ValidationPayload["publish"]["packages"][number]["releaseNotes"]): string =>
-		notes.status === "found" ? "✅" : "⚠️";
+		notes?.status === "found" ? "✅" : "⚠️";
 
 	const tableRows: ReadonlyArray<ReadonlyArray<string>> = packages.map((pkg) => {
 		const changesets = pkg.changesetCount === null ? "—" : String(pkg.changesetCount);

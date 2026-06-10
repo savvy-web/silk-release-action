@@ -16,11 +16,11 @@ Alternatively, pass a `github-token` with `packages: write` permission:
     github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-### OIDC Publishing Fails for New Packages
+### Publishing fails for new npm packages
 
-OIDC trusted publishing to npm requires two things: the package must already exist on npmjs.com, and your repository must be listed as a trusted publisher on that package. Both conditions must be satisfied — a 404 from npm usually means the package has never been published; a 403 means the package exists but the repository is not trusted.
+OIDC trusted publishing to npm requires two things: the package must already exist on npmjs.com, and your repository must be listed as a trusted publisher on that package. A first-time publish cannot satisfy either condition, so trusted publishing fails. When an `npm-token` is available, the action automatically retries the same tarball with classic token auth, so a first-time publish succeeds as long as you provide the token.
 
-For first-time publishes, or when OIDC trusted publishing has not yet been configured on npmjs.com, provide an npm token:
+If a publish fails and you have not supplied an `npm-token`, provide one so the token-auth fallback can complete the publish:
 
 ```yaml
 - uses: savvy-web/silk-release-action@main
