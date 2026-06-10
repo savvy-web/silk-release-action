@@ -182,7 +182,7 @@ function loadConfigFromLocalRepo(rootDir: string): LocalRepoLookup {
  * to the action as environment variables in the workflow:
  *
  * ```yaml
- * - uses: savvy-web/silk-release-action@main
+ * - uses: savvy-web/silk-release-action@v2
  *   env:
  *     SILK_RELEASE_SBOM_TEMPLATE: ${{ vars.SILK_RELEASE_SBOM_TEMPLATE }}
  * ```
