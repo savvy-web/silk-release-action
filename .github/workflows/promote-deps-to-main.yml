@@ -1,0 +1,84 @@
+# Promote merged dependency updates from `dev` to `main`.
+#
+# `silk-update.yml` opens a `pnpm/config-deps` PR into `dev` and squash-merges
+# it once checks pass. When that merge lands, this workflow opens a `dev -> main`
+# PR (using a GitHub App token so the PR triggers required checks / cloud
+# reviewers) and leaves it open for review and the action's smoke tests. It does
+# not auto-merge — promotion to `main` stays a reviewed step.
+name: Promote Dependency Updates
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [dev]
+  workflow_dispatch:
+
+concurrency:
+  group: promote-deps-to-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    name: Open dev to main PR
+    runs-on: ubuntu-latest
+    # Manual dispatch, or a real merge of the pnpm/config-deps branch into dev.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.merged == true &&
+       github.event.pull_request.head.ref == 'pnpm/config-deps')
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Open or update dev to main PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_PAGER: cat
+          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          SOURCE_PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+
+          # An open dev -> main PR already auto-tracks new dev commits, so a
+          # second config-deps merge needs no new PR.
+          existing="$(gh api "repos/${REPO}/pulls?base=main&head=${OWNER}:dev&state=open" --jq 'length')"
+          if [[ "$existing" -gt 0 ]]; then
+            number="$(gh api "repos/${REPO}/pulls?base=main&head=${OWNER}:dev&state=open" --jq '.[0].number')"
+            echo "::notice::dev -> main PR #${number} already open; new dev commits are tracked automatically."
+            exit 0
+          fi
+
+          if [[ -n "${SOURCE_PR}" ]]; then
+            trigger="Triggered by merged dependency PR #${SOURCE_PR}."
+          else
+            trigger="Triggered manually via workflow_dispatch."
+          fi
+
+          body=$(cat <<EOF
+          ## Promote dependency updates
+
+          Automated promotion of dependency updates accumulated on \`dev\` into \`main\`.
+          ${trigger}
+
+          This PR is left open so cloud reviewers and the action's smoke tests can
+          run against the changes before release. Merging it starts the normal
+          release cycle.
+          EOF
+          )
+
+          number="$(gh api --method POST "repos/${REPO}/pulls" \
+            -f title="chore(deps): promote dependency updates to main" \
+            -f head="dev" \
+            -f base="main" \
+            -f body="${body}" \
+            --jq '.number')"
+          echo "::notice::Opened dev -> main PR #${number}."

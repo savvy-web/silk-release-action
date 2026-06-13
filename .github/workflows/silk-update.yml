@@ -53,6 +53,7 @@ jobs:
           auto-merge: "squash"
           upgrade-runtime-node: "^26.0.0"
           upgrade-package-manager: "^11.0.0"
+          source-branch: dev
           config-dependencies: |
             @savvy-web/pnpm-plugin-silk
           dependencies: |
