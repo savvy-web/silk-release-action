@@ -1,5 +1,27 @@
 # @savvy-web/silk-release-action
 
+## 2.0.1
+
+### Dependencies
+
+* | [`c8b6976`](https://github.com/savvy-web/silk-release-action/commit/c8b69769055cea520f204389d04c7d7436f7d25e) | Dependency    | Type    | Action | From   | To |
+  | :------------------------------------------------------------------------------------------------------------ | :------------ | :------ | :----- | :----- | -- |
+  | @savvy-web/github-action-effects                                                                              | dependency    | updated | ^2.1.3 | ^2.1.4 |    |
+  | @savvy-web/silk-effects                                                                                       | dependency    | updated | ^1.0.0 | ^1.1.0 |    |
+  | json-schema-effect                                                                                            | dependency    | updated | ^0.2.1 | ^0.2.2 |    |
+  | @savvy-web/github-action-builder                                                                              | devDependency | updated | ^0.7.6 | ^0.7.8 |    |
+  | @savvy-web/silk                                                                                               | devDependency | updated | ^0.4.0 | ^0.4.2 |    |
+  | @savvy-web/vitest                                                                                             | devDependency | updated | ^1.4.0 | ^1.5.0 |    |
+
+- | [`f67fc7b`](https://github.com/savvy-web/silk-release-action/commit/f67fc7ba86fa29a0df01d65a6ef97cdf8c3eb9b0) | Dependency    | Type    | Action   | From     | To |
+  | :------------------------------------------------------------------------------------------------------------ | :------------ | :------ | :------- | :------- | -- |
+  | @effect/platform-node                                                                                         | dependency    | updated | ^0.106.0 | ^0.107.0 |    |
+  | effect                                                                                                        | dependency    | updated | ^3.21.2  | ^3.21.3  |    |
+  | @savvy-web/silk-effects                                                                                       | dependency    | updated | ^1.1.0   | ^1.2.0   |    |
+  | json-schema-effect                                                                                            | dependency    | updated | ^0.2.2   | ^0.2.4   |    |
+  | @savvy-web/github-action-builder                                                                              | devDependency | updated | ^0.7.8   | ^0.7.9   |    |
+  | @savvy-web/silk                                                                                               | devDependency | updated | ^0.4.2   | ^1.1.0   |    |
+
 ## 2.0.0
 
 ### Breaking Changes
