@@ -50,6 +50,15 @@ export interface TargetPublishResult {
 		| undefined;
 	registryUrl?: string | undefined;
 	attestationUrl?: string | undefined;
+	/**
+	 * npm's native trusted-publishing provenance URL — the Sigstore
+	 * transparency-log entry npm itself emits when the tarball publishes to the
+	 * npm public registry with `--provenance`. Distinct from
+	 * {@link attestationUrl} (the action's own SLSA provenance attestation):
+	 * GitHub Packages targets carry only the latter, npm targets carry both.
+	 * Absent for non-npm registries and provenance-disabled publishes.
+	 */
+	npmProvenanceUrl?: string | undefined;
 	error?: string | undefined;
 	/** Full stdout from publish command */
 	stdout?: string | undefined;
