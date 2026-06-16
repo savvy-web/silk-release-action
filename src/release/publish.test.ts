@@ -39,7 +39,7 @@ import {
 } from "@savvy-web/github-action-effects/testing";
 import type { Redacted } from "effect";
 import { ConfigProvider, Effect, Layer } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	PublishTarget,
 	PublishabilityDetector,
@@ -767,6 +767,47 @@ describe("runPublishTargets", () => {
 			expect(targetResult?.skipReason).toBeUndefined();
 			expect(targetResult?.recovery).toBeUndefined();
 		});
+
+		it("renders the rich publish tree (icons, registry rows, npm-native provenance) and threads the URL onto the result", async () => {
+			// Capture the streamed publish-group tree and assert its shape — the
+			// tree only renders for real in CI, so this is the pre-push render check.
+			const provUrl = "https://search.sigstore.dev/?logIndex=1822519034";
+			const npmLayer = NpmRegistryTest.empty();
+			const { state: pubState, layer: pubLayer } = PackagePublishTest.layer({
+				packResult: makePackResult(),
+				publishTarballProvenanceUrl: provUrl,
+			});
+			const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, `/tmp/test/${PACK_NAME}`);
+			const target = makeNpmTarget(PACK_NAME, `/tmp/test/${PACK_NAME}`);
+			const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
+
+			const captured: string[] = [];
+			const writeSpy = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+				captured.push(String(chunk));
+				return true;
+			});
+			let result: PublishPackagesResult;
+			try {
+				result = await Effect.runPromise(
+					runPublishTargets(detected, args).pipe(Effect.provide(makeBaseLayers(pubLayer, npmLayer, wsPkg, [target]))),
+				);
+			} finally {
+				writeSpy.mockRestore();
+			}
+
+			const out = captured.join("");
+			// pack row carries the 📦 icon; publish row carries ⬆ and the registry host.
+			expect(out).toContain("📦 pack:");
+			expect(out).toContain("⬆ npm: published · registry.npmjs.org");
+			// npm-native provenance renders as its own 🔏 row with the captured URL.
+			expect(out).toContain(`🔏 provenance: ${provUrl} (npm native)`);
+			// The group summary keeps the provenance note.
+			expect(out).toContain("Publish · @test/pkg@1.0.0:");
+
+			// The URL is also threaded onto the structured target result for the release table.
+			expect(pubState.publishTarballCalls).toHaveLength(1);
+			expect(result.packages[0]?.targets[0]?.npmProvenanceUrl).toBe(provUrl);
+		});
 	});
 
 	describe("skipped-identical recovery", () => {
@@ -1432,7 +1473,7 @@ describe("runPublishTargets", () => {
 					});
 				},
 				publish: (_packageDir: string) => Effect.succeed(undefined as undefined),
-				publishTarball: (_tarball: string, _options) => Effect.succeed(undefined as undefined),
+				publishTarball: (_tarball: string, _options) => Effect.succeed({}),
 				verifyIntegrity: (_name: string, _version: string, _digest: string) => Effect.succeed(false),
 				publishToRegistries: (_packageDir: string, _registries) => Effect.succeed(undefined as undefined),
 				publishIdempotent: (_input) =>

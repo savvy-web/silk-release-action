@@ -186,7 +186,10 @@ export function findApiDocFile(directory: string | undefined, packageName: strin
  * path so CHANGELOG.md can be located.  Falls back to `process.cwd()` if
  * discovery fails (e.g. a deleted monorepo member).
  */
-const buildReleaseNotes = (packages: PackagePublishResult[]): Effect.Effect<string, never, WorkspaceDiscovery> =>
+const buildReleaseNotes = (
+	packages: PackagePublishResult[],
+	owner: string,
+): Effect.Effect<string, never, WorkspaceDiscovery> =>
 	Effect.gen(function* () {
 		const discovery = yield* WorkspaceDiscovery;
 		let notes = "";
@@ -221,7 +224,7 @@ const buildReleaseNotes = (packages: PackagePublishResult[]): Effect.Effect<stri
 		for (const pkg of packages) {
 			for (const target of pkg.targets.filter((t) => t.success)) {
 				const registryName = getRegistryDisplayName(target.target.registry ?? undefined);
-				const packageUrl = getPackagePageUrl(target.target.registry ?? null, pkg.name, pkg.version);
+				const packageUrl = getPackagePageUrl(target.target.registry ?? null, pkg.name, pkg.version, owner);
 				publishedTargets.push({ pkg, target, registryName, packageUrl });
 			}
 		}
@@ -242,6 +245,10 @@ const buildReleaseNotes = (packages: PackagePublishResult[]): Effect.Effect<stri
 			const apiDocExists = findApiDocFile(target.target.directory, pkg.name) !== undefined;
 			const apiCell = apiDocExists ? "📄" : "—";
 			const provenanceParts: string[] = [];
+			// npm's own trusted-publishing provenance (npm-registry targets only),
+			// then the action's own SLSA provenance + GitHub attestation + SBOM. A
+			// given target may carry several distinct anchors over the same artifact.
+			if (target.npmProvenanceUrl) provenanceParts.push(`[npm](${target.npmProvenanceUrl})`);
 			if (target.attestationUrl) provenanceParts.push(`[Sigstore](${target.attestationUrl})`);
 			if (pkg.githubAttestationUrl) provenanceParts.push(`[GitHub](${pkg.githubAttestationUrl})`);
 			if (target.sbomAttestationUrl) provenanceParts.push(`[SBOM](${target.sbomAttestationUrl})`);
@@ -438,7 +445,7 @@ const processOneTag = (
 		);
 
 		// ── Step 2: Build release notes ───────────────────────────────────────────
-		const notes = yield* buildReleaseNotes(associatedPackages);
+		const notes = yield* buildReleaseNotes(associatedPackages, owner);
 
 		// ── Step 3: Create GitHub release ─────────────────────────────────────────
 		const releaseSvc = yield* GitHubRelease;

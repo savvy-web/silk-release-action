@@ -34,11 +34,13 @@ import {
 	Step,
 	isGitHubPackagesRegistry,
 	isJsrRegistry,
+	isNpmRegistry,
 } from "@savvy-web/github-action-effects";
 import { Config, Effect, Option, Redacted } from "effect";
 import { PublishabilityDetector, TopologicalSorter, WorkspaceDiscovery, WorkspacePackage } from "workspaces-effect";
 
 import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
+import { getGroupId } from "../utils/group-id.js";
 import { buildProvenancePredicate } from "./attest-helpers.js";
 import { ChangesetConfig } from "./changeset-config.js";
 import { humanizeSize } from "./report.js";
@@ -56,6 +58,27 @@ import type { PackagePublishResult, PublishPackagesResult, TargetPublishResult }
 const normalizePackageManager = (pm: string): "npm" | "pnpm" | "yarn" | "bun" => {
 	if (pm === "pnpm" || pm === "yarn" || pm === "bun" || pm === "npm") return pm;
 	return "npm";
+};
+
+/**
+ * Compact label for a registry, used as the publish row's step name in the
+ * rich publish tree (`⬆ npm: …`, `⬆ github: …`). Well-known registries collapse
+ * to `npm`/`github`/`jsr`; anything else falls back to its hostname.
+ */
+const registryShortLabel = (registry: string): string => {
+	if (isNpmRegistry(registry)) return "npm";
+	if (isGitHubPackagesRegistry(registry)) return "github";
+	if (isJsrRegistry(registry)) return "jsr";
+	return registryHost(registry);
+};
+
+/** The hostname of a registry URL, for the `published · <host>` detail. Falls back to the raw value. */
+const registryHost = (registry: string): string => {
+	try {
+		return new URL(registry).host;
+	} catch {
+		return registry.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+	}
 };
 
 // ─── Public interfaces ────────────────────────────────────────────────────────
@@ -557,7 +580,7 @@ const publishDirectoryGroup = (
 	sbomPath: string | null,
 ) =>
 	Step.withStep(
-		`Publish · ${packageName}`,
+		`Publish · ${packageName}@${version}`,
 		Effect.gen(function* () {
 			const publishSvc = yield* PackagePublish;
 			const registrySvc = yield* NpmRegistry;
@@ -591,7 +614,7 @@ const publishDirectoryGroup = (
 
 			// ── Pack stage — once per directory ───────────────────────────────────
 			const packResultEither = yield* Step.withStep(
-				`pack ${packageName} ${directory}`,
+				"pack",
 				Effect.gen(function* () {
 					yield* Effect.logDebug(`[publish] ${packageName}: packing ${directory}`);
 					const outcome = yield* publishSvc.pack(directory).pipe(
@@ -612,6 +635,7 @@ const publishDirectoryGroup = (
 					}
 					return outcome;
 				}),
+				{ icon: "📦" },
 			);
 
 			if (!packResultEither.ok) {
@@ -645,7 +669,7 @@ const publishDirectoryGroup = (
 
 			for (const t of npmTargets) {
 				const perTargetResult = yield* Step.withStep(
-					`publish ${packageName} ${directory} → ${t.registry}`,
+					registryShortLabel(t.registry),
 					Effect.gen(function* () {
 						yield* Effect.logDebug(`[publish] ${packageName} ${directory} → ${t.registry}`);
 
@@ -720,7 +744,7 @@ const publishDirectoryGroup = (
 									tokenAuth: isGhPkgs,
 								})
 								.pipe(
-									Effect.map(() => ({ ok: true as const })),
+									Effect.map((r) => ({ ok: true as const, provenanceUrl: r.provenanceUrl })),
 									Effect.catchAll((e: PackagePublishError) => Effect.succeed({ ok: false as const, error: e.message })),
 								);
 
@@ -743,7 +767,7 @@ const publishDirectoryGroup = (
 										tokenAuth: true,
 									})
 									.pipe(
-										Effect.map(() => ({ ok: true as const })),
+										Effect.map((r) => ({ ok: true as const, provenanceUrl: r.provenanceUrl })),
 										Effect.catchAll((e: PackagePublishError) =>
 											Effect.succeed({ ok: false as const, error: e.message }),
 										),
@@ -771,7 +795,7 @@ const publishDirectoryGroup = (
 								};
 							}
 
-							yield* Step.success(`published`);
+							yield* Step.success(`published · ${registryHost(t.registry)}`);
 							return {
 								outcome: "published" as const,
 								result: {
@@ -783,6 +807,9 @@ const publishDirectoryGroup = (
 									packedSize: packResult.packedSize,
 									unpackedSize: packResult.unpackedSize,
 									fileCount: packResult.fileCount,
+									...(publishOutcome.provenanceUrl !== undefined
+										? { npmProvenanceUrl: publishOutcome.provenanceUrl }
+										: {}),
 								} satisfies TargetPublishResult,
 							};
 						}
@@ -838,6 +865,7 @@ const publishDirectoryGroup = (
 							} satisfies TargetPublishResult,
 						};
 					}),
+					{ icon: "⬆" },
 				);
 
 				results.push(perTargetResult.result);
@@ -863,36 +891,38 @@ const publishDirectoryGroup = (
 				sbomRecovered: false,
 			};
 			let attestationsRan = false;
-			if (anySuccess) {
-				attestations = yield* Step.withStep(
-					"attest tarball",
-					Effect.gen(function* () {
-						if (!groupProvenance) {
-							yield* Step.success("skipped (no provenance configured)");
-							return {
-								attestationUrl: undefined,
-								sbomAttestationUrl: undefined,
-								provenanceRecovered: false,
-								sbomRecovered: false,
-							} satisfies AttestationsOutcome;
-						}
-						const outcome = yield* runAttestationsForBuild(
-							packageName,
-							version,
-							groupProvenance,
-							packResult.sha256Hex,
-							sbomPath,
-						);
-						// One log line summarising provenance + SBOM, including the
-						// idempotent reuse on a recovery run so the build output
-						// shows whether anything new was written this run.
-						const provLabel = outcome.provenanceRecovered ? "provenance reused" : "provenance written";
-						const sbomLabel = outcome.sbomRecovered ? "SBOM reused" : "SBOM written";
-						yield* Step.success(`${provLabel}, ${sbomLabel}`);
-						return outcome;
-					}),
+			if (anySuccess && groupProvenance) {
+				// The action's own per-build attestation: one SLSA provenance + one SBOM
+				// over this group's tarball, shared across every target that publishes it.
+				// `runAttestationsForBuild` catches its own errors and degrades to undefined
+				// URLs, so no step envelope is needed for failure spill here.
+				attestations = yield* runAttestationsForBuild(
+					packageName,
+					version,
+					groupProvenance,
+					packResult.sha256Hex,
+					sbomPath,
 				);
-				attestationsRan = groupProvenance;
+				attestationsRan = true;
+			}
+
+			// Emit the attestation rows beneath the publish targets — one per real URL,
+			// never an empty row. npm's native trusted-publishing provenance (captured per
+			// npm target during publish) and the action's own attestation are distinct
+			// anchors over the same artifact, so both render when present.
+			const npmProvenanceUrls = [
+				...new Set(results.map((r) => r.npmProvenanceUrl).filter((u): u is string => u !== undefined)),
+			];
+			for (const url of npmProvenanceUrls) {
+				yield* Step.line("🔏", `provenance: ${url} (npm native)`);
+			}
+			if (attestations.attestationUrl !== undefined) {
+				const reused = attestations.provenanceRecovered ? " — reused" : "";
+				yield* Step.line("🔏", `provenance: ${attestations.attestationUrl} (action)${reused}`);
+			}
+			if (attestations.sbomAttestationUrl !== undefined) {
+				const reused = attestations.sbomRecovered ? " — reused" : "";
+				yield* Step.line("📄", `sbom: ${attestations.sbomAttestationUrl}${reused}`);
 			}
 
 			// Attach the shared URLs (and the per-package sbomPath, threaded in from
@@ -920,8 +950,20 @@ const publishDirectoryGroup = (
 
 			// Render the group's tally honestly: when any target failed to
 			// publish or hit a fatal integrity mismatch, the group did not fully
-			// succeed, so emit the ❌ block rather than a misleading ✅.
-			const groupSummary = `${publishedCount} published, ${skippedIdenticalCount} skipped-identical, ${mismatchCount} mismatch, ${failedCount} failed`;
+			// succeed, so emit the ❌ block rather than a misleading ✅. Only
+			// non-zero counts appear, so a clean run reads `2 targets published`
+			// rather than burying the signal under three zero columns.
+			const counts: string[] = [];
+			if (publishedCount > 0) counts.push(`${publishedCount} published`);
+			if (skippedIdenticalCount > 0) counts.push(`${skippedIdenticalCount} skipped-identical`);
+			if (mismatchCount > 0) counts.push(`${mismatchCount} mismatch`);
+			if (failedCount > 0) counts.push(`${failedCount} failed`);
+			const attestNote: string[] = [];
+			if (npmProvenanceUrls.length > 0 || attestations.attestationUrl !== undefined) attestNote.push("provenance");
+			if (attestations.sbomAttestationUrl !== undefined) attestNote.push("SBOM");
+			const summaryParts = [counts.length > 0 ? counts.join(", ") : "no targets"];
+			if (attestNote.length > 0) summaryParts.push(attestNote.join(" + "));
+			const groupSummary = summaryParts.join(" · ");
 			if (mismatchCount > 0 || failedCount > 0) {
 				yield* Step.failure(groupSummary);
 			} else {
@@ -1347,9 +1389,12 @@ export const runPublishTargets = (
 				const sbomPathForPackage = sbomPaths.get(name) ?? null;
 
 				for (const [directory, groupTargets] of groups) {
-					const distDir = basename(directory);
+					// Single-group packages (the common npm+github-collapsed case) read
+					// `Publish · @scope/pkg@1.2.3`; only a package split across distinct
+					// byte-groups disambiguates with the group id (e.g. `· github`).
+					const groupSuffix = groups.size > 1 ? ` · ${getGroupId(directory)}` : "";
 					const groupResults = yield* logger.group(
-						`Publish · ${name} · ${distDir}`,
+						`Publish · ${name}@${version}${groupSuffix}`,
 						publishDirectoryGroup(
 							name,
 							version,
