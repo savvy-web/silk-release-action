@@ -39,6 +39,7 @@ import { getGroupId } from "../utils/group-id.js";
 import { inferSBOMMetadata, resolveSBOMMetadata } from "../utils/infer-sbom-metadata.js";
 import type { ConfigSource } from "../utils/load-release-config.js";
 import { loadSBOMConfig } from "../utils/load-release-config.js";
+import { normalizePackageManager } from "../utils/normalize-package-manager.js";
 import { validateNTIACompliance } from "../utils/validate-ntia-compliance.js";
 import { ChangesetConfig } from "./changeset-config.js";
 import { ValidationError } from "./errors.js";
@@ -624,6 +625,9 @@ export const runValidation = (args: ValidationInputArgs) =>
 								registry: sizingTarget?.registry ?? "https://registry.npmjs.org/",
 								access: sizingTarget?.access ?? "public",
 								provenance: sizingTarget?.provenance ?? false,
+								// Dispatch through the same npm executor the live publish uses, so the
+								// dry-run validates against the exact npm (incl. fresh `pnpm dlx npm`).
+								packageManager: normalizePackageManager(args.packageManager),
 							})
 							.pipe(
 								Effect.map((dryRunResult) => ({
