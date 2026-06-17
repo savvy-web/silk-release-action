@@ -30,7 +30,7 @@ import {
 } from "@savvy-web/github-action-effects";
 import { Config, Effect, Option, Redacted } from "effect";
 import type { PublishTarget, WorkspacePackage } from "workspaces-effect";
-import { WorkspaceDiscovery } from "workspaces-effect";
+import { TopologicalSorter, WorkspaceDiscovery } from "workspaces-effect";
 import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
 import type { EnhancedCycloneDXDocument, ResolvedSBOMMetadata, SBOMMetadataConfig } from "../types/sbom-config.js";
 import { countChangesetsPerPackage } from "../utils/count-changesets.js";
@@ -407,6 +407,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 	Effect.gen(function* () {
 		const logger = yield* ActionLogger;
 		const discovery = yield* WorkspaceDiscovery;
+		const sorter = yield* TopologicalSorter;
 		const publish = yield* PackagePublish;
 		const sbomSvc = yield* Sbom;
 		const runner = yield* CommandRunner;
@@ -530,6 +531,27 @@ export const runValidation = (args: ValidationInputArgs) =>
 			} satisfies ValidationReport;
 		}
 
+		// Order the released packages topologically (dependencies first) so the
+		// dry-run / SBOM steps surface in the same order the Phase-3 publish runs
+		// them. `listPackages` returns workspace glob order (alphabetical), not
+		// dependency order; `TopologicalSorter` is the dedicated ordering service.
+		// Mirror the publish phase: `sortSubset` returns the transitive closure of
+		// the released names, so keep only the released packages. A cyclic graph
+		// falls back to discovery order rather than aborting validation.
+		const releasedByName = new Map(releasedPackages.map((r) => [r.pkg.name, r] as const));
+		const sortedReleasedNames = yield* sorter.sortSubset([...releasedByName.keys()]).pipe(
+			Effect.map((closure) => closure.filter((name) => releasedByName.has(name))),
+			Effect.catchAll((e: unknown) =>
+				Effect.gen(function* () {
+					yield* Effect.logWarning(`Topological sort failed, using discovery order: ${String(e)}`);
+					return [...releasedByName.keys()] as ReadonlyArray<string>;
+				}),
+			),
+		);
+		const orderedReleasedPackages = sortedReleasedNames
+			.map((name) => releasedByName.get(name))
+			.filter((r): r is ReleasedPackage => r !== undefined);
+
 		// Structured findings accumulated across the publish dry-run and SBOM
 		// steps. Errors fail their check; warnings are advisory. Discovery order
 		// is preserved (the comment renderer reorders errors-before-warnings).
@@ -560,7 +582,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 		let sbomCount = 0;
 		let sbomSuccess = 0;
 
-		for (const { pkg, baseVersion } of releasedPackages) {
+		for (const { pkg, baseVersion } of orderedReleasedPackages) {
 			// Resolve publish targets, then drop any whose built `package.json` is
 			// `private` — validation only exercises what will actually be published.
 			const targets = yield* resolvePublishableTargets(pkg, workspaceRoot);
