@@ -1,5 +1,21 @@
 # @savvy-web/silk-release-action
 
+## 2.1.1
+
+### Bug Fixes
+
+* [`df15068`](https://github.com/savvy-web/silk-release-action/commit/df15068b6da0b9a1ef23aa2a5a25720bb85f5aea) ### Pre-publish dry-runs no longer fail on the runner's npm cache
+
+Phase-2 validation dry-runs were failing with `npm error code EACCES` ("Your cache folder contains root-owned files") on GitHub's macOS runners, where `~/.npm/_cacache` is partially root-owned and current npm refuses to use it. The dry-run now passes its `packageManager` through to `PackagePublish.dryRun`, which (via the updated `@savvy-web/github-action-effects`) runs npm against a runner-writable cache and dispatches through the same npm executor as the live publish. A dry-run therefore validates against the exact npm the publish will run instead of the runner's bundled one.
+
+* [`df15068`](https://github.com/savvy-web/silk-release-action/commit/df15068b6da0b9a1ef23aa2a5a25720bb85f5aea) ### Pre-publish validation logs render as a per-package tree
+
+Phase-2 validation previously emitted two flat, separate log groups per package-build (`Dry-run · <pkg> · <group>` and `SBOM · <pkg> · <group>`). It now renders one collapsible group per package-build — `Validate · <pkg>@<version>` — containing a `📦 pack` step (dry-run sizing), per-registry `⬆ <registry> · ready/not-ready` rows, and a `📄 sbom` step, capped by a summary line (`N ready · <size> · SBOM ok`). This mirrors the Phase-3 publish tree, so the two phases read consistently. The `ValidationReport` data is unchanged — only the log presentation.
+
+* [`df15068`](https://github.com/savvy-web/silk-release-action/commit/df15068b6da0b9a1ef23aa2a5a25720bb85f5aea) ### Pre-publish validation now processes packages in dependency order
+
+Phase-2 dry-run and SBOM steps ran in workspace glob order (alphabetical) because they iterated `WorkspaceDiscovery.listPackages()` directly, which does not sort by dependencies. Validation now orders released packages through `TopologicalSorter.sortSubset` — the same service the Phase-3 publish already uses — so a package is validated after the workspace dependencies it builds on, and the dry-run/SBOM log matches publish order. A cyclic graph falls back to discovery order rather than aborting validation.
+
 ## 2.1.0
 
 ### Features
