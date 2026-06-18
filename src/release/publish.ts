@@ -34,7 +34,6 @@ import {
 	Step,
 	isGitHubPackagesRegistry,
 	isJsrRegistry,
-	isNpmRegistry,
 } from "@savvy-web/github-action-effects";
 import { Config, Effect, Option, Redacted } from "effect";
 import { PublishabilityDetector, TopologicalSorter, WorkspaceDiscovery, WorkspacePackage } from "workspaces-effect";
@@ -42,6 +41,7 @@ import { PublishabilityDetector, TopologicalSorter, WorkspaceDiscovery, Workspac
 import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
 import { getGroupId } from "../utils/group-id.js";
 import { normalizePackageManager } from "../utils/normalize-package-manager.js";
+import { registryHost, registryShortLabel } from "../utils/registry-label.js";
 import { buildProvenancePredicate } from "./attest-helpers.js";
 import { ChangesetConfig } from "./changeset-config.js";
 import { humanizeSize } from "./report.js";
@@ -49,27 +49,6 @@ import { isTargetPrivate, pickToken } from "./resolve-targets.js";
 import type { PackagePublishResult, PublishPackagesResult, TargetPublishResult } from "./types.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/**
- * Compact label for a registry, used as the publish row's step name in the
- * rich publish tree (`⬆ npm: …`, `⬆ github: …`). Well-known registries collapse
- * to `npm`/`github`/`jsr`; anything else falls back to its hostname.
- */
-const registryShortLabel = (registry: string): string => {
-	if (isNpmRegistry(registry)) return "npm";
-	if (isGitHubPackagesRegistry(registry)) return "github";
-	if (isJsrRegistry(registry)) return "jsr";
-	return registryHost(registry);
-};
-
-/** The hostname of a registry URL, for the `published · <host>` detail. Falls back to the raw value. */
-const registryHost = (registry: string): string => {
-	try {
-		return new URL(registry).host;
-	} catch {
-		return registry.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
-	}
-};
 
 // ─── Public interfaces ────────────────────────────────────────────────────────
 
