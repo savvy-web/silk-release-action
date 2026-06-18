@@ -1338,10 +1338,17 @@ describe("runValidation", () => {
 
 			const { state: pubState, layer: pubLayer } = PackagePublishTest.empty();
 
-			// Reordering sorter: returns the dependency order regardless of input order.
+			// Reordering sorter: ranks the actual input names into dependency order
+			// (beta before alpha). Sorting the input — rather than returning a constant —
+			// means the test fails if runValidation passes the wrong subset to sortSubset.
+			const depOrder = ["@test/beta", "@test/alpha"];
+			const rank = (name: string) => {
+				const i = depOrder.indexOf(name);
+				return i === -1 ? Number.MAX_SAFE_INTEGER : i;
+			};
 			const reorderingSorterLayer = Layer.succeed(TopologicalSorter, {
-				sort: () => Effect.succeed(["@test/beta", "@test/alpha"] as ReadonlyArray<string>),
-				sortSubset: (_names: ReadonlyArray<string>) => Effect.succeed(["@test/beta", "@test/alpha"]),
+				sort: () => Effect.succeed([...depOrder] as ReadonlyArray<string>),
+				sortSubset: (names: ReadonlyArray<string>) => Effect.succeed([...names].sort((a, b) => rank(a) - rank(b))),
 				levels: () => Effect.succeed([] as ReadonlyArray<ReadonlyArray<string>>),
 			} as typeof TopologicalSorter.Service);
 
