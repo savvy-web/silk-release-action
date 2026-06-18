@@ -40,6 +40,7 @@ import { PublishabilityDetector, TopologicalSorter, WorkspaceDiscovery, Workspac
 
 import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
 import { getGroupId } from "../utils/group-id.js";
+import type { PackageManager } from "../utils/normalize-package-manager.js";
 import { normalizePackageManager } from "../utils/normalize-package-manager.js";
 import { registryHost, registryShortLabel } from "../utils/registry-label.js";
 import { buildProvenancePredicate } from "./attest-helpers.js";
@@ -545,7 +546,7 @@ const publishDirectoryGroup = (
 	targetsInGroup: ReadonlyArray<TargetSpec>,
 	npmToken: string | null,
 	ghPkgsToken: string | null,
-	packageManager: "npm" | "pnpm" | "yarn" | "bun",
+	packageManager: PackageManager,
 	sbomPath: string | null,
 ) =>
 	Step.withStep(
