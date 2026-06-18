@@ -20,17 +20,17 @@ import { isAbsolute, join, relative } from "node:path";
 
 import type { PackagePublishError, ResolvedDependency, SbomError, SbomInput } from "@savvy-web/github-action-effects";
 import {
-	ActionLogger,
 	ActionState,
 	CommandRunner,
 	PackagePublish,
 	Sbom,
+	Step,
 	isGitHubPackagesRegistry,
 	isNpmRegistry,
 } from "@savvy-web/github-action-effects";
 import { Config, Effect, Option, Redacted } from "effect";
 import type { PublishTarget, WorkspacePackage } from "workspaces-effect";
-import { WorkspaceDiscovery } from "workspaces-effect";
+import { TopologicalSorter, WorkspaceDiscovery } from "workspaces-effect";
 import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
 import type { EnhancedCycloneDXDocument, ResolvedSBOMMetadata, SBOMMetadataConfig } from "../types/sbom-config.js";
 import { countChangesetsPerPackage } from "../utils/count-changesets.js";
@@ -39,9 +39,12 @@ import { getGroupId } from "../utils/group-id.js";
 import { inferSBOMMetadata, resolveSBOMMetadata } from "../utils/infer-sbom-metadata.js";
 import type { ConfigSource } from "../utils/load-release-config.js";
 import { loadSBOMConfig } from "../utils/load-release-config.js";
+import { normalizePackageManager } from "../utils/normalize-package-manager.js";
+import { registryShortLabel } from "../utils/registry-label.js";
 import { validateNTIACompliance } from "../utils/validate-ntia-compliance.js";
 import { ChangesetConfig } from "./changeset-config.js";
 import { ValidationError } from "./errors.js";
+import { humanizeSize } from "./report.js";
 import { pickToken, resolvePublishableTargets } from "./resolve-targets.js";
 import type {
 	BuildSbom,
@@ -404,8 +407,8 @@ export const detectReleasedPackages = (
  */
 export const runValidation = (args: ValidationInputArgs) =>
 	Effect.gen(function* () {
-		const logger = yield* ActionLogger;
 		const discovery = yield* WorkspaceDiscovery;
+		const sorter = yield* TopologicalSorter;
 		const publish = yield* PackagePublish;
 		const sbomSvc = yield* Sbom;
 		const runner = yield* CommandRunner;
@@ -529,6 +532,27 @@ export const runValidation = (args: ValidationInputArgs) =>
 			} satisfies ValidationReport;
 		}
 
+		// Order the released packages topologically (dependencies first) so the
+		// dry-run / SBOM steps surface in the same order the Phase-3 publish runs
+		// them. `listPackages` returns workspace glob order (alphabetical), not
+		// dependency order; `TopologicalSorter` is the dedicated ordering service.
+		// Mirror the publish phase: `sortSubset` returns the transitive closure of
+		// the released names, so keep only the released packages. A cyclic graph
+		// falls back to discovery order rather than aborting validation.
+		const releasedByName = new Map(releasedPackages.map((r) => [r.pkg.name, r] as const));
+		const sortedReleasedNames = yield* sorter.sortSubset([...releasedByName.keys()]).pipe(
+			Effect.map((closure) => closure.filter((name) => releasedByName.has(name))),
+			Effect.catchAll((e: unknown) =>
+				Effect.gen(function* () {
+					yield* Effect.logWarning(`Topological sort failed, using discovery order: ${String(e)}`);
+					return [...releasedByName.keys()] as ReadonlyArray<string>;
+				}),
+			),
+		);
+		const orderedReleasedPackages = sortedReleasedNames
+			.map((name) => releasedByName.get(name))
+			.filter((r): r is ReleasedPackage => r !== undefined);
+
 		// Structured findings accumulated across the publish dry-run and SBOM
 		// steps. Errors fail their check; warnings are advisory. Discovery order
 		// is preserved (the comment renderer reorders errors-before-warnings).
@@ -559,7 +583,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 		let sbomCount = 0;
 		let sbomSuccess = 0;
 
-		for (const { pkg, baseVersion } of releasedPackages) {
+		for (const { pkg, baseVersion } of orderedReleasedPackages) {
 			// Resolve publish targets, then drop any whose built `package.json` is
 			// `private` — validation only exercises what will actually be published.
 			const targets = yield* resolvePublishableTargets(pkg, workspaceRoot);
@@ -590,218 +614,264 @@ export const runValidation = (args: ValidationInputArgs) =>
 
 			for (const build of builds) {
 				const group = getGroupId(build.directory);
+				// Multi-build packages (split across byte-groups) disambiguate the
+				// group title with the group id, exactly like the Phase-3 publish tree.
+				const groupSuffix = builds.length > 1 ? ` · ${group}` : "";
 
-				// ── Per-build dry-run (one per directory) ──────────────────────
 				// The tarball is a property of the directory: identical across the
 				// registries publishing it. Run the dry-run once; the first target's
 				// access/provenance drive the npm-pack invocation (pack output is the
 				// same regardless). Per-registry publish readiness is decided below.
 				const sizingTarget = build.targets[0];
 
-				const dryRunOutcome = yield* logger.group(
-					`Dry-run · ${pkg.name} · ${group}`,
-					Effect.gen(function* () {
-						yield* Effect.logDebug(`cwd: ${build.absoluteDirectory}`);
-
-						// Set up auth for the sizing target's registry before the dry-run.
-						if (sizingTarget !== undefined) {
-							const token = pickToken(sizingTarget.registry, npmToken, ghPkgsToken);
-							if (token !== null) {
-								yield* publish
-									.setupAuth(sizingTarget.registry, Redacted.make(token))
-									.pipe(
-										Effect.catchAll((e: PackagePublishError) =>
-											Effect.logWarning(`setupAuth failed for ${sizingTarget.registry}: ${e.message}`),
-										),
-									);
-							}
-						}
-
-						yield* Effect.logDebug(`npm publish --dry-run in ${build.absoluteDirectory}`);
-
-						return yield* publish
-							.dryRun(build.absoluteDirectory, {
-								registry: sizingTarget?.registry ?? "https://registry.npmjs.org/",
-								access: sizingTarget?.access ?? "public",
-								provenance: sizingTarget?.provenance ?? false,
-							})
-							.pipe(
-								Effect.map((dryRunResult) => ({
-									success: dryRunResult.ok,
-									output: dryRunResult.output,
-									packedSize: dryRunResult.packedSize,
-									unpackedSize: dryRunResult.unpackedSize,
-									fileCount: dryRunResult.fileCount,
-								})),
-								Effect.catchAll((e: PackagePublishError) =>
-									Effect.succeed({
-										success: false as const,
-										output: e.message,
-										packedSize: undefined,
-										unpackedSize: undefined,
-										fileCount: undefined,
-									}),
-								),
-								Effect.tap((result) =>
-									result.success
-										? Effect.logInfo(
-												result.fileCount !== undefined
-													? `✅ dry-run passed — ${result.fileCount} file(s)`
-													: "✅ dry-run passed",
-											)
-										: Effect.logWarning(`dry-run failed for ${pkg.name} · ${group}: ${result.output}`),
-								),
-							);
-					}),
-				);
-
-				// ── Per-registry publish readiness ─────────────────────────────
-				const targetResults: BuildTargetResult[] = [];
-				for (const target of build.targets) {
-					totalTargets++;
-					const targetIsNpm = isNpmRegistry(target.registry);
-					const targetIsGhPkgs = isGitHubPackagesRegistry(target.registry);
-
-					if (dryRunOutcome.success) {
-						readyTargets++;
-						targetResults.push({
-							registry: target.registry,
-							status: "ready",
-							access: target.access,
-							provenance: target.provenance,
-						});
-					} else {
-						allPublishOk = false;
-						if (targetIsNpm) npmReadyAll = false;
-						if (targetIsGhPkgs) githubPackagesReadyAll = false;
-						const detail = (dryRunOutcome.output ?? "").trim() || "unknown error";
-						targetResults.push({
-							registry: target.registry,
-							status: "failed",
-							access: target.access,
-							provenance: target.provenance,
-							error: detail,
-						});
-						findings.push({
-							severity: "error",
-							check: "Publish Validation",
-							scope: { package: pkg.name, directory: build.directory },
-							message: `dry-run failed: ${detail}`,
-						});
-					}
-				}
-
-				// ── Per-build SBOM (one per directory) ─────────────────────────
-				// Dependencies come from the built `dist/<dir>/package.json` — the
-				// artifact that actually ships. The resolved `sbom-config` metadata
-				// (merged with package.json-inferred defaults) is passed to
-				// `Sbom.generate` so the emitted BOM genuinely carries supplier and
-				// author — NTIA then validates the real shipped artifact.
-				sbomCount++;
+				// Dependencies + resolved SBOM metadata come from the built
+				// `dist/<dir>/package.json` — the artifact that actually ships. The
+				// resolved metadata is passed to `Sbom.generate` so the emitted BOM
+				// genuinely carries supplier/author — NTIA validates the real artifact.
 				const dependencies = readBuiltDependencies(build.absoluteDirectory);
 				const resolved = resolveSBOMMetadata(inferSBOMMetadata(build.absoluteDirectory), sbomConfig);
 				resolvedSbomConfig.set(`${pkg.name}:${build.directory}`, resolved);
 				const sbomMetadata = toSbomMetadataInput(resolved);
 
-				const sbomOutcome = yield* logger.group(
-					`SBOM · ${pkg.name} · ${group}`,
+				// One collapsible group per package-build, mirroring the Phase-3 publish
+				// tree: a `📦 pack` step (dry-run sizing), per-registry readiness rows,
+				// and a `📄 sbom` step, capped by a group summary line.
+				const buildResult = yield* Step.groupStep(
+					`Validate · ${pkg.name}@${pkg.version}${groupSuffix}`,
 					Effect.gen(function* () {
-						yield* Effect.logDebug(
-							`workspace package: ${pkg.name}@${pkg.version} · group: ${group} · ${dependencies.length} dep(s)`,
+						// ── 📦 pack / dry-run (sizing, one per directory) ──────────────
+						const dryRunOutcome = yield* Step.withStep(
+							"pack",
+							Effect.gen(function* () {
+								yield* Effect.logDebug(`cwd: ${build.absoluteDirectory}`);
+
+								// Set up auth for the sizing target's registry before the dry-run.
+								if (sizingTarget !== undefined) {
+									const token = pickToken(sizingTarget.registry, npmToken, ghPkgsToken);
+									if (token !== null) {
+										yield* publish
+											.setupAuth(sizingTarget.registry, Redacted.make(token))
+											.pipe(
+												Effect.catchAll((e: PackagePublishError) =>
+													Effect.logWarning(`setupAuth failed for ${sizingTarget.registry}: ${e.message}`),
+												),
+											);
+									}
+								}
+
+								yield* Effect.logDebug(`npm pack --dry-run in ${build.absoluteDirectory}`);
+
+								const result = yield* publish
+									.dryRun(build.absoluteDirectory, {
+										registry: sizingTarget?.registry ?? "https://registry.npmjs.org/",
+										access: sizingTarget?.access ?? "public",
+										provenance: sizingTarget?.provenance ?? false,
+										// Dispatch through the same npm executor the live publish uses, so the
+										// dry-run validates against the exact npm (incl. fresh `pnpm dlx npm`).
+										packageManager: normalizePackageManager(args.packageManager),
+									})
+									.pipe(
+										Effect.map((dryRunResult) => ({
+											success: dryRunResult.ok,
+											output: dryRunResult.output,
+											packedSize: dryRunResult.packedSize,
+											unpackedSize: dryRunResult.unpackedSize,
+											fileCount: dryRunResult.fileCount,
+										})),
+										Effect.catchAll((e: PackagePublishError) =>
+											Effect.succeed({
+												success: false as const,
+												output: e.message,
+												packedSize: undefined,
+												unpackedSize: undefined,
+												fileCount: undefined,
+											}),
+										),
+									);
+
+								if (result.success) {
+									yield* Step.success(
+										result.packedSize !== undefined && result.fileCount !== undefined
+											? `${humanizeSize(result.packedSize)} · ${result.fileCount} files`
+											: "sized",
+									);
+								} else {
+									// Concise failure line (first line of npm's error); the full output
+									// is carried in the per-registry finding, not spilled into the tree.
+									yield* Step.failure((result.output ?? "").trim().split("\n")[0] || "dry-run failed");
+								}
+								return result;
+							}),
+							{ icon: "📦" },
 						);
 
-						return yield* sbomSvc
-							.generate({
-								rootName: pkg.name,
-								rootVersion: pkg.version,
-								dependencies,
-								...(sbomMetadata.supplier !== undefined && { supplier: sbomMetadata.supplier }),
-								...(sbomMetadata.authors !== undefined && { authors: sbomMetadata.authors }),
-							})
-							.pipe(
-								Effect.flatMap((bom) =>
-									Effect.gen(function* () {
-										const bomJson = yield* sbomSvc.serializeJson(bom);
-										yield* Effect.logDebug(`generated CycloneDX BOM:\n${bomJson}`);
-										yield* Effect.logInfo("✅ SBOM generated");
+						// ── ⬆ per-registry publish readiness ───────────────────────────
+						// All targets share the single dry-run above, so these are
+						// informational rows (not independent pass/fail steps).
+						const targetResults: BuildTargetResult[] = [];
+						for (const target of build.targets) {
+							totalTargets++;
+							const targetIsNpm = isNpmRegistry(target.registry);
+							const targetIsGhPkgs = isGitHubPackagesRegistry(target.registry);
+							const label = registryShortLabel(target.registry);
 
-										// The CycloneDX `Bom` model is a class instance, not the
-										// plain `EnhancedCycloneDXDocument` the NTIA validator
-										// reads. Parse the canonical CycloneDX JSON form (the BOM
-										// `Sbom.generate` actually produced, metadata included)
-										// into the plain document shape.
-										let document: EnhancedCycloneDXDocument | null = null;
-										try {
-											document = JSON.parse(bomJson) as EnhancedCycloneDXDocument;
-										} catch {
-											document = null;
-										}
+							if (dryRunOutcome.success) {
+								readyTargets++;
+								targetResults.push({
+									registry: target.registry,
+									status: "ready",
+									access: target.access,
+									provenance: target.provenance,
+								});
+								yield* Step.line("⬆", `${label} · ready`);
+							} else {
+								allPublishOk = false;
+								if (targetIsNpm) npmReadyAll = false;
+								if (targetIsGhPkgs) githubPackagesReadyAll = false;
+								const detail = (dryRunOutcome.output ?? "").trim() || "unknown error";
+								targetResults.push({
+									registry: target.registry,
+									status: "failed",
+									access: target.access,
+									provenance: target.provenance,
+									error: detail,
+								});
+								findings.push({
+									severity: "error",
+									check: "Publish Validation",
+									scope: { package: pkg.name, directory: build.directory },
+									message: `dry-run failed: ${detail}`,
+								});
+								yield* Step.line("⬆", `${label} · not-ready`);
+							}
+						}
 
-										const sbomFindings: ValidationFinding[] = [];
-										let sbom: BuildSbom | null = null;
+						// ── 📄 sbom (one per directory) ────────────────────────────────
+						sbomCount++;
+						const sbomOutcome = yield* Step.withStep(
+							"sbom",
+							Effect.gen(function* () {
+								yield* Effect.logDebug(
+									`workspace package: ${pkg.name}@${pkg.version} · group: ${group} · ${dependencies.length} dep(s)`,
+								);
 
-										if (document !== null) {
-											const ntia = validateNTIACompliance(document);
-											const missing = ntia.fields.filter((f) => !f.passed).map((f) => f.name);
-											const componentCount = document.components?.length ?? 0;
+								return yield* sbomSvc
+									.generate({
+										rootName: pkg.name,
+										rootVersion: pkg.version,
+										dependencies,
+										...(sbomMetadata.supplier !== undefined && { supplier: sbomMetadata.supplier }),
+										...(sbomMetadata.authors !== undefined && { authors: sbomMetadata.authors }),
+									})
+									.pipe(
+										Effect.flatMap((bom) =>
+											Effect.gen(function* () {
+												const bomJson = yield* sbomSvc.serializeJson(bom);
+												yield* Effect.logDebug(`generated CycloneDX BOM:\n${bomJson}`);
 
-											if (!ntia.compliant) {
-												sbomFindings.push({
-													severity: "warning",
-													check: "SBOM Preview",
-													scope: { package: pkg.name, directory: build.directory },
-													message: `SBOM generated but missing NTIA fields: ${missing.join(", ")}`,
-												});
-											}
-											// A dependency-free package legitimately has a
-											// component-less BOM — that is not a finding.
+												// The CycloneDX `Bom` model is a class instance, not the
+												// plain `EnhancedCycloneDXDocument` the NTIA validator
+												// reads. Parse the canonical CycloneDX JSON form into the
+												// plain document shape.
+												let document: EnhancedCycloneDXDocument | null = null;
+												try {
+													document = JSON.parse(bomJson) as EnhancedCycloneDXDocument;
+												} catch {
+													document = null;
+												}
 
-											sbom = {
-												componentCount,
-												ntiaCompliant: ntia.compliant,
-												missingNtiaFields: missing,
-											};
-										}
+												const sbomFindings: ValidationFinding[] = [];
+												let sbom: BuildSbom | null = null;
 
-										return { ok: true as const, sbom, findings: sbomFindings };
-									}),
-								),
-								Effect.catchAll((e: SbomError) =>
-									Effect.gen(function* () {
-										yield* Effect.logWarning(`SBOM generation failed for ${pkg.name} · ${group}: ${e.message}`);
-										return {
-											ok: false as const,
-											sbom: null as BuildSbom | null,
-											findings: [
-												{
-													severity: "error" as const,
-													check: "SBOM Preview",
-													scope: { package: pkg.name, directory: build.directory },
-													message: `SBOM generation failed: ${e.message}`,
-												} satisfies ValidationFinding,
-											],
-										};
-									}),
-								),
-							);
+												if (document !== null) {
+													const ntia = validateNTIACompliance(document);
+													const missing = ntia.fields.filter((f) => !f.passed).map((f) => f.name);
+													const componentCount = document.components?.length ?? 0;
+
+													if (!ntia.compliant) {
+														sbomFindings.push({
+															severity: "warning",
+															check: "SBOM Preview",
+															scope: { package: pkg.name, directory: build.directory },
+															message: `SBOM generated but missing NTIA fields: ${missing.join(", ")}`,
+														});
+													}
+													// A dependency-free package legitimately has a
+													// component-less BOM — that is not a finding.
+
+													sbom = {
+														componentCount,
+														ntiaCompliant: ntia.compliant,
+														missingNtiaFields: missing,
+													};
+													yield* Step.success(`${componentCount} components · NTIA ${ntia.compliant ? "✓" : "⚠"}`);
+												} else {
+													yield* Step.success("generated");
+												}
+
+												return { ok: true as const, sbom, findings: sbomFindings };
+											}),
+										),
+										Effect.catchAll((e: SbomError) =>
+											Effect.gen(function* () {
+												yield* Step.failure(`generation failed: ${e.message}`);
+												return {
+													ok: false as const,
+													sbom: null as BuildSbom | null,
+													findings: [
+														{
+															severity: "error" as const,
+															check: "SBOM Preview",
+															scope: { package: pkg.name, directory: build.directory },
+															message: `SBOM generation failed: ${e.message}`,
+														} satisfies ValidationFinding,
+													],
+												};
+											}),
+										),
+									);
+							}),
+							{ icon: "📄" },
+						);
+
+						findings.push(...sbomOutcome.findings);
+						if (sbomOutcome.ok) {
+							sbomSuccess++;
+						} else {
+							sbomOk = false;
+						}
+
+						// ── group summary ─────────────────────────────────────────────
+						const readyCount = targetResults.filter((t) => t.status === "ready").length;
+						const notReadyCount = targetResults.length - readyCount;
+						const sizePart =
+							dryRunOutcome.packedSize !== undefined ? humanizeSize(dryRunOutcome.packedSize) : "unsized";
+						const sbomPart = sbomOutcome.ok
+							? sbomOutcome.sbom?.ntiaCompliant === false
+								? "SBOM ⚠"
+								: "SBOM ok"
+							: "SBOM failed";
+						const readyPart =
+							notReadyCount > 0 ? `${readyCount} ready, ${notReadyCount} not-ready` : `${readyCount} ready`;
+						const summary = `${readyPart} · ${sizePart} · ${sbomPart}`;
+						if (notReadyCount > 0 || !sbomOutcome.ok) {
+							yield* Step.failure(summary);
+						} else {
+							yield* Step.success(summary);
+						}
+
+						return {
+							directory: build.directory,
+							packedBytes: dryRunOutcome.packedSize ?? null,
+							unpackedBytes: dryRunOutcome.unpackedSize ?? null,
+							fileCount: dryRunOutcome.fileCount ?? null,
+							sbom: sbomOutcome.sbom,
+							targets: targetResults,
+						} satisfies PackageBuildResult;
 					}),
 				);
 
-				findings.push(...sbomOutcome.findings);
-				if (sbomOutcome.ok) {
-					sbomSuccess++;
-				} else {
-					sbomOk = false;
-				}
-
-				buildResults.push({
-					directory: build.directory,
-					packedBytes: dryRunOutcome.packedSize ?? null,
-					unpackedBytes: dryRunOutcome.unpackedSize ?? null,
-					fileCount: dryRunOutcome.fileCount ?? null,
-					sbom: sbomOutcome.sbom,
-					targets: targetResults,
-				});
+				buildResults.push(buildResult);
 			}
 
 			validationPackages.push({

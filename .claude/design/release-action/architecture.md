@@ -4,8 +4,8 @@ category: architecture
 status: current
 completeness: 95
 created: 2026-02-07
-updated: 2026-06-10
-last-synced: 2026-06-10
+updated: 2026-06-18
+last-synced: 2026-06-18
 module: release-action
 related:
   - integration.md
@@ -107,9 +107,11 @@ The commit subject matches the PR title; the commit body is a bullet list of ful
 
 Triggers on push to the release branch. Creates all validation Check Runs upfront for immediate visibility. Phase 2 now routes through `src/release/validation.ts` (`runValidation`) — a pure Effect program — rather than a chain of imperative utility modules.
 
-**`src/release/validation.ts`** (`runValidation`) — Enumerates workspace packages, diffs versions against the target branch to discover which packages are being released (`detectReleasedPackages` drops changeset-ignored names entirely via `ChangesetConfig.isIgnored`, so they never appear, not even as version-only rows), resolves publish targets via `resolvePublishableTargets` (the `PublishabilityDetectorAdaptiveLive` seam), groups targets by build directory, runs `PackagePublish.dryRun` per build directory, generates one SBOM per build directory via the `Sbom` service, applies `sbom-config` metadata, and assembles a `ValidationReport`. The report is build-centric: `ValidationPackageResult` carries builds, sizes, SBOMs, and registry targets. `strict-warnings` mode escalates warning-severity findings to `failure` for auto-merge gating.
+**`src/release/validation.ts`** (`runValidation`) — Enumerates workspace packages, diffs versions against the target branch to discover which packages are being released (`detectReleasedPackages` drops changeset-ignored names entirely via `ChangesetConfig.isIgnored`, so they never appear, not even as version-only rows), orders the released set through `TopologicalSorter.sortSubset` (dependencies first, matching Phase-3 publish order; a cyclic graph falls back to discovery order rather than aborting), resolves publish targets via `resolvePublishableTargets` (the `PublishabilityDetectorAdaptiveLive` seam), groups targets by build directory, runs `PackagePublish.dryRun` per build directory, generates one SBOM per build directory via the `Sbom` service, applies `sbom-config` metadata, and assembles a `ValidationReport`. The report is build-centric: `ValidationPackageResult` carries builds, sizes, SBOMs, and registry targets. `strict-warnings` mode escalates warning-severity findings to `failure` for auto-merge gating.
 
-Phase 2 emits three per-step Check Runs — `Publish Validation`, `Release Notes Preview` and `SBOM Preview`. Their titles carry no decorative leading icons (the older `📦`/`📋`/`🔏` markers were removed); the only title decoration is the `🧪` marker prepended in dry-run mode (see [Dry-Run Mode](#dry-run-mode)). Dry-run and SBOM step labels key off the byte-group id (`getGroupId`) rather than the now-uniform `pkg` directory basename.
+The dry-run dispatches through the same npm executor as the live publish: `runValidation` passes the normalized `packageManager` (via `normalizePackageManager`) to `PackagePublish.dryRun`, so a dry-run validates against the exact npm the Phase-3 publish will run (`pnpm dlx npm`, `yarn npm`, `bun x npm` or bare `npm`) rather than the runner's bundled one. See [Authentication and publishing](integration.md#authentication-and-publishing).
+
+Phase 2 emits three per-step Check Runs — `Publish Validation`, `Release Notes Preview` and `SBOM Preview`. Their titles carry no decorative leading icons (the older `📦`/`📋`/`🔏` markers were removed); the only title decoration is the `🧪` marker prepended in dry-run mode (see [Dry-Run Mode](#dry-run-mode)). The per-build log mirrors the Phase-3 publish tree: one `Step.groupStep("Validate · pkg@version[ · group]")` per build directory containing a `📦 pack` step (dry-run sizing), per-registry `⬆ <registry> · ready/not-ready` rows and a `📄 sbom` step, capped by a `Step.success`/`Step.failure` group summary. The group title disambiguates by byte-group id (`getGroupId`) only when a package spans multiple builds. This is presentation only — the `ValidationReport` data shape is unchanged.
 
 Every check-run summary is passed through `capCheckSummary` (`src/utils/create-validation-check.ts`) before completion. This caps the summary at GitHub's 65535-**byte** limit (UTF-8 bytes, not characters — emoji and box-drawing glyphs each count as several bytes), truncating on a byte budget without splitting a multi-byte sequence and appending a truncation notice. Without it large monorepos 422'd the check completion. Release-notes CHANGELOG content is the main size driver, so `main.ts` `stripReleaseNotes` omits per-package `releaseNotes` from the structured `result` output and the embedded JSON block — the full notes live only in the Release Notes Preview check (see [Schema Layer](#schema-layer)).
 
@@ -206,12 +208,15 @@ main.ts
   |       +-- release/resolve-targets.ts (resolvePublishableTargets seam)
   |       +-- release/publishability.ts (PublishabilityDetectorAdaptiveLive)
   |       +-- release/changeset-config.ts (ChangesetConfig service)
+  |       +-- utils/normalize-package-manager.ts (dry-run npm dispatch)
+  |       +-- utils/registry-label.ts (⬆ row labels)
   |       +-- infer-sbom-metadata.ts
   |       +-- load-release-config.ts
   |       +-- count-changesets.ts
   |       +-- extract-release-notes.ts
   |       +-- validate-ntia-compliance.ts
-  |       +-- PackagePublish.dryRun (library service)
+  |       +-- TopologicalSorter.sortSubset (library service, dependency order)
+  |       +-- PackagePublish.dryRun (library service, packageManager dispatch)
   |       +-- Sbom.generate (library service)
   |     release/report.ts (buildValidationComment, buildChecksTable, …)
   |     create-validation-check.ts + derive-check-conclusion.ts
@@ -432,7 +437,9 @@ When `dry-run: true` is set, the action executes a parallel path that validates 
 | `src/utils/infer-sbom-metadata.ts` | Infer SBOM metadata from package.json fields |
 | `src/utils/link-issues-from-commits.ts` | Extract and cross-reference issues from commits |
 | `src/utils/load-release-config.ts` | Layered config loading; decodes via SilkReleaseConfig schema |
+| `src/utils/normalize-package-manager.ts` | Narrow the packageManager input to the four-value enum for npm dispatch (shared by publish.ts + validation.ts) |
 | `src/utils/parse-changesets.ts` | Changeset YAML frontmatter parsing |
+| `src/utils/registry-label.ts` | registryShortLabel / registryHost — ⬆ row labels in the publish and validation log trees (shared by publish.ts + validation.ts) |
 | `src/utils/release-summary-helpers.ts` | listPublishablePackages (Effect over the single detector), getReleasingPackages, resolveReleasePrTitle, formatReleasePackageList |
 | `src/utils/summary-writer.ts` | Type-safe markdown via ts-markdown |
 | `src/utils/tokens.ts` | appToken() and packagesToken() helpers for non-Effect publish chain context |

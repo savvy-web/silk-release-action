@@ -34,13 +34,15 @@ import {
 	Step,
 	isGitHubPackagesRegistry,
 	isJsrRegistry,
-	isNpmRegistry,
 } from "@savvy-web/github-action-effects";
 import { Config, Effect, Option, Redacted } from "effect";
 import { PublishabilityDetector, TopologicalSorter, WorkspaceDiscovery, WorkspacePackage } from "workspaces-effect";
 
 import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
 import { getGroupId } from "../utils/group-id.js";
+import type { PackageManager } from "../utils/normalize-package-manager.js";
+import { normalizePackageManager } from "../utils/normalize-package-manager.js";
+import { registryHost, registryShortLabel } from "../utils/registry-label.js";
 import { buildProvenancePredicate } from "./attest-helpers.js";
 import { ChangesetConfig } from "./changeset-config.js";
 import { humanizeSize } from "./report.js";
@@ -48,38 +50,6 @@ import { isTargetPrivate, pickToken } from "./resolve-targets.js";
 import type { PackagePublishResult, PublishPackagesResult, TargetPublishResult } from "./types.js";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/**
- * Narrow the loosely-typed `packageManager` string from `PublishInputArgs`
- * into the four-value enum the library's `PackagePublish.publish` accepts.
- * Anything unrecognised falls back to `"npm"` — matches the lockfile-detection
- * fallback chain in `detectPackageManager`.
- */
-const normalizePackageManager = (pm: string): "npm" | "pnpm" | "yarn" | "bun" => {
-	if (pm === "pnpm" || pm === "yarn" || pm === "bun" || pm === "npm") return pm;
-	return "npm";
-};
-
-/**
- * Compact label for a registry, used as the publish row's step name in the
- * rich publish tree (`⬆ npm: …`, `⬆ github: …`). Well-known registries collapse
- * to `npm`/`github`/`jsr`; anything else falls back to its hostname.
- */
-const registryShortLabel = (registry: string): string => {
-	if (isNpmRegistry(registry)) return "npm";
-	if (isGitHubPackagesRegistry(registry)) return "github";
-	if (isJsrRegistry(registry)) return "jsr";
-	return registryHost(registry);
-};
-
-/** The hostname of a registry URL, for the `published · <host>` detail. Falls back to the raw value. */
-const registryHost = (registry: string): string => {
-	try {
-		return new URL(registry).host;
-	} catch {
-		return registry.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
-	}
-};
 
 // ─── Public interfaces ────────────────────────────────────────────────────────
 
@@ -576,7 +546,7 @@ const publishDirectoryGroup = (
 	targetsInGroup: ReadonlyArray<TargetSpec>,
 	npmToken: string | null,
 	ghPkgsToken: string | null,
-	packageManager: "npm" | "pnpm" | "yarn" | "bun",
+	packageManager: PackageManager,
 	sbomPath: string | null,
 ) =>
 	Step.withStep(
@@ -617,7 +587,9 @@ const publishDirectoryGroup = (
 				"pack",
 				Effect.gen(function* () {
 					yield* Effect.logDebug(`[publish] ${packageName}: packing ${directory}`);
-					const outcome = yield* publishSvc.pack(directory).pipe(
+					// Pack through the active manager's npm executor — same dispatch as
+					// publish/dry-run so every phase packs with the identical npm.
+					const outcome = yield* publishSvc.pack(directory, { packageManager }).pipe(
 						Effect.map((r) => ({ ok: true as const, result: r })),
 						Effect.catchAll((e: PackagePublishError) => Effect.succeed({ ok: false as const, error: e.message })),
 					);

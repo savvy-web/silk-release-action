@@ -77,9 +77,9 @@ We author every dependency in the table below, so a bug or missing API in one ca
 
 | Package | Repo | Local checkout |
 | ------- | ---- | -------------- |
-| `@savvy-web/github-action-effects` | `savvy-web/github-action-effects` | `../github-action-effects` |
-| `@savvy-web/github-action-builder` | `savvy-web/github-action-builder` | `../github-action-builder` |
-| `@savvy-web/silk-effects` | `savvy-web/silk-effect` | clone as needed |
+| `@savvy-web/github-action-effects` | `savvy-web/systems` (monorepo) | `../systems/packages/github-action-effects` |
+| `@savvy-web/github-action-builder` | `savvy-web/systems` (monorepo) | `../systems/packages/github-action-builder` |
+| `@savvy-web/silk-effects` | `savvy-web/systems` (monorepo) | `../systems/packages/silk-effects` |
 | `workspaces-effect` | `spencerbeggs/workspaces-effect` | `../../spencerbeggs/workspaces-effect` |
 | `json-schema-effect` | `spencerbeggs/json-schema-effect` | `../../spencerbeggs/json-schema-effect` |
 
@@ -87,7 +87,7 @@ We author every dependency in the table below, so a bug or missing API in one ca
 
 **Two ways to link a local library build:**
 
-- **Direct-only dependency → `pnpm link`.** e.g. `pnpm link ../github-action-effects` symlinks `node_modules/@savvy-web/github-action-effects` to the local build. Verify the linked `package.json` via `node:fs` (NOT `require(...package.json)` — the `exports` map does not expose `./package.json`), or `pnpm why <pkg>`.
+- **Direct-only dependency → `pnpm link`.** e.g. `pnpm link ../systems/packages/github-action-effects` symlinks `node_modules/@savvy-web/github-action-effects` to the local build. Verify the linked `package.json` via `node:fs` (NOT `require(...package.json)` — the `exports` map does not expose `./package.json`), or `pnpm why <pkg>`.
 - **Also a transitive dependency → `pnpm-workspace.yaml` override.** A bare `pnpm link` redirects only the direct import, leaving the transitive copy (e.g. `workspaces-effect` pulled in by `silk-effects`) on the registry version and bundling **two** copies. A `link:` override forces every resolution to one local copy:
 
   ```yaml
@@ -110,7 +110,7 @@ We author every dependency in the table below, so a bug or missing API in one ca
 
 **Committing while a link/override is active:** commit the **full dogfood state** to `dev` — `src` + rebuilt `dist` + changeset **and** the `pnpm-workspace.yaml` override + `pnpm-lock.yaml`. The override holds a machine-specific link path, so `dev` only installs cleanly with the sibling repos checked out at the paths in the table above; that is the accepted dogfooding trade-off, and the cleanup in step 7 reverts it. No CI runs on a plain `dev` push, so the committed `dev` source may reference an unpublished library API until it publishes — expected during dogfooding. Commits must be GPG-signed with the GitHub-verified key for `C. Spencer Beggs <spencer@savvyweb.systems>` or the signature ruleset rejects them.
 
-**Currently active:** no dogfood link or override is active. All first-party dependencies are pinned to registry versions: `@savvy-web/silk-effects ^1.0.0`, `@savvy-web/github-action-effects ^2.1.3`, and `workspaces-effect ^1.2.0`. The per-byte-group prod layout work depends on `silk-effects ^1.0.0` (publishability/target resolution) and `github-action-effects ^2.1.3`.
+**Currently active:** no dogfood link or override is active. All first-party dependencies are pinned to registry versions: `@savvy-web/silk-effects ^1.3.0`, `@savvy-web/github-action-effects ^2.2.1`, and `workspaces-effect ^1.2.0`. The per-byte-group prod layout work depends on `silk-effects ^1.3.0` (publishability/target resolution) and `github-action-effects ^2.2.1` — the latter redirects npm's cache off the runner's root-owned `~/.npm` so pre-publish dry-runs no longer hit EACCES on macOS runners.
 
 ## Development & Release Cycle
 

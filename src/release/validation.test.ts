@@ -19,7 +19,13 @@ import {
 } from "@savvy-web/github-action-effects/testing";
 import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
-import { PublishTarget, PublishabilityDetector, WorkspaceDiscovery, WorkspacePackage } from "workspaces-effect";
+import {
+	PublishTarget,
+	PublishabilityDetector,
+	TopologicalSorter,
+	WorkspaceDiscovery,
+	WorkspacePackage,
+} from "workspaces-effect";
 
 import { matchesIgnorePattern } from "../utils/detect-repo-type.js";
 import { ChangesetConfig } from "./changeset-config.js";
@@ -124,6 +130,15 @@ const changesetConfigDefaultLayer = Layer.succeed(ChangesetConfig, {
 	fixed: () => Effect.succeed([]),
 });
 
+// TopologicalSorter mock: runValidation orders released packages via `sortSubset`.
+// Return the requested names unchanged so ordering is a no-op in tests (the real
+// dependency-order behavior is exercised by the publish phase / workspaces-effect).
+const topoSorterLayer = Layer.succeed(TopologicalSorter, {
+	sort: () => Effect.succeed([] as ReadonlyArray<string>),
+	sortSubset: (names: ReadonlyArray<string>) => Effect.succeed(names),
+	levels: () => Effect.succeed([] as ReadonlyArray<ReadonlyArray<string>>),
+} as typeof TopologicalSorter.Service);
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("runValidation", () => {
@@ -146,6 +161,7 @@ describe("runValidation", () => {
 			const layers = Layer.mergeAll(
 				NodeContext.layer,
 				loggerLayer,
+				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -211,6 +227,7 @@ describe("runValidation", () => {
 			const layers = Layer.mergeAll(
 				NodeContext.layer,
 				loggerLayer,
+				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -255,6 +272,7 @@ describe("runValidation", () => {
 			const layers = Layer.mergeAll(
 				NodeContext.layer,
 				loggerLayer,
+				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -297,6 +315,7 @@ describe("runValidation", () => {
 			const layers = Layer.mergeAll(
 				NodeContext.layer,
 				loggerLayer,
+				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -338,6 +357,7 @@ describe("runValidation", () => {
 			const layers = Layer.mergeAll(
 				NodeContext.layer,
 				loggerLayer,
+				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -378,6 +398,7 @@ describe("runValidation", () => {
 			const layers = Layer.mergeAll(
 				NodeContext.layer,
 				loggerLayer,
+				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -420,6 +441,7 @@ describe("runValidation", () => {
 			const layers = Layer.mergeAll(
 				NodeContext.layer,
 				loggerLayer,
+				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -465,6 +487,7 @@ describe("runValidation", () => {
 			const layers = Layer.mergeAll(
 				NodeContext.layer,
 				loggerLayer,
+				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -510,6 +533,7 @@ describe("runValidation", () => {
 			const layers = Layer.mergeAll(
 				NodeContext.layer,
 				loggerLayer,
+				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -569,6 +593,7 @@ describe("runValidation", () => {
 			const layers = Layer.mergeAll(
 				NodeContext.layer,
 				loggerLayer,
+				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -610,6 +635,7 @@ describe("runValidation", () => {
 			const layers = Layer.mergeAll(
 				NodeContext.layer,
 				loggerLayer,
+				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -663,6 +689,7 @@ describe("runValidation", () => {
 			const layers = Layer.mergeAll(
 				NodeContext.layer,
 				loggerLayer,
+				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -706,6 +733,7 @@ describe("runValidation", () => {
 			const layers = Layer.mergeAll(
 				NodeContext.layer,
 				loggerLayer,
+				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -746,6 +774,7 @@ describe("runValidation", () => {
 			const layers = Layer.mergeAll(
 				NodeContext.layer,
 				loggerLayer,
+				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -789,6 +818,7 @@ describe("runValidation", () => {
 			const layers = Layer.mergeAll(
 				NodeContext.layer,
 				loggerLayer,
+				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -857,6 +887,7 @@ describe("runValidation", () => {
 			const layers = Layer.mergeAll(
 				NodeContext.layer,
 				loggerLayer,
+				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -923,6 +954,7 @@ describe("runValidation", () => {
 			const layers = Layer.mergeAll(
 				NodeContext.layer,
 				loggerLayer,
+				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -987,6 +1019,7 @@ describe("runValidation", () => {
 			const layers = Layer.mergeAll(
 				NodeContext.layer,
 				loggerLayer,
+				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -1051,6 +1084,7 @@ describe("runValidation", () => {
 			const layers = Layer.mergeAll(
 				NodeContext.layer,
 				loggerLayer,
+				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -1105,6 +1139,7 @@ describe("runValidation", () => {
 			const layers = Layer.mergeAll(
 				NodeContext.layer,
 				loggerLayer,
+				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -1180,6 +1215,7 @@ describe("runValidation", () => {
 			const layers = Layer.mergeAll(
 				NodeContext.layer,
 				loggerLayer,
+				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -1254,6 +1290,7 @@ describe("runValidation", () => {
 			const layers = Layer.mergeAll(
 				NodeContext.layer,
 				loggerLayer,
+				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -1275,6 +1312,74 @@ describe("runValidation", () => {
 			expect(build?.sbom?.componentCount).toBe(0);
 			const noComponentsWarning = report.findings.find((f) => f.message.includes("no components"));
 			expect(noComponentsWarning).toBeUndefined();
+		});
+	});
+
+	describe("topological ordering", () => {
+		it("validates released packages in dependency order, not workspace glob order", async () => {
+			// Discovery returns alphabetical glob order [alpha, beta]; the dependency
+			// order is [beta, alpha] (alpha depends on beta). Validation must follow
+			// the TopologicalSorter, so beta is dry-run/SBOM'd before alpha.
+			const alpha = makeWsPkg("@test/alpha", "1.1.0", "packages/alpha");
+			const beta = makeWsPkg("@test/beta", "1.1.0", "packages/beta");
+			const alphaTarget = makeNpmTarget("@test/alpha", "/tmp/dist/alpha");
+			const betaTarget = makeNpmTarget("@test/beta", "/tmp/dist/beta");
+
+			const commandResponses = new Map<string, CommandResponse>([
+				[
+					"git show main:packages/alpha/package.json",
+					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/alpha", version: "1.0.0" }), stderr: "" },
+				],
+				[
+					"git show main:packages/beta/package.json",
+					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/beta", version: "1.0.0" }), stderr: "" },
+				],
+			]);
+
+			const { state: pubState, layer: pubLayer } = PackagePublishTest.empty();
+
+			// Reordering sorter: ranks the actual input names into dependency order
+			// (beta before alpha). Sorting the input — rather than returning a constant —
+			// means the test fails if runValidation passes the wrong subset to sortSubset.
+			const depOrder = ["@test/beta", "@test/alpha"];
+			const rank = (name: string) => {
+				const i = depOrder.indexOf(name);
+				return i === -1 ? Number.MAX_SAFE_INTEGER : i;
+			};
+			const reorderingSorterLayer = Layer.succeed(TopologicalSorter, {
+				sort: () => Effect.succeed([...depOrder] as ReadonlyArray<string>),
+				sortSubset: (names: ReadonlyArray<string>) => Effect.succeed([...names].sort((a, b) => rank(a) - rank(b))),
+				levels: () => Effect.succeed([] as ReadonlyArray<ReadonlyArray<string>>),
+			} as typeof TopologicalSorter.Service);
+
+			const layers = Layer.mergeAll(
+				NodeContext.layer,
+				loggerLayer,
+				reorderingSorterLayer,
+				actionStateLayer,
+				makeCommandRunnerLayer(commandResponses),
+				pubLayer,
+				npmRegistryLayer,
+				sbomLayer,
+				attestLayer,
+				changesetConfigDefaultLayer,
+				// Discovery lists alphabetically (alpha before beta).
+				makeWorkspaceDiscoveryLayer([alpha, beta]),
+				makePublishabilityLayer(
+					new Map([
+						["@test/alpha", [alphaTarget]],
+						["@test/beta", [betaTarget]],
+					]),
+				),
+			);
+
+			const report = await Effect.runPromise(
+				runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(Effect.provide(layers)),
+			);
+
+			// The report and the dry-run calls follow dependency order: beta, then alpha.
+			expect(report.packages.map((p) => p.name)).toEqual(["@test/beta", "@test/alpha"]);
+			expect(pubState.dryRunCalls.map((c) => c.packageDir)).toEqual(["/tmp/dist/beta", "/tmp/dist/alpha"]);
 		});
 	});
 });
