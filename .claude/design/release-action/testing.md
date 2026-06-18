@@ -4,8 +4,8 @@ category: testing
 status: current
 completeness: 90
 created: 2026-02-07
-updated: 2026-06-10
-last-synced: 2026-06-10
+updated: 2026-06-18
+last-synced: 2026-06-18
 module: release-action
 related:
   - architecture.md
@@ -219,6 +219,8 @@ vi.mocked(getWorkspacePackagesSync).mockReturnValue([
 ]);
 ```
 
+`workspaces-effect` services that have no `/testing` layer are stubbed inline with `Layer.succeed`. `runValidation` orders released packages through `TopologicalSorter.sortSubset`, so its tests provide a `TopologicalSorter` stub — a no-op that returns the input names unchanged for most cases, and a reordering stub for the dedicated "dependency order, not glob order" test that asserts both the report order and the `dryRunCalls` order follow the sorter.
+
 #### Publishability Integration Tests
 
 `__test__/integration/publishability.int.test.ts` uses real fixture workspaces to verify the full silk publishability matrix against the `SilkPublishabilityDetectorLive` layer without any mocking. Each fixture is a minimal workspace with a real `package.json` in `__test__/integration/fixtures/`:
@@ -302,6 +304,8 @@ Source modules without dedicated test files:
 | `src/types/*.ts` | Type definitions with no runtime behavior |
 | `src/utils/create-api-commit.ts` | GitHub API commit (excluded from coverage) |
 | `src/release/resolve-targets.ts` | Covered indirectly via validation and publishability tests |
+| `src/utils/normalize-package-manager.ts` | Single-branch narrowing helper; exercised via publish and validation tests |
+| `src/utils/registry-label.ts` | Label helpers; exercised via publish and validation log-tree assertions |
 
 ### Test Best Practices
 

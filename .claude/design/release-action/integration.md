@@ -4,8 +4,8 @@ category: integration
 status: current
 completeness: 92
 created: 2026-02-07
-updated: 2026-06-10
-last-synced: 2026-06-10
+updated: 2026-06-18
+last-synced: 2026-06-18
 module: release-action
 related:
   - architecture.md
@@ -73,7 +73,7 @@ The implementation reads raw `package.json` from disk (not the typed `WorkspaceP
 
 Authentication and publishing are handled by library services in Phase 3:
 
-- **`PackagePublish`** (library) — `pack(directory)` runs npm pack once per build directory; `publishTarball(path, opts)` publishes the pre-packed tarball; `setupAuth(registry, token)` writes auth to `~/.npmrc`. OIDC for npm and JSR is handled inside the library's `PackagePublish.publishTarball` implementation via `pnpm dlx npm` (fetches npm 11.x which supports OIDC trusted publishing; Node 24 ships npm 10.x which does not).
+- **`PackagePublish`** (library) — `pack(directory, opts)` runs npm pack once per build directory; `publishTarball(path, opts)` publishes the pre-packed tarball; `dryRun(directory, opts)` runs `npm publish --dry-run`; `setupAuth(registry, token)` writes auth to `~/.npmrc`. `pack`, `dryRun` and the live publish all take a `packageManager` option and dispatch through the same npm executor (`pnpm dlx npm`, `yarn npm`, `bun x npm` or bare `npm`), so a Phase-2 dry-run validates against the exact npm the Phase-3 publish runs. OIDC for npm and JSR is handled inside the library's `PackagePublish.publishTarball` implementation via `pnpm dlx npm` (fetches npm 11.x which supports OIDC trusted publishing; Node 24 ships npm 10.x which does not).
 - **`NpmRegistry`** (library) — `getPublishedIntegrity(name, version, opts)` probes a registry for an existing version's tarball digest. Returns `Option.none()` when absent, `Option.some(digest)` when present. Used by `publishDirectoryGroup` before deciding whether to publish, skip, or abort.
 
 ##### Token-auth publishing fallback
@@ -85,7 +85,7 @@ Authentication and publishing are handled by library services in Phase 3:
 
 Failures surface npm's actual error (e.g. `ENEEDAUTH`, `E404`) rather than an opaque exit code, and the resolved auth-token key plus target `.npmrc` are logged (never the token) for auth debugging.
 
-Phase 2 dry-run validation uses `PackagePublish.dryRun` from the library, which runs `npm publish --dry-run` (via `pnpm dlx npm`) against each target registry.
+Phase 2 dry-run validation uses `PackagePublish.dryRun` from the library, which runs `npm publish --dry-run` against each target registry through the active manager's npm executor (see above). The bump to `@savvy-web/github-action-effects ^2.2.1` makes every npm CLI call route through a runner-writable cache (`<RUNNER_TEMP>/silk-npm-cache`), sidestepping the macOS runner's partially root-owned `~/.npm` cache that previously failed dry-runs with `EACCES`. That is a library-level fix the action simply consumes.
 
 #### Configuration Loading (`load-release-config.ts`)
 
@@ -222,6 +222,8 @@ Packing once ensures every registry receives identical content with the same SHA
 | `src/release/releases.ts` | runReleases: tags, GitHub releases, group-keyed tarball/SBOM/API-doc/meta.tgz assets, attestations |
 | `src/release/meta-archive.ts` | tarMetaFolder: packs a bundler `meta/` folder into a `…<group>.meta.tgz` doc bundle |
 | `src/utils/group-id.ts` | getGroupId, insertGroupToken — byte-group asset naming |
+| `src/utils/normalize-package-manager.ts` | normalizePackageManager — narrows packageManager for npm dispatch (publish + validation) |
+| `src/utils/registry-label.ts` | registryShortLabel / registryHost — ⬆ row labels (publish + validation log trees) |
 | `src/release/layers.ts` | ReleaseLive layer composition |
 | `src/release/types.ts` | TargetPublishResult, ValidationFinding, ValidationPackageResult, etc. |
 
