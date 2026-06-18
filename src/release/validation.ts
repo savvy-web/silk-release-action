@@ -696,8 +696,8 @@ export const runValidation = (args: ValidationInputArgs) =>
 											: "sized",
 									);
 								} else {
-									// Buffer the full npm output as debug so it spills under the ❌.
-									yield* Effect.logDebug(`dry-run output:\n${result.output}`);
+									// Concise failure line (first line of npm's error); the full output
+									// is carried in the per-registry finding, not spilled into the tree.
 									yield* Step.failure((result.output ?? "").trim().split("\n")[0] || "dry-run failed");
 								}
 								return result;
