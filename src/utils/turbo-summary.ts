@@ -66,22 +66,28 @@ export interface TurboRunEntry {
  *
  * @remarks
  * A turbo-summarize build is one whose script invokes Turbo (`turbo run` or
- * `turbo <flags> run`) **and** passes `--summarize` (with or without a value).
- * Both must be present; a plain `turbo run` or a stray `--summarize` on a
- * non-turbo command does not qualify.
+ * `turbo <flags> run`) **and** passes `--summarize` (with or without a value),
+ * or sets `TURBO_RUN_SUMMARY` to a truthy value (either as an environment
+ * variable or inline in the script).
  *
  * @param scriptBody - The raw script body from `package.json` `scripts`.
+ * @param env - The environment object (typically `process.env`).
  * @returns `true` when the script is a turbo-summarize build.
  *
  * @public
  */
-export function isTurboSummarizeScript(scriptBody: string): boolean {
+export function isTurboSummarizeBuild(scriptBody: string, env: { TURBO_RUN_SUMMARY?: string | undefined }): boolean {
 	if (typeof scriptBody !== "string" || scriptBody === "") {
 		return false;
 	}
-	const invokesTurboRun = /\bturbo\b[^\n]*\brun\b/.test(scriptBody);
-	const hasSummarize = /--summarize\b/.test(scriptBody);
-	return invokesTurboRun && hasSummarize;
+	if (!/\bturbo\b[^\n]*\brun\b/.test(scriptBody)) {
+		return false;
+	}
+	const summarizeFlag = /--summarize\b/.test(scriptBody);
+	const envValue = env.TURBO_RUN_SUMMARY;
+	const envEnabled = typeof envValue === "string" && (envValue === "1" || envValue.toLowerCase() === "true");
+	const inlineEnabled = /\bTURBO_RUN_SUMMARY\s*=\s*["']?(?:1|true)\b/i.test(scriptBody);
+	return summarizeFlag || envEnabled || inlineEnabled;
 }
 
 /**
@@ -177,7 +183,7 @@ export const logTurboRunSummary = (
 		const pkg = JSON.parse(pkgRaw) as { scripts?: Record<string, string> };
 		const scriptBody = pkg.scripts?.[scriptName] ?? "";
 
-		if (!isTurboSummarizeScript(scriptBody)) {
+		if (!isTurboSummarizeBuild(scriptBody, process.env as { TURBO_RUN_SUMMARY?: string | undefined })) {
 			yield* Effect.logDebug(`Turbo summary: '${scriptName}' is not a turbo --summarize build; skipping`);
 			return;
 		}

@@ -6,32 +6,39 @@ import { NodeFileSystem } from "@effect/platform-node";
 import { Step } from "@savvy-web/github-action-effects";
 import { Effect, LogLevel, Logger } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { isTurboSummarizeScript, logTurboRunSummary, pickNewest } from "./turbo-summary.js";
+import { isTurboSummarizeBuild, logTurboRunSummary, pickNewest } from "./turbo-summary.js";
 
-describe("isTurboSummarizeScript", () => {
-	it("detects a `turbo run` build with --summarize", () => {
-		expect(isTurboSummarizeScript("turbo run build:prod --summarize")).toBe(true);
+describe("isTurboSummarizeBuild", () => {
+	const noEnv = {} as { TURBO_RUN_SUMMARY?: string };
+	it("detects a turbo run build with --summarize", () => {
+		expect(isTurboSummarizeBuild("turbo run build:prod --summarize", noEnv)).toBe(true);
 	});
-
-	it("detects `turbo ... run` with flags before run and --summarize=true", () => {
-		expect(isTurboSummarizeScript("turbo --log-order=grouped run build --summarize=true")).toBe(true);
+	it("detects --summarize=true with flags before run", () => {
+		expect(isTurboSummarizeBuild("turbo --log-order=grouped run build --summarize=true", noEnv)).toBe(true);
 	});
-
-	it("detects when CI prefix and other flags surround the command", () => {
-		expect(isTurboSummarizeScript('CI="true" turbo run build:prod --output-logs=full --summarize')).toBe(true);
+	it("detects TURBO_RUN_SUMMARY=1 in the process env", () => {
+		expect(isTurboSummarizeBuild("turbo run build:prod", { TURBO_RUN_SUMMARY: "1" })).toBe(true);
 	});
-
-	it("returns false for a turbo run without --summarize", () => {
-		expect(isTurboSummarizeScript("turbo run build:prod --log-order=grouped")).toBe(false);
+	it("detects TURBO_RUN_SUMMARY=true (case-insensitive) in the env", () => {
+		expect(isTurboSummarizeBuild("turbo run build", { TURBO_RUN_SUMMARY: "TRUE" })).toBe(true);
 	});
-
-	it("returns false for a non-turbo script even if --summarize appears", () => {
-		expect(isTurboSummarizeScript("node build.js --summarize")).toBe(false);
+	it("detects TURBO_RUN_SUMMARY set inline in the script", () => {
+		expect(isTurboSummarizeBuild("TURBO_RUN_SUMMARY=1 turbo run build", noEnv)).toBe(true);
 	});
-
+	it("returns false for a turbo run with neither flag nor env", () => {
+		expect(isTurboSummarizeBuild("turbo run build:prod --log-order=grouped", noEnv)).toBe(false);
+	});
+	it("returns false when env is set but the script is not turbo", () => {
+		expect(isTurboSummarizeBuild("node build.js", { TURBO_RUN_SUMMARY: "1" })).toBe(false);
+	});
+	it("returns false for env value 0/false/empty", () => {
+		expect(isTurboSummarizeBuild("turbo run build", { TURBO_RUN_SUMMARY: "0" })).toBe(false);
+		expect(isTurboSummarizeBuild("turbo run build", { TURBO_RUN_SUMMARY: "false" })).toBe(false);
+		expect(isTurboSummarizeBuild("turbo run build", { TURBO_RUN_SUMMARY: "" })).toBe(false);
+	});
 	it("returns false for an empty or non-string body", () => {
-		expect(isTurboSummarizeScript("")).toBe(false);
-		expect(isTurboSummarizeScript(undefined as unknown as string)).toBe(false);
+		expect(isTurboSummarizeBuild("", noEnv)).toBe(false);
+		expect(isTurboSummarizeBuild(undefined as unknown as string, noEnv)).toBe(false);
 	});
 });
 
