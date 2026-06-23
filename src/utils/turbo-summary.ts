@@ -1,17 +1,18 @@
 /**
- * Turbo run-summary detection and (Phase 1) raw logging.
+ * Turbo run-summary detection, diagnostics, and summary rendering.
  *
  * @remarks
  * When a release builds via `turbo run ... --summarize`, Turbo writes a run
- * summary JSON under `.turbo/runs/`. This module detects that a build is a
- * turbo-summarize build, locates the newest summary, and logs what it found so
- * the embedded remote cache's behaviour during a release is observable in the
- * Actions log.
+ * summary JSON under `.turbo/runs/`. This module detects whether a build is a
+ * turbo-summarize build ({@link readTurboDiagnostics}), emits concise live
+ * marker lines ({@link emitConciseMarker}), and renders a collapsible
+ * step-summary section ({@link renderTurboCacheSection}) so the embedded remote
+ * cache's behaviour during a release is observable in the Actions log and
+ * job/check summaries.
  *
- * The whole flow is strictly **non-fatal**: {@link logTurboRunSummary} wraps
- * every effect (including JSON parse defects) in {@link Effect.catchAllCause}
- * and demotes any failure to a warning, so build validation never depends on
- * turbo parsing.
+ * The whole flow is strictly **non-fatal**: callers wrap via
+ * {@link Effect.catchAllCause} and demote any failure to a warning, so build
+ * validation never depends on turbo parsing.
  *
  * @module utils/turbo-summary
  */
@@ -20,7 +21,7 @@ import { join } from "node:path";
 import { FileSystem } from "@effect/platform";
 import type { PlatformError } from "@effect/platform/Error";
 import { Step } from "@savvy-web/github-action-effects";
-import { Cause, Effect, Option } from "effect";
+import { Effect, Option } from "effect";
 import { summaryWriter } from "./summary-writer.js";
 
 /**
@@ -170,43 +171,6 @@ export function pickNewest(entries: ReadonlyArray<TurboRunEntry>): string | unde
 }
 
 /**
- * Locate the newest `.turbo/runs/*.json` summary under a build directory.
- *
- * @remarks
- * Returns {@link Option.none} when the `.turbo/runs` directory is absent or
- * holds no `.json` files — both are normal "no summary to report" cases (no
- * `--summarize`, or the build failed before Turbo wrote the summary). Genuine
- * read failures surface as the {@link PlatformError} typed error.
- *
- * @param cwd - The build working directory (Turbo writes `.turbo/runs` here).
- * @returns The absolute path of the newest summary, or {@link Option.none}.
- *
- * @public
- */
-export const findLatestTurboRunSummary = (
-	cwd: string,
-): Effect.Effect<Option.Option<string>, PlatformError, FileSystem.FileSystem> =>
-	Effect.gen(function* () {
-		const fs = yield* FileSystem.FileSystem;
-		const runsDir = join(cwd, ".turbo", "runs");
-		if (!(yield* fs.exists(runsDir))) {
-			return Option.none();
-		}
-		const names = (yield* fs.readDirectory(runsDir)).filter((name) => name.endsWith(".json"));
-		if (names.length === 0) {
-			return Option.none();
-		}
-		const entries: TurboRunEntry[] = [];
-		for (const name of names) {
-			const info = yield* fs.stat(join(runsDir, name));
-			const mtimeMs = Option.match(info.mtime, { onNone: () => 0, onSome: (date) => date.getTime() });
-			entries.push({ name, mtimeMs });
-		}
-		const newest = pickNewest(entries);
-		return newest === undefined ? Option.none() : Option.some(join(runsDir, newest));
-	});
-
-/**
  * List all `.turbo/runs/*.json` summaries under a build directory, sorted
  * newest-first by modification time.
  *
@@ -261,87 +225,6 @@ export const readTurboRunSummary = (
 		const content = yield* fs.readFileString(path);
 		return JSON.parse(content) as TurboRunSummary;
 	});
-
-/**
- * Phase 1: detect a turbo-summarize build, locate the newest run summary, and
- * raw-log it so the embedded remote cache's behaviour is visible in the
- * Actions log.
- *
- * @remarks
- * Non-fatal by construction: any failure (missing/malformed `package.json`,
- * unreadable directory, malformed summary JSON — including parse defects) is
- * caught via {@link Effect.catchAllCause} and demoted to a warning. The
- * effect therefore has `never` in its error channel and can be sequenced into
- * build validation without affecting its success.
- *
- * Absence (not a turbo-summarize build, or no summary written) is logged at
- * debug level and is not a failure.
- *
- * @param cwd - The build working directory.
- * @param scriptName - The package-manager script that ran the build (e.g. the
- *   `build-command` input, or `ci:build` by default).
- *
- * @public
- */
-export const logTurboRunSummary = (
-	cwd: string,
-	scriptName: string,
-): Effect.Effect<void, never, FileSystem.FileSystem> =>
-	Effect.gen(function* () {
-		const fs = yield* FileSystem.FileSystem;
-
-		const pkgRaw = yield* fs.readFileString(join(cwd, "package.json"));
-		const pkg = JSON.parse(pkgRaw) as { scripts?: Record<string, string> };
-		const scriptBody = pkg.scripts?.[scriptName] ?? "";
-
-		if (!isTurboSummarizeBuild(scriptBody, process.env as { TURBO_RUN_SUMMARY?: string | undefined })) {
-			yield* Effect.logDebug(`Turbo summary: '${scriptName}' is not a turbo --summarize build; skipping`);
-			return;
-		}
-
-		const summaryPathOpt = yield* findLatestTurboRunSummary(cwd);
-		if (Option.isNone(summaryPathOpt)) {
-			yield* Effect.logDebug("Turbo summary: no .turbo/runs/*.json found; skipping");
-			return;
-		}
-		const summaryPath = summaryPathOpt.value;
-
-		const content = yield* fs.readFileString(summaryPath);
-		const summary = JSON.parse(content) as TurboRunSummary;
-
-		const execution = summary.execution ?? {};
-		const tasks = summary.tasks ?? [];
-		let remote = 0;
-		let local = 0;
-		let miss = 0;
-		let timeSaved = 0;
-		for (const task of tasks) {
-			const cache = task.cache ?? {};
-			if (cache.source === "REMOTE" || cache.remote === true) remote++;
-			else if (cache.source === "LOCAL" || cache.local === true) local++;
-			else miss++;
-			timeSaved += cache.timeSaved ?? 0;
-		}
-
-		// `Step.line` bypasses the Phase-2 step buffer, so these surface live at
-		// the default `info` log level (unlike `Effect.logInfo`, which is
-		// buffered and discarded when the build succeeds).
-		yield* Step.line("🐢", `turbo summary: ${summaryPath}`);
-		yield* Step.line(
-			"🐢",
-			`turbo execution: command=${execution.command ?? "?"} attempted=${execution.attempted ?? 0} cached=${execution.cached ?? 0} failed=${execution.failed ?? 0}`,
-		);
-		yield* Step.line("🐢", `turbo cache: ${remote} REMOTE · ${local} LOCAL · ${miss} MISS · ${timeSaved}ms saved`);
-
-		// Per-task detail stays at debug level (visible only under
-		// ACTIONS_STEP_DEBUG) to keep the normal log to a few summary rows.
-		for (const task of tasks) {
-			const cache = task.cache ?? {};
-			yield* Effect.logDebug(
-				`turbo task ${task.taskId ?? "?"} — ${cache.status ?? "?"} (${cache.source && cache.source !== "" ? cache.source : "—"}), saved ${cache.timeSaved ?? 0}ms`,
-			);
-		}
-	}).pipe(Effect.catchAllCause((cause) => Effect.logWarning(`Turbo summary logging failed: ${Cause.pretty(cause)}`)));
 
 const toTaskRows = (summary: TurboRunSummary): TurboTaskRow[] =>
 	(summary.tasks ?? []).map((task) => {

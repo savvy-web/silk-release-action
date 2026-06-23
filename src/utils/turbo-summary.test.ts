@@ -12,7 +12,6 @@ import {
 	formatConciseMarkerLines,
 	isTurboSummarizeBuild,
 	listTurboRunSummaryPaths,
-	logTurboRunSummary,
 	pickNewest,
 	readTurboDiagnostics,
 	renderTurboCacheSection,
@@ -133,66 +132,12 @@ describe("listTurboRunSummaryPaths", () => {
 	});
 });
 
-describe("logTurboRunSummary (non-fatal orchestrator)", () => {
-	let dir: string;
-
-	beforeEach(() => {
-		dir = mkdtempSync(join(tmpdir(), "turbo-summary-"));
-	});
-
-	afterEach(() => {
-		rmSync(dir, { recursive: true, force: true });
-	});
-
-	const run = (cwd: string, scriptName: string): Promise<void> =>
-		Effect.runPromise(logTurboRunSummary(cwd, scriptName).pipe(Effect.provide(NodeFileSystem.layer)));
-
-	it("resolves (never rejects) when the run summary JSON is malformed", async () => {
-		writeFileSync(
-			join(dir, "package.json"),
-			JSON.stringify({ scripts: { "ci:build": "turbo run build --summarize" } }),
-		);
-		await mkdir(join(dir, ".turbo", "runs"), { recursive: true });
-		writeFileSync(join(dir, ".turbo", "runs", "bad.json"), "{ this is not json");
-
-		// Must resolve, not reject — turbo logging is strictly non-fatal.
-		await expect(run(dir, "ci:build")).resolves.toBeUndefined();
-	});
-
-	it("resolves when the script is not a turbo --summarize build", async () => {
-		writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts: { "ci:build": "tsc -b" } }));
-		await expect(run(dir, "ci:build")).resolves.toBeUndefined();
-	});
-
-	it("resolves when there is no .turbo/runs directory", async () => {
-		writeFileSync(
-			join(dir, "package.json"),
-			JSON.stringify({ scripts: { "ci:build": "turbo run build --summarize" } }),
-		);
-		await expect(run(dir, "ci:build")).resolves.toBeUndefined();
-	});
-
-	it("resolves on a well-formed summary", async () => {
-		writeFileSync(
-			join(dir, "package.json"),
-			JSON.stringify({ scripts: { "ci:build": "turbo run build --summarize" } }),
-		);
-		await mkdir(join(dir, ".turbo", "runs"), { recursive: true });
-		writeFileSync(
-			join(dir, ".turbo", "runs", "run.json"),
-			JSON.stringify({
-				execution: { command: "turbo run build", attempted: 1, cached: 1, failed: 0, success: 0, exitCode: 0 },
-				tasks: [{ taskId: "pkg#build", cache: { status: "HIT", source: "REMOTE", timeSaved: 1200 } }],
-			}),
-		);
-		await expect(run(dir, "ci:build")).resolves.toBeUndefined();
-	});
-
-	// Regression for the integration finding: inside the Phase-2
-	// `Step.groupStep`, info-level Effect logs are buffered and discarded on
-	// success, so the marker must be emitted via a buffer-bypassing channel
-	// (`Step.line`) to appear live. Wrapping in `Step.withStep` reproduces that
-	// buffering; `Effect.logInfo` would be swallowed, `Step.line` is not.
+// Regression for the integration finding: inside the Phase-2
+// `Step.groupStep`, info-level Effect logs are buffered and discarded on
+// success, so the marker must be emitted via a buffer-bypassing channel
+// (`Step.line`) to appear live. Wrapping in `Step.withStep` reproduces that
+// buffering; `Effect.logInfo` would be swallowed, `Step.line` is not.
+describe("emitConciseMarker (buffer-bypass visibility)", () => {
 	it("emits the marker live even when wrapped in a buffering Step that succeeds", async () => {
 		const summary = {
 			execution: { command: "turbo run build", attempted: 2, cached: 2, failed: 0 },
