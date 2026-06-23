@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
 import { Step } from "@savvy-web/github-action-effects";
 import { Effect, LogLevel, Logger } from "effect";
@@ -127,7 +127,7 @@ describe("listTurboRunSummaryPaths", () => {
 		const future = new Date(Date.now() + 10_000);
 		utimesSync(join(runs, "b.json"), future, future);
 		const paths = await run(dir);
-		expect(paths.map((p) => p.split("/").pop())).toEqual(["b.json", "a.json"]);
+		expect(paths.map((p) => basename(p))).toEqual(["b.json", "a.json"]);
 		expect(paths.every((p) => p.startsWith(runs))).toBe(true);
 	});
 });

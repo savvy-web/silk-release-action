@@ -17,7 +17,7 @@
  * @module utils/turbo-summary
  */
 
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { FileSystem } from "@effect/platform";
 import type { PlatformError } from "@effect/platform/Error";
 import { Step } from "@savvy-web/github-action-effects";
@@ -144,6 +144,10 @@ export function isTurboSummarizeBuild(scriptBody: string, env: { TURBO_RUN_SUMMA
  * Sort entries by modification time (newest first), with ties broken by larger
  * name for determinism.
  *
+ * @remarks
+ * Pure and non-mutating — copies the input before sorting, so callers can pass
+ * a readonly array without side effects.
+ *
  * @param entries - Candidate entries.
  * @returns Sorted entries (newest mtime first, ties broken by larger name).
  *
@@ -160,6 +164,10 @@ export function sortEntriesNewestFirst(entries: ReadonlyArray<TurboRunEntry>): T
  * Pick the newest entry by modification time, breaking ties deterministically
  * by the lexicographically larger name (so the result is independent of the
  * order in which directory entries were read).
+ *
+ * @remarks
+ * A thin convenience over {@link sortEntriesNewestFirst} — returns just the
+ * newest entry's name.
  *
  * @param entries - Candidate entries.
  * @returns The name of the newest entry, or `undefined` when there are none.
@@ -302,6 +310,10 @@ export function aggregateTurboRuns(items: ReadonlyArray<{ path: string; summary:
  * Build the three concise marker lines for the newest summary: path,
  * execution summary, and a REMOTE/LOCAL/MISS cache tally.
  *
+ * @remarks
+ * Pure — formats display strings only. Cache counts derive from the summary's
+ * task rows via {@link toFileStats}; missing fields fall back to `0`/`"?"`.
+ *
  * @param path - Absolute path to the summary file (used as the first line).
  * @param summary - Parsed turbo run summary.
  * @returns Array of three formatted marker lines.
@@ -321,6 +333,11 @@ export function formatConciseMarkerLines(path: string, summary: TurboRunSummary)
 /**
  * Emit the concise marker via `Step.line`, which bypasses the Phase-2 step
  * buffer and appears live at the default info level.
+ *
+ * @remarks
+ * `Effect.logInfo` would be buffered and discarded on a successful build inside
+ * the Phase-2 `Step.groupStep`; `Step.line` writes live, so the marker is
+ * always visible.
  *
  * @param path - Absolute path to the summary file.
  * @param summary - Parsed turbo run summary.
@@ -420,7 +437,7 @@ export function renderTurboCacheSection(aggregate: TurboAggregate): string {
 			summaryWriter.table(
 				["Summary", "Attempted", "Cached", "Remote", "Local", "Miss", "Saved (ms)"],
 				aggregate.perFile.map((f) => [
-					f.path.split("/").pop() ?? f.path,
+					basename(f.path),
 					String(f.attempted),
 					String(f.cached),
 					String(f.remote),
