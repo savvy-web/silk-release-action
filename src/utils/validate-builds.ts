@@ -9,6 +9,7 @@
  * catches breakage anywhere in the repo.
  */
 
+import type { FileSystem } from "@effect/platform";
 import type {
 	ActionEnvironmentError,
 	ActionOutputError,
@@ -21,6 +22,7 @@ import type { ConfigError } from "effect";
 import { Config, Effect } from "effect";
 import { capCheckSummary } from "./create-validation-check.js";
 import { summaryWriter } from "./summary-writer.js";
+import { logTurboRunSummary } from "./turbo-summary.js";
 
 export interface BuildValidationResult {
 	success: boolean;
@@ -96,7 +98,7 @@ export const validateBuilds = (
 ): Effect.Effect<
 	BuildValidationResult,
 	ActionEnvironmentError | ActionOutputError | CheckRunError | CommandRunnerError | ConfigError.ConfigError,
-	ActionEnvironment | ActionOutputs | CheckRun | CommandRunner
+	ActionEnvironment | ActionOutputs | CheckRun | CommandRunner | FileSystem.FileSystem
 > =>
 	Effect.gen(function* () {
 		const env = yield* ActionEnvironment;
@@ -129,6 +131,12 @@ export const validateBuilds = (
 			}
 		} else {
 			yield* Effect.logInfo(`[DRY RUN] Would run: ${buildCmd} ${buildArgs.join(" ")}`);
+		}
+
+		// Phase 1: surface turbo cache behaviour when this was a turbo-summarize
+		// build. Strictly non-fatal — never gates build-validation success.
+		if (!dryRun) {
+			yield* logTurboRunSummary(process.cwd(), buildCommand !== "" ? buildCommand : "ci:build");
 		}
 
 		const success = buildExitCode === 0 && !buildError.includes("error") && !buildError.includes("ERROR");

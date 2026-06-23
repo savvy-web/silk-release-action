@@ -9,6 +9,7 @@
  * so no real build is executed.
  */
 
+import { NodeFileSystem } from "@effect/platform-node";
 import type { ActionOutputsTestState, CheckRunTestState } from "@savvy-web/github-action-effects/testing";
 import {
 	ActionEnvironmentTest,
@@ -62,6 +63,7 @@ const runStage = (
 		ActionOutputsTest.layer(f.outputsState),
 		CheckRunTest.layer(f.checkRunState),
 		CommandRunnerTest.layer(new Map(commandResponses)),
+		NodeFileSystem.layer,
 	);
 	const config = ConfigProvider.fromMap(
 		new Map([
@@ -142,6 +144,7 @@ describe("validateBuilds", () => {
 			ActionOutputsTest.layer(f.outputsState),
 			CheckRunTest.layer(f.checkRunState),
 			CommandRunnerTest.empty(),
+			NodeFileSystem.layer,
 		);
 		const config = ConfigProvider.fromMap(
 			new Map([
