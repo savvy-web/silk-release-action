@@ -37,19 +37,18 @@
 	"dependencies": {
 		"@effect/platform": "catalog:silk",
 		"@effect/platform-node": "catalog:silk",
-		"@savvy-web/github-action-effects": "^2.2.2",
+		"@savvy-web/github-action-effects": "^2.3.0",
 		"@savvy-web/silk-effects": "^1.5.0",
 		"ajv": "^8.20.0",
 		"effect": "catalog:silk",
 		"json-schema-effect": "^0.2.4",
 		"jsonc-parser": "^3.3.1",
-		"kerberos": "^7.0.0",
 		"ts-markdown": "^1.3.0",
 		"workspaces-effect": "^1.2.0"
 	},
 	"devDependencies": {
-		"@savvy-web/github-action-builder": "^0.7.10",
-		"@savvy-web/silk": "^1.3.0",
+		"@savvy-web/github-action-builder": "^0.8.0",
+		"@savvy-web/silk": "^1.3.1",
 		"@savvy-web/vitest": "^1.5.1",
 		"tsx": "catalog:silk"
 	},
