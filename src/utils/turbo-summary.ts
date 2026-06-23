@@ -19,6 +19,7 @@
 import { join } from "node:path";
 import { FileSystem } from "@effect/platform";
 import type { PlatformError } from "@effect/platform/Error";
+import { Step } from "@savvy-web/github-action-effects";
 import { Cause, Effect, Option } from "effect";
 
 /**
@@ -191,12 +192,36 @@ export const logTurboRunSummary = (
 		const content = yield* fs.readFileString(summaryPath);
 		const summary = JSON.parse(content) as TurboRunSummary;
 
-		yield* Effect.logInfo(`🐢 Turbo run summary: ${summaryPath}`);
-		yield* Effect.logInfo(`Turbo execution: ${JSON.stringify(summary.execution ?? {})}`);
-		for (const task of summary.tasks ?? []) {
+		const execution = summary.execution ?? {};
+		const tasks = summary.tasks ?? [];
+		let remote = 0;
+		let local = 0;
+		let miss = 0;
+		let timeSaved = 0;
+		for (const task of tasks) {
 			const cache = task.cache ?? {};
-			yield* Effect.logInfo(
-				`  ${task.taskId ?? "?"} — ${cache.status ?? "?"} (${cache.source && cache.source !== "" ? cache.source : "—"}), saved ${cache.timeSaved ?? 0}ms`,
+			if (cache.source === "REMOTE" || cache.remote === true) remote++;
+			else if (cache.source === "LOCAL" || cache.local === true) local++;
+			else miss++;
+			timeSaved += cache.timeSaved ?? 0;
+		}
+
+		// `Step.line` bypasses the Phase-2 step buffer, so these surface live at
+		// the default `info` log level (unlike `Effect.logInfo`, which is
+		// buffered and discarded when the build succeeds).
+		yield* Step.line("🐢", `turbo summary: ${summaryPath}`);
+		yield* Step.line(
+			"🐢",
+			`turbo execution: command=${execution.command ?? "?"} attempted=${execution.attempted ?? 0} cached=${execution.cached ?? 0} failed=${execution.failed ?? 0}`,
+		);
+		yield* Step.line("🐢", `turbo cache: ${remote} REMOTE · ${local} LOCAL · ${miss} MISS · ${timeSaved}ms saved`);
+
+		// Per-task detail stays at debug level (visible only under
+		// ACTIONS_STEP_DEBUG) to keep the normal log to a few summary rows.
+		for (const task of tasks) {
+			const cache = task.cache ?? {};
+			yield* Effect.logDebug(
+				`turbo task ${task.taskId ?? "?"} — ${cache.status ?? "?"} (${cache.source && cache.source !== "" ? cache.source : "—"}), saved ${cache.timeSaved ?? 0}ms`,
 			);
 		}
 	}).pipe(Effect.catchAllCause((cause) => Effect.logWarning(`Turbo summary logging failed: ${Cause.pretty(cause)}`)));

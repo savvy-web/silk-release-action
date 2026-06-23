@@ -3,7 +3,8 @@ import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
-import { Effect } from "effect";
+import { Step } from "@savvy-web/github-action-effects";
+import { Effect, LogLevel, Logger } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { isTurboSummarizeScript, logTurboRunSummary, pickNewest } from "./turbo-summary.js";
 
@@ -123,5 +124,50 @@ describe("logTurboRunSummary (non-fatal orchestrator)", () => {
 			}),
 		);
 		await expect(run(dir, "ci:build")).resolves.toBeUndefined();
+	});
+
+	// Regression for the integration finding: inside the Phase-2
+	// `Step.groupStep`, info-level Effect logs are buffered and discarded on
+	// success, so the marker must be emitted via a buffer-bypassing channel
+	// (`Step.line`) to appear live. Wrapping in `Step.withStep` reproduces that
+	// buffering; `Effect.logInfo` would be swallowed, `Step.line` is not.
+	it("emits the marker live even when wrapped in a buffering Step that succeeds", async () => {
+		writeFileSync(
+			join(dir, "package.json"),
+			JSON.stringify({ scripts: { "ci:build": "turbo run build --summarize" } }),
+		);
+		await mkdir(join(dir, ".turbo", "runs"), { recursive: true });
+		const summaryFile = join(dir, ".turbo", "runs", "run.json");
+		writeFileSync(
+			summaryFile,
+			JSON.stringify({
+				execution: { command: "turbo run build", attempted: 2, cached: 2, failed: 0, success: 0, exitCode: 0 },
+				tasks: [
+					{ taskId: "pkg-a#build", cache: { status: "HIT", source: "REMOTE", timeSaved: 1200 } },
+					{ taskId: "pkg-b#build", cache: { status: "HIT", source: "LOCAL", timeSaved: 300 } },
+				],
+			}),
+		);
+
+		const chunks: string[] = [];
+		const origWrite = process.stdout.write.bind(process.stdout);
+		// biome-ignore lint/suspicious/noExplicitAny: monkey-patch for test capture
+		(process.stdout.write as any) = (chunk: unknown, ...rest: unknown[]) => {
+			chunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk as Uint8Array).toString("utf-8"));
+			return origWrite(chunk as string, ...(rest as []));
+		};
+		try {
+			await Effect.runPromise(
+				Step.withStep("Validate builds", logTurboRunSummary(dir, "ci:build")).pipe(
+					Effect.provide(NodeFileSystem.layer),
+					Logger.withMinimumLogLevel(LogLevel.All),
+				),
+			);
+		} finally {
+			process.stdout.write = origWrite;
+		}
+
+		const captured = chunks.join("");
+		expect(captured).toContain(summaryFile);
 	});
 });
