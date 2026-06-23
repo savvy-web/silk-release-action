@@ -1,5 +1,17 @@
 packages:
   - .
+allowBuilds:
+  "@parcel/watcher": true
+  "@savvy-web/github-action-builder": true
+  "@savvy-web/vitest": true
+  better-sqlite3: true
+  core-js: true
+  esbuild: true
+  kerberos: true
+  msgpackr-extract: true
 autoInstallPeers: true
 configDependencies:
-  "@savvy-web/pnpm-plugin-silk": 0.15.1+sha512-/YweRPSahFlUxa5P5sCspJ9VMyaICvZDEutIP3rPrjNEW7kJGg93lGXzJI2WMwvaTBRzOrjFGVRbTGkx6ZX30g==
+  "@savvy-web/pnpm-plugin-silk": 0.16.1+sha512-ezIsMs06mTSjPqip8fcXJCx0KXVzRd3vSyjHr2YvTiqksY3Q+l9yd+YZg7Yo4CMwnyndZAolaqXX2WrN0XEWAw==
+overrides:
+  "@savvy-web/github-action-builder": link:../systems/packages/github-action-builder/dist/dev/pkg
+  "@savvy-web/github-action-effects": link:../systems/packages/github-action-effects/dist/dev/pkg
