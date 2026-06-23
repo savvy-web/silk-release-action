@@ -195,8 +195,9 @@ export const listTurboRunSummaryPaths = (cwd: string): Effect.Effect<string[], P
  * Read a Turbo run-summary JSON from a path.
  *
  * @remarks
- * Parses the JSON and returns the {@link TurboRunSummary} shape. Genuine read
- * or parse failures surface as {@link PlatformError}.
+ * File read failures surface as the typed {@link PlatformError}. Malformed JSON
+ * throws synchronously and becomes an Effect defect (Cause.die), not a typed
+ * error; callers handle via {@link Effect.catchAllCause}.
  *
  * @param path - Absolute path to the `.json` summary file.
  * @returns The parsed summary.
