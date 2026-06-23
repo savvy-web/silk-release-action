@@ -295,4 +295,23 @@ describe("readTurboDiagnostics", () => {
 			expect(result.aggregate.remote).toBe(1);
 		}
 	});
+	it("resolves to null (never rejects) when a run summary is malformed — mirrors the non-fatal validate-builds wrapper", async () => {
+		writeFileSync(
+			join(dir, "package.json"),
+			JSON.stringify({ scripts: { "ci:build": "turbo run build --summarize" } }),
+		);
+		await mkdir(join(dir, ".turbo", "runs"), { recursive: true });
+		writeFileSync(join(dir, ".turbo", "runs", "bad.json"), "{ this is not json");
+
+		// readTurboDiagnostics lets malformed JSON surface as a defect; the
+		// production caller (validate-builds) wraps it in Effect.catchAllCause.
+		// Mirror that composition and assert it resolves to null, never rejects.
+		const result = await Effect.runPromise(
+			readTurboDiagnostics(dir, "ci:build", {}).pipe(
+				Effect.catchAllCause(() => Effect.succeed(null)),
+				Effect.provide(NodeFileSystem.layer),
+			),
+		);
+		expect(result).toBeNull();
+	});
 });
