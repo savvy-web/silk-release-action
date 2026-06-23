@@ -21,6 +21,7 @@ import { FileSystem } from "@effect/platform";
 import type { PlatformError } from "@effect/platform/Error";
 import { Step } from "@savvy-web/github-action-effects";
 import { Cause, Effect, Option } from "effect";
+import { summaryWriter } from "./summary-writer.js";
 
 /**
  * Shape of the relevant fields of a Turbo run-summary JSON. Every field is
@@ -407,4 +408,68 @@ export function aggregateTurboRuns(items: ReadonlyArray<{ path: string; summary:
 		perFile,
 		tasks,
 	};
+}
+
+/**
+ * Build the three concise marker lines for the newest summary: path,
+ * execution summary, and a REMOTE/LOCAL/MISS cache tally.
+ * @public
+ */
+export function formatConciseMarkerLines(path: string, summary: TurboRunSummary): string[] {
+	const stats = toFileStats(path, summary);
+	const exec = summary.execution ?? {};
+	return [
+		`turbo summary: ${path}`,
+		`turbo execution: command=${exec.command ?? "?"} attempted=${exec.attempted ?? 0} cached=${exec.cached ?? 0} failed=${exec.failed ?? 0}`,
+		`turbo cache: ${stats.remote} REMOTE · ${stats.local} LOCAL · ${stats.miss} MISS · ${stats.timeSaved}ms saved`,
+	];
+}
+
+/**
+ * Emit the concise marker via `Step.line`, which bypasses the Phase-2 step
+ * buffer and appears live at the default info level.
+ * @public
+ */
+export const emitConciseMarker = (path: string, summary: TurboRunSummary): Effect.Effect<void> =>
+	Effect.forEach(formatConciseMarkerLines(path, summary), (line) => Step.line("🐢", line), { discard: true });
+
+/**
+ * Render the collapsed "Turbo Cache" step-summary section markdown.
+ * @public
+ */
+export function renderTurboCacheSection(aggregate: TurboAggregate): string {
+	const totals = summaryWriter.table(
+		["Metric", "Value"],
+		[
+			["Attempted", String(aggregate.attempted)],
+			["Cached", String(aggregate.cached)],
+			["Fresh", String(aggregate.fresh)],
+			["Failed", String(aggregate.failed)],
+			["Time saved", `${aggregate.timeSaved}ms`],
+		],
+	);
+	const sources = `**Cache sources:** ${aggregate.remote} REMOTE · ${aggregate.local} LOCAL · ${aggregate.miss} MISS`;
+	const parts: string[] = [totals, sources];
+	if (aggregate.files > 1) {
+		parts.push(
+			summaryWriter.table(
+				["Summary", "Attempted", "Cached", "Remote", "Local", "Miss", "Saved (ms)"],
+				aggregate.perFile.map((f) => [
+					f.path.split("/").pop() ?? f.path,
+					String(f.attempted),
+					String(f.cached),
+					String(f.remote),
+					String(f.local),
+					String(f.miss),
+					String(f.timeSaved),
+				]),
+			),
+		);
+	}
+	const taskTable = summaryWriter.table(
+		["Task", "Status", "Source", "Saved (ms)"],
+		aggregate.tasks.map((t) => [t.taskId, t.status, t.source, String(t.timeSaved)]),
+	);
+	parts.push(`<details>\n<summary>Per-task detail (${aggregate.tasks.length})</summary>\n\n${taskTable}\n\n</details>`);
+	return parts.join("\n\n");
 }

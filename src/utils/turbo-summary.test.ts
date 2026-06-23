@@ -8,10 +8,13 @@ import { Effect, LogLevel, Logger } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	aggregateTurboRuns,
+	emitConciseMarker,
+	formatConciseMarkerLines,
 	isTurboSummarizeBuild,
 	listTurboRunSummaryPaths,
 	logTurboRunSummary,
 	pickNewest,
+	renderTurboCacheSection,
 	sortEntriesNewestFirst,
 } from "./turbo-summary.js";
 
@@ -190,23 +193,10 @@ describe("logTurboRunSummary (non-fatal orchestrator)", () => {
 	// (`Step.line`) to appear live. Wrapping in `Step.withStep` reproduces that
 	// buffering; `Effect.logInfo` would be swallowed, `Step.line` is not.
 	it("emits the marker live even when wrapped in a buffering Step that succeeds", async () => {
-		writeFileSync(
-			join(dir, "package.json"),
-			JSON.stringify({ scripts: { "ci:build": "turbo run build --summarize" } }),
-		);
-		await mkdir(join(dir, ".turbo", "runs"), { recursive: true });
-		const summaryFile = join(dir, ".turbo", "runs", "run.json");
-		writeFileSync(
-			summaryFile,
-			JSON.stringify({
-				execution: { command: "turbo run build", attempted: 2, cached: 2, failed: 0, success: 0, exitCode: 0 },
-				tasks: [
-					{ taskId: "pkg-a#build", cache: { status: "HIT", source: "REMOTE", timeSaved: 1200 } },
-					{ taskId: "pkg-b#build", cache: { status: "HIT", source: "LOCAL", timeSaved: 300 } },
-				],
-			}),
-		);
-
+		const summary = {
+			execution: { command: "turbo run build", attempted: 2, cached: 2, failed: 0 },
+			tasks: [{ taskId: "a#build", cache: { status: "HIT", source: "REMOTE", timeSaved: 100 } }],
+		};
 		const chunks: string[] = [];
 		const origWrite = process.stdout.write.bind(process.stdout);
 		// biome-ignore lint/suspicious/noExplicitAny: monkey-patch for test capture
@@ -216,17 +206,14 @@ describe("logTurboRunSummary (non-fatal orchestrator)", () => {
 		};
 		try {
 			await Effect.runPromise(
-				Step.withStep("Validate builds", logTurboRunSummary(dir, "ci:build")).pipe(
-					Effect.provide(NodeFileSystem.layer),
+				Step.withStep("Validate builds", emitConciseMarker("/x/run.json", summary)).pipe(
 					Logger.withMinimumLogLevel(LogLevel.All),
 				),
 			);
 		} finally {
 			process.stdout.write = origWrite;
 		}
-
-		const captured = chunks.join("");
-		expect(captured).toContain(summaryFile);
+		expect(chunks.join("")).toContain("/x/run.json");
 	});
 });
 
@@ -276,5 +263,49 @@ describe("aggregateTurboRuns", () => {
 		expect(agg.timeSaved).toBe(600);
 		expect(agg.perFile.map((f) => f.path)).toEqual(["/x/1.json", "/x/2.json"]);
 		expect(agg.tasks).toHaveLength(4);
+	});
+});
+
+describe("formatConciseMarkerLines", () => {
+	it("returns path, execution, and cache-tally lines", () => {
+		const lines = formatConciseMarkerLines("/x/run.json", {
+			execution: { command: "turbo run build", attempted: 2, cached: 2, failed: 0 },
+			tasks: [
+				{ taskId: "a#build", cache: { status: "HIT", source: "REMOTE", timeSaved: 100 } },
+				{ taskId: "b#build", cache: { status: "HIT", source: "LOCAL", timeSaved: 200 } },
+			],
+		});
+		expect(lines[0]).toContain("/x/run.json");
+		expect(lines[1]).toContain("attempted=2");
+		expect(lines[1]).toContain("cached=2");
+		expect(lines[2]).toBe("turbo cache: 1 REMOTE · 1 LOCAL · 0 MISS · 300ms saved");
+	});
+});
+
+describe("renderTurboCacheSection", () => {
+	const agg = aggregateTurboRuns([
+		{
+			path: "/x/run.json",
+			summary: {
+				execution: { attempted: 2, cached: 2, failed: 0 },
+				tasks: [
+					{ taskId: "a#build", cache: { status: "HIT", source: "REMOTE", timeSaved: 100 } },
+					{ taskId: "b#build", cache: { status: "HIT", source: "LOCAL", timeSaved: 200 } },
+				],
+			},
+		},
+	]);
+	it("includes totals, the source tally, and a collapsed per-task table", () => {
+		const md = renderTurboCacheSection(agg);
+		expect(md).toContain("Attempted");
+		expect(md).toContain("1 REMOTE · 1 LOCAL · 0 MISS");
+		expect(md).toContain("<details>");
+		expect(md).toContain("a#build");
+	});
+	it("omits the per-file table for a single file", () => {
+		// "Attempted" appears once (totals row label); the per-file table — which
+		// would add a second "Attempted" column header — is omitted for one file.
+		const md = renderTurboCacheSection(agg);
+		expect((md.match(/Attempted/g) ?? []).length).toBe(1);
 	});
 });
