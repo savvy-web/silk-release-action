@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +6,13 @@ import { NodeFileSystem } from "@effect/platform-node";
 import { Step } from "@savvy-web/github-action-effects";
 import { Effect, LogLevel, Logger } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { isTurboSummarizeBuild, logTurboRunSummary, pickNewest } from "./turbo-summary.js";
+import {
+	isTurboSummarizeBuild,
+	listTurboRunSummaryPaths,
+	logTurboRunSummary,
+	pickNewest,
+	sortEntriesNewestFirst,
+} from "./turbo-summary.js";
 
 describe("isTurboSummarizeBuild", () => {
 	const noEnv = {} as { TURBO_RUN_SUMMARY?: string };
@@ -75,6 +81,50 @@ describe("pickNewest", () => {
 				{ name: "aaa.json", mtimeMs: 100 },
 			]),
 		).toBe("zzz.json");
+	});
+});
+
+describe("sortEntriesNewestFirst", () => {
+	it("orders newest mtime first, tie-broken by larger name", () => {
+		const sorted = sortEntriesNewestFirst([
+			{ name: "old.json", mtimeMs: 100 },
+			{ name: "new.json", mtimeMs: 300 },
+			{ name: "aaa.json", mtimeMs: 300 },
+		]);
+		expect(sorted.map((e) => e.name)).toEqual(["new.json", "aaa.json", "old.json"]);
+	});
+});
+
+describe("listTurboRunSummaryPaths", () => {
+	let dir: string;
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "turbo-list-"));
+	});
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+	const run = (cwd: string): Promise<string[]> =>
+		Effect.runPromise(listTurboRunSummaryPaths(cwd).pipe(Effect.provide(NodeFileSystem.layer)));
+
+	it("returns [] when .turbo/runs is absent", async () => {
+		await expect(run(dir)).resolves.toEqual([]);
+	});
+	it("returns [] when the dir has no json files", async () => {
+		await mkdir(join(dir, ".turbo", "runs"), { recursive: true });
+		writeFileSync(join(dir, ".turbo", "runs", "note.txt"), "x");
+		await expect(run(dir)).resolves.toEqual([]);
+	});
+	it("returns all json paths newest-first", async () => {
+		const runs = join(dir, ".turbo", "runs");
+		await mkdir(runs, { recursive: true });
+		writeFileSync(join(runs, "a.json"), "{}");
+		writeFileSync(join(runs, "b.json"), "{}");
+		// make b.json newer
+		const future = new Date(Date.now() + 10_000);
+		utimesSync(join(runs, "b.json"), future, future);
+		const paths = await run(dir);
+		expect(paths.map((p) => p.split("/").pop())).toEqual(["b.json", "a.json"]);
+		expect(paths.every((p) => p.startsWith(runs))).toBe(true);
 	});
 });
 

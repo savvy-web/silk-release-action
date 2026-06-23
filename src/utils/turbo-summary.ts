@@ -91,6 +91,22 @@ export function isTurboSummarizeBuild(scriptBody: string, env: { TURBO_RUN_SUMMA
 }
 
 /**
+ * Sort entries by modification time (newest first), with ties broken by larger
+ * name for determinism.
+ *
+ * @param entries - Candidate entries.
+ * @returns Sorted entries (newest mtime first, ties broken by larger name).
+ *
+ * @public
+ */
+export function sortEntriesNewestFirst(entries: ReadonlyArray<TurboRunEntry>): TurboRunEntry[] {
+	return [...entries].sort((a, b) => {
+		if (b.mtimeMs !== a.mtimeMs) return b.mtimeMs - a.mtimeMs;
+		return a.name < b.name ? 1 : a.name > b.name ? -1 : 0;
+	});
+}
+
+/**
  * Pick the newest entry by modification time, breaking ties deterministically
  * by the lexicographically larger name (so the result is independent of the
  * order in which directory entries were read).
@@ -101,17 +117,7 @@ export function isTurboSummarizeBuild(scriptBody: string, env: { TURBO_RUN_SUMMA
  * @public
  */
 export function pickNewest(entries: ReadonlyArray<TurboRunEntry>): string | undefined {
-	let best: TurboRunEntry | undefined;
-	for (const entry of entries) {
-		if (
-			best === undefined ||
-			entry.mtimeMs > best.mtimeMs ||
-			(entry.mtimeMs === best.mtimeMs && entry.name > best.name)
-		) {
-			best = entry;
-		}
-	}
-	return best?.name;
+	return sortEntriesNewestFirst(entries)[0]?.name;
 }
 
 /**
@@ -149,6 +155,61 @@ export const findLatestTurboRunSummary = (
 		}
 		const newest = pickNewest(entries);
 		return newest === undefined ? Option.none() : Option.some(join(runsDir, newest));
+	});
+
+/**
+ * List all `.turbo/runs/*.json` summaries under a build directory, sorted
+ * newest-first by modification time.
+ *
+ * @remarks
+ * Returns an empty array when the `.turbo/runs` directory is absent or holds
+ * no `.json` files — both are normal cases. Genuine read failures surface as
+ * the {@link PlatformError} typed error.
+ *
+ * @param cwd - The build working directory.
+ * @returns Absolute paths of all `.json` summaries, sorted newest-first.
+ *
+ * @public
+ */
+export const listTurboRunSummaryPaths = (cwd: string): Effect.Effect<string[], PlatformError, FileSystem.FileSystem> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem;
+		const runsDir = join(cwd, ".turbo", "runs");
+		if (!(yield* fs.exists(runsDir))) {
+			return [];
+		}
+		const names = (yield* fs.readDirectory(runsDir)).filter((name) => name.endsWith(".json"));
+		if (names.length === 0) {
+			return [];
+		}
+		const entries: TurboRunEntry[] = [];
+		for (const name of names) {
+			const info = yield* fs.stat(join(runsDir, name));
+			const mtimeMs = Option.match(info.mtime, { onNone: () => 0, onSome: (date) => date.getTime() });
+			entries.push({ name, mtimeMs });
+		}
+		return sortEntriesNewestFirst(entries).map((entry) => join(runsDir, entry.name));
+	});
+
+/**
+ * Read a Turbo run-summary JSON from a path.
+ *
+ * @remarks
+ * Parses the JSON and returns the {@link TurboRunSummary} shape. Genuine read
+ * or parse failures surface as {@link PlatformError}.
+ *
+ * @param path - Absolute path to the `.json` summary file.
+ * @returns The parsed summary.
+ *
+ * @public
+ */
+export const readTurboRunSummary = (
+	path: string,
+): Effect.Effect<TurboRunSummary, PlatformError, FileSystem.FileSystem> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem;
+		const content = yield* fs.readFileString(path);
+		return JSON.parse(content) as TurboRunSummary;
 	});
 
 /**
