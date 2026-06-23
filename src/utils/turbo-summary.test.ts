@@ -14,6 +14,7 @@ import {
 	listTurboRunSummaryPaths,
 	logTurboRunSummary,
 	pickNewest,
+	readTurboDiagnostics,
 	renderTurboCacheSection,
 	sortEntriesNewestFirst,
 } from "./turbo-summary.js";
@@ -307,5 +308,46 @@ describe("renderTurboCacheSection", () => {
 		// would add a second "Attempted" column header — is omitted for one file.
 		const md = renderTurboCacheSection(agg);
 		expect((md.match(/Attempted/g) ?? []).length).toBe(1);
+	});
+});
+
+describe("readTurboDiagnostics", () => {
+	let dir: string;
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "turbo-diag-"));
+	});
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+	const run = (cwd: string, script: string, env: { TURBO_RUN_SUMMARY?: string } = {}) =>
+		Effect.runPromise(readTurboDiagnostics(cwd, script, env).pipe(Effect.provide(NodeFileSystem.layer)));
+	const writePkg = (body: string) =>
+		writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts: { "ci:build": body } }));
+
+	it("returns not-turbo when the script is not a turbo --summarize build", async () => {
+		writePkg("tsc -b");
+		await expect(run(dir, "ci:build")).resolves.toEqual({ _tag: "not-turbo" });
+	});
+	it("returns no-summaries when detected but no runs exist", async () => {
+		writePkg("turbo run build --summarize");
+		await expect(run(dir, "ci:build")).resolves.toEqual({ _tag: "no-summaries" });
+	});
+	it("returns ok with newest path and aggregate when summaries exist", async () => {
+		writePkg("turbo run build --summarize");
+		const runs = join(dir, ".turbo", "runs");
+		await mkdir(runs, { recursive: true });
+		writeFileSync(
+			join(runs, "run.json"),
+			JSON.stringify({
+				execution: { command: "turbo run build", attempted: 1, cached: 1, failed: 0 },
+				tasks: [{ taskId: "a#build", cache: { status: "HIT", source: "REMOTE", timeSaved: 100 } }],
+			}),
+		);
+		const result = await run(dir, "ci:build");
+		expect(result._tag).toBe("ok");
+		if (result._tag === "ok") {
+			expect(result.newestPath.endsWith("run.json")).toBe(true);
+			expect(result.aggregate.remote).toBe(1);
+		}
 	});
 });

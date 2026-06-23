@@ -433,6 +433,44 @@ export function formatConciseMarkerLines(path: string, summary: TurboRunSummary)
 export const emitConciseMarker = (path: string, summary: TurboRunSummary): Effect.Effect<void> =>
 	Effect.forEach(formatConciseMarkerLines(path, summary), (line) => Step.line("🐢", line), { discard: true });
 
+/** Result of detecting + reading turbo run summaries. @public */
+export type TurboDiagnostics =
+	| { _tag: "not-turbo" }
+	| { _tag: "no-summaries" }
+	| { _tag: "ok"; newestPath: string; newestSummary: TurboRunSummary; aggregate: TurboAggregate };
+
+/**
+ * Detect a turbo-summarize build, read every `.turbo/runs/*.json`, and
+ * aggregate. Returns a discriminated result so the caller chooses the log
+ * level / output. JSON parse failures surface as defects for the caller's
+ * non-fatal wrapper to catch.
+ * @public
+ */
+export const readTurboDiagnostics = (
+	cwd: string,
+	scriptName: string,
+	env: { TURBO_RUN_SUMMARY?: string | undefined },
+): Effect.Effect<TurboDiagnostics, PlatformError, FileSystem.FileSystem> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem;
+		const pkgRaw = yield* fs.readFileString(join(cwd, "package.json"));
+		const pkg = JSON.parse(pkgRaw) as { scripts?: Record<string, string> };
+		const scriptBody = pkg.scripts?.[scriptName] ?? "";
+		if (!isTurboSummarizeBuild(scriptBody, env)) {
+			return { _tag: "not-turbo" };
+		}
+		const paths = yield* listTurboRunSummaryPaths(cwd);
+		if (paths.length === 0) {
+			return { _tag: "no-summaries" };
+		}
+		const items: { path: string; summary: TurboRunSummary }[] = [];
+		for (const path of paths) {
+			const summary = yield* readTurboRunSummary(path);
+			items.push({ path, summary });
+		}
+		return { _tag: "ok", newestPath: paths[0], newestSummary: items[0].summary, aggregate: aggregateTurboRuns(items) };
+	});
+
 /**
  * Render the collapsed "Turbo Cache" step-summary section markdown.
  * @public
