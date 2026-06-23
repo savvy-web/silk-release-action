@@ -7,6 +7,7 @@ import { Step } from "@savvy-web/github-action-effects";
 import { Effect, LogLevel, Logger } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	aggregateTurboRuns,
 	isTurboSummarizeBuild,
 	listTurboRunSummaryPaths,
 	logTurboRunSummary,
@@ -226,5 +227,54 @@ describe("logTurboRunSummary (non-fatal orchestrator)", () => {
 
 		const captured = chunks.join("");
 		expect(captured).toContain(summaryFile);
+	});
+});
+
+describe("aggregateTurboRuns", () => {
+	const remoteSummary = {
+		execution: { command: "turbo run build", attempted: 2, cached: 2, failed: 0 },
+		tasks: [
+			{ taskId: "a#build", cache: { status: "HIT", source: "REMOTE", timeSaved: 100 } },
+			{ taskId: "b#build", cache: { status: "HIT", source: "LOCAL", timeSaved: 200 } },
+		],
+	};
+	it("derives per-file stats and task rows from one summary", () => {
+		const agg = aggregateTurboRuns([{ path: "/x/run.json", summary: remoteSummary }]);
+		expect(agg.files).toBe(1);
+		expect(agg.attempted).toBe(2);
+		expect(agg.cached).toBe(2);
+		expect(agg.fresh).toBe(0);
+		expect(agg.remote).toBe(1);
+		expect(agg.local).toBe(1);
+		expect(agg.miss).toBe(0);
+		expect(agg.timeSaved).toBe(300);
+		expect(agg.tasks).toHaveLength(2);
+		expect(agg.tasks[0]).toEqual({ taskId: "a#build", status: "HIT", source: "REMOTE", timeSaved: 100 });
+	});
+	it("classifies a built task as MISS and counts fresh", () => {
+		const agg = aggregateTurboRuns([
+			{
+				path: "/x/run.json",
+				summary: {
+					execution: { attempted: 1, cached: 0, failed: 0 },
+					tasks: [{ taskId: "c#build", cache: { status: "MISS", source: "" } }],
+				},
+			},
+		]);
+		expect(agg.miss).toBe(1);
+		expect(agg.fresh).toBe(1);
+		expect(agg.tasks[0].source).toBe("MISS");
+	});
+	it("sums across multiple files and preserves per-file rows", () => {
+		const agg = aggregateTurboRuns([
+			{ path: "/x/1.json", summary: remoteSummary },
+			{ path: "/x/2.json", summary: remoteSummary },
+		]);
+		expect(agg.files).toBe(2);
+		expect(agg.attempted).toBe(4);
+		expect(agg.remote).toBe(2);
+		expect(agg.timeSaved).toBe(600);
+		expect(agg.perFile.map((f) => f.path)).toEqual(["/x/1.json", "/x/2.json"]);
+		expect(agg.tasks).toHaveLength(4);
 	});
 });

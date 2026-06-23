@@ -61,6 +61,54 @@ export interface TurboRunEntry {
 }
 
 /**
+ * A single task's cache outcome, normalized for display.
+ *
+ * @public
+ */
+export interface TurboTaskRow {
+	taskId: string;
+	status: string;
+	source: "REMOTE" | "LOCAL" | "MISS";
+	timeSaved: number;
+}
+
+/**
+ * Per-summary-file cache stats.
+ *
+ * @public
+ */
+export interface TurboFileStats {
+	path: string;
+	attempted: number;
+	cached: number;
+	fresh: number;
+	failed: number;
+	remote: number;
+	local: number;
+	miss: number;
+	timeSaved: number;
+}
+
+/**
+ * Aggregate cache stats across every summary file in a job.
+ *
+ * @public
+ */
+export interface TurboAggregate {
+	files: number;
+	attempted: number;
+	cached: number;
+	fresh: number;
+	failed: number;
+	remote: number;
+	local: number;
+	miss: number;
+	timeSaved: number;
+	perFile: TurboFileStats[];
+	tasks: TurboTaskRow[];
+}
+
+/**
  * Decide whether a package-manager script body runs a `turbo --summarize`
  * build.
  *
@@ -293,3 +341,70 @@ export const logTurboRunSummary = (
 			);
 		}
 	}).pipe(Effect.catchAllCause((cause) => Effect.logWarning(`Turbo summary logging failed: ${Cause.pretty(cause)}`)));
+
+const toTaskRows = (summary: TurboRunSummary): TurboTaskRow[] =>
+	(summary.tasks ?? []).map((task) => {
+		const cache = task.cache ?? {};
+		const source: TurboTaskRow["source"] =
+			cache.source === "REMOTE" || cache.remote === true
+				? "REMOTE"
+				: cache.source === "LOCAL" || cache.local === true
+					? "LOCAL"
+					: "MISS";
+		return { taskId: task.taskId ?? "?", status: cache.status ?? "?", source, timeSaved: cache.timeSaved ?? 0 };
+	});
+
+const toFileStats = (path: string, summary: TurboRunSummary): TurboFileStats => {
+	const rows = toTaskRows(summary);
+	const exec = summary.execution ?? {};
+	const attempted = exec.attempted ?? rows.length;
+	const cached = exec.cached ?? 0;
+	let remote = 0;
+	let local = 0;
+	let miss = 0;
+	let timeSaved = 0;
+	for (const row of rows) {
+		if (row.source === "REMOTE") remote++;
+		else if (row.source === "LOCAL") local++;
+		else miss++;
+		timeSaved += row.timeSaved;
+	}
+	return {
+		path,
+		attempted,
+		cached,
+		fresh: Math.max(0, attempted - cached),
+		failed: exec.failed ?? 0,
+		remote,
+		local,
+		miss,
+		timeSaved,
+	};
+};
+
+/**
+ * Aggregate cache stats across all turbo run summaries in a batch.
+ *
+ * @param items - Array of summary file paths paired with parsed summaries.
+ * @returns Aggregated statistics with per-file detail and flattened task rows.
+ *
+ * @public
+ */
+export function aggregateTurboRuns(items: ReadonlyArray<{ path: string; summary: TurboRunSummary }>): TurboAggregate {
+	const perFile = items.map(({ path, summary }) => toFileStats(path, summary));
+	const tasks = items.flatMap(({ summary }) => toTaskRows(summary));
+	const sum = (pick: (f: TurboFileStats) => number): number => perFile.reduce((total, f) => total + pick(f), 0);
+	return {
+		files: perFile.length,
+		attempted: sum((f) => f.attempted),
+		cached: sum((f) => f.cached),
+		fresh: sum((f) => f.fresh),
+		failed: sum((f) => f.failed),
+		remote: sum((f) => f.remote),
+		local: sum((f) => f.local),
+		miss: sum((f) => f.miss),
+		timeSaved: sum((f) => f.timeSaved),
+		perFile,
+		tasks,
+	};
+}
