@@ -269,6 +269,11 @@ const toFileStats = (path: string, summary: TurboRunSummary): TurboFileStats => 
 /**
  * Aggregate cache stats across all turbo run summaries in a batch.
  *
+ * @remarks
+ * `cached` and `fresh` come from each summary's `execution` block while
+ * `remote`, `local`, and `miss` are counted from task rows, so the two are
+ * independent turbo-reported figures that may not reconcile under version skew.
+ *
  * @param items - Array of summary file paths paired with parsed summaries.
  * @returns Aggregated statistics with per-file detail and flattened task rows.
  *
@@ -296,6 +301,11 @@ export function aggregateTurboRuns(items: ReadonlyArray<{ path: string; summary:
 /**
  * Build the three concise marker lines for the newest summary: path,
  * execution summary, and a REMOTE/LOCAL/MISS cache tally.
+ *
+ * @param path - Absolute path to the summary file (used as the first line).
+ * @param summary - Parsed turbo run summary.
+ * @returns Array of three formatted marker lines.
+ *
  * @public
  */
 export function formatConciseMarkerLines(path: string, summary: TurboRunSummary): string[] {
@@ -311,12 +321,21 @@ export function formatConciseMarkerLines(path: string, summary: TurboRunSummary)
 /**
  * Emit the concise marker via `Step.line`, which bypasses the Phase-2 step
  * buffer and appears live at the default info level.
+ *
+ * @param path - Absolute path to the summary file.
+ * @param summary - Parsed turbo run summary.
+ * @returns Effect that emits all three marker lines to stdout.
+ *
  * @public
  */
 export const emitConciseMarker = (path: string, summary: TurboRunSummary): Effect.Effect<void> =>
 	Effect.forEach(formatConciseMarkerLines(path, summary), (line) => Step.line("🐢", line), { discard: true });
 
-/** Result of detecting + reading turbo run summaries. @public */
+/**
+ * Result of detecting and reading turbo run summaries.
+ *
+ * @public
+ */
 export type TurboDiagnostics =
 	| { _tag: "not-turbo" }
 	| { _tag: "no-summaries" }
@@ -325,8 +344,16 @@ export type TurboDiagnostics =
 /**
  * Detect a turbo-summarize build, read every `.turbo/runs/*.json`, and
  * aggregate. Returns a discriminated result so the caller chooses the log
- * level / output. JSON parse failures surface as defects for the caller's
- * non-fatal wrapper to catch.
+ * level / output.
+ *
+ * @remarks
+ * Each summary file is read with an individual guard: a malformed or unreadable
+ * file is skipped (debug-logged) rather than propagating a defect. Only
+ * surviving files are aggregated. If all files fail, `{ _tag: "no-summaries" }`
+ * is returned rather than a defect. The outer `package.json` read still
+ * surfaces its `PlatformError` typed channel; a malformed `package.json` is a
+ * defect — the `validateBuilds` caller's `catchAllCause` is the backstop.
+ *
  * @public
  */
 export const readTurboDiagnostics = (
@@ -348,10 +375,27 @@ export const readTurboDiagnostics = (
 		}
 		const items: { path: string; summary: TurboRunSummary }[] = [];
 		for (const path of paths) {
-			const summary = yield* readTurboRunSummary(path);
-			items.push({ path, summary });
+			const result = yield* readTurboRunSummary(path).pipe(
+				Effect.map((summary) => ({ path, summary })),
+				Effect.catchAllCause((cause) =>
+					Effect.logDebug(`Turbo summary: skipping unreadable/malformed ${path}: ${cause}`).pipe(
+						Effect.as(null as { path: string; summary: TurboRunSummary } | null),
+					),
+				),
+			);
+			if (result !== null) {
+				items.push(result);
+			}
 		}
-		return { _tag: "ok", newestPath: paths[0], newestSummary: items[0].summary, aggregate: aggregateTurboRuns(items) };
+		if (items.length === 0) {
+			return { _tag: "no-summaries" };
+		}
+		return {
+			_tag: "ok",
+			newestPath: items[0].path,
+			newestSummary: items[0].summary,
+			aggregate: aggregateTurboRuns(items),
+		};
 	});
 
 /**
@@ -387,10 +431,14 @@ export function renderTurboCacheSection(aggregate: TurboAggregate): string {
 			),
 		);
 	}
-	const taskTable = summaryWriter.table(
-		["Task", "Status", "Source", "Saved (ms)"],
-		aggregate.tasks.map((t) => [t.taskId, t.status, t.source, String(t.timeSaved)]),
-	);
-	parts.push(`<details>\n<summary>Per-task detail (${aggregate.tasks.length})</summary>\n\n${taskTable}\n\n</details>`);
+	if (aggregate.tasks.length > 0) {
+		const taskTable = summaryWriter.table(
+			["Task", "Status", "Source", "Saved (ms)"],
+			aggregate.tasks.map((t) => [t.taskId, t.status, t.source, String(t.timeSaved)]),
+		);
+		parts.push(
+			`<details>\n<summary>Per-task detail (${aggregate.tasks.length})</summary>\n\n${taskTable}\n\n</details>`,
+		);
+	}
 	return parts.join("\n\n");
 }

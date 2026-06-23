@@ -254,6 +254,20 @@ describe("renderTurboCacheSection", () => {
 		const md = renderTurboCacheSection(agg);
 		expect((md.match(/Attempted/g) ?? []).length).toBe(1);
 	});
+	it("omits the collapsed per-task details block when tasks is empty", () => {
+		const emptyTasksAgg = aggregateTurboRuns([
+			{
+				path: "/x/run.json",
+				summary: {
+					execution: { attempted: 1, cached: 0, failed: 0 },
+					tasks: [],
+				},
+			},
+		]);
+		const md = renderTurboCacheSection(emptyTasksAgg);
+		expect(md).not.toContain("<details>");
+		expect(md).not.toContain("Per-task detail");
+	});
 });
 
 describe("readTurboDiagnostics", () => {
@@ -295,7 +309,7 @@ describe("readTurboDiagnostics", () => {
 			expect(result.aggregate.remote).toBe(1);
 		}
 	});
-	it("resolves to null (never rejects) when a run summary is malformed — mirrors the non-fatal validate-builds wrapper", async () => {
+	it("returns no-summaries (never rejects) when the only run summary is malformed", async () => {
 		writeFileSync(
 			join(dir, "package.json"),
 			JSON.stringify({ scripts: { "ci:build": "turbo run build --summarize" } }),
@@ -303,15 +317,37 @@ describe("readTurboDiagnostics", () => {
 		await mkdir(join(dir, ".turbo", "runs"), { recursive: true });
 		writeFileSync(join(dir, ".turbo", "runs", "bad.json"), "{ this is not json");
 
-		// readTurboDiagnostics lets malformed JSON surface as a defect; the
-		// production caller (validate-builds) wraps it in Effect.catchAllCause.
-		// Mirror that composition and assert it resolves to null, never rejects.
-		const result = await Effect.runPromise(
-			readTurboDiagnostics(dir, "ci:build", {}).pipe(
-				Effect.catchAllCause(() => Effect.succeed(null)),
-				Effect.provide(NodeFileSystem.layer),
-			),
+		// Per-file skip: a lone malformed file is skipped → zero survivors →
+		// readTurboDiagnostics returns { _tag: "no-summaries" } rather than a defect.
+		const result = await run(dir, "ci:build");
+		expect(result).toEqual({ _tag: "no-summaries" });
+	});
+	it("skips a malformed summary file and aggregates the rest", async () => {
+		writePkg("turbo run build --summarize");
+		const runs = join(dir, ".turbo", "runs");
+		await mkdir(runs, { recursive: true });
+
+		// Write the valid summary (one REMOTE task).
+		writeFileSync(
+			join(runs, "valid.json"),
+			JSON.stringify({
+				execution: { command: "turbo run build", attempted: 1, cached: 1, failed: 0 },
+				tasks: [{ taskId: "a#build", cache: { status: "HIT", source: "REMOTE", timeSaved: 100 } }],
+			}),
 		);
-		expect(result).toBeNull();
+		// Write the malformed file.
+		writeFileSync(join(runs, "bad.json"), "{ not valid json");
+
+		// Make valid.json the newest so it is items[0] (newestPath / newestSummary).
+		const future = new Date(Date.now() + 10_000);
+		utimesSync(join(runs, "valid.json"), future, future);
+
+		const result = await run(dir, "ci:build");
+		expect(result._tag).toBe("ok");
+		if (result._tag === "ok") {
+			expect(result.aggregate.files).toBe(1);
+			expect(result.aggregate.remote).toBe(1);
+			expect(result.newestPath.endsWith("valid.json")).toBe(true);
+		}
 	});
 });
