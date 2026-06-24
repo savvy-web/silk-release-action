@@ -1,5 +1,11 @@
 # @savvy-web/silk-release-action
 
+## 2.2.0
+
+### Features
+
+* [`22e682d`](https://github.com/savvy-web/silk-release-action/commit/22e682d2d9178b16bc3accf4b0d7dea703765f29) Add a Turbo Cache diagnostics section to build validation. Detection now also recognizes the TURBO\_RUN\_SUMMARY environment variable in addition to the --summarize flag, all .turbo/runs summaries in a job are aggregated, and a collapsed Turbo Cache section (totals, REMOTE/LOCAL/MISS breakdown, per-task detail) is added to the build-validation summary. The concise console marker is unchanged. The feature is non-fatal.
+
 ## 2.1.1
 
 ### Bug Fixes
