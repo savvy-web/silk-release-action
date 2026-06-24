@@ -9,6 +9,7 @@
  * catches breakage anywhere in the repo.
  */
 
+import type { FileSystem } from "@effect/platform";
 import type {
 	ActionEnvironmentError,
 	ActionOutputError,
@@ -18,9 +19,10 @@ import type {
 } from "@savvy-web/github-action-effects";
 import { ActionEnvironment, ActionOutputs, CheckRun, CommandRunner } from "@savvy-web/github-action-effects";
 import type { ConfigError } from "effect";
-import { Config, Effect } from "effect";
+import { Cause, Config, Effect } from "effect";
 import { capCheckSummary } from "./create-validation-check.js";
 import { summaryWriter } from "./summary-writer.js";
+import { emitConciseMarker, readTurboDiagnostics, renderTurboCacheSection } from "./turbo-summary.js";
 
 export interface BuildValidationResult {
 	success: boolean;
@@ -96,7 +98,7 @@ export const validateBuilds = (
 ): Effect.Effect<
 	BuildValidationResult,
 	ActionEnvironmentError | ActionOutputError | CheckRunError | CommandRunnerError | ConfigError.ConfigError,
-	ActionEnvironment | ActionOutputs | CheckRun | CommandRunner
+	ActionEnvironment | ActionOutputs | CheckRun | CommandRunner | FileSystem.FileSystem
 > =>
 	Effect.gen(function* () {
 		const env = yield* ActionEnvironment;
@@ -131,6 +133,35 @@ export const validateBuilds = (
 			yield* Effect.logInfo(`[DRY RUN] Would run: ${buildCmd} ${buildArgs.join(" ")}`);
 		}
 
+		// Surface turbo cache behaviour when this was a turbo-summarize build.
+		// Strictly non-fatal — never gates build-validation success.
+		let turboSection: string | null = null;
+		if (!dryRun) {
+			turboSection = yield* readTurboDiagnostics(
+				process.cwd(),
+				buildCommand !== "" ? buildCommand : "ci:build",
+				process.env as { TURBO_RUN_SUMMARY?: string | undefined },
+			).pipe(
+				Effect.flatMap((diag) =>
+					Effect.gen(function* () {
+						if (diag._tag === "not-turbo") {
+							yield* Effect.logDebug("Turbo summary: not a turbo --summarize build; skipping");
+							return null;
+						}
+						if (diag._tag === "no-summaries") {
+							yield* Effect.logDebug("Turbo summary: no .turbo/runs/*.json found; skipping");
+							return null;
+						}
+						yield* emitConciseMarker(diag.newestPath, diag.newestSummary);
+						return renderTurboCacheSection(diag.aggregate);
+					}),
+				),
+				Effect.catchAllCause((cause) =>
+					Effect.logWarning(`Turbo summary logging failed: ${Cause.pretty(cause)}`).pipe(Effect.as(null)),
+				),
+			);
+		}
+
 		const success = buildExitCode === 0 && !buildError.includes("error") && !buildError.includes("ERROR");
 
 		const annotations = !success && buildError !== "" ? parseAnnotations(buildError) : [];
@@ -159,6 +190,9 @@ export const validateBuilds = (
 		const checkSections: Array<{ heading?: string; level?: 2 | 3; content: string }> = [
 			{ heading: "Build Results", content: resultsTable },
 		];
+		if (turboSection !== null) {
+			checkSections.push({ heading: "Turbo Cache", level: 3, content: turboSection });
+		}
 		if (!success && errorSummary !== "") {
 			checkSections.push({
 				heading: "Build Errors",
@@ -192,6 +226,9 @@ export const validateBuilds = (
 			{ heading: checkTitle, content: checkSummary },
 			{ heading: "Build Results", level: 3, content: jobResultsTable },
 		];
+		if (turboSection !== null) {
+			jobSections.push({ heading: "Turbo Cache", level: 3, content: turboSection });
+		}
 		if (!success && errorSummary !== "") {
 			jobSections.push({
 				heading: "Build Errors",

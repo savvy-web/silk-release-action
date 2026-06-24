@@ -25,7 +25,7 @@ TypeScript action implementing a three-phase release workflow using changesets:
 
 - Explicit return types on all exported functions
 - Never use `any` -- use proper types or `unknown` with type guards
-- Prefer `type` over `interface` (Biome enforced)
+- Prefer `interface` over `type` for object shapes (Biome `useConsistentTypeDefinitions` enforces this); use `type` for unions and aliases
 - Narrow error types: `(error as { status?: number }).status === 404`
 
 ### Import Conventions

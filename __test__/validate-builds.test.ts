@@ -9,6 +9,10 @@
  * so no real build is executed.
  */
 
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { NodeFileSystem } from "@effect/platform-node";
 import type { ActionOutputsTestState, CheckRunTestState } from "@savvy-web/github-action-effects/testing";
 import {
 	ActionEnvironmentTest,
@@ -62,6 +66,7 @@ const runStage = (
 		ActionOutputsTest.layer(f.outputsState),
 		CheckRunTest.layer(f.checkRunState),
 		CommandRunnerTest.layer(new Map(commandResponses)),
+		NodeFileSystem.layer,
 	);
 	const config = ConfigProvider.fromMap(
 		new Map([
@@ -142,6 +147,7 @@ describe("validateBuilds", () => {
 			ActionOutputsTest.layer(f.outputsState),
 			CheckRunTest.layer(f.checkRunState),
 			CommandRunnerTest.empty(),
+			NodeFileSystem.layer,
 		);
 		const config = ConfigProvider.fromMap(
 			new Map([
@@ -161,5 +167,44 @@ describe("validateBuilds", () => {
 		expect(f.checkRunState.runs).toHaveLength(1);
 		expect(f.checkRunState.runs[0].name).toContain("Dry Run");
 		expect(f.checkRunState.runs[0].conclusion).toBe("success");
+	});
+
+	it("includes a Turbo Cache section in the check summary and resolves non-fatally when turbo summaries exist", async () => {
+		// Set up a scratch fixture directory with a turbo-summarize build and a
+		// valid .turbo/runs/run.json summary so validateBuilds exercises the turbo
+		// path all the way through emitConciseMarker → renderTurboCacheSection →
+		// checkSections push.
+		const scratchDir = mkdtempSync(join(tmpdir(), "vb-turbo-"));
+		const originalCwd = process.cwd();
+		try {
+			writeFileSync(
+				join(scratchDir, "package.json"),
+				JSON.stringify({ scripts: { "ci:build": "turbo run build --summarize" } }),
+			);
+			mkdirSync(join(scratchDir, ".turbo", "runs"), { recursive: true });
+			writeFileSync(
+				join(scratchDir, ".turbo", "runs", "run.json"),
+				JSON.stringify({
+					execution: { command: "turbo run build", attempted: 1, cached: 1, failed: 0 },
+					tasks: [{ taskId: "a#build", cache: { status: "HIT", source: "REMOTE", timeSaved: 100 } }],
+				}),
+			);
+			// chdir so process.cwd() in validateBuilds resolves to our scratch dir.
+			process.chdir(scratchDir);
+
+			const f = makeFixtures();
+			const result = await runStage(f, [["pnpm ci:build", { exitCode: 0, stdout: "Build complete\n", stderr: "" }]]);
+
+			// Build validation itself is unaffected.
+			expect(result.success).toBe(true);
+
+			// The completed check run summary should contain the "Turbo Cache" heading.
+			expect(f.checkRunState.runs).toHaveLength(1);
+			const output = f.checkRunState.runs[0].outputs[0];
+			expect(output?.summary).toContain("Turbo Cache");
+		} finally {
+			process.chdir(originalCwd);
+			rmSync(scratchDir, { recursive: true, force: true });
+		}
 	});
 });

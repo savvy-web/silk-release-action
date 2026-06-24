@@ -110,7 +110,7 @@ We author every dependency in the table below, so a bug or missing API in one ca
 
 **Committing while a link/override is active:** commit the **full dogfood state** to `dev` — `src` + rebuilt `dist` + changeset **and** the `pnpm-workspace.yaml` override + `pnpm-lock.yaml`. The override holds a machine-specific link path, so `dev` only installs cleanly with the sibling repos checked out at the paths in the table above; that is the accepted dogfooding trade-off, and the cleanup in step 7 reverts it. No CI runs on a plain `dev` push, so the committed `dev` source may reference an unpublished library API until it publishes — expected during dogfooding. Commits must be GPG-signed with the GitHub-verified key for `C. Spencer Beggs <spencer@savvyweb.systems>` or the signature ruleset rejects them.
 
-**Currently active:** no dogfood link or override is active. All first-party dependencies are pinned to registry versions: `@savvy-web/silk-effects ^1.3.0`, `@savvy-web/github-action-effects ^2.2.1`, and `workspaces-effect ^1.2.0`. The per-byte-group prod layout work depends on `silk-effects ^1.3.0` (publishability/target resolution) and `github-action-effects ^2.2.1` — the latter redirects npm's cache off the runner's root-owned `~/.npm` so pre-publish dry-runs no longer hit EACCES on macOS runners.
+**Currently active:** no dogfood link or override is active. All first-party dependencies are pinned to published registry versions: `@savvy-web/silk-effects ^1.5.0`, `@savvy-web/github-action-effects ^2.3.0`, `@savvy-web/github-action-builder ^0.8.0` (dev), and `workspaces-effect ^1.2.0`. The turbo cache-diagnostics work was dogfooded against local `link:` overrides for `github-action-effects` and `github-action-builder`; those were removed once `github-action-effects@2.3.0` (which round-trips turbo's `x-artifact-duration` header so remote cache hits report real `timeSaved`) and `github-action-builder@0.8.0` published.
 
 ## Development & Release Cycle
 
@@ -197,14 +197,14 @@ Strict rules enforced (see `biome.jsonc`):
 - Forced `.js` extensions in imports
 - Separated type imports (`separatedType` style)
 - `node:` protocol required for Node.js imports
-- Prefer `type` over `interface`
+- Prefer `interface` over `type` for object shapes (Biome `useConsistentTypeDefinitions` rewrites `type X = {…}` to `interface`); use `type` for unions and aliases
 - Explicit types required for exports (except tests/scripts)
 - No import cycles | No unused variables (`ignoreRestSiblings: true`)
 
 ### TypeScript Configuration
 
 - Module: ESNext with bundler resolution | Target: ES2022 | Strict mode
-- `resolveJsonModule` enabled | Vitest globals available
+- `resolveJsonModule` enabled | tests import Vitest APIs explicitly (`import { describe, it, expect } from "vitest"`) — globals are not enabled
 
 ### Markdown Linting
 
