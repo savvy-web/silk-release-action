@@ -11,10 +11,9 @@
 	},
 	"enableAllProjectMcpServers": true,
 	"enabledPlugins": {
-		"design-docs@spencerbeggs": true,
 		"silk@savvy-web-systems": true,
-		"docs@savvy-web-systems": true,
-		"vitest@savvy-web-systems": true
+		"design-docs@spencerbeggs": true,
+		"vitest-agent@spencerbeggs": true
 	},
 	"plansDirectory": ".claude/plans"
 }
