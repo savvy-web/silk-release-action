@@ -30,7 +30,7 @@ import {
 } from "@savvy-web/github-action-effects";
 import { Config, Effect, Option, Redacted } from "effect";
 import type { PublishTarget, WorkspacePackage } from "workspaces-effect";
-import { TopologicalSorter, WorkspaceDiscovery } from "workspaces-effect";
+import { WorkspaceDiscovery } from "workspaces-effect";
 import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
 import type { EnhancedCycloneDXDocument, ResolvedSBOMMetadata, SBOMMetadataConfig } from "../types/sbom-config.js";
 import { countChangesetsPerPackage } from "../utils/count-changesets.js";
@@ -41,6 +41,7 @@ import type { ConfigSource } from "../utils/load-release-config.js";
 import { loadSBOMConfig } from "../utils/load-release-config.js";
 import { normalizePackageManager } from "../utils/normalize-package-manager.js";
 import { registryShortLabel } from "../utils/registry-label.js";
+import { sortReleasesTopologically } from "../utils/sort-releases-topologically.js";
 import { validateNTIACompliance } from "../utils/validate-ntia-compliance.js";
 import { ChangesetConfig } from "./changeset-config.js";
 import { ValidationError } from "./errors.js";
@@ -408,7 +409,6 @@ export const detectReleasedPackages = (
 export const runValidation = (args: ValidationInputArgs) =>
 	Effect.gen(function* () {
 		const discovery = yield* WorkspaceDiscovery;
-		const sorter = yield* TopologicalSorter;
 		const publish = yield* PackagePublish;
 		const sbomSvc = yield* Sbom;
 		const runner = yield* CommandRunner;
@@ -535,20 +535,10 @@ export const runValidation = (args: ValidationInputArgs) =>
 		// Order the released packages topologically (dependencies first) so the
 		// dry-run / SBOM steps surface in the same order the Phase-3 publish runs
 		// them. `listPackages` returns workspace glob order (alphabetical), not
-		// dependency order; `TopologicalSorter` is the dedicated ordering service.
-		// Mirror the publish phase: `sortSubset` returns the transitive closure of
-		// the released names, so keep only the released packages. A cyclic graph
-		// falls back to discovery order rather than aborting validation.
+		// dependency order; the shared helper keeps only the released packages and
+		// falls back to discovery order on a cyclic graph rather than aborting.
 		const releasedByName = new Map(releasedPackages.map((r) => [r.pkg.name, r] as const));
-		const sortedReleasedNames = yield* sorter.sortSubset([...releasedByName.keys()]).pipe(
-			Effect.map((closure) => closure.filter((name) => releasedByName.has(name))),
-			Effect.catchAll((e: unknown) =>
-				Effect.gen(function* () {
-					yield* Effect.logWarning(`Topological sort failed, using discovery order: ${String(e)}`);
-					return [...releasedByName.keys()] as ReadonlyArray<string>;
-				}),
-			),
-		);
+		const sortedReleasedNames = yield* sortReleasesTopologically([...releasedByName.keys()]);
 		const orderedReleasedPackages = sortedReleasedNames
 			.map((name) => releasedByName.get(name))
 			.filter((r): r is ReleasedPackage => r !== undefined);

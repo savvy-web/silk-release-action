@@ -53,6 +53,7 @@ import {
 } from "@savvy-web/github-action-effects";
 import { Config, Effect, Layer, Option, Redacted } from "effect";
 import { ReleaseLive } from "./release/layers.js";
+import type { DetectedRelease } from "./release/publish.js";
 import { detectReleases, runBuildAndSbom, runPublishTargets } from "./release/publish.js";
 import { runReleases } from "./release/releases.js";
 import {
@@ -85,6 +86,7 @@ import type { TagInfo } from "./utils/determine-tag-strategy.js";
 import { determineTagStrategy, isMonorepoForTagging } from "./utils/determine-tag-strategy.js";
 import { linkIssuesFromCommits } from "./utils/link-issues-from-commits.js";
 import type { ConfigSource } from "./utils/load-release-config.js";
+import { sortReleasesTopologically } from "./utils/sort-releases-topologically.js";
 import { updateReleaseBranch } from "./utils/update-release-branch.js";
 import { updateStickyComment } from "./utils/update-sticky-comment.js";
 import { validateBuilds } from "./utils/validate-builds.js";
@@ -808,7 +810,20 @@ const runPublishing = (mergedReleasePRNumber: number | undefined) =>
 			// ── Step 1: Detect released packages ───────────────────────────────────
 			// `detectReleases` wraps itself in Step.withStep, which emits its own
 			// success line on completion. No extra info line here.
-			const detected = yield* detectReleases(args);
+			const detectedUnordered = yield* detectReleases(args);
+
+			// Order the detected packages dependency-first once, at the source, so
+			// every downstream step — tag strategy (Step 2), build & SBOM (Step 3),
+			// publish (Step 4), and GitHub releases (Step 5) — surfaces packages in
+			// the same topological order. Detection returns workspace glob order
+			// (alphabetical); without this, releases/tags ran alphabetically while
+			// publishing ran topologically. `runPublishTargets` re-sorts internally
+			// (idempotent on an already-ordered list) as defence-in-depth.
+			const detectedByName = new Map(detectedUnordered.map((d) => [d.name, d] as const));
+			const detectedOrder = yield* sortReleasesTopologically(detectedUnordered.map((d) => d.name));
+			const detected: ReadonlyArray<DetectedRelease> = detectedOrder
+				.map((name) => detectedByName.get(name))
+				.filter((d): d is DetectedRelease => d !== undefined);
 
 			if (detected.length === 0) {
 				const empty: PublishPackagesResult = {
