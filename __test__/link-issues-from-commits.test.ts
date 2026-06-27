@@ -31,17 +31,27 @@ import type {
 	GitHubCommitTestState,
 	GitHubIssueTestState,
 	GitTagTestState,
+	PullRequestInfo,
 } from "@savvy-web/github-action-effects/testing";
 import {
 	ActionEnvironmentTest,
+	ActionOutputsTest,
+	CheckRunTest,
+	GitHubClient,
+	GitHubClientError,
 	GitHubClientTest,
 	GitHubCommitTest,
 	GitHubIssueTest,
 	GitTagTest,
+	PullRequestTest,
 } from "@savvy-web/github-action-effects/testing";
-import { Effect, Layer, Logger } from "effect";
+import { ConfigProvider, Effect, Layer, Logger, Stream } from "effect";
 import { describe, expect, it } from "vitest";
-import { getLatestTagSha, getLinkedIssuesFromCommits } from "../src/utils/link-issues-from-commits.js";
+import {
+	getLatestTagSha,
+	getLinkedIssuesFromCommits,
+	linkIssuesFromCommits,
+} from "../src/utils/link-issues-from-commits.js";
 
 // ---------------------------------------------------------------------------
 // Shared constants
@@ -219,6 +229,263 @@ describe("getLatestTagSha", () => {
 			{ tag: "@scope/pkg@1.9.0", sha: "sha-1-9-0" },
 		]);
 		expect(sha).toBe("sha-2-0-0");
+	});
+
+	it("handles a bare X.Y.Z tag with no leading v and no @ (extractVersionFromTag fallthrough)", async () => {
+		const sha = await runGetLatestTagSha([{ tag: "1.2.3", sha: "sha-bare" }]);
+		expect(sha).toBe("sha-bare");
+	});
+
+	it("returns null when no tag yields a parseable semver version", async () => {
+		const sha = await runGetLatestTagSha([
+			{ tag: "not-a-version", sha: "x" },
+			{ tag: "random", sha: "y" },
+		]);
+		expect(sha).toBeNull();
+	});
+
+	it("skips unparseable tags and selects the highest parseable one", async () => {
+		const sha = await runGetLatestTagSha([
+			{ tag: "garbage", sha: "g" },
+			{ tag: "v2.0.0", sha: "s2" },
+			{ tag: "v1.0.0", sha: "s1" },
+		]);
+		expect(sha).toBe("s2");
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Top-level stage: linkIssuesFromCommits (Check Run + PR cross-referencing)
+// ---------------------------------------------------------------------------
+
+const gqlError = (reason: string): GitHubClientError =>
+	new GitHubClientError({ operation: "graphql", status: undefined, reason, retryable: false, retryAfterMs: undefined });
+
+/**
+ * Content-matching GitHubClient layer. The real test layer matches GraphQL by
+ * exact query string; this dispatches on query content + variables so we can
+ * drive the closingIssuesReferences, timeline, and addComment branches of the
+ * top-level stage independently.
+ */
+const makeContentClient = (): Layer.Layer<GitHubClient> => {
+	const closingResp = {
+		repository: {
+			pullRequest: {
+				allLinked: {
+					nodes: [
+						{ id: "node8", number: 8, title: "PR issue 8", state: "OPEN", url: "u8" },
+						{ id: "node5", number: 5, title: "PR issue 5", state: "CLOSED", url: "u5" },
+					],
+				},
+				manuallyLinked: {
+					nodes: [
+						{ id: "node8", number: 8, title: "PR issue 8", state: "OPEN", url: "u8" },
+						{ id: "node9", number: 9, title: "Manual 9", state: "OPEN", url: "u9" },
+					],
+				},
+			},
+		},
+	};
+	const timelineLinked = {
+		repository: {
+			issue: {
+				timelineItems: {
+					nodes: [{ __typename: "CrossReferencedEvent", source: { __typename: "PullRequest", number: 100 } }],
+				},
+			},
+		},
+	};
+	const timelineEmpty = { repository: { issue: { timelineItems: { nodes: [] } } } };
+
+	const client: ReturnType<typeof GitHubClient.of> = {
+		rest: <T>(): Effect.Effect<T, GitHubClientError> => Effect.fail(gqlError("rest not supported")),
+		graphql: <T>(query: string, variables?: Record<string, unknown>): Effect.Effect<T, GitHubClientError> => {
+			const v = variables ?? {};
+			if (query.includes("closingIssuesReferences")) {
+				if (v.prNumber === 20) return Effect.fail(gqlError("PR 20 closing query failed"));
+				return Effect.succeed(closingResp as T);
+			}
+			if (query.includes("timelineItems")) {
+				if (v.issueNumber === 8) return Effect.fail(gqlError("timeline 8 failed"));
+				if (v.issueNumber === 5) return Effect.succeed(timelineLinked as T);
+				return Effect.succeed(timelineEmpty as T);
+			}
+			if (query.includes("addComment")) {
+				if (v.subjectId === "node9") return Effect.fail(gqlError("addComment 9 failed"));
+				return Effect.succeed({ addComment: { commentEdge: { node: { id: "c1" } } } } as T);
+			}
+			return Effect.fail(gqlError("unmatched query"));
+		},
+		paginate: <T>(): Effect.Effect<T[], GitHubClientError> => Effect.fail(gqlError("paginate not supported")),
+		paginateStream: <T>(): Stream.Stream<T, GitHubClientError> => Stream.fail(gqlError("paginateStream not supported")),
+		repo: Effect.succeed({ owner: OWNER, repo: REPO }),
+	};
+	return Layer.succeed(GitHubClient, client);
+};
+
+const makeAssociatedPR = (number: number): PullRequestInfo => ({
+	number,
+	url: `https://github.com/${OWNER}/${REPO}/pull/${number}`,
+	nodeId: `pr-node-${number}`,
+	title: `chore: release #${number}`,
+	state: "open",
+	head: "changeset-release/main",
+	base: TARGET_BRANCH,
+	draft: false,
+	merged: false,
+	mergedAt: null,
+	mergeCommitSha: null,
+});
+
+interface TopLevelFixtures {
+	commitState: GitHubCommitTestState;
+	issueState: GitHubIssueTestState;
+	outputsState: ReturnType<typeof ActionOutputsTest.empty>;
+	checkRunState: ReturnType<typeof CheckRunTest.empty>;
+	prState: ReturnType<typeof PullRequestTest.empty>;
+}
+
+const runTopLevel = (f: TopLevelFixtures, dryRun: boolean) => {
+	const layer = Layer.mergeAll(
+		ActionEnvironmentTest.layer({
+			GITHUB_SHA: "headsha123",
+			GITHUB_REF: `refs/heads/${TARGET_BRANCH}`,
+			GITHUB_REPOSITORY: `${OWNER}/${REPO}`,
+			GITHUB_REPOSITORY_OWNER: OWNER,
+			GITHUB_WORKSPACE: "/workspace",
+			GITHUB_EVENT_NAME: "push",
+			GITHUB_EVENT_PATH: "/dev/null",
+			GITHUB_RUN_ID: "1",
+			GITHUB_RUN_NUMBER: "1",
+			GITHUB_ACTOR: "test",
+			GITHUB_SERVER_URL: "https://github.com",
+			GITHUB_API_URL: "https://api.github.com",
+		}),
+		ActionOutputsTest.layer(f.outputsState),
+		CheckRunTest.layer(f.checkRunState),
+		makeContentClient(),
+		GitTagTest.layer(GitTagTest.empty().state),
+		GitHubCommitTest.layer(f.commitState),
+		GitHubIssueTest.layer(f.issueState),
+		PullRequestTest.layer(f.prState),
+	);
+	const config = ConfigProvider.fromMap(
+		new Map([
+			["target-branch", TARGET_BRANCH],
+			["dry-run", String(dryRun)],
+		]),
+	);
+	return Effect.runPromise(
+		linkIssuesFromCommits.pipe(
+			Effect.provide(layer),
+			Effect.provide(Logger.replace(Logger.defaultLogger, Logger.none)),
+			Effect.withConfigProvider(config),
+		),
+	);
+};
+
+const makeRichFixtures = (): TopLevelFixtures => {
+	const commitState = GitHubCommitTest.empty();
+	commitState.commitLists.set(TARGET_BRANCH, [
+		makeCommit("c1", "fix: bug\n\nCloses #5"),
+		makeCommit("c2", "feat: thing (#10)"),
+		makeCommit("c3", "chore: stuff\n\nCloses #6"),
+		makeCommit("c7", "test: x\n\nCloses #7"),
+		makeCommit("c20", "feat: other (#20)"),
+	]);
+
+	const issueState = GitHubIssueTest.empty().state;
+	// #5 fully seeded (also PR-linked, so its PR title wins).
+	issueState.issues.set(5, {
+		number: 5,
+		title: "Issue 5",
+		state: "open",
+		labels: [],
+		htmlUrl: "https://github.com/owner/repo/issues/5",
+		nodeId: "issue5node",
+	});
+	// #7 seeded WITHOUT htmlUrl/nodeId → exercises the `?? ""` fallbacks.
+	issueState.issues.set(7, { number: 7, title: "Issue 7", state: "open", labels: [] });
+	// #6 deliberately NOT seeded → fetchIssueDetails returns null.
+
+	const prState = PullRequestTest.empty();
+	prState.associatedByCommit.set("headsha123", [makeAssociatedPR(100)]);
+
+	return {
+		commitState,
+		issueState,
+		outputsState: ActionOutputsTest.empty(),
+		checkRunState: CheckRunTest.empty(),
+		prState,
+	};
+};
+
+describe("linkIssuesFromCommits (top-level stage)", () => {
+	it("collects issues from commit messages and merged PRs, reports a check run, and cross-references the PR", async () => {
+		const f = makeRichFixtures();
+		const result = await runTopLevel(f, false);
+
+		// #5 (message + PR), #7 (message backfill), #8 + #9 (PR only) survive;
+		// #6 has no seeded issue and no PR title, so it is dropped.
+		const numbers = result.linkedIssues.map((i) => i.number).sort((a, b) => a - b);
+		expect(numbers).toEqual([5, 7, 8, 9]);
+
+		// #5's title comes from the PR closing-references node, not the issue API.
+		const five = result.linkedIssues.find((i) => i.number === 5);
+		expect(five?.title).toBe("PR issue 5");
+		expect(five?.state).toBe("closed");
+
+		// #7 backfilled from the issue API, with empty url/node_id fallbacks.
+		const seven = result.linkedIssues.find((i) => i.number === 7);
+		expect(seven?.title).toBe("Issue 7");
+		expect(seven?.url).toBe("");
+		expect(seven?.node_id).toBe("");
+
+		// A non-dry-run check run was created and completed successfully.
+		expect(f.checkRunState.runs).toHaveLength(1);
+		expect(f.checkRunState.runs[0].name).toBe("Link Issues from Commits");
+		expect(f.checkRunState.runs[0].conclusion).toBe("success");
+
+		// Cross-referencing ran: #7 (empty timeline) got a comment; #5 was
+		// already linked; #8's timeline failed; #9's addComment failed.
+		expect(result.commits).toHaveLength(5);
+	});
+
+	it("uses the dry-run check title and skips PR cross-referencing", async () => {
+		const f = makeRichFixtures();
+		const result = await runTopLevel(f, true);
+
+		expect(f.checkRunState.runs[0].name).toContain("Dry Run");
+		// linkIssuesToPR is skipped in dry-run, so no associated-commit lookup
+		// produced cross-reference comments — the result still carries the issues.
+		expect(result.linkedIssues.length).toBeGreaterThan(0);
+	});
+
+	it("renders the empty-state summary when there are no commits or issues", async () => {
+		const f: TopLevelFixtures = {
+			commitState: GitHubCommitTest.empty(),
+			issueState: GitHubIssueTest.empty().state,
+			outputsState: ActionOutputsTest.empty(),
+			checkRunState: CheckRunTest.empty(),
+			prState: PullRequestTest.empty(),
+		};
+		const result = await runTopLevel(f, false);
+
+		expect(result.linkedIssues).toHaveLength(0);
+		expect(result.commits).toHaveLength(0);
+		expect(f.checkRunState.runs).toHaveLength(1);
+		expect(f.checkRunState.runs[0].conclusion).toBe("success");
+	});
+
+	it("returns early from cross-referencing when no PR is associated with the head commit", async () => {
+		const f = makeRichFixtures();
+		// No associated PR seeded for headsha123.
+		f.prState.associatedByCommit.clear();
+
+		const result = await runTopLevel(f, false);
+
+		expect(result.linkedIssues.length).toBeGreaterThan(0);
+		expect(f.checkRunState.runs[0].conclusion).toBe("success");
 	});
 });
 
