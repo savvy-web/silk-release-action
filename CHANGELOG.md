@@ -1,5 +1,19 @@
 # @savvy-web/silk-release-action
 
+## 2.2.1
+
+### Bug Fixes
+
+* [`fccd229`](https://github.com/savvy-web/silk-release-action/commit/fccd229118ed87f9eb81e53ea4d4a6b07beaf02b) Phase 3 GitHub releases and git tags are now created in the same topological (dependency-first) order as registry publishing. Previously, releases and tags were created in alphabetical workspace order while publishing ran dependency-first, so in multi-package repos the GitHub releases could appear out of order relative to the publish sequence.
+
+### Dependencies
+
+* | [`fccd229`](https://github.com/savvy-web/silk-release-action/commit/fccd229118ed87f9eb81e53ea4d4a6b07beaf02b) | Dependency    | Type    | Action | From   | To |
+  | :------------------------------------------------------------------------------------------------------------ | :------------ | :------ | :----- | :----- | -- |
+  | @savvy-web/github-action-effects                                                                              | dependency    | updated | ^2.3.0 | ^2.3.2 |    |
+  | @savvy-web/silk-effects                                                                                       | dependency    | updated | ^1.5.0 | ^1.5.1 |    |
+  | @savvy-web/silk                                                                                               | devDependency | updated | ^1.3.3 | ^1.3.4 |    |
+
 ## 2.2.0
 
 ### Features
