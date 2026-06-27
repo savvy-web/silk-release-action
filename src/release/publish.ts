@@ -36,13 +36,14 @@ import {
 	isJsrRegistry,
 } from "@savvy-web/github-action-effects";
 import { Config, Effect, Option, Redacted } from "effect";
-import { PublishabilityDetector, TopologicalSorter, WorkspaceDiscovery, WorkspacePackage } from "workspaces-effect";
+import { PublishabilityDetector, WorkspaceDiscovery, WorkspacePackage } from "workspaces-effect";
 
 import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
 import { getGroupId } from "../utils/group-id.js";
 import type { PackageManager } from "../utils/normalize-package-manager.js";
 import { normalizePackageManager } from "../utils/normalize-package-manager.js";
 import { registryHost, registryShortLabel } from "../utils/registry-label.js";
+import { sortReleasesTopologically } from "../utils/sort-releases-topologically.js";
 import { buildProvenancePredicate } from "./attest-helpers.js";
 import { ChangesetConfig } from "./changeset-config.js";
 import { humanizeSize } from "./report.js";
@@ -1192,7 +1193,6 @@ export const runPublishTargets = (
 	Effect.gen(function* () {
 		const discovery = yield* WorkspaceDiscovery;
 		const detector = yield* PublishabilityDetector;
-		const sorter = yield* TopologicalSorter;
 		const state = yield* ActionState;
 		const logger = yield* ActionLogger;
 
@@ -1310,19 +1310,10 @@ export const runPublishTargets = (
 		// ── Topological ordering ───────────────────────────────────────────────
 		yield* Effect.logDebug("runPublishTargets: sorting packages topologically");
 
-		// `sortSubset` returns the transitive-dependency closure of the given
-		// packages; keep only the packages actually being released so a
-		// non-bumped dependency is not treated as a publish target.
-		const detectedNames = new Set(detected.map((r) => r.name));
-		const sortedNames = yield* sorter.sortSubset(detected.map((r) => r.name)).pipe(
-			Effect.map((closure) => closure.filter((name) => detectedNames.has(name))),
-			Effect.catchAll((e: unknown) =>
-				Effect.gen(function* () {
-					yield* Effect.logWarning(`Topological sort failed, using insertion order: ${String(e)}`);
-					return detected.map((r) => r.name) as ReadonlyArray<string>;
-				}),
-			),
-		);
+		// Dependency-first order via the shared helper (keeps only the released
+		// packages, falls back to detection order on a cyclic graph). The Phase-3
+		// orchestrator already sorts `detected`, so this is idempotent here.
+		const sortedNames = yield* sortReleasesTopologically(detected.map((r) => r.name));
 
 		// ── Publish each package (accumulate errors) ───────────────────────────
 		const totalTargets = [...targetsByPackage.values()].reduce((sum, p) => sum + p.targets.length, 0);

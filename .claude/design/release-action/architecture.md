@@ -4,8 +4,8 @@ category: architecture
 status: current
 completeness: 95
 created: 2026-02-07
-updated: 2026-06-18
-last-synced: 2026-06-18
+updated: 2026-06-26
+last-synced: 2026-06-26
 module: release-action
 related:
   - integration.md
@@ -107,7 +107,7 @@ The commit subject matches the PR title; the commit body is a bullet list of ful
 
 Triggers on push to the release branch. Creates all validation Check Runs upfront for immediate visibility. Phase 2 now routes through `src/release/validation.ts` (`runValidation`) — a pure Effect program — rather than a chain of imperative utility modules.
 
-**`src/release/validation.ts`** (`runValidation`) — Enumerates workspace packages, diffs versions against the target branch to discover which packages are being released (`detectReleasedPackages` drops changeset-ignored names entirely via `ChangesetConfig.isIgnored`, so they never appear, not even as version-only rows), orders the released set through `TopologicalSorter.sortSubset` (dependencies first, matching Phase-3 publish order; a cyclic graph falls back to discovery order rather than aborting), resolves publish targets via `resolvePublishableTargets` (the `PublishabilityDetectorAdaptiveLive` seam), groups targets by build directory, runs `PackagePublish.dryRun` per build directory, generates one SBOM per build directory via the `Sbom` service, applies `sbom-config` metadata, and assembles a `ValidationReport`. The report is build-centric: `ValidationPackageResult` carries builds, sizes, SBOMs, and registry targets. `strict-warnings` mode escalates warning-severity findings to `failure` for auto-merge gating.
+**`src/release/validation.ts`** (`runValidation`) — Enumerates workspace packages, diffs versions against the target branch to discover which packages are being released (`detectReleasedPackages` drops changeset-ignored names entirely via `ChangesetConfig.isIgnored`, so they never appear, not even as version-only rows), orders the released set dependency-first through the shared `sortReleasesTopologically` helper (matching Phase-3 order; a cyclic graph falls back to discovery order rather than aborting), resolves publish targets via `resolvePublishableTargets` (the `PublishabilityDetectorAdaptiveLive` seam), groups targets by build directory, runs `PackagePublish.dryRun` per build directory, generates one SBOM per build directory via the `Sbom` service, applies `sbom-config` metadata, and assembles a `ValidationReport`. The report is build-centric: `ValidationPackageResult` carries builds, sizes, SBOMs, and registry targets. `strict-warnings` mode escalates warning-severity findings to `failure` for auto-merge gating.
 
 The dry-run dispatches through the same npm executor as the live publish: `runValidation` passes the normalized `packageManager` (via `normalizePackageManager`) to `PackagePublish.dryRun`, so a dry-run validates against the exact npm the Phase-3 publish will run (`pnpm dlx npm`, `yarn npm`, `bun x npm` or bare `npm`) rather than the runner's bundled one. See [Authentication and publishing](integration.md#authentication-and-publishing).
 
@@ -134,9 +134,11 @@ Triggers on merge of the release PR to main. Phase 3 is a pure Effect orchestrat
 
 1. **`detectReleases`** (`src/release/publish.ts`) — Detects released packages from the merged PR's file diff (PR-first) or commit diff (fallback), then drops changeset-ignored names entirely via `ChangesetConfig.isIgnored`. Wrapped in `Step.withStep`.
 2. **`runBuildAndSbom`** (`src/release/publish.ts`) — Runs `ci:build` once, then generates one CycloneDX SBOM per package via `Sbom.generate`. Aborts the phase if the build fails. Returns `BuildSbomResult` including per-package SBOM paths.
-3. **`runPublishTargets`** (`src/release/publish.ts`) — Publishes packages. Discovers workspace packages, resolves publish targets via `PublishabilityDetector`, sorts topologically via `TopologicalSorter`, and calls `publishDirectoryGroup` for each unique build directory. The publish orchestrator aborts before any releases if fewer than half the targets published (i.e., N/2 or 0/N).
+3. **`runPublishTargets`** (`src/release/publish.ts`) — Publishes packages. Discovers workspace packages, resolves publish targets via `PublishabilityDetector`, sorts topologically via the shared `sortReleasesTopologically` helper (idempotent — `main.ts` has already ordered the set), and calls `publishDirectoryGroup` for each unique build directory. The publish orchestrator aborts before any releases if fewer than half the targets published (i.e., N/2 or 0/N).
 4. **`runReleases`** (`src/release/releases.ts`) — Creates Git tags (sha-aware idempotency) and GitHub releases, uploads group-keyed tarball, SBOM, API-doc and `meta.tgz` assets, creates SLSA provenance and SBOM attestations (idempotent: checks `Attest.listForSubject` before writing). One attestation per build directory, not per target. Asset names are keyed by byte-group via `src/utils/group-id.ts` (see [Group-keyed release assets](#group-keyed-release-assets)).
 5. **`buildPublishSummary`** (`src/release/report.ts`) — Generates the sticky-comment publish summary and Check Run output.
+
+Ordering is established **once, at the source**: immediately after `detectReleases`, `main.ts` orders the detected set dependency-first via the shared `sortReleasesTopologically` helper (`src/utils/sort-releases-topologically.ts`), so every downstream step — tag strategy, build & SBOM, publish and GitHub releases — runs in the same dependency-first order. Previously only `runPublishTargets` sorted topologically while tag strategy and `runReleases` consumed the detection-order (alphabetical) set, so registry publishes ran dependency-first while tags and GitHub releases were created alphabetically; sorting at the source removes that inconsistency. The helper filters `TopologicalSorter.sortSubset`'s dependency closure back to the released subset and falls back to detection order on a cyclic graph. The same helper backs Phase-2 validation and the re-sort inside `runPublishTargets` (idempotent), so `publish.ts` and `validation.ts` no longer own the sort logic directly.
 
 The `determine-tag-strategy.ts` utility (still in `src/utils/`) decides between single-tag and per-package tag strategies and runs between steps 3 and 4. `main.ts` resolves the per-package-tags boolean via `yield* isMonorepoForTagging(process.cwd())` (Effect, through the single detector + `ChangesetConfig.fixed`) and passes it to the pure `determineTagStrategy(publishResults, needsPerPackageTags)`.
 
@@ -215,7 +217,7 @@ main.ts
   |       +-- count-changesets.ts
   |       +-- extract-release-notes.ts
   |       +-- validate-ntia-compliance.ts
-  |       +-- TopologicalSorter.sortSubset (library service, dependency order)
+  |       +-- sort-releases-topologically.ts (sortReleasesTopologically → TopologicalSorter.sortSubset)
   |       +-- PackagePublish.dryRun (library service, packageManager dispatch)
   |       +-- Sbom.generate (library service)
   |     release/report.ts (buildValidationComment, buildChecksTable, …)
@@ -224,12 +226,13 @@ main.ts
   |     cleanup-validation-checks.ts
   |
   +-- Phase 3 chain (all Effect):
+  |     sort-releases-topologically.ts (main.ts orders detected set once, at source)
   |     release/publish.ts
   |       detectReleases → GitHubContent / PullRequest / GitHubCommit +
   |                        ChangesetConfig (isIgnored filter)
   |       runBuildAndSbom → CommandRunner + Sbom (library services)
   |       runPublishTargets → WorkspaceDiscovery + PublishabilityDetector +
-  |                           TopologicalSorter + PackagePublish + NpmRegistry +
+  |                           sortReleasesTopologically + PackagePublish + NpmRegistry +
   |                           Attest (library services)
   |     determine-tag-strategy.ts (between publish and releases)
   |       isMonorepoForTagging → WorkspaceDiscovery + PublishabilityDetector + ChangesetConfig.fixed
@@ -441,6 +444,7 @@ When `dry-run: true` is set, the action executes a parallel path that validates 
 | `src/utils/parse-changesets.ts` | Changeset YAML frontmatter parsing |
 | `src/utils/registry-label.ts` | registryShortLabel / registryHost — ⬆ row labels in the publish and validation log trees (shared by publish.ts + validation.ts) |
 | `src/utils/release-summary-helpers.ts` | listPublishablePackages (Effect over the single detector), getReleasingPackages, resolveReleasePrTitle, formatReleasePackageList |
+| `src/utils/sort-releases-topologically.ts` | sortReleasesTopologically — shared dependency-first ordering (closure-filtered, cyclic-graph fallback) for Phase-3 source ordering, runPublishTargets and Phase-2 validation |
 | `src/utils/summary-writer.ts` | Type-safe markdown via ts-markdown |
 | `src/utils/tokens.ts` | appToken() and packagesToken() helpers for non-Effect publish chain context |
 | `src/utils/update-release-branch.ts` | Recreate release branch from main |

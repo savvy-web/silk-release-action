@@ -52,6 +52,8 @@ When the release PR is merged, the action detects the merge and publishes:
 5. Creates GitHub releases with auto-generated release notes from CHANGELOGs
 6. Optionally generates SBOMs for published packages
 
+**Dependency-first ordering:** in a monorepo the action processes packages in topological order, so a package's dependencies are published, tagged and released before the package itself — a dependent never appears on a registry ahead of something it needs.
+
 **Step-buffered output:** each publish step emits a single summary line on success (e.g. `✅ pack @scope/pkg: 122 kB · 10 files`) and a `❌` header with debug context on failure. This keeps logs scannable while preserving full detail for failures.
 
 **Self-recovering publish chain:** if one registry fails partway through (for example, GitHub Packages succeeds but npm fails), the action aborts before creating the GitHub Release. On the next run it detects which registries already received the exact same tarball and skips them (`skipped-identical (recovery)`), then continues with the registries that still need publishing.
