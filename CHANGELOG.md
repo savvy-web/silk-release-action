@@ -1,5 +1,16 @@
 # @savvy-web/silk-release-action
 
+## 2.2.2
+
+### Dependencies
+
+* [`a7df8b4`](https://github.com/savvy-web/silk-release-action/commit/a7df8b4d34cedc93b412ae007897f35a2505e441) | Dependency | Type | Action | From | To |
+  \| :------------------------------- | :------------ | :------ | :----- | :----- |
+  \| @savvy-web/github-action-effects | dependency | updated | ^2.3.2 | ^2.3.3 |
+  \| @savvy-web/silk-effects | dependency | updated | ^1.5.1 | ^1.5.2 |
+  \| @savvy-web/github-action-builder | devDependency | updated | ^0.8.0 | ^1.0.1 |
+  \| @savvy-web/silk | devDependency | updated | ^1.3.4 | ^1.3.5 |
+
 ## 2.2.1
 
 ### Bug Fixes
