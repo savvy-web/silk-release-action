@@ -3,8 +3,10 @@
 # `silk-update.yml` opens a `pnpm/config-deps` PR into `dev` and squash-merges
 # it once checks pass. When that merge lands, this workflow opens a `dev -> main`
 # PR (using a GitHub App token so the PR triggers required checks / cloud
-# reviewers) and leaves it open for review and the action's smoke tests. It does
-# not auto-merge — promotion to `main` stays a reviewed step.
+# reviewers), reuses the source dependency PR's title, and enables auto-merge so
+# promotion lands on `main` once the required status checks pass (Tests, Code
+# Quality, Claude Code Review, etc.). `main`'s ruleset gates the merge — squash
+# only, 0 required approvals — so review is optional but checks are not.
 name: Promote Dependency Updates
 
 on:
@@ -45,6 +47,7 @@ jobs:
           REPO: ${{ github.repository }}
           OWNER: ${{ github.repository_owner }}
           SOURCE_PR: ${{ github.event.pull_request.number }}
+          SOURCE_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
 
@@ -53,6 +56,8 @@ jobs:
           existing="$(gh api "repos/${REPO}/pulls?base=main&head=${OWNER}:dev&state=open" --jq 'length')"
           if [[ "$existing" -gt 0 ]]; then
             number="$(gh api "repos/${REPO}/pulls?base=main&head=${OWNER}:dev&state=open" --jq '.[0].number')"
+            # Re-assert auto-merge in case it was cleared; harmless if already set.
+            gh pr merge "${number}" --repo "${REPO}" --auto --squash || true
             echo "::notice::dev -> main PR #${number} already open; new dev commits are tracked automatically."
             exit 0
           fi
@@ -61,6 +66,14 @@ jobs:
             trigger="Triggered by merged dependency PR #${SOURCE_PR}."
           else
             trigger="Triggered manually via workflow_dispatch."
+          fi
+
+          # Reuse the merged dependency PR's title (must satisfy the Conventional
+          # Commits / PR Title Validation checks); fall back for manual dispatch.
+          if [[ -n "${SOURCE_TITLE}" ]]; then
+            title="${SOURCE_TITLE}"
+          else
+            title="chore(deps): promote dependency updates to main"
           fi
 
           body=$(cat <<EOF
@@ -76,9 +89,14 @@ jobs:
           )
 
           number="$(gh api --method POST "repos/${REPO}/pulls" \
-            -f title="chore(deps): promote dependency updates to main" \
+            -f title="${title}" \
             -f head="dev" \
             -f base="main" \
             -f body="${body}" \
             --jq '.number')"
-          echo "::notice::Opened dev -> main PR #${number}."
+
+          # Auto-merge with squash (the only method main's ruleset allows); the
+          # PR lands once the required status checks pass.
+          gh pr merge "${number}" --repo "${REPO}" --auto --squash
+
+          echo "::notice::Opened dev -> main PR #${number} and enabled auto-merge."
