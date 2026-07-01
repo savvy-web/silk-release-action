@@ -1,4 +1,5 @@
 {
 	"$schema": "https://biomejs.dev/schemas/2.5.1/schema.json",
-	"extends": ["@savvy-web/silk/biome"]
+	"extends": ["@savvy-web/silk/biome"],
+	"root": true
 }

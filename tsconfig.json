@@ -1,3 +1,4 @@
 {
-	"extends": ["@savvy-web/github-action-builder/tsconfig/action.json"]
+	"$schema": "https://json.schemastore.org/tsconfig",
+	"extends": "@savvy-web/github-action-builder/tsconfig/action.json"
 }

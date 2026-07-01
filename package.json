@@ -49,6 +49,7 @@
 	"devDependencies": {
 		"@savvy-web/github-action-builder": "^1.0.1",
 		"@savvy-web/silk": "^1.3.6",
+		"@types/node": "catalog:silk",
 		"@vitest-agent/plugin": "^1.1.2",
 		"tsx": "catalog:silk"
 	},
