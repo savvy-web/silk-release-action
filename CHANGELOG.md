@@ -1,5 +1,11 @@
 # @savvy-web/silk-release-action
 
+## 2.2.3
+
+### Bug Fixes
+
+* [`997e402`](https://github.com/savvy-web/silk-release-action/commit/997e402b0d68facf503afd62dda6e536f3d4b96b) Explicitly declare `@types/node` version.
+
 ## 2.2.2
 
 ### Dependencies
