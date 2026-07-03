@@ -1,6 +1,6 @@
 {
 	"name": "@savvy-web/silk-release-action",
-	"version": "2.2.3",
+	"version": "2.2.4",
 	"private": true,
 	"description": "Automated release management GitHub Action with changesets, multi-registry publishing, and GitHub releases.",
 	"homepage": "https://github.com/savvy-web/silk-release-action#readme",
