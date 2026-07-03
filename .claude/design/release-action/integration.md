@@ -4,8 +4,8 @@ category: integration
 status: current
 completeness: 92
 created: 2026-02-07
-updated: 2026-06-18
-last-synced: 2026-06-18
+updated: 2026-07-03
+last-synced: 2026-07-03
 module: release-action
 related:
   - architecture.md
@@ -33,9 +33,9 @@ dependencies:
 
 The release action supports publishing to multiple registries simultaneously with OIDC-first authentication, SBOM generation, and NTIA compliance validation. This document covers the registry infrastructure, authentication model, SBOM/compliance system, and the type system that ties them together.
 
-Phase 3 is a self-recovering publish chain built on `@savvy-web/github-action-effects` (`^2.1.3`) library services. The old imperative registry modules (`registry-auth.ts`, `registry-utils.ts`, `pre-validate-target.ts`, `dry-run-publish.ts`, `resolve-targets.ts`, `publish-packages.ts`, `publish-target.ts`) are deleted. The `Attest` and `Sbom` services from the old `src/services/attest/` directory are now part of the library; that directory no longer exists in this repo. See `src/release/publish.ts` and `src/release/releases.ts` for the current Effect orchestration.
+Phase 3 is a self-recovering publish chain built on `@savvy-web/github-action-effects` library services (see `package.json` for the declared range). The old imperative registry modules (`registry-auth.ts`, `registry-utils.ts`, `pre-validate-target.ts`, `dry-run-publish.ts`, `resolve-targets.ts`, `publish-packages.ts`, `publish-target.ts`) are deleted. The `Attest` and `Sbom` services from the old `src/services/attest/` directory are now part of the library; that directory no longer exists in this repo. See `src/release/publish.ts` and `src/release/releases.ts` for the current Effect orchestration.
 
-Publish and release operate on the `@savvy-web/bundler` per-byte-group prod layout (requires `@savvy-web/silk-effects ^1.0.0`): each package's `publishConfig.targets` is a Record map resolved through a `dist/prod/targets.json` binding into `dist/prod/<group>/pkg` build directories, one per byte-variant group. Registries that share bytes share a group, so `npm: true` + `github: true` collapse into a single tarball deployed to both registries.
+Publish and release operate on the `@savvy-web/bundler` per-byte-group prod layout (via `@savvy-web/silk-effects`): each package's `publishConfig.targets` is a Record map resolved through a `dist/prod/targets.json` binding into `dist/prod/<group>/pkg` build directories, one per byte-variant group. Registries that share bytes share a group, so `npm: true` + `github: true` collapse into a single tarball deployed to both registries.
 
 ## Current State
 
@@ -111,7 +111,7 @@ Under the 2.0 library all three identities are carried as `Redacted<string>` thr
 
 ### Attestation System
 
-The `Attest` and `Sbom` services are now part of `@savvy-web/github-action-effects` (`^2.1.3`). The old `src/services/attest/` directory no longer exists in this repo; the library's published surface (`Attest`, `Sbom`, `SigstoreSigner`, `OidcTokenIssuer`) is consumed directly in `src/release/publish.ts` and `src/release/releases.ts`.
+The `Attest` and `Sbom` services are now part of `@savvy-web/github-action-effects`. The old `src/services/attest/` directory no longer exists in this repo; the library's published surface (`Attest`, `Sbom`, `SigstoreSigner`, `OidcTokenIssuer`) is consumed directly in `src/release/publish.ts` and `src/release/releases.ts`.
 
 **Key properties of the current attestation flow:**
 

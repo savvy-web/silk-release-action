@@ -15,9 +15,9 @@ Private repository for **shared GitHub Actions, reusable workflows, and GitHub p
 
 Load design docs when working on the relevant subsystem:
 
-- `@.claude/design/release-action/architecture.md` - Three-phase workflow, module dependency graph, entry points, shared infrastructure
-- `@.claude/design/release-action/integration.md` - Multi-registry publishing, OIDC auth, SBOM/NTIA compliance, publish summaries
-- `@.claude/design/release-action/testing.md` - Test strategy, mock factory patterns, coverage map, specialized testing patterns
+- `@./.claude/design/release-action/architecture.md` - Three-phase workflow, module dependency graph, entry points, shared infrastructure
+- `@./.claude/design/release-action/integration.md` - Multi-registry publishing, OIDC auth, SBOM/NTIA compliance, publish summaries
+- `@./.claude/design/release-action/testing.md` - Test strategy, mock factory patterns, coverage map, specialized testing patterns
 
 ## Silk Release Action
 
@@ -29,7 +29,7 @@ TypeScript-based GitHub Action for automated release management with changesets.
 2. **Phase 2 (Validation)** - Push to release branch triggers build validation, publish dry-runs, release notes preview, and sticky comment updates
 3. **Phase 3 (Publishing)** - Merge of release PR triggers multi-registry publishing, GitHub releases, and SBOM/attestation generation
 
-For full architecture, module dependency graph, and per-module documentation: `@.claude/design/release-action/architecture.md`
+For full architecture, module dependency graph, and per-module documentation: `@./.claude/design/release-action/architecture.md`
 
 ### Action Inputs
 
@@ -59,7 +59,7 @@ For full architecture, module dependency graph, and per-module documentation: `@
 | **GitHub Packages** | `github-token` input | Pass `secrets.GITHUB_TOKEN` with `packages: write` |
 | **Custom registries** | `custom-registries` input | Format: `https://registry.example.com/_authToken=<TOKEN>` |
 
-For full integration details, token plumbing, and `SILK_GITHUB_PACKAGES_TOKEN`: `@.claude/design/release-action/integration.md`
+For full integration details, token plumbing, and `SILK_GITHUB_PACKAGES_TOKEN`: `@./.claude/design/release-action/integration.md`
 
 ### Integration Testing
 
@@ -110,7 +110,7 @@ We author every dependency in the table below, so a bug or missing API in one ca
 
 **Committing while a link/override is active:** commit the **full dogfood state** to `dev` — `src` + rebuilt `dist` + changeset **and** the `pnpm-workspace.yaml` override + `pnpm-lock.yaml`. The override holds a machine-specific link path, so `dev` only installs cleanly with the sibling repos checked out at the paths in the table above; that is the accepted dogfooding trade-off, and the cleanup in step 7 reverts it. No CI runs on a plain `dev` push, so the committed `dev` source may reference an unpublished library API until it publishes — expected during dogfooding. Commits must be GPG-signed with the GitHub-verified key for `C. Spencer Beggs <spencer@savvyweb.systems>` or the signature ruleset rejects them.
 
-**Currently active:** no dogfood link or override is active. All first-party dependencies are pinned to published registry versions: `@savvy-web/silk-effects ^1.5.0`, `@savvy-web/github-action-effects ^2.3.0`, `@savvy-web/github-action-builder ^0.8.0` (dev), and `workspaces-effect ^1.2.0`. The turbo cache-diagnostics work was dogfooded against local `link:` overrides for `github-action-effects` and `github-action-builder`; those were removed once `github-action-effects@2.3.0` (which round-trips turbo's `x-artifact-duration` header so remote cache hits report real `timeSaved`) and `github-action-builder@0.8.0` published.
+**Currently active:** no dogfood link or override is active. All first-party dependencies are pinned to published registry versions: `@savvy-web/silk-effects ^2.1.0`, `@savvy-web/github-action-effects ^2.3.5`, `@savvy-web/github-action-builder ^1.0.3` (dev), `workspaces-effect ^2.0.1`, and `json-schema-effect ^0.3.0`. The silk-effects v2 and workspaces-effect v2 majors were absorbed as dependency-only bumps — the action consumes none of the reworked surfaces, so `src/` is unchanged and only `dist/` was rebuilt (verified end-to-end via `silk-integration`).
 
 ## Development & Release Cycle
 

@@ -5,7 +5,7 @@ status: current
 completeness: 90
 created: 2026-02-07
 updated: 2026-06-18
-last-synced: 2026-06-18
+last-synced: 2026-07-03
 module: release-action
 related:
   - architecture.md
@@ -331,7 +331,7 @@ pnpm test path/to/test.test.ts   # Run specific test file
 
 ### Why 85% Coverage Threshold?
 
-The 85% per-file threshold balances thorough testing with pragmatism. Some modules (API commit creation, direct publishing) are difficult to unit test due to complex I/O dependencies involving multiple interacting external systems. These are validated through integration testing in the `savvy-web/workflow-integration` repository.
+The 85% per-file threshold balances thorough testing with pragmatism. Some modules (API commit creation, direct publishing) are difficult to unit test due to complex I/O dependencies involving multiple interacting external systems. These are validated through integration testing in the `savvy-web/silk-integration` repository.
 
 The per-file enforcement (`perFile: true`) prevents high-coverage modules from masking low-coverage ones, which is a common problem with global thresholds in projects with many small utility modules.
 
