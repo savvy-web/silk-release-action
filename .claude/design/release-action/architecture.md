@@ -4,8 +4,8 @@ category: architecture
 status: current
 completeness: 95
 created: 2026-02-07
-updated: 2026-06-26
-last-synced: 2026-06-26
+updated: 2026-07-03
+last-synced: 2026-07-03
 module: release-action
 related:
   - integration.md
@@ -52,9 +52,11 @@ The `silk-release-action` is a TypeScript GitHub Action implementing a three-pha
 
 The action automates the full release lifecycle: detecting pending changes, managing a release branch and PR, validating builds and registry readiness, publishing to multiple registries (npm, JSR, GitHub Packages, custom), creating Git tags and GitHub releases with attestations, and closing linked issues. All operations produce GitHub Check Runs for rich CI feedback and post sticky comments on the release PR for at-a-glance status.
 
-Phase 3 is a pure Effect orchestration built on `@savvy-web/github-action-effects` (`^2.1.3`) library services. Phases 1 and 2 remain as a mix of Effect entry points (entry-point scripts, `src/release/validation.ts`) and imperative utility modules. The library ships the `Attest` and `Sbom` services, eliminating the old `src/services/attest/` directory entirely. The 2.0 layer shape changed the contracts this action adopts: `GitHubAppLive` and `ActionCacheLive` now require `HttpClient.HttpClient` (provided via `FetchHttpClient.layer`) and secret-bearing APIs take or decode to `Redacted<string>` (see [State Management](#state-management)).
+Phase 3 is a pure Effect orchestration built on `@savvy-web/github-action-effects` library services (see `package.json` for the declared range). Phases 1 and 2 remain as a mix of Effect entry points (entry-point scripts, `src/release/validation.ts`) and imperative utility modules. The library ships the `Attest` and `Sbom` services, eliminating the old `src/services/attest/` directory entirely. The 2.0 layer shape changed the contracts this action adopts: `GitHubAppLive` and `ActionCacheLive` now require `HttpClient.HttpClient` (provided via `FetchHttpClient.layer`) and secret-bearing APIs take or decode to `Redacted<string>` (see [State Management](#state-management)).
 
-Publish and release target the `@savvy-web/bundler` per-byte-group prod layout (requires `@savvy-web/silk-effects ^1.0.0`). Each package's `publishConfig.targets` is a Record map (binding-driven; the legacy array form is gone) and the build emits `dist/prod/<group>/pkg` directories, one per byte-variant group. `npm: true` + `github: true` collapse into a single tarball deployed to both registries. See [Per-byte-group prod layout](#per-byte-group-prod-layout).
+Publish and release target the `@savvy-web/bundler` per-byte-group prod layout (via `@savvy-web/silk-effects`). Each package's `publishConfig.targets` is a Record map (binding-driven; the legacy array form is gone) and the build emits `dist/prod/<group>/pkg` directories, one per byte-variant group. `npm: true` + `github: true` collapse into a single tarball deployed to both registries. See [Per-byte-group prod layout](#per-byte-group-prod-layout).
+
+The action deliberately consumes a narrow, stable slice of its first-party libraries: `ChangesetConfig`, the silk publishability rules (`SilkPublishability` / `PublishabilityDetectorAdaptiveLive`), `WorkspaceDiscovery`, `TopologicalSorter` and the sync discovery helpers. The `@savvy-web/silk-effects` 2.x major reworked the library's changesets subsystem (removed `Changesets.WorkspaceSnapshotReader`, changed `DepsRegen`/`ReleasePlanner` contracts) and the `workspaces-effect` 2.x major added `PointInTimeWorkspace` and changed catalog-resolution contracts — none of which this action touches, so both majors landed here as dependency-only bumps with zero source changes.
 
 ## Current State
 
@@ -161,7 +163,7 @@ After `runPublishTargets`, `main.ts` checks whether the publish results warrant 
 
 #### Per-byte-group prod layout
 
-Publish and release operate on the `@savvy-web/bundler` prod layout. Each package's `publishConfig.targets` is a Record map resolved through a `dist/prod/targets.json` binding (the resolution lives in the `PublishabilityDetector` from `@savvy-web/silk-effects ^1.0.0` / `workspaces-effect`, not in this repo), and the build emits one `dist/prod/<group>/pkg` directory per byte-variant group with a sibling `dist/prod/<group>/meta` folder. Registries whose bytes are identical share one group — `npm: true` + `github: true` collapse into a single `dist/prod/<group>/pkg` tarball deployed to both. The orchestrators still pack once per build directory; the per-group layout means a build directory now corresponds to a byte-group rather than a single per-registry publish dir. `src/utils/group-id.ts` derives the group id from a build directory (`getGroupId("dist/prod/npm/pkg") === "npm"`) for asset naming and step labels.
+Publish and release operate on the `@savvy-web/bundler` prod layout. Each package's `publishConfig.targets` is a Record map resolved through a `dist/prod/targets.json` binding (the resolution lives in the `PublishabilityDetector` from `@savvy-web/silk-effects` / `workspaces-effect`, not in this repo), and the build emits one `dist/prod/<group>/pkg` directory per byte-variant group with a sibling `dist/prod/<group>/meta` folder. Registries whose bytes are identical share one group — `npm: true` + `github: true` collapse into a single `dist/prod/<group>/pkg` tarball deployed to both. The orchestrators still pack once per build directory; the per-group layout means a build directory now corresponds to a byte-group rather than a single per-registry publish dir. `src/utils/group-id.ts` derives the group id from a build directory (`getGroupId("dist/prod/npm/pkg") === "npm"`) for asset naming and step labels.
 
 #### Group-keyed release assets
 
@@ -395,7 +397,7 @@ The action uses three GitHub API communication patterns:
 
 - **REST API** (`octokit.rest.*`): Standard CRUD operations — Check Runs, branch queries, PR listing, file comparisons, release creation, asset uploads.
 - **GraphQL API**: Complex queries requiring nested data. Used for `closingIssuesReferences` on PRs (linked issues) and branch protection mutations.
-- **Library services**: `@savvy-web/github-action-effects` (`^2.1.3`) provides Effect services (`PullRequest`, `GitTag`, `CheckRun`, `GitHubRelease`, `GitHubArtifactMetadata`, `GitHubCommit`, `GitHubContent`, `NpmRegistry`, `Attest`, `Sbom`, `PackagePublish`, `RegistryClassifier`) that wrap all Phase-3 GitHub and registry interactions. No raw Octokit calls remain in `src/release/` modules.
+- **Library services**: `@savvy-web/github-action-effects` provides Effect services (`PullRequest`, `GitTag`, `CheckRun`, `GitHubRelease`, `GitHubArtifactMetadata`, `GitHubCommit`, `GitHubContent`, `NpmRegistry`, `Attest`, `Sbom`, `PackagePublish`, `RegistryClassifier`) that wrap all Phase-3 GitHub and registry interactions. No raw Octokit calls remain in `src/release/` modules.
 
 ### Dry-Run Mode
 
