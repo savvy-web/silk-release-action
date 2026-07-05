@@ -4,8 +4,8 @@ category: architecture
 status: current
 completeness: 95
 created: 2026-02-07
-updated: 2026-07-03
-last-synced: 2026-07-03
+updated: 2026-07-05
+last-synced: 2026-07-05
 module: release-action
 related:
   - integration.md
@@ -20,6 +20,7 @@ dependencies: []
   - [Entry Points](#entry-points)
   - [Phase Detection](#phase-detection)
   - [Phase 1: Release Branch Management](#phase-1-release-branch-management)
+    - [Native versioning (zero-install)](#native-versioning-zero-install)
   - [Phase 2: Release Validation](#phase-2-release-validation)
   - [Phase 3: Release Publishing](#phase-3-release-publishing)
     - [Per-byte-group prod layout](#per-byte-group-prod-layout)
@@ -34,6 +35,7 @@ dependencies: []
   - [Why Three Phases?](#why-three-phases)
   - [Why API Commits?](#why-api-commits)
   - [Why Recreate vs Rebase?](#why-recreate-vs-rebase)
+  - [Why version natively?](#why-version-natively)
   - [Why a Five-Step Phase-3 Flow?](#why-a-five-step-phase-3-flow)
   - [Why Pack Once per Directory?](#why-pack-once-per-directory)
   - [Why Step.failure Is Non-Throwing?](#why-stepfailure-is-non-throwing)
@@ -56,7 +58,7 @@ Phase 3 is a pure Effect orchestration built on `@savvy-web/github-action-effect
 
 Publish and release target the `@savvy-web/bundler` per-byte-group prod layout (via `@savvy-web/silk-effects`). Each package's `publishConfig.targets` is a Record map (binding-driven; the legacy array form is gone) and the build emits `dist/prod/<group>/pkg` directories, one per byte-variant group. `npm: true` + `github: true` collapse into a single tarball deployed to both registries. See [Per-byte-group prod layout](#per-byte-group-prod-layout).
 
-The action deliberately consumes a narrow, stable slice of its first-party libraries: `ChangesetConfig`, the silk publishability rules (`SilkPublishability` / `PublishabilityDetectorAdaptiveLive`), `WorkspaceDiscovery`, `TopologicalSorter` and the sync discovery helpers. The `@savvy-web/silk-effects` 2.x major reworked the library's changesets subsystem (removed `Changesets.WorkspaceSnapshotReader`, changed `DepsRegen`/`ReleasePlanner` contracts) and the `workspaces-effect` 2.x major added `PointInTimeWorkspace` and changed catalog-resolution contracts — none of which this action touches, so both majors landed here as dependency-only bumps with zero source changes.
+The action consumes a deliberately narrow slice of its first-party libraries: `ChangesetConfig`, the silk publishability rules (`SilkPublishability` / `PublishabilityDetectorAdaptiveLive`), `WorkspaceDiscovery`, `TopologicalSorter`, the sync discovery helpers and — since the native-versioning rework — the `@savvy-web/silk-effects` 3.x changesets engine (`Changesets.ReleasePlanner` / `Changesets.ConfigInspector` plus the bundled changelog generators). Phase 1 versions in-process through that engine, so consumer `ci:version` scripts are never invoked and Phase 1 runs zero-install (the shared workflow passes `install-deps: false`). See [Native versioning (zero-install)](#native-versioning-zero-install).
 
 ## Current State
 
@@ -90,8 +92,20 @@ Detection priority order:
 Triggers on push to `main` (non-release commits). Phase 1 is rewired onto the `ChangesetAnalyzer` service from `@savvy-web/github-action-effects` (replacing the old `get-changeset-status.ts` module). Publishability detection now flows through `PublishabilityDetectorAdaptiveLive` from `src/release/publishability.ts` (which delegates to the silk rules in silk mode). The remaining utility modules are:
 
 - **`check-release-branch.ts`** — Checks whether the `changeset-release/main` branch exists and whether an open PR exists from that branch to the target branch.
-- **`create-release-branch.ts`** — Creates a new branch from `origin/{targetBranch}`, runs the changeset version command, creates a signed API commit (see `create-api-commit.ts`), links issues found in changeset files via GraphQL mutations, and opens a PR with standard labels. The PR title and commit subject are resolved from the releasing packages via `release-summary-helpers.ts` (see [Release PR and commit titles](#release-pr-and-commit-titles)).
-- **`update-release-branch.ts`** — Recreates the branch from main rather than rebasing. Collects linked issues from changesets before running the version command. Creates an API commit with the main branch HEAD as parent. Handles PR reopening if the branch was previously deleted. Uses the same title/commit-subject resolution as `create-release-branch.ts`. When `changeset version` produces no changes the branch would be identical to main — an invalid "nothing to release" state — so this flow closes any open release PR (via `PullRequest.update`), deletes the release branch (via `GitBranch.delete`) and skips the reopen/title-update/create-PR steps (guarded by an internal `branchDeleted` flag), emitting a `neutral` check-run conclusion. `UpdateReleaseBranchResult.deleted` signals this to `main.ts`, which reports `updated: false` and a null release PR. This mirrors the create flow, which already deletes its freshly-cut branch when the version command is a no-op.
+- **`create-release-branch.ts`** — Creates a new branch from `origin/{targetBranch}`, applies pending changesets natively via `runNativeVersion` (see [Native versioning (zero-install)](#native-versioning-zero-install)), runs the conditional Biome format step, creates a signed API commit (see `create-api-commit.ts`), links issues found in changeset files via GraphQL mutations, and opens a PR with standard labels. The PR title and commit subject are resolved from the releasing packages via `release-summary-helpers.ts` (see [Release PR and commit titles](#release-pr-and-commit-titles)).
+- **`update-release-branch.ts`** — Recreates the branch from main rather than rebasing. Collects linked issues from changesets before versioning natively. Creates an API commit with the main branch HEAD as parent. Handles PR reopening if the branch was previously deleted. Uses the same title/commit-subject resolution as `create-release-branch.ts`. When versioning produces no changes the branch would be identical to main — an invalid "nothing to release" state — so this flow closes any open release PR (via `PullRequest.update`), deletes the release branch (via `GitBranch.delete`) and skips the reopen/title-update/create-PR steps (guarded by an internal `branchDeleted` flag), emitting a `neutral` check-run conclusion. `UpdateReleaseBranchResult.deleted` signals this to `main.ts`, which reports `updated: false` and a null release PR. This mirrors the create flow, which already deletes its freshly-cut branch when the version command is a no-op.
+
+#### Native versioning (zero-install)
+
+Phase 1 versions in-process — the action no longer shells out to the consumer's `ci:version` script and the `version-command` input is removed from `action.yml`. Both branch-management flows call `runNativeVersion(cwd)` (`src/utils/native-version.ts`), which drives the bundled silk-effects v3 `Changesets.ReleasePlanner.apply` — the same engine `savvy changeset version` runs — after validating `.changeset/config.json` via `Changesets.ConfigInspector` (an absent config proceeds, matching the savvy CLI's gate). Since main.ts no longer needs to pick a version command, both call sites are argument-free (no `packageManager` parameter).
+
+Key mechanics:
+
+- **Changelog id map** — `CHANGELOG_MODULES` maps the consumer config's changelog id onto action-shipped ESM bundles, so no consumer `node_modules` is required. The three silk ids resolve to `dist/changelog-silk.js` (silk-effects `changelogFunctions`) and `@changesets/cli/changelog` resolves to `dist/changelog-default.js` (`@changesets/changelog-git`). An unmapped id fails inside `ReleasePlanner.apply` with a typed error naming it. The bundles are emitted as worker entries in `action.config.ts`; `build.nativeDynamicImports` keeps the runtime dynamic imports inside `@changesets/apply-release-plan` and `workspaces-effect` native, because rspack otherwise compiles them into context modules that throw on on-disk paths.
+- **Token scoping** — the changelog GitHub-info fetch reads `process.env.GITHUB_TOKEN` directly, so `runNativeVersion` sets it from the App token strictly around the apply (the App token wins over any ambient `GITHUB_TOKEN` the job exports) and restores the prior state after. See [Token Plumbing](integration.md#token-plumbing).
+- **Reset-then-retry** — `apply` is not idempotent (it deletes consumed changesets), so on a transient failure (`ECONNRESET`, `ETIMEDOUT`, `ENOTFOUND`, `EAI_AGAIN`, `fetch failed`) the flow resets the tree (`git checkout -- .` + `git clean -fd`), pauses one second and retries exactly once. This replaces the deleted `execWithRetry` exponential backoff.
+- **Post-version formatting** — `formatWorkspaceWithBiome` (`src/utils/format-workspace.ts`) replaces the `&& biome format --write .` tail of the removed consumer script; see [the format policy](integration.md#native-versioning-and-zero-install-phase-1) for the warn-vs-fail rules.
+- **Layer** — `NativeVersioningLive` in `src/release/layers.ts` composes `ReleasePlannerLive` over `ConfigInspectorLive`, provided by `ChangesetConfigReaderLive` and `WorkspacesLive`, and is merged into `ReleaseLive`.
 
 #### Release PR and commit titles
 
@@ -192,6 +206,8 @@ main.ts
   |     ChangesetAnalyzer (library service, replaces get-changeset-status)
   |     check-release-branch.ts
   |     create-release-branch.ts
+  |       +-- native-version.ts (runNativeVersion → Changesets.ReleasePlanner + ConfigInspector)
+  |       +-- format-workspace.ts (formatWorkspaceWithBiome)
   |       +-- create-api-commit.ts
   |       +-- parse-changesets.ts
   |       +-- release-summary-helpers.ts (listPublishablePackages, getReleasingPackages)
@@ -199,6 +215,8 @@ main.ts
   |         +-- release/publishability.ts (PublishabilityDetectorAdaptiveLive)
   |         +-- release/changeset-config.ts (ChangesetConfig service)
   |     update-release-branch.ts
+  |       +-- native-version.ts (runNativeVersion → Changesets.ReleasePlanner + ConfigInspector)
+  |       +-- format-workspace.ts (formatWorkspaceWithBiome)
   |       +-- create-api-commit.ts
   |       +-- parse-changesets.ts
   |       +-- detect-repo-type.ts
@@ -244,7 +262,10 @@ main.ts
   |                     Attest + OidcTokenIssuer (library services)
   |     release/report.ts (buildPublishSummary, buildReleaseNotesPreviewSummary, …)
   |     release/layers.ts
-  |       ReleaseLive = WorkspacesLive + ChangesetConfigLive + PublishabilityDetectorAdaptiveLive
+  |       ReleaseLive = WorkspacesLive + ChangesetConfigLive +
+  |                     PublishabilityDetectorAdaptiveLive + NativeVersioningLive
+  |       NativeVersioningLive = ReleasePlannerLive ← ConfigInspectorLive
+  |                              ← ChangesetConfigReaderLive + WorkspacesLive
   |
   +-- Phase 3a:
   |     close-linked-issues.ts
@@ -337,6 +358,10 @@ The `update-release-branch.ts` module recreates the release branch from main ins
 
 The corollary: if recreation followed by `changeset version` yields no changes, the branch is byte-identical to main. There is no PR to open — GitHub rejects PR creation with "No commits between main and changeset-release/main", which previously failed the run. The update flow now treats this as the "nothing to release" terminal state and tears the branch down (close PR, delete branch) rather than trying to sync it forward, matching how the create flow handles a no-op version command.
 
+### Why version natively?
+
+Shelling out to the consumer's `ci:version` script forced Phase 1 to run a full dependency install just to bump versions and write changelogs — the slowest part of an otherwise API-only phase. Versioning in-process through the bundled silk-effects v3 engine makes Phase 1 genuinely zero-install: the shared workflow passes `install-deps: false` and the action runs on a bare checkout. The changelog id map is what removes the last `node_modules` dependency — the generator module named in the consumer's changeset config is resolved to an action-shipped bundle instead of a package the consumer would have to install. It also decouples the action from consumer script drift: the version step now behaves identically in every repo, and consumer `ci:version` scripts (with their `&& biome format` tails) are simply no longer invoked by the action.
+
 ### Why a Five-Step Phase-3 Flow?
 
 Phase 3 is split into `detectReleases` → `runBuildAndSbom` → `runPublishTargets` → `runReleases` → summary to enforce fail-fast gating at each boundary:
@@ -377,7 +402,7 @@ GitHub Actions state passes data between `pre`, `main`, and `post` lifecycle hoo
 - **`GithubPackagesTokenState`** — Optional workflow `github-token` written by `pre.ts` when the input is provided; read by the Phase-3 publish flow.
 - **`PackageManagerState`** — Auto-detected package manager, written by `main.ts` Phase-0 boot.
 
-The GitHub App installation token is persisted by `GitHubToken.provision` (from `@savvy-web/github-action-effects`) under an internal key and read back via `GitHubToken.client()` / `GitHubToken.read()`. `process.env.GITHUB_TOKEN` is never written by the action.
+The GitHub App installation token is persisted by `GitHubToken.provision` (from `@savvy-web/github-action-effects`) under an internal key and read back via `GitHubToken.client()` / `GitHubToken.read()`. `process.env.GITHUB_TOKEN` is never written persistently by the action; the one scoped exception is Phase-1 native versioning, which sets it from the App token around `ReleasePlanner.apply` and restores the prior value after (see [Native versioning (zero-install)](#native-versioning-zero-install)).
 
 Under the 2.0 library the secret-bearing token APIs all take or decode to `Redacted<string>`: `GitHubApp.generateToken` / `revokeToken`, `GitHubClientLive.fromToken` / `fromApp`, `PackagePublish.setupAuth` and the decoded `InstallationToken.token` field. Wrapping tokens in `Redacted` keeps them out of logs and error renders.
 
@@ -421,7 +446,9 @@ When `dry-run: true` is set, the action executes a parallel path that validates 
 | `src/release/report.ts` | buildValidationComment, buildPublishSummary, buildChecksTable, buildFindingsTable |
 | `src/release/publishability.ts` | SilkPublishabilityDetectorLive, PublishabilityDetectorAdaptiveLive |
 | `src/release/changeset-config.ts` | ChangesetConfig Effect service: single source of changeset-config truth (mode, versionPrivate, ignorePatterns, isIgnored, fixed) |
-| `src/release/layers.ts` | ReleaseLive = WorkspacesLive + ChangesetConfigLive + PublishabilityDetectorAdaptiveLive |
+| `src/release/layers.ts` | ReleaseLive = WorkspacesLive + ChangesetConfigLive + PublishabilityDetectorAdaptiveLive + NativeVersioningLive |
+| `src/changelog/silk.ts` | Bundled silk changelog generator (silk-effects changelogFunctions) → dist/changelog-silk.js |
+| `src/changelog/default.ts` | Bundled vanilla changelog generator (@changesets/changelog-git) → dist/changelog-default.js |
 | `src/release/resolve-targets.ts` | resolvePublishableTargets seam for Phase-2 and Phase-3 |
 | `src/release/types.ts` | TargetPublishResult, PackagePublishResult, ValidationFinding, ValidationPackageResult, etc. |
 | `src/release/errors.ts` | ValidationError, ReleasesError tagged error types |
@@ -430,7 +457,7 @@ When `dry-run: true` is set, the action executes a parallel path that validates 
 | `src/utils/close-linked-issues.ts` | Close issues linked to merged release PR |
 | `src/utils/commit-signoff.ts` | DCO Signed-off-by trailer via GitHubToken.botIdentity |
 | `src/utils/create-api-commit.ts` | GitHub API commits (auto-signed by App) |
-| `src/utils/create-release-branch.ts` | Create release branch, version, commit, and PR |
+| `src/utils/create-release-branch.ts` | Create release branch, native version apply, commit, and PR |
 | `src/utils/create-validation-check.ts` | Unified Check Run aggregating all validations; capCheckSummary (65535-byte UTF-8 cap) |
 | `src/utils/group-id.ts` | getGroupId (byte-group from build dir), insertGroupToken (group-keyed asset names) |
 | `src/utils/count-changesets.ts` | Count changesets per package |
@@ -439,9 +466,11 @@ When `dry-run: true` is set, the action executes a parallel path that validates 
 | `src/utils/detect-workflow-phase.ts` | Phase routing based on GitHub event context |
 | `src/utils/determine-tag-strategy.ts` | isMonorepoForTagging (Effect, via the single detector + ChangesetConfig.fixed) and pure determineTagStrategy |
 | `src/utils/extract-release-notes.ts` | First-H2-to-second-H2 CHANGELOG section extraction |
+| `src/utils/format-workspace.ts` | formatWorkspaceWithBiome — conditional post-version format via the standalone biome binary |
 | `src/utils/infer-sbom-metadata.ts` | Infer SBOM metadata from package.json fields |
 | `src/utils/link-issues-from-commits.ts` | Extract and cross-reference issues from commits |
 | `src/utils/load-release-config.ts` | Layered config loading; decodes via SilkReleaseConfig schema |
+| `src/utils/native-version.ts` | runNativeVersion — bundled ReleasePlanner.apply with CHANGELOG_MODULES id map, token scoping and reset-then-retry |
 | `src/utils/normalize-package-manager.ts` | Narrow the packageManager input to the four-value enum for npm dispatch (shared by publish.ts + validation.ts) |
 | `src/utils/parse-changesets.ts` | Changeset YAML frontmatter parsing |
 | `src/utils/registry-label.ts` | registryShortLabel / registryHost — ⬆ row labels in the publish and validation log trees (shared by publish.ts + validation.ts) |
@@ -449,7 +478,7 @@ When `dry-run: true` is set, the action executes a parallel path that validates 
 | `src/utils/sort-releases-topologically.ts` | sortReleasesTopologically — shared dependency-first ordering (closure-filtered, cyclic-graph fallback) for Phase-3 source ordering, runPublishTargets and Phase-2 validation |
 | `src/utils/summary-writer.ts` | Type-safe markdown via ts-markdown |
 | `src/utils/tokens.ts` | appToken() and packagesToken() helpers for non-Effect publish chain context |
-| `src/utils/update-release-branch.ts` | Recreate release branch from main |
+| `src/utils/update-release-branch.ts` | Recreate release branch from main; native version apply |
 | `src/utils/update-sticky-comment.ts` | Idempotent PR comment management |
 | `src/utils/validate-builds.ts` | Build validation with error annotation |
 | `src/utils/validate-ntia-compliance.ts` | NTIA minimum elements SBOM validation |

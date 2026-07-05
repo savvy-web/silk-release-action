@@ -34,15 +34,18 @@ import {
 	GitHubClient,
 	PullRequest,
 } from "@savvy-web/github-action-effects";
+import type { Changesets } from "@savvy-web/silk-effects";
 import type { ConfigError } from "effect";
-import { Config, Duration, Effect } from "effect";
+import { Config, Effect } from "effect";
 import type { PublishabilityDetector } from "workspaces-effect";
 import { WorkspaceDiscovery } from "workspaces-effect";
 import type { ChangesetConfig } from "../release/changeset-config.js";
 import { resolveSignoff } from "./commit-signoff.js";
 import { isSinglePackage } from "./detect-repo-type.js";
 import { isMonorepoForTagging } from "./determine-tag-strategy.js";
+import { formatWorkspaceWithBiome } from "./format-workspace.js";
 import { getLinkedIssuesFromCommits } from "./link-issues-from-commits.js";
+import { runNativeVersion } from "./native-version.js";
 import {
 	formatReleasePackageList,
 	getReleasingPackages,
@@ -58,63 +61,6 @@ export interface CreateReleaseBranchResult {
 	checkId: number;
 	versionSummary: string;
 }
-
-/** Errors that bubble out of git/version exec calls or the changeset retry. */
-const RETRYABLE_NETWORK_ERRORS = ["ECONNRESET", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN"];
-
-/**
- * Run a command with exponential backoff on transient network errors. The
- * underlying {@link CommandRunner.exec} call already returns a non-zero
- * exit code as an error, so we only need to filter on the reason string
- * to decide whether to retry.
- *
- * @internal
- */
-const execWithRetry = (
-	command: string,
-	args: ReadonlyArray<string>,
-	maxRetries = 3,
-): Effect.Effect<void, CommandRunnerError, CommandRunner> =>
-	Effect.gen(function* () {
-		const runner = yield* CommandRunner;
-		const baseDelay = Duration.seconds(1);
-		const maxDelay = Duration.seconds(10);
-
-		for (let attempt = 0; attempt <= maxRetries; attempt++) {
-			const result = yield* Effect.either(runner.exec(command, args).pipe(Effect.asVoid));
-			if (result._tag === "Right") return;
-
-			const isRetryable = RETRYABLE_NETWORK_ERRORS.some((code) => result.left.reason.includes(code));
-			if (attempt === maxRetries || !isRetryable) {
-				return yield* Effect.fail(result.left);
-			}
-
-			const exp = Math.min(2 ** attempt * Duration.toMillis(baseDelay), Duration.toMillis(maxDelay));
-			const jitter = exp * (0.5 + Math.random() * 0.5);
-			yield* Effect.logWarning(
-				`Command failed on attempt ${attempt + 1}/${maxRetries + 1} (${result.left.reason}); retrying in ${Math.round(jitter)}ms`,
-			);
-			yield* Effect.sleep(Duration.millis(jitter));
-		}
-	});
-
-/** Map package manager name to (command, version-args) defaults. */
-const defaultVersionInvocation = (packageManager: string, versionCommand: string): { cmd: string; args: string[] } => {
-	if (versionCommand !== "") {
-		const parts = versionCommand.split(" ");
-		return { cmd: parts[0], args: parts.slice(1) };
-	}
-	switch (packageManager) {
-		case "pnpm":
-			return { cmd: "pnpm", args: ["ci:version"] };
-		case "yarn":
-			return { cmd: "yarn", args: ["ci:version"] };
-		case "bun":
-			return { cmd: "bun", args: ["run", "ci:version"] };
-		default:
-			return { cmd: "npm", args: ["run", "ci:version"] };
-	}
-};
 
 /** GraphQL response shape for the createLinkedBranch mutation. */
 interface CreateLinkedBranchResponse {
@@ -158,13 +104,13 @@ export const CREATE_PULL_REQUEST_MUTATION = `
  *
  * @public
  */
-export const createReleaseBranch = (
-	packageManager: string,
-): Effect.Effect<
+export const createReleaseBranch = (): Effect.Effect<
 	CreateReleaseBranchResult,
 	| ActionEnvironmentError
 	| ActionOutputError
 	| CheckRunError
+	| Changesets.ConfigurationError
+	| Changesets.ReleasePlanError
 	| CommandRunnerError
 	| ConfigError.ConfigError
 	| GitCommitError
@@ -175,6 +121,8 @@ export const createReleaseBranch = (
 	| ActionOutputs
 	| ActionState
 	| ChangesetConfig
+	| Changesets.ConfigInspector
+	| Changesets.ReleasePlanner
 	| CheckRun
 	| CommandRunner
 	| FileSystem.FileSystem
@@ -200,7 +148,6 @@ export const createReleaseBranch = (
 
 		const releaseBranch = yield* Config.string("release-branch").pipe(Config.withDefault("changeset-release/main"));
 		const targetBranch = yield* Config.string("target-branch").pipe(Config.withDefault("main"));
-		const versionCommand = yield* Config.string("version-command").pipe(Config.withDefault(""));
 		const prTitlePrefix = yield* Config.string("pr-title-prefix").pipe(Config.withDefault("chore: release"));
 		const dryRun = yield* Config.boolean("dry-run").pipe(Config.withDefault(false));
 
@@ -214,12 +161,17 @@ export const createReleaseBranch = (
 			yield* Effect.logInfo(`[DRY RUN] Would create branch: ${releaseBranch} from origin/${targetBranch}`);
 		}
 
-		yield* Effect.logInfo("Running changeset version");
-		const { cmd: versionCmd, args: versionArgs } = defaultVersionInvocation(packageManager, versionCommand);
+		yield* Effect.logInfo("Applying pending changesets natively");
 		if (!dryRun) {
-			yield* execWithRetry(versionCmd, versionArgs);
+			const appliedRelease = yield* runNativeVersion(process.cwd());
+			for (const release of appliedRelease.releases) {
+				yield* Effect.logInfo(
+					`Released ${release.name}: ${release.oldVersion} -> ${release.newVersion} (${release.type})`,
+				);
+			}
+			yield* formatWorkspaceWithBiome();
 		} else {
-			yield* Effect.logInfo(`[DRY RUN] Would run: ${versionCmd} ${versionArgs.join(" ")}`);
+			yield* Effect.logInfo("[DRY RUN] Would natively apply pending changesets");
 		}
 
 		let changedFiles = "";

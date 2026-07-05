@@ -36,6 +36,7 @@ import {
 	GitHubIssueTest,
 	PullRequestTest,
 } from "@savvy-web/github-action-effects/testing";
+import { Changesets } from "@savvy-web/silk-effects";
 import { ConfigProvider, Effect, Layer, Logger } from "effect";
 import { describe, expect, it } from "vitest";
 import { PublishabilityDetector, WorkspaceDiscovery } from "workspaces-effect";
@@ -63,6 +64,26 @@ const changesetConfigStub = Layer.succeed(ChangesetConfig, {
 	ignorePatterns: () => Effect.succeed([]),
 	isIgnored: () => Effect.succeed(false),
 	fixed: () => Effect.succeed([]),
+});
+
+const appliedRelease: Changesets.AppliedRelease = {
+	dryRun: false,
+	releases: [{ name: "@scope/a", type: "minor", oldVersion: "1.0.0", newVersion: "1.1.0" }],
+	touchedFiles: ["package.json", "CHANGELOG.md"],
+	versionFileUpdates: [],
+};
+
+const releasePlannerStub = Changesets.makeReleasePlannerTest({ apply: appliedRelease });
+
+const configInspectorStub = Changesets.makeConfigInspectorTest({
+	configPath: "/workspace/.changeset/config.json",
+	projectDir: "/workspace",
+	changelog: "@savvy-web/silk/changesets/changelog",
+	baseBranch: "main",
+	access: "restricted",
+	ignore: [],
+	packages: [],
+	legacyVersionFilesUsed: false,
 });
 
 const RELEASE_BRANCH = "changeset-release/main";
@@ -175,6 +196,7 @@ const runStage = (
 	f: Fixtures,
 	commandResponses: Array<[string, string]> = [],
 	changesetFiles: ReadonlyArray<string> = [],
+	plannerLayer: Layer.Layer<Changesets.ReleasePlanner> = releasePlannerStub,
 ): Promise<UpdateReleaseBranchResult> => {
 	const layer = Layer.mergeAll(
 		ActionEnvironmentTest.layer({
@@ -203,23 +225,25 @@ const runStage = (
 		GitHubIssueTest.layer(f.issueState),
 		PullRequestTest.layer(f.prState),
 		FileSystem.layerNoop({
+			exists: () => Effect.succeed(false),
 			readDirectory: () => Effect.succeed([...changesetFiles]),
 		}),
 		workspaceDiscoveryStub,
 		publishabilityDetectorStub,
 		changesetConfigStub,
+		plannerLayer,
+		configInspectorStub,
 	);
 	const config = ConfigProvider.fromMap(
 		new Map([
 			["release-branch", RELEASE_BRANCH],
 			["target-branch", TARGET_BRANCH],
-			["version-command", ""],
 			["pr-title-prefix", "chore: release"],
 			["dry-run", "false"],
 		]),
 	);
 	return Effect.runPromise(
-		updateReleaseBranch("pnpm").pipe(
+		updateReleaseBranch().pipe(
 			Effect.provide(layer),
 			Effect.provide(Logger.replace(Logger.defaultLogger, Logger.none)),
 			Effect.withConfigProvider(config),
@@ -350,5 +374,12 @@ describe("updateReleaseBranch", () => {
 		// No PR was created during cleanup.
 		expect(f.prState.prs).toHaveLength(0);
 		expect(f.branchState.branches.has(RELEASE_BRANCH)).toBe(false);
+	});
+
+	it("fails when native versioning fails", async () => {
+		const f = makeFixtures({ restResponses: refResponse });
+		// Planner test layer with no apply fixture → apply fails with ReleasePlanError.
+		const failingPlanner = Changesets.makeReleasePlannerTest({});
+		await expect(runStage(f, versionChange, [], failingPlanner)).rejects.toThrow(/ReleasePlanError|not provided/);
 	});
 });
