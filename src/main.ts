@@ -235,7 +235,7 @@ const runBranchManagement = Effect.gen(function* () {
 
 			if (branchCheck.exists) {
 				yield* Effect.logInfo("Release branch exists — running update flow");
-				const updateResult = yield* updateReleaseBranch(packageManager);
+				const updateResult = yield* updateReleaseBranch();
 				// A deleted branch (nothing to release) is neither an update nor a
 				// live PR — drop the stale PR number so the output reports no PR.
 				updated = updateResult.success && !updateResult.deleted;
@@ -243,7 +243,7 @@ const runBranchManagement = Effect.gen(function* () {
 				prNumber = updateResult.deleted ? null : (updateResult.prNumber ?? prNumber);
 			} else {
 				yield* Effect.logInfo("Release branch does not exist — running create flow");
-				const createResult = yield* createReleaseBranch(packageManager);
+				const createResult = yield* createReleaseBranch();
 				created = createResult.created;
 				prNumber = createResult.prNumber ?? prNumber;
 			}

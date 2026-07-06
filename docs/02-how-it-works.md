@@ -11,8 +11,16 @@ When new commits land on `main` that include changeset files, the action:
 1. Scans for changeset files and identifies packages with pending releases
 2. Categorizes packages as publishable (registry targets) or version-only (GitHub release only)
 3. Checks if the release branch (`changeset-release/main`) already exists
-4. If no branch exists: creates the branch, runs the version command, and opens a release PR
+4. If no branch exists: creates the branch, applies the pending changesets, and opens a release PR
 5. If the branch exists: rebases it onto `main` to incorporate new changes, detecting conflicts
+
+### Native versioning
+
+Versioning happens in-process. The action bundles the changesets engine, so it applies version bumps and writes CHANGELOG entries itself rather than running a script from your repository — the branch-management job does not need your dependencies installed. The `changelog` id in your `.changeset/config.json` selects one of the bundled changelog generators (see [Changelog configuration](./03-configuration.md#changelog-configuration)); an unrecognized id fails the phase with an error naming the supported ids. GitHub attribution in generated entries (PR, commit and user links) is fetched with the action's App token.
+
+If the repository root contains `biome.json` or `biome.jsonc`, the action runs `biome format --write .` after applying versions. A missing `biome` binary on `PATH`, or a Biome config that cannot resolve without `node_modules`, logs a warning and continues unformatted; any other formatting failure fails the phase. See [Post-version formatting](./03-configuration.md#post-version-formatting).
+
+### Release PR title
 
 The release PR title and the release-branch commit subject are derived from the packages that will release. A single releasable package or a group locked to one shared version gets `release: <version>`. An independent multi-package repo lists each release as `release: name@version, …`, omitting the npm scope shared by every package and collapsing to `release: <count> packages` once the title would exceed 100 characters. Packages excluded by changeset config are left out. The commit body is a bullet list of the releasing packages with their full scoped names. When no releasable package or version can be determined, the title falls back to the `pr-title-prefix` input (default: `chore: release`).
 

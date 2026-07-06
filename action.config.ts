@@ -5,9 +5,19 @@ export default defineConfig({
 		pre: "src/pre.ts",
 		main: "src/main.ts",
 		post: "src/post.ts",
+		workers: {
+			"changelog-silk": "src/changelog/silk.ts",
+			"changelog-default": "src/changelog/default.ts",
+		},
 	},
 	build: {
 		minify: true,
+		// The changesets engine resolves the changelog module path at runtime and
+		// dynamic-imports it; without this, rspack compiles that import into a
+		// context module that throws "Cannot find module" for on-disk paths.
+		// workspaces-effect's pnpm config-dependency hook loader has the same
+		// runtime-path dynamic-import pattern.
+		nativeDynamicImports: ["@changesets/apply-release-plan", "workspaces-effect"],
 		// `@cyclonedx/cyclonedx-library` ships optional plugins (XML
 		// serializers, XML validators, draft-2019 JSON validators) we
 		// never invoke — we only use the JSON serializer. They aren't

@@ -33,10 +33,6 @@ inputs:
     description: Target branch for PR (usually main)
     required: false
     default: main
-  version-command:
-    description: Custom version command (defaults to auto-detected package-manager ci:version)
-    required: false
-    default: ""
   pr-title-prefix:
     description: Prefix for release PR title
     required: false

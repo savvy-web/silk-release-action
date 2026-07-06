@@ -10,7 +10,6 @@
 | `skip-token-revoke` | No | `"false"` | Skip token revocation in post-action (tokens expire after 1 hour anyway) |
 | `release-branch` | No | `changeset-release/main` | Name of the release branch |
 | `target-branch` | No | `main` | Target branch for the release PR |
-| `version-command` | No | `""` | Custom version command (defaults to auto-detected `{package-manager} ci:version`) |
 | `pr-title-prefix` | No | `chore: release` | Fallback title for the release PR and commit subject. Used only when no releasable package or version can be determined; otherwise the title is derived as `release: <version>` (see [How it works](./02-how-it-works.md)) |
 | `dry-run` | No | `"false"` | Run in dry-run mode (preview only, no actual changes) |
 | `phase` | No | `""` | Explicitly set the workflow phase, skipping automatic detection. Values: `branch-management`, `validation`, `publishing`, `close-issues`, `none` |
@@ -41,6 +40,29 @@ machine-readable contract: the three orthogonal flags (`noop`, `succeeded`,
 `schemaVersion` for forward compatibility.
 
 The serialized payload does not include per-package release notes. The validation phase still computes the next CHANGELOG entries, but it surfaces them in the dedicated Release Notes Preview check rather than in `result`. To read release notes from a workflow, fetch the GitHub release body after Phase 3, or read the Release Notes Preview check on the release PR.
+
+## Changelog configuration
+
+Phase 1 generates CHANGELOG entries with a changelog module bundled into the action, selected by the `changelog` id in your `.changeset/config.json`. No consumer `node_modules` is read, so the branch-management job runs without a dependency install. Supported ids:
+
+| Configured changelog id | Generator |
+| --- | --- |
+| `@savvy-web/changelog` | Silk changelog format |
+| `@savvy-web/silk/changesets/changelog` | Silk changelog format |
+| `@savvy-web/changesets/changelog` | Silk changelog format |
+| `@changesets/cli/changelog` | Standard changesets format |
+
+Any other id fails Phase 1 with an error naming the supported ids. GitHub attribution in generated entries (PR, commit and user links) is fetched with the action's App token — no extra token configuration is needed.
+
+### Post-version formatting
+
+If the repository root contains `biome.json` or `biome.jsonc`, the action runs `biome format --write .` after applying versions:
+
+| Condition | Behavior |
+| --- | --- |
+| Standalone `biome` binary not on `PATH` | Logs a warning, continues unformatted |
+| Config cannot resolve without `node_modules` (e.g. `extends: ["@savvy-web/silk/biome"]`) | Logs a warning, continues unformatted |
+| Any other formatting failure | Fails the phase |
 
 ## Authentication model
 

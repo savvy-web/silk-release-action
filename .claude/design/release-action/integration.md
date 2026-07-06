@@ -4,8 +4,8 @@ category: integration
 status: current
 completeness: 92
 created: 2026-02-07
-updated: 2026-07-03
-last-synced: 2026-07-03
+updated: 2026-07-05
+last-synced: 2026-07-05
 module: release-action
 related:
   - architecture.md
@@ -20,6 +20,7 @@ dependencies:
 - [Current State](#current-state)
   - [Publishability Detection (Silk Rules)](#publishability-detection-silk-rules)
   - [Registry Infrastructure](#registry-infrastructure)
+  - [Native versioning and zero-install Phase 1](#native-versioning-and-zero-install-phase-1)
   - [Token Plumbing](#token-plumbing)
   - [Attestation System](#attestation-system)
   - [SBOM and Compliance System](#sbom-and-compliance-system)
@@ -97,9 +98,21 @@ Layered configuration with three sources in priority order:
 
 The first source found wins. All sources support JSONC via `jsonc-parser`.
 
+### Native versioning and zero-install Phase 1
+
+Phase 1 (branch management) runs zero-install: the shared workflow passes `install-deps: false` and the action versions in-process via the bundled silk-effects v3 `ReleasePlanner` (`src/utils/native-version.ts`). Consumer `ci:version` scripts are no longer invoked and the `version-command` input is removed from `action.yml` and the composite actions.
+
+**Changelog id map** — the consumer's changeset config names a changelog generator by module id; `CHANGELOG_MODULES` maps the known ids onto action-shipped ESM bundles so no consumer `node_modules` is required. Supported ids: `@savvy-web/changelog`, `@savvy-web/silk/changesets/changelog` and `@savvy-web/changesets/changelog` → `dist/changelog-silk.js` (silk-effects `changelogFunctions`); `@changesets/cli/changelog` → `dist/changelog-default.js` (`@changesets/changelog-git`). Any other id fails inside `ReleasePlanner.apply` with a typed error naming it. The bundles are emitted as `workers` entries in `action.config.ts`.
+
+**GITHUB_TOKEN scoping and precedence** — the upstream changelog GitHub-info fetch (`@changesets/get-github-info`) reads `process.env.GITHUB_TOKEN` directly. `runNativeVersion` sets it from the App token for the duration of the apply — the App token takes precedence over any ambient `GITHUB_TOKEN` the job exports, so the changelog fetch always uses the action's own identity — and restores the prior state afterward. This env mutation is not parallel-safe; Phase 1 is strictly sequential by design.
+
+**Transient retry** — `ReleasePlanner.apply` is not idempotent (it deletes consumed changesets), so a transient failure (`ECONNRESET`, `ETIMEDOUT`, `ENOTFOUND`, `EAI_AGAIN`, `fetch failed`) triggers a single reset-then-retry: `git checkout -- .` + `git clean -fd`, a one-second pause, then one fresh apply.
+
+**Biome format policy** — after a successful apply, `formatWorkspaceWithBiome` (`src/utils/format-workspace.ts`) replaces the `&& biome format --write .` tail of the removed consumer script. If `biome.json(c)` exists and the standalone `biome` binary (installed by silk-runtime-action) is on PATH, it runs `biome format --write .`. Missing binary with a present config → warn and continue. A config the standalone binary cannot resolve (matched on `could not resolve|module not found` — silk-suite repos `extends` the `@savvy-web/silk/biome` package, which only exists with `node_modules` installed) → warn and continue. Any other non-zero format exit fails the phase.
+
 ### Token Plumbing
 
-`process.env.GITHUB_TOKEN` is never written by the action. The token landscape has three distinct identities:
+`process.env.GITHUB_TOKEN` is never written persistently by the action. The one scoped exception is Phase-1 native versioning, which sets it from the App token around `ReleasePlanner.apply` and restores the prior value after (see [Native versioning and zero-install Phase 1](#native-versioning-and-zero-install-phase-1)). The token landscape has three distinct identities:
 
 - **App installation token** — provisioned by `pre.ts` via `GitHubToken.provision()` and stored in `ActionState` under an internal key. Read by the Effect `main.ts` orchestrator via `GitHubToken.client()`. The `tokens.appToken()` helper in `src/utils/tokens.ts` exposes it for non-Effect callers.
 - **Workflow packages token** — the optional `github-token` action input (typically `secrets.GITHUB_TOKEN` with `permissions: packages: write`). Stored in `GithubPackagesTokenState`. Exposed as `tokens.packagesToken()`, which prefers this token and falls back to the App token. npm publish subprocesses authenticate via `SILK_GITHUB_PACKAGES_TOKEN` (not `GITHUB_TOKEN`) to avoid interfering with the runner's OIDC environment.
@@ -177,7 +190,7 @@ See `src/release/types.ts` for the current `TargetPublishResult.status` three-wa
 
 ### Why Not Set GITHUB_TOKEN?
 
-The action deliberately never writes `process.env.GITHUB_TOKEN`. The runner's `GITHUB_TOKEN` is used by the OIDC subsystem and by GitHub Actions' own trust mechanisms. Overwriting it breaks OIDC token fetches for npm and JSR trusted publishing. The `SILK_GITHUB_PACKAGES_TOKEN` env var is a namespaced alternative that carries the packages/attestation identity without contaminating the standard name.
+The action deliberately never writes `process.env.GITHUB_TOKEN` persistently. The runner's `GITHUB_TOKEN` is used by the OIDC subsystem and by GitHub Actions' own trust mechanisms. Overwriting it breaks OIDC token fetches for npm and JSR trusted publishing. The `SILK_GITHUB_PACKAGES_TOKEN` env var is a namespaced alternative that carries the packages/attestation identity without contaminating the standard name. The Phase-1 native-versioning exception is safe because it is scoped and restored before any publish or OIDC work runs — Phase 1 never touches registries.
 
 ### Why Idempotent Attestation?
 
@@ -226,6 +239,16 @@ Packing once ensures every registry receives identical content with the same SHA
 | `src/utils/registry-label.ts` | registryShortLabel / registryHost — ⬆ row labels (publish + validation log trees) |
 | `src/release/layers.ts` | ReleaseLive layer composition |
 | `src/release/types.ts` | TargetPublishResult, ValidationFinding, ValidationPackageResult, etc. |
+
+### Native Versioning (Phase 1)
+
+| File | Description |
+| --- | --- |
+| `src/utils/native-version.ts` | runNativeVersion, CHANGELOG_MODULES id map, GITHUB_TOKEN scoping, reset-then-retry |
+| `src/utils/format-workspace.ts` | formatWorkspaceWithBiome — conditional post-version format policy |
+| `src/changelog/silk.ts` | Bundled silk changelog generator → dist/changelog-silk.js |
+| `src/changelog/default.ts` | Bundled vanilla changelog generator → dist/changelog-default.js |
+| `action.config.ts` | workers entries for the changelog bundles; nativeDynamicImports for runtime dynamic imports |
 
 ### Token Plumbing
 

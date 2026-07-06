@@ -3,6 +3,7 @@
 ## Prerequisites
 
 - A GitHub repository using [changesets](https://github.com/changesets/changesets) for version management
+- A `.changeset/config.json` whose `changelog` field uses a supported changelog id (see [Changelog configuration](./03-configuration.md#changelog-configuration))
 - A [GitHub App](https://docs.github.com/en/apps/creating-github-apps) with the required permissions (see below)
 - Node.js project with a supported package manager (npm, pnpm, yarn, or bun)
 
@@ -83,7 +84,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: savvy-web/silk-release-action@v2
+      - uses: savvy-web/silk-release-action@v3
         with:
           app-client-id: ${{ vars.APP_CLIENT_ID }}
           app-private-key: ${{ secrets.APP_PRIVATE_KEY }}

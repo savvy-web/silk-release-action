@@ -7,6 +7,7 @@ Automated release management for GitHub repositories using changesets. Handles t
 ## Features
 
 - Three-phase release workflow: branch management, validation, and publishing
+- Native changeset versioning — release branches are versioned in-process, so the branch-management job needs no dependency install
 - Multi-registry publishing with OIDC support (npm, JSR, GitHub Packages, custom)
 - Automatic release PR creation and rebasing with conflict detection
 - Build validation and dry-run publish checks before releasing
@@ -15,7 +16,7 @@ Automated release management for GitHub repositories using changesets. Handles t
 ## Install
 
 ```yaml
-- uses: savvy-web/silk-release-action@v2
+- uses: savvy-web/silk-release-action@v3
   with:
     app-client-id: ${{ vars.APP_CLIENT_ID }}
     app-private-key: ${{ secrets.APP_PRIVATE_KEY }}
@@ -44,7 +45,7 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: savvy-web/silk-release-action@v2
+      - uses: savvy-web/silk-release-action@v3
         with:
           app-client-id: ${{ vars.APP_CLIENT_ID }}
           app-private-key: ${{ secrets.APP_PRIVATE_KEY }}

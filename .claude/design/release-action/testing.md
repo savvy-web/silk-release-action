@@ -4,8 +4,8 @@ category: testing
 status: current
 completeness: 90
 created: 2026-02-07
-updated: 2026-06-18
-last-synced: 2026-07-03
+updated: 2026-07-05
+last-synced: 2026-07-05
 module: release-action
 related:
   - architecture.md
@@ -98,6 +98,10 @@ Key test layers:
 - **`NpmRegistryTest`** — records getPublishedIntegrity calls; inject `Option.none()` or `Option.some(digest)`
 - **`AttestTest`** / **`SbomTest`** — record attestation and SBOM generation calls; no cryptographic work
 
+**`CommandRunnerTest` default-success nuance:** `CommandRunnerTest.layer(map)` returns a default success (exit 0) for any command key not registered in the map — an unregistered command does NOT fail. To simulate a failing command (e.g. "binary not on PATH" in the `format-workspace` tests), register the exact command string with a non-zero `exitCode`; `execCapture` turns that into a failed `CommandRunnerError`, which is what production `Effect.either` probes observe as a Left. Registering must-not-run commands with non-zero exits is also the way to pin that a code path does not execute them.
+
+**silk-effects test factories:** `@savvy-web/silk-effects` ships `Changesets.makeReleasePlannerTest` and `Changesets.makeConfigInspectorTest`, in-memory factories for the native-versioning services. The `create-release-branch` and `update-release-branch` tests provide these layers for the version step instead of the exec mocks they used when versioning shelled out to `ci:version`; `native-version.test.ts` uses them to exercise the id map, config gate, token scoping and reset-then-retry directly. `runNativeVersion` invokes `planner.apply` through a thunk so a stateful test double actually runs again on the retry.
+
 The canonical test pattern for Phase-3 Effect code:
 
 ```typescript
@@ -148,7 +152,7 @@ Tests that mock `@actions/exec` capture output via listener callbacks. Used exte
 ```typescript
 vi.mocked(exec.exec).mockImplementation(
   async (cmd, args, options) => {
-    if (cmd === "pnpm" && args?.[0] === "ci:version") {
+    if (cmd === "pnpm" && args?.[0] === "ci:build") {
       if (options?.listeners?.stdout) {
         options.listeners.stdout(Buffer.from("M package.json\n"));
       }
@@ -273,6 +277,8 @@ Co-located tests live in `src/release/*.test.ts`. Integration tests live in `__t
 | `__test__/check-release-branch.test.ts` | `check-release-branch.ts` | Phase 1 |
 | `__test__/create-release-branch.test.ts` | `create-release-branch.ts` | Phase 1 |
 | `__test__/update-release-branch.test.ts` | `update-release-branch.ts` | Phase 1 |
+| `__test__/native-version.test.ts` | `src/utils/native-version.ts` | Phase 1 |
+| `__test__/format-workspace.test.ts` | `src/utils/format-workspace.ts` | Phase 1 |
 | `__test__/close-linked-issues.test.ts` | `close-linked-issues.ts` | Phase 3a |
 | `__test__/cleanup-validation-checks.test.ts` | `cleanup-validation-checks.ts` | Infra |
 | `__test__/create-validation-check.test.ts` | `create-validation-check.ts` | Phase 2 |
@@ -303,6 +309,7 @@ Source modules without dedicated test files:
 | `src/main.ts` | Main action entry point; orchestrates phases |
 | `src/types/*.ts` | Type definitions with no runtime behavior |
 | `src/utils/create-api-commit.ts` | GitHub API commit (excluded from coverage) |
+| `src/changelog/*.ts` | Re-export shims for the bundled changelog generators; no logic |
 | `src/release/resolve-targets.ts` | Covered indirectly via validation and publishability tests |
 | `src/utils/normalize-package-manager.ts` | Single-branch narrowing helper; exercised via publish and validation tests |
 | `src/utils/registry-label.ts` | Label helpers; exercised via publish and validation log-tree assertions |
@@ -350,7 +357,7 @@ Factory functions like those provided by `@savvy-web/github-action-effects/testi
 
 ### Why 240s Test Timeout?
 
-Some tests involve complex async operations with multiple retries and fake timer advances. The create-release-branch tests, for example, simulate exponential backoff with up to 60 seconds of fake time advancement. The generous 240-second timeout prevents flaky failures in CI environments.
+Some tests involve complex async operations with multiple retries and fake timer advances. The detect-workflow-phase tests, for example, simulate the release-commit detection retries (3 attempts with 5-second delays) via fake time advancement. The generous 240-second timeout prevents flaky failures in CI environments.
 
 ### Why Exclude Certain Modules from Coverage?
 

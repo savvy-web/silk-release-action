@@ -15,9 +15,9 @@ Private repository for **shared GitHub Actions, reusable workflows, and GitHub p
 
 Load design docs when working on the relevant subsystem:
 
-- `@./.claude/design/release-action/architecture.md` - Three-phase workflow, module dependency graph, entry points, shared infrastructure
-- `@./.claude/design/release-action/integration.md` - Multi-registry publishing, OIDC auth, SBOM/NTIA compliance, publish summaries
-- `@./.claude/design/release-action/testing.md` - Test strategy, mock factory patterns, coverage map, specialized testing patterns
+- `@./.claude/design/release-action/architecture.md` - Three-phase workflow, native versioning (zero-install Phase 1), module dependency graph, entry points, shared infrastructure
+- `@./.claude/design/release-action/integration.md` - Multi-registry publishing, OIDC auth, native versioning/changelog module map, token plumbing, SBOM/NTIA compliance, publish summaries
+- `@./.claude/design/release-action/testing.md` - Test strategy, test-layer patterns, silk-effects test factories, coverage map, specialized testing patterns
 
 ## Silk Release Action
 
@@ -25,7 +25,7 @@ TypeScript-based GitHub Action for automated release management with changesets.
 
 **Three-phase workflow:**
 
-1. **Phase 1 (Branch Management)** - Push to `main` triggers changeset detection, creates/updates `changeset-release/main` branch and release PR
+1. **Phase 1 (Branch Management)** - Push to `main` triggers changeset detection, creates/updates `changeset-release/main` branch and release PR. Versioning runs in-process (zero-install) via the bundled silk-effects v3 `ReleasePlanner` — no consumer `ci:version` script, no `version-command` input
 2. **Phase 2 (Validation)** - Push to release branch triggers build validation, publish dry-runs, release notes preview, and sticky comment updates
 3. **Phase 3 (Publishing)** - Merge of release PR triggers multi-registry publishing, GitHub releases, and SBOM/attestation generation
 
@@ -40,7 +40,6 @@ For full architecture, module dependency graph, and per-module documentation: `@
 | `github-token` | No | `""` | GitHub token for GitHub Packages publishing |
 | `release-branch` | No | `changeset-release/main` | Release branch name |
 | `target-branch` | No | `main` | Target branch for release PR |
-| `version-command` | No | auto | Custom version command |
 | `pr-title-prefix` | No | `chore: release` | Release PR title prefix |
 | `dry-run` | No | `false` | Dry-run mode |
 | `phase` | No | `""` | Explicitly set phase (skips auto-detection) |
@@ -110,7 +109,7 @@ We author every dependency in the table below, so a bug or missing API in one ca
 
 **Committing while a link/override is active:** commit the **full dogfood state** to `dev` — `src` + rebuilt `dist` + changeset **and** the `pnpm-workspace.yaml` override + `pnpm-lock.yaml`. The override holds a machine-specific link path, so `dev` only installs cleanly with the sibling repos checked out at the paths in the table above; that is the accepted dogfooding trade-off, and the cleanup in step 7 reverts it. No CI runs on a plain `dev` push, so the committed `dev` source may reference an unpublished library API until it publishes — expected during dogfooding. Commits must be GPG-signed with the GitHub-verified key for `C. Spencer Beggs <spencer@savvyweb.systems>` or the signature ruleset rejects them.
 
-**Currently active:** no dogfood link or override is active. All first-party dependencies are pinned to published registry versions: `@savvy-web/silk-effects ^2.1.0`, `@savvy-web/github-action-effects ^2.3.5`, `@savvy-web/github-action-builder ^1.0.3` (dev), `workspaces-effect ^2.0.1`, and `json-schema-effect ^0.3.0`. The silk-effects v2 and workspaces-effect v2 majors were absorbed as dependency-only bumps — the action consumes none of the reworked surfaces, so `src/` is unchanged and only `dist/` was rebuilt (verified end-to-end via `silk-integration`).
+**Currently active:** no dogfood link or override is active. All first-party dependencies are pinned to published registry versions: `@savvy-web/silk-effects ^3.0.0`, `@savvy-web/github-action-effects ^2.3.5`, `@savvy-web/github-action-builder ^1.1.0` (dev), `workspaces-effect ^2.0.1`, and `json-schema-effect ^0.3.0`. Unlike the earlier dependency-only major bumps, the silk-effects v3 and github-action-builder 1.1 upgrades are actively consumed: Phase-1 native versioning drives the v3 changesets `ReleasePlanner`/`ConfigInspector` engine and its `changelogModules` seam, and the builder's `build.nativeDynamicImports` keeps the changesets/workspaces-effect runtime dynamic imports native in the bundle.
 
 ## Development & Release Cycle
 
@@ -161,16 +160,17 @@ pnpm typecheck         # Run tsgo --noEmit via Turbo
 
 ```bash
 pnpm test                              # Run all tests
-pnpm test path/to/test.test.ts         # Specific test file
 pnpm test --watch                      # Watch mode
 pnpm test --coverage                   # With coverage report
 pnpm ci:test                           # CI mode with coverage
 ```
 
+A CLI file argument does **not** filter to a single file here (vitest projects are discovered via the vitest-agent plugin) — to run specific files, use the vitest-agent MCP `run_tests` tool with a `files` array.
+
 ### Git Workflow
 
 ```bash
-pnpm ci:version        # changeset version && biome format --write .
+pnpm ci:version        # savvy changeset version && biome format --write . (this repo's own versioning)
 ```
 
 ### Pre-commit Hooks
