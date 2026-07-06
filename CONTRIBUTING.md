@@ -32,7 +32,7 @@ pnpm install
 
 ## Code Quality Standards
 
-- **Formatter:** Biome 2.3.14 -- tabs, 120-character line width
+- **Formatter:** Biome -- tabs, 120-character line width
 - **Linting:** Biome with strict rules including `noImportCycles`, `useExplicitType` for exports, and `useNodejsImportProtocol`
 - **TypeScript:** Strict mode, ES2022 target, bundler module resolution
 - **Testing:** Vitest with 85% coverage thresholds (per-file)
