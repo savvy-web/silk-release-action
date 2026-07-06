@@ -3,5 +3,3 @@ packages:
 autoInstallPeers: true
 configDependencies:
   "@savvy-web/pnpm-plugin-silk": 0.20.0+sha512-wVThM+d9hqvOwBvDl01cSwgLZte51cjyh+OVK06JZ0wbjonhQxesnn4Ik7PuMuMVLw8zVMAcrN+O0rTvgOKkLw==
-overrides:
-  "@manypkg/find-root>@types/node": catalog:silk

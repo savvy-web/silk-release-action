@@ -4,8 +4,8 @@ category: architecture
 status: current
 completeness: 95
 created: 2026-02-07
-updated: 2026-07-05
-last-synced: 2026-07-05
+updated: 2026-07-06
+last-synced: 2026-07-06
 module: release-action
 related:
   - integration.md
@@ -380,7 +380,7 @@ When publishing to multiple registries, the action packs the tarball once and re
 
 ### Why a Silk-Specific Publishability Helper?
 
-The vanilla `PublishabilityDetectorLive` from `workspaces-effect` treats `package.json#private: true` as "not publishable" full stop. Silk convention inverts that: in silk mode `private: true` is the norm on workspace `package.json` and publishability is derived from `publishConfig`, not the `private` flag. The silk rules therefore consult `publishConfig.targets` first, then `publishConfig.access`, and only fall back to the `private` flag as a last-resort default (see [Publishability Detection (Silk Rules)](integration.md#publishability-detection-silk-rules) for the full precedence). `PublishabilityDetectorAdaptiveLive` in `src/release/publishability.ts` short-circuits changeset-ignored packages to `[]` regardless of mode (via `ChangesetConfig.isIgnored`), then reads `ChangesetConfig.mode` per-call and dispatches to the silk override (silk mode), the library default (vanilla mode), or a no-op detector (none mode). This single ignore-aware detector is the only publishability path — Phase 1 (`listPublishablePackages`/`isMonorepoForTagging`), Phase 2 (`runValidation`) and Phase 3 (`runPublishTargets`) all resolve through it. The same rules are encoded identically in `silk-update-action` and the silk `changesets` package.
+The vanilla `PublishabilityDetectorLive` from `workspaces-effect` treats `package.json#private: true` as "not publishable" full stop. Silk convention inverts that: in silk mode `private: true` is the norm on workspace `package.json` and publishability is derived from `publishConfig`, not the `private` flag. The silk rules therefore consult `publishConfig.targets` first, then `publishConfig.access`, and only fall back to the `private` flag as a last-resort default (see [Publishability Detection (Silk Rules)](integration.md#publishability-detection-silk-rules) for the full precedence). `PublishabilityDetectorAdaptiveLive` in `src/release/publishability.ts` short-circuits changeset-ignored packages to `[]` regardless of mode (via `ChangesetConfig.isIgnored`), then reads `ChangesetConfig.mode` per-call and dispatches to the silk override (silk mode), the library default (vanilla mode), or a no-op detector (none mode). This single ignore-aware detector is the only publishability path — Phase 1 (`listPublishablePackages`/`isMonorepoForTagging`), Phase 2 (`runValidation`) and Phase 3 (`runPublishTargets`) all resolve through it. The mode itself is decoded by the bundled silk-effects `ChangesetConfigReader` from the changelog id in the consumer's `.changeset/config.json`, so the bundled library's silk-marker id set is load-bearing: an unrecognized id silently degrades the repo to vanilla rules and Phase 3 publishes the dev target — which happened on silk-effects 3.0.0 for the canonical `@savvy-web/changelog` id (issue #143; fixed in the bundled 3.0.1+, see [Publishability Detection (Silk Rules)](integration.md#publishability-detection-silk-rules)). The same rules are encoded identically in `silk-update-action` and the silk `changesets` package.
 
 ## Key Design Patterns
 
