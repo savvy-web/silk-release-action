@@ -4,8 +4,8 @@ category: integration
 status: current
 completeness: 92
 created: 2026-02-07
-updated: 2026-07-05
-last-synced: 2026-07-05
+updated: 2026-07-06
+last-synced: 2026-07-06
 module: release-action
 related:
   - architecture.md
@@ -54,6 +54,8 @@ The silk publishability rules live in `src/release/publishability.ts`. Two Effec
 This precedence fixed a regression where a public source package (`private: false`) declaring `publishConfig.targets` was short-circuited to a single default target at `publishConfig.directory` (the private `dist/dev` artifact), which the private-build filter then dropped — misclassifying it as version-only.
 
 **`PublishabilityDetectorAdaptiveLive`** is the single ignore-aware detector. It short-circuits to `[]` for any package whose name matches the changeset `ignore` globs (via `ChangesetConfig.isIgnored`, which uses the shared `matchesIgnorePattern` matcher exported from `src/utils/detect-repo-type.ts`), regardless of mode. It then reads `ChangesetConfig.mode` per-call and dispatches to the silk override (silk mode), the library's built-in `PublishabilityDetectorLive` (vanilla mode), or a no-op detector that returns an empty array for every package (none mode). Every publishability path resolves through this layer: Phase 1 (`listPublishablePackages` / `isMonorepoForTagging`), Phase 2 (`runValidation` via `resolvePublishableTargets`) and Phase 3 (`runPublishTargets` via `PublishabilityDetector`).
+
+`ChangesetConfig.mode` is itself decoded by the bundled silk-effects `ChangesetConfigReader` from the changelog id in the consumer's `.changeset/config.json`, which makes the library's silk-marker id set load-bearing: an id the bundled reader does not recognize silently degrades the repo to vanilla rules, where the workspaces-effect default resolves the single target at `publishConfig.directory` (the private `dist/dev/pkg` dev artifact) instead of the prod byte groups. That failure mode shipped once — silk-effects 3.0.0 recognized only the two legacy ids, so repos declaring the canonical `@savvy-web/changelog` id (what current `savvy init` writes) had Phase 3 publish their dev target with unresolved `catalog:` specifiers (issue #143, `yaml-effect@0.7.1`). The bundled silk-effects 3.0.1+ adds `@savvy-web/changelog` to the silk markers, so those repos detect as silk workspaces again.
 
 Ignored packages are excluded from detection entirely, not just from publishing: Phase-2 `detectReleasedPackages` and Phase-3 `detectReleases` both drop changeset-ignored names via `ChangesetConfig.isIgnored`, so they never appear in validation or publish output — not even as version-only rows.
 

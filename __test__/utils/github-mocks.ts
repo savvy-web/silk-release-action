@@ -1,4 +1,3 @@
-// biome-ignore lint/correctness/noUndeclaredDependencies: only used in tests
 import { vi } from "vitest";
 
 /**
