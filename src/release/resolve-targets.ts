@@ -12,6 +12,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { FileSystem } from "@effect/platform";
 import { isGitHubPackagesRegistry, isNpmRegistry } from "@savvy-web/github-action-effects";
+import type { PublishTargetBindingError } from "@savvy-web/silk-effects";
 import { SilkPublishability } from "@savvy-web/silk-effects";
 import type { Effect } from "effect";
 import type { PublishTarget, PublishabilityDetector, WorkspacePackage } from "workspaces-effect";
@@ -54,6 +55,11 @@ export function isTargetPrivate(targetDir: string): boolean {
  * `isAbsolute(t.directory) ? t.directory : join(pkg.path, t.directory)` — this
  * is what `validation.ts` does for the dry-run `cwd` and SBOM directory.
  *
+ * Fails with `PublishTargetBindingError` when the package has a
+ * `dist/prod/targets.json` binding and detection selected a directory the
+ * binding does not describe — detection did not pick the prod build output, so
+ * the bytes about to be packed are not the release artifact.
+ *
  * @param pkg - The workspace package to resolve targets for.
  * @param workspaceRoot - Absolute path to the workspace root.
  * @returns The publishable targets, with `private`-built targets removed.
@@ -61,8 +67,11 @@ export function isTargetPrivate(targetDir: string): boolean {
 export const resolvePublishableTargets = (
 	pkg: WorkspacePackage,
 	workspaceRoot: string,
-): Effect.Effect<ReadonlyArray<PublishTarget>, never, PublishabilityDetector | FileSystem.FileSystem> =>
-	SilkPublishability.resolveTargets(pkg, workspaceRoot);
+): Effect.Effect<
+	ReadonlyArray<PublishTarget>,
+	PublishTargetBindingError,
+	PublishabilityDetector | FileSystem.FileSystem
+> => SilkPublishability.resolveTargets(pkg, workspaceRoot);
 
 /**
  * Resolve the auth token for a publish-target registry.

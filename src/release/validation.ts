@@ -576,7 +576,33 @@ export const runValidation = (args: ValidationInputArgs) =>
 		for (const { pkg, baseVersion } of orderedReleasedPackages) {
 			// Resolve publish targets, then drop any whose built `package.json` is
 			// `private` — validation only exercises what will actually be published.
-			const targets = yield* resolvePublishableTargets(pkg, workspaceRoot);
+			//
+			// A `PublishTargetBindingError` means detection selected a directory the
+			// package's `dist/prod/targets.json` does not bind — the #143 shape, where
+			// a dev build was about to be packed. Record it as an error finding rather
+			// than aborting the whole run: the check fails, auto-merge is blocked, and
+			// the remaining packages still get validated and reported.
+			const resolved = yield* Effect.either(resolvePublishableTargets(pkg, workspaceRoot));
+			if (resolved._tag === "Left") {
+				const bindingError = resolved.left;
+				yield* Effect.logError(bindingError.message);
+				findings.push({
+					severity: "error",
+					check: "Publish Validation",
+					scope: { package: pkg.name, directory: bindingError.directory },
+					message: bindingError.message,
+				});
+				validationPackages.push({
+					name: pkg.name,
+					version: pkg.version,
+					baseVersion,
+					changesetCount: changesetCounts.get(pkg.name) ?? null,
+					builds: [],
+					releaseNotes: extractReleaseNotes(pkg.path),
+				});
+				continue;
+			}
+			const targets = resolved.right;
 
 			// Read the CHANGELOG.md `changeset version` already wrote — the
 			// release branch carries the per-version section. The extractor
