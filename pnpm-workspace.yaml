@@ -1,13 +1,5 @@
 packages:
   - .
 autoInstallPeers: true
-# DOGFOOD (temporary): exercise the local npm-12 pack-json fix and the publish
-# guards before they publish. Both are also transitive deps, so a bare `pnpm
-# link` would leave a second registry copy in the bundle — overrides force every
-# resolution onto the one local build. Remove once the fixed versions publish;
-# see CLAUDE.md "Dogfooding First-Party Dependencies", step 7.
-overrides:
-  "@savvy-web/github-action-effects": "link:../systems/packages/github-action-effects/dist/dev/pkg"
-  "@savvy-web/silk-effects": "link:../systems/packages/silk-effects/dist/dev/pkg"
 configDependencies:
   "@savvy-web/pnpm-plugin-silk": 0.21.0+sha512-UADjHt3lC5T22L4g9OjaI4QFaifvCN4viInTfb691R5blYSfoEw3YJ0UDdKzLLzXHPYZEfJShb5tY0SR9pq8Rw==
