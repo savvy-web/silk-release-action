@@ -37,8 +37,8 @@
 	"dependencies": {
 		"@effect/platform": "catalog:silk",
 		"@effect/platform-node": "catalog:silk",
-		"@savvy-web/github-action-effects": "^2.3.7",
-		"@savvy-web/silk-effects": "^3.1.0",
+		"@savvy-web/github-action-effects": "^2.4.0",
+		"@savvy-web/silk-effects": "^3.2.0",
 		"ajv": "^8.20.0",
 		"effect": "catalog:silk",
 		"json-schema-effect": "^0.3.0",

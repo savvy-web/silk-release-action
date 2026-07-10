@@ -4,8 +4,8 @@ category: integration
 status: current
 completeness: 92
 created: 2026-02-07
-updated: 2026-07-06
-last-synced: 2026-07-06
+updated: 2026-07-09
+last-synced: 2026-07-09
 module: release-action
 related:
   - architecture.md
@@ -65,7 +65,7 @@ The implementation reads raw `package.json` from disk (not the typed `WorkspaceP
 
 #### Target Resolution (`src/release/resolve-targets.ts`)
 
-`resolvePublishableTargets(pkg, workspaceRoot, detector)` is the Phase-2 seam. It calls `PublishabilityDetector.detect(pkg)` to get the raw `PublishTarget[]` and converts each to the internal `ResolvedTarget` shape with absolute paths, null-safe registry/tokenEnv, and shorthand expansion:
+`resolvePublishableTargets(pkg, workspaceRoot)` is the Phase-2 publish-target seam. It delegates to `SilkPublishability.resolveTargets` (from `@savvy-web/silk-effects`), which resolves the package's publishable `PublishTarget[]` from the per-byte-group prod layout, expanding string shorthands and object targets. It fails with `PublishTargetBindingError` when the package carries a `dist/prod/targets.json` binding and detection selected a directory that binding does not describe — detection did not pick the prod build output, so the bytes about to be packed are not the release artifact (issue #144). `runValidation` wraps the call in `Effect.either` and turns a `Left` into a `severity: "error"` finding that fails the check and blocks auto-merge, without aborting the rest of the run. The `pickToken` helper in the same module resolves each target registry's auth token. Shorthands resolve to:
 
 - `"npm"` — `registry.npmjs.org` with OIDC and provenance
 - `"github"` — `npm.pkg.github.com` with the `SILK_GITHUB_PACKAGES_TOKEN` env var
@@ -76,7 +76,7 @@ The implementation reads raw `package.json` from disk (not the typed `WorkspaceP
 
 Authentication and publishing are handled by library services in Phase 3:
 
-- **`PackagePublish`** (library) — `pack(directory, opts)` runs npm pack once per build directory; `publishTarball(path, opts)` publishes the pre-packed tarball; `dryRun(directory, opts)` runs `npm publish --dry-run`; `setupAuth(registry, token)` writes auth to `~/.npmrc`. `pack`, `dryRun` and the live publish all take a `packageManager` option and dispatch through the same npm executor (`pnpm dlx npm`, `yarn npm`, `bun x npm` or bare `npm`), so a Phase-2 dry-run validates against the exact npm the Phase-3 publish runs. OIDC for npm and JSR is handled inside the library's `PackagePublish.publishTarball` implementation via `pnpm dlx npm` (fetches npm 11.x which supports OIDC trusted publishing; Node 24 ships npm 10.x which does not).
+- **`PackagePublish`** (library) — `pack(directory, opts)` runs npm pack once per build directory; `publishTarball(path, opts)` publishes the pre-packed tarball; `dryRun(directory, opts)` runs `npm publish --dry-run`; `setupAuth(registry, token)` writes auth to `~/.npmrc`. `pack`, `dryRun` and the live publish all take a `packageManager` option and dispatch through the same npm executor (`pnpm dlx npm@11`, `yarn npm`, `bun x npm@11` or bare `npm`), so a Phase-2 dry-run validates against the exact npm the Phase-3 publish runs. The dlx-fetched npm is pinned to `npm@11`: it lands OIDC trusted publishing (Node 24 ships npm 10.x, which lacks it) while avoiding npm 12.0.0, which changed `pack --json` from an entry array to a name-keyed object — every publish failed `npm pack returned empty result` when npm 12 took the `latest` tag on 2026-07-08 — and whose `publish` throws `MODULE_NOT_FOUND: sigstore` (npm/cli#9722). The `@savvy-web/github-action-effects` 2.4.0 fix reads both `pack --json` shapes and refuses a manifest carrying `catalog:`/`workspace:` specifiers or a zero-file tarball; the action consumes it. OIDC for npm and JSR is handled inside `PackagePublish.publishTarball`.
 - **`NpmRegistry`** (library) — `getPublishedIntegrity(name, version, opts)` probes a registry for an existing version's tarball digest. Returns `Option.none()` when absent, `Option.some(digest)` when present. Used by `publishDirectoryGroup` before deciding whether to publish, skip, or abort.
 
 ##### Token-auth publishing fallback
@@ -138,7 +138,7 @@ The `Attest` and `Sbom` services are now part of `@savvy-web/github-action-effec
 
 **Honest failure reporting** — Attestation failures are non-fatal. `Step.failure` is used (not an Effect defect) so the label is rendered with `❌` in the log and the step buffer is spilled, but the publish result is still recorded and the release can complete. The `TargetPublishResult.attestationUrl` is `undefined` rather than populated.
 
-**OIDC via `pnpm dlx npm`** — Node 24 ships npm 10.x, which lacks OIDC trusted publishing. `PackagePublish.publishTarball` routes through `pnpm dlx npm` (which fetches npm 11.x) when the package manager is pnpm, enabling OIDC for npm and JSR.
+**OIDC via pinned `pnpm dlx npm@11`** — Node 24 ships npm 10.x, which lacks OIDC trusted publishing. `PackagePublish.publishTarball` routes through the dlx executor pinned to `npm@11` when the package manager is pnpm, enabling OIDC for npm and JSR (see [Authentication and publishing](#authentication-and-publishing) for why 11 and not 12).
 
 **Storage-record linkage** — After a successful GitHub Packages publish, the library calls `GitHubArtifactMetadata` to POST a storage record linking the attestation to the artifact's metadata entry. This is what makes attestations appear in the org packages UI.
 
