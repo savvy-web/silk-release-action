@@ -96,6 +96,14 @@ Phase 2 runs `pnpm build` (or your configured package manager's build command). 
 2. Fix the issue on the release branch or on `main` (the action will rebase on next push)
 3. The validation check on the PR will update automatically
 
+### Publish validation fails on an unpublishable artifact
+
+Phase 2 dry-run packs each publishable package and refuses artifacts that would ship something broken rather than packing them silently. Any of the cases below records an `error` finding, fails the **Publish Validation** check and blocks auto-merge; the remaining packages still validate and report. Fix the offending package, then push the release branch (or push to `main` and let the action rebase).
+
+- **Unresolved `catalog:` or `workspace:` specifiers** — the built `package.json` still carries a `catalog:` or `workspace:` dependency range, which publishes a package that is uninstallable outside the workspace (`EUNSUPPORTEDPROTOCOL`). Your build step must rewrite these to concrete versions before the artifact is packed.
+- **Zero-file tarball** — `npm pack` would produce an empty archive. Check the package's `files` field and confirm the build wrote output to the directory being packed.
+- **Publish directory not bound by `dist/prod/targets.json`** — publishability detection selected a directory your production build does not declare, usually a dev build, so a non-release artifact was about to be packed. Run the package's production build so the release output exists at a declared target.
+
 ### Partial publish — one registry succeeded, another failed
 
 If Phase 3 fails after publishing to some registries but before finishing all of them, the action stops before creating the GitHub Release. On re-run, it detects which registries already received the correct tarball and skips them with a `skipped-identical (recovery)` status, then continues with the remaining registries. No manual cleanup is required.

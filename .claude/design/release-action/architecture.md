@@ -4,8 +4,8 @@ category: architecture
 status: current
 completeness: 95
 created: 2026-02-07
-updated: 2026-07-06
-last-synced: 2026-07-06
+updated: 2026-07-09
+last-synced: 2026-07-09
 module: release-action
 related:
   - integration.md
@@ -126,7 +126,9 @@ Triggers on push to the release branch. Creates all validation Check Runs upfron
 
 **`src/release/validation.ts`** (`runValidation`) — Enumerates workspace packages, diffs versions against the target branch to discover which packages are being released (`detectReleasedPackages` drops changeset-ignored names entirely via `ChangesetConfig.isIgnored`, so they never appear, not even as version-only rows), orders the released set dependency-first through the shared `sortReleasesTopologically` helper (matching Phase-3 order; a cyclic graph falls back to discovery order rather than aborting), resolves publish targets via `resolvePublishableTargets` (the `PublishabilityDetectorAdaptiveLive` seam), groups targets by build directory, runs `PackagePublish.dryRun` per build directory, generates one SBOM per build directory via the `Sbom` service, applies `sbom-config` metadata, and assembles a `ValidationReport`. The report is build-centric: `ValidationPackageResult` carries builds, sizes, SBOMs, and registry targets. `strict-warnings` mode escalates warning-severity findings to `failure` for auto-merge gating.
 
-The dry-run dispatches through the same npm executor as the live publish: `runValidation` passes the normalized `packageManager` (via `normalizePackageManager`) to `PackagePublish.dryRun`, so a dry-run validates against the exact npm the Phase-3 publish will run (`pnpm dlx npm`, `yarn npm`, `bun x npm` or bare `npm`) rather than the runner's bundled one. See [Authentication and publishing](integration.md#authentication-and-publishing).
+`runValidation` wraps `resolvePublishableTargets` in `Effect.either`. A `Left` carries a `PublishTargetBindingError` — detection selected a directory the package's `dist/prod/targets.json` binding does not describe, so the bytes about to be packed are not the prod release artifact. On that `Left` the flow logs the error, pushes a `severity: "error"` finding scoped to `{ package, directory }` under `Publish Validation`, records an empty `builds` list for the package and continues to the next one. The error finding drives the check-run conclusion to failure (blocking auto-merge), yet the remaining packages still validate and report — the run does not abort. This is the Phase-2 guard against packing an unresolved dev build (issue #144); it depends on the `PublishTargetBindingError` that `SilkPublishability.resolveTargets` now raises (see [Registry Infrastructure](integration.md#registry-infrastructure)).
+
+The dry-run dispatches through the same npm executor as the live publish: `runValidation` passes the normalized `packageManager` (via `normalizePackageManager`) to `PackagePublish.dryRun`, so a dry-run validates against the exact npm the Phase-3 publish will run (`pnpm dlx npm@11`, `yarn npm`, `bun x npm@11` or bare `npm`) rather than the runner's bundled one. See [Authentication and publishing](integration.md#authentication-and-publishing).
 
 Phase 2 emits three per-step Check Runs — `Publish Validation`, `Release Notes Preview` and `SBOM Preview`. Their titles carry no decorative leading icons (the older `📦`/`📋`/`🔏` markers were removed); the only title decoration is the `🧪` marker prepended in dry-run mode (see [Dry-Run Mode](#dry-run-mode)). The per-build log mirrors the Phase-3 publish tree: one `Step.groupStep("Validate · pkg@version[ · group]")` per build directory containing a `📦 pack` step (dry-run sizing), per-registry `⬆ <registry> · ready/not-ready` rows and a `📄 sbom` step, capped by a `Step.success`/`Step.failure` group summary. The group title disambiguates by byte-group id (`getGroupId`) only when a package spans multiple builds. This is presentation only — the `ValidationReport` data shape is unchanged.
 
