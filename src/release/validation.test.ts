@@ -128,6 +128,7 @@ const changesetConfigDefaultLayer = Layer.succeed(ChangesetConfig, {
 	ignorePatterns: () => Effect.succeed([]),
 	isIgnored: (_name: string) => Effect.succeed(false),
 	fixed: () => Effect.succeed([]),
+	refresh: () => Effect.void,
 });
 
 // TopologicalSorter mock: runValidation orders released packages via `sortSubset`.
@@ -947,6 +948,7 @@ describe("runValidation", () => {
 				ignorePatterns: () => Effect.succeed(ignore),
 				isIgnored: (name: string) => Effect.succeed(ignore.some((p) => matchesIgnorePattern(name, p))),
 				fixed: () => Effect.succeed([]),
+				refresh: () => Effect.void,
 			});
 
 			const { layer: pubLayer } = PackagePublishTest.empty();

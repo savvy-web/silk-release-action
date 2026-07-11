@@ -64,6 +64,7 @@ const changesetConfigStub = Layer.succeed(ChangesetConfig, {
 	ignorePatterns: () => Effect.succeed([]),
 	isIgnored: () => Effect.succeed(false),
 	fixed: () => Effect.succeed([]),
+	refresh: () => Effect.void,
 });
 
 const appliedRelease: Changesets.AppliedRelease = {

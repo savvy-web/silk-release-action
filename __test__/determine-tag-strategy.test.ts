@@ -51,6 +51,7 @@ const makeChangesetConfigLayer = (
 		isIgnored: (name: string) =>
 			Effect.succeed(ignore.some((p) => name === p || (p.endsWith("/*") && name.startsWith(p.slice(0, -1))))),
 		fixed: () => Effect.succeed(fixed),
+		refresh: () => Effect.void,
 	});
 
 const runIsMonorepo = (

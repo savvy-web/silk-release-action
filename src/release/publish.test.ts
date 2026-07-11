@@ -224,6 +224,7 @@ const changesetConfigDefaultLayer = Layer.succeed(ChangesetConfig, {
 	ignorePatterns: () => Effect.succeed([]),
 	isIgnored: (_name: string) => Effect.succeed(false),
 	fixed: () => Effect.succeed([]),
+	refresh: () => Effect.void,
 });
 
 // ─── detectReleases ─────────────────────────────────────────────────────────
@@ -458,6 +459,7 @@ describe("detectReleases", () => {
 				ignorePatterns: () => Effect.succeed(ignore),
 				isIgnored: (name: string) => Effect.succeed(ignore.some((p) => matchesIgnorePattern(name, p))),
 				fixed: () => Effect.succeed([]),
+				refresh: () => Effect.void,
 			});
 
 			const args: PublishInputArgs = {
