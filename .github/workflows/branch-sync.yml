@@ -1,0 +1,329 @@
+# Keeps the `dev` / `main` branch pair coherent. Three concerns, three jobs:
+#
+#   promote    A `pnpm/config-deps` merge into `dev` opens (or refreshes) the
+#              `dev -> main` PR with auto-merge.
+#   sync-dev   Any push to `main` evens `dev` out with it.
+#   major-tag  A published release moves the `v<major>` alias tag.
+#
+# `sync-dev` keys off *`main` moving*, not off a release being published. A push
+# to `main` that produces no release (a dependency promotion with no changeset,
+# for example) still has to even the branches out, and keying on `release` missed
+# exactly that case. Merging `changeset-release/main` is itself a push to `main`,
+# so the release path is still covered.
+#
+# `dev` is force-reset only when git proves by patch-id that it holds nothing
+# `main` lacks. A `dev` that is genuinely ahead is preparing a release: it gets
+# rebased, and if the rebase conflicts nothing is touched at all.
+name: Branch Sync
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [dev]
+  push:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      task:
+        description: Which job to run
+        type: choice
+        options:
+          - sync-dev
+          - major-tag
+          - promote
+        default: sync-dev
+      tag:
+        description: Release tag to process (major-tag only; must already exist)
+        type: string
+        required: false
+      dry-run:
+        description: Print the actions without pushing
+        type: boolean
+        default: true
+
+# All three jobs mutate the dev/main relationship, so they must not race.
+concurrency:
+  group: branch-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sync-dev:
+    name: Even dev out with main
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.task == 'sync-dev')
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Even dev out with main
+        env:
+          DRY_RUN: ${{ inputs.dry-run || false }}
+          BOT_NAME: ${{ steps.app-token.outputs.app-slug }}[bot]
+          BOT_EMAIL: ${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com
+        run: |
+          set -euo pipefail
+
+          # Needed only by the rebase path, which writes commits.
+          git config user.name "$BOT_NAME"
+          git config user.email "$BOT_EMAIL"
+
+          git fetch --quiet origin main
+          main_head="$(git rev-parse FETCH_HEAD)"
+          dev_head="$(git ls-remote origin refs/heads/dev | awk '{ print $1 }')"
+
+          echo "main: $main_head"
+          echo "dev:  ${dev_head:-<absent>}"
+
+          # Push a ref only if `dev` still points where we found it, so a
+          # concurrent push to `dev` aborts this sync instead of losing to it.
+          push_dev() {
+            git push --force-with-lease="refs/heads/dev:${dev_head}" origin "${1}:refs/heads/dev"
+          }
+
+          if [[ -z "$dev_head" ]]; then
+            if [[ "$DRY_RUN" == "true" ]]; then
+              echo "::notice::[dry-run] would create dev at $main_head"
+            else
+              git push origin "${main_head}:refs/heads/dev"
+              echo "::notice::Created dev at $main_head."
+            fi
+            exit 0
+          fi
+
+          if [[ "$dev_head" == "$main_head" ]]; then
+            echo "::notice::dev already at $main_head; nothing to do."
+            exit 0
+          fi
+
+          git fetch --quiet origin dev
+
+          # Ask the only question that matters: would resetting dev lose work?
+          #
+          # Merge dev into main in memory and compare the resulting tree to main's.
+          # If they match, dev has no content main lacks and the reset is a
+          # no-op for content -- true whether dev is even, strictly behind, or
+          # squash-merged.
+          #
+          # Commit-level tests do NOT survive a squash merge. `git cherry` and
+          # friends compare patch-ids one commit at a time, so N dev commits
+          # squashed into 1 commit on main match nothing and read as unmerged
+          # work. Content is the source of truth here; commits are not.
+          main_tree="$(git rev-parse "${main_head}^{tree}")"
+          merged_tree="$(git merge-tree --write-tree "$main_head" FETCH_HEAD 2>/dev/null || true)"
+
+          if [[ "$merged_tree" == "$main_tree" ]]; then
+            echo "Merging dev into main is a no-op; dev holds nothing main lacks. Resetting."
+            if [[ "$DRY_RUN" == "true" ]]; then
+              echo "::notice::[dry-run] would reset dev -> $main_head"
+            else
+              push_dev "$main_head"
+              echo "::notice::Reset dev to $main_head."
+            fi
+            exit 0
+          fi
+
+          # A conflicting merge-tree exits non-zero and prints no tree, which also
+          # lands here: dev genuinely diverges, so it earns a rebase attempt.
+          echo "dev holds work main lacks; rebasing onto main."
+          git checkout --quiet -B dev "$dev_head"
+
+          if ! git rebase --empty=drop "$main_head"; then
+            git rebase --abort || true
+            echo "::warning::dev holds work not in main and rebasing it onto $main_head conflicts. dev was left untouched — rebase it by hand."
+            exit 0
+          fi
+
+          rebased="$(git rev-parse HEAD)"
+          if [[ "$rebased" == "$dev_head" ]]; then
+            echo "::notice::dev already rebased on $main_head; no push."
+          elif [[ "$DRY_RUN" == "true" ]]; then
+            echo "::notice::[dry-run] would rebase dev -> $rebased (onto $main_head)"
+          else
+            push_dev "$rebased"
+            echo "::notice::Rebased dev onto $main_head ($rebased)."
+          fi
+
+  major-tag:
+    name: Move the major alias tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    if: >-
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' && inputs.task == 'major-tag')
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Move the v<major> alias tag
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          DRY_RUN: ${{ inputs.dry-run || false }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${RELEASE_TAG}" ]]; then
+            echo "::error::No release tag supplied."
+            exit 1
+          fi
+
+          # Stable SemVer 2.0.0 only: bare MAJOR.MINOR.PATCH.
+          # No leading "v", no -prerelease, no +build metadata.
+          if [[ ! "$RELEASE_TAG" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "::notice::Tag '$RELEASE_TAG' is not a stable SemVer release; nothing to do."
+            exit 0
+          fi
+
+          major="${BASH_REMATCH[1]}"
+          if (( major < 1 )); then
+            echo "::notice::Release $RELEASE_TAG is below 1.0.0 (major $major); nothing to do."
+            exit 0
+          fi
+
+          alias_tag="v${major}"
+          commit="$(git rev-list -n 1 "refs/tags/${RELEASE_TAG}")"
+
+          # Resolve the commit a remote tag points at (peels annotated tags); empty if absent.
+          remote_tag_commit() {
+            local plain="" peeled="" sha ref
+            while read -r sha ref; do
+              case "$ref" in
+                "refs/tags/${1}^{}") peeled="$sha" ;;
+                "refs/tags/${1}") plain="$sha" ;;
+              esac
+            done < <(git ls-remote origin "refs/tags/${1}" "refs/tags/${1}^{}")
+            printf '%s' "${peeled:-$plain}"
+          }
+
+          alias_current="$(remote_tag_commit "$alias_tag")"
+
+          echo "Release $RELEASE_TAG -> $commit"
+          echo "Major alias $alias_tag: ${alias_current:-<absent>} -> $commit"
+
+          if [[ "$alias_current" == "$commit" ]]; then
+            echo "::notice::$alias_tag already at $commit; no tag push."
+          elif [[ "$DRY_RUN" == "true" ]]; then
+            echo "::notice::[dry-run] would force-push $alias_tag -> $commit"
+          else
+            git tag -f "$alias_tag" "$commit"
+            git push --force origin "refs/tags/${alias_tag}"
+            echo "::notice::Moved $alias_tag to $commit."
+          fi
+
+  promote:
+    name: Open dev to main PR
+    runs-on: ubuntu-latest
+    # A real merge of the pnpm/config-deps branch into dev, or manual dispatch.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.task == 'promote') ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.merged == true &&
+       github.event.pull_request.head.ref == 'pnpm/config-deps')
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Open or update dev to main PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_PAGER: cat
+          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          SOURCE_PR: ${{ github.event.pull_request.number }}
+          SOURCE_TITLE: ${{ github.event.pull_request.title }}
+          DRY_RUN: ${{ inputs.dry-run || false }}
+        run: |
+          set -euo pipefail
+
+          # An open dev -> main PR already auto-tracks new dev commits, so a
+          # second config-deps merge needs no new PR.
+          existing="$(gh api "repos/${REPO}/pulls?base=main&head=${OWNER}:dev&state=open" --jq 'length')"
+          if [[ "$existing" -gt 0 ]]; then
+            number="$(gh api "repos/${REPO}/pulls?base=main&head=${OWNER}:dev&state=open" --jq '.[0].number')"
+            if [[ "$DRY_RUN" != "true" ]]; then
+              # Re-assert auto-merge in case it was cleared; harmless if already set.
+              gh pr merge "${number}" --repo "${REPO}" --auto --squash || true
+            fi
+            echo "::notice::dev -> main PR #${number} already open; new dev commits are tracked automatically."
+            exit 0
+          fi
+
+          if [[ -n "${SOURCE_PR}" ]]; then
+            trigger="Triggered by merged dependency PR #${SOURCE_PR}."
+          else
+            trigger="Triggered manually via workflow_dispatch."
+          fi
+
+          # Reuse the merged dependency PR's title (must satisfy the Conventional
+          # Commits / PR Title Validation checks); fall back for manual dispatch.
+          if [[ -n "${SOURCE_TITLE}" ]]; then
+            title="${SOURCE_TITLE}"
+          else
+            title="chore(deps): promote dependency updates to main"
+          fi
+
+          body=$(cat <<EOF
+          ## Promote dependency updates
+
+          Automated promotion of dependency updates accumulated on \`dev\` into \`main\`.
+          ${trigger}
+
+          This PR is left open so cloud reviewers and the action's smoke tests can
+          run against the changes before release. Merging it starts the normal
+          release cycle.
+          EOF
+          )
+
+          if [[ "$DRY_RUN" == "true" ]]; then
+            echo "::notice::[dry-run] would open dev -> main PR titled '${title}' with auto-merge."
+            exit 0
+          fi
+
+          number="$(gh api --method POST "repos/${REPO}/pulls" \
+            -f title="${title}" \
+            -f head="dev" \
+            -f base="main" \
+            -f body="${body}" \
+            --jq '.number')"
+
+          # Auto-merge with squash (the only method main's ruleset allows); the
+          # PR lands once the required status checks pass.
+          gh pr merge "${number}" --repo "${REPO}" --auto --squash
+
+          echo "::notice::Opened dev -> main PR #${number} and enabled auto-merge."
