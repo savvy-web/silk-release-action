@@ -1,5 +1,13 @@
 # @savvy-web/silk-release-action
 
+## 3.1.2
+
+### Dependencies
+
+* | Dependency              | Type       | Action  | From   | To     |                                                          |
+  | ----------------------- | ---------- | ------- | ------ | ------ | -------------------------------------------------------- |
+  | @savvy-web/silk-effects | dependency | updated | ^3.2.2 | ^3.2.3 | Thanks [@spencerbeggs](https://github.com/spencerbeggs)! |
+
 ## 3.1.1
 
 ### Dependencies
