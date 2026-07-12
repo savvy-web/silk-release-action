@@ -6,17 +6,17 @@ importers:
   .:
     configDependencies:
       '@savvy-web/pnpm-plugin-silk':
-        specifier: 0.22.0
-        version: 0.22.0
+        specifier: 0.22.1
+        version: 0.22.1
 
 packages:
 
-  '@savvy-web/pnpm-plugin-silk@0.22.0':
-    resolution: {integrity: sha512-fdLb4xOZfJcyD01rrgm4RT5UR5quezgLY0chciH1oMVq0ogDiAHxlEqJOltS08Rq6WuzBJoV74yysA9T7DkSuA==}
+  '@savvy-web/pnpm-plugin-silk@0.22.1':
+    resolution: {integrity: sha512-BCYsx9ezKBWsGGHPlE4WcEjgDX+5pNEnWsCa8Ud8VEiDKbpcjP8XeO8Iap1r3wmiHaQos5xQEKvDF3jblk4mWQ==}
 
 snapshots:
 
-  '@savvy-web/pnpm-plugin-silk@0.22.0': {}
+  '@savvy-web/pnpm-plugin-silk@0.22.1': {}
 
 ---
 lockfileVersion: '9.0'
@@ -44,9 +44,9 @@ catalogs:
       version: 4.23.0
 
 overrides:
-  '@manypkg/find-root>@types/node': ^26.1.1
+  '@microsoft/api-extractor>typescript': ^6.0.3
 
-pnpmfileChecksum: sha256-pMHHDu09X1MmSFdOlodQpgjhFumB6jQXvbYZzylTWwM=
+pnpmfileChecksum: sha256-uYxK5IpbX5KNn+Ib3DnKjhPxxOIqKL+rGz70TwCoYZk=
 
 importers:
 
@@ -62,7 +62,7 @@ importers:
         specifier: ^2.4.0
         version: 2.4.0(@effect/platform-node@0.107.0(@effect/cluster@0.59.0(@effect/platform@0.96.2(effect@3.21.4))(@effect/rpc@0.75.1(@effect/platform@0.96.2(effect@3.21.4))(effect@3.21.4))(@effect/sql@0.51.1(@effect/experimental@0.60.0(@effect/platform@0.96.2(effect@3.21.4))(effect@3.21.4))(@effect/platform@0.96.2(effect@3.21.4))(effect@3.21.4))(@effect/workflow@0.18.2(@effect/experimental@0.60.0(@effect/platform@0.96.2(effect@3.21.4))(effect@3.21.4))(@effect/platform@0.96.2(effect@3.21.4))(@effect/rpc@0.75.1(@effect/platform@0.96.2(effect@3.21.4))(effect@3.21.4))(effect@3.21.4))(effect@3.21.4))(@effect/platform@0.96.2(effect@3.21.4))(@effect/rpc@0.75.1(@effect/platform@0.96.2(effect@3.21.4))(effect@3.21.4))(@effect/sql@0.51.1(@effect/experimental@0.60.0(@effect/platform@0.96.2(effect@3.21.4))(effect@3.21.4))(@effect/platform@0.96.2(effect@3.21.4))(effect@3.21.4))(effect@3.21.4))(@effect/platform@0.96.2(effect@3.21.4))(ajv-formats@3.0.1(ajv@8.20.0))(ajv@8.20.0)(effect@3.21.4)
       '@savvy-web/silk-effects':
-        specifier: ^3.2.3
+        specifier: ^3.2.5
         version: 3.2.5(@effect/platform@0.96.2(effect@3.21.4))(effect@3.21.4)
       ajv:
         specifier: ^8.20.0
@@ -87,10 +87,10 @@ importers:
         specifier: ^1.0.0-next.6
         version: 1.0.0-next.6
       '@savvy-web/github-action-builder':
-        specifier: ^1.1.1
+        specifier: ^1.1.2
         version: 1.1.2(@effect/experimental@0.60.0(@effect/platform@0.96.2(effect@3.21.4))(effect@3.21.4))(@effect/workflow@0.18.2(@effect/experimental@0.60.0(@effect/platform@0.96.2(effect@3.21.4))(effect@3.21.4))(@effect/platform@0.96.2(effect@3.21.4))(@effect/rpc@0.75.1(@effect/platform@0.96.2(effect@3.21.4))(effect@3.21.4))(effect@3.21.4))(@types/node@26.1.1)(typescript@7.0.2)
       '@savvy-web/silk':
-        specifier: ^2.3.0
+        specifier: ^2.3.2
         version: 2.3.2(@changesets/cli@3.0.0-next.8)(@commitlint/cli@21.2.1(@types/node@26.1.1)(conventional-commits-parser@7.1.0)(typescript@7.0.2))(@commitlint/config-conventional@21.2.0)(@types/node@26.1.1)(husky@9.1.7)(lint-staged@17.0.8)(markdownlint-cli2-formatter-codequality@0.0.7(markdownlint-cli2@0.23.0))(markdownlint-cli2@0.23.0)(turbo@2.10.4)(typescript@7.0.2)
       '@types/node':
         specifier: catalog:silk
