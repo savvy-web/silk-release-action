@@ -31,7 +31,7 @@
 		"test:coverage": "vitest run --coverage --pass-with-no-tests",
 		"test:watch": "vitest --watch --pass-with-no-tests",
 		"typecheck": "turbo run types:check --log-prefix=none --log-order=grouped",
-		"types:check": "tsgo --noEmit",
+		"types:check": "tsc --noEmit",
 		"validate": "github-action-builder validate"
 	},
 	"dependencies": {
