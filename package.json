@@ -35,6 +35,7 @@
 		"validate": "github-action-builder validate"
 	},
 	"dependencies": {
+		"@changesets/changelog-git": "^1.0.0-next.6",
 		"@effect/platform": "catalog:silk",
 		"@effect/platform-node": "catalog:silk",
 		"@savvy-web/github-action-effects": "^2.4.0",
@@ -47,11 +48,9 @@
 		"workspaces-effect": "^2.1.0"
 	},
 	"devDependencies": {
-		"@changesets/changelog-git": "^1.0.0-next.6",
 		"@savvy-web/github-action-builder": "^1.1.2",
 		"@savvy-web/silk": "^2.4.2",
-		"@types/node": "catalog:silk",
-		"@vitest-agent/plugin": "^1.1.8",
+		"@vitest-agent/plugin": "^1.1.9",
 		"tsx": "catalog:silk"
 	},
 	"packageManager": "pnpm@11.13.0+sha512.88d94724d8f2e6c186744a5584c6e59ecac869ec7ba15e9cb4cd628e8dc7066820b2481d8ee3b51ea8da323a7378068aa58c556a3720d32b7c20a051d088363a",
