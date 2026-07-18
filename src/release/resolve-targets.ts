@@ -10,12 +10,11 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { FileSystem } from "@effect/platform";
+import type { PublishTarget, PublishabilityDetector, WorkspacePackage } from "@effected/workspaces";
 import { isGitHubPackagesRegistry, isNpmRegistry } from "@savvy-web/github-action-effects";
 import type { PublishTargetBindingError } from "@savvy-web/silk-effects";
 import { SilkPublishability } from "@savvy-web/silk-effects";
-import type { Effect } from "effect";
-import type { PublishTarget, PublishabilityDetector, WorkspacePackage } from "workspaces-effect";
+import type { Effect, FileSystem } from "effect";
 
 /**
  * Report whether a built target directory's `package.json` is marked `private`.

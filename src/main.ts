@@ -14,8 +14,8 @@
  * An absent or unrecognized phase falls through to a no-op.
  */
 
-import { FetchHttpClient, FileSystem } from "@effect/platform";
-import { NodeFileSystem, NodePath } from "@effect/platform-node";
+import { NodeServices } from "@effect/platform-node";
+import type { ActionOutputsShape } from "@savvy-web/github-action-effects";
 import {
 	Action,
 	ActionEnvironment,
@@ -51,7 +51,8 @@ import {
 	SigstoreSignerLive,
 	Step,
 } from "@savvy-web/github-action-effects";
-import { Config, Effect, Layer, Option, Redacted } from "effect";
+import { Config, Effect, FileSystem, Layer, Option, Redacted } from "effect";
+import { FetchHttpClient } from "effect/unstable/http";
 import { ReleaseLive } from "./release/layers.js";
 import type { DetectedRelease } from "./release/publish.js";
 import { detectReleases, runBuildAndSbom, runPublishTargets } from "./release/publish.js";
@@ -112,10 +113,10 @@ const detectPackageManager = Effect.gen(function* () {
 	const fs = yield* FileSystem.FileSystem;
 
 	// 1. Read `package.json`'s `packageManager` field if present.
-	const readResult = yield* Effect.either(fs.readFileString("package.json"));
-	if (readResult._tag === "Right") {
+	const readResult = yield* Effect.result(fs.readFileString("package.json"));
+	if (readResult._tag === "Success") {
 		try {
-			const parsed = JSON.parse(readResult.right) as { packageManager?: string };
+			const parsed = JSON.parse(readResult.success) as { packageManager?: string };
 			const raw = parsed.packageManager ?? "";
 			const name = raw.split("@")[0];
 			if (name === "npm" || name === "pnpm" || name === "yarn" || name === "bun") return name;
@@ -127,7 +128,7 @@ const detectPackageManager = Effect.gen(function* () {
 	// 2. Lockfile fallback. Probe in pnpm > yarn > bun order; first hit wins.
 	// `fs.exists` returns `Effect<boolean, PlatformError>`; treat errors as
 	// "doesn't exist" so a transient FS issue cannot flip the chosen manager.
-	const exists = (path: string) => fs.exists(path).pipe(Effect.catchAll(() => Effect.succeed(false)));
+	const exists = (path: string) => fs.exists(path).pipe(Effect.catch(() => Effect.succeed(false)));
 
 	if (yield* exists("pnpm-lock.yaml")) return "pnpm" as const;
 	if (yield* exists("yarn.lock")) return "yarn" as const;
@@ -170,7 +171,7 @@ const stripReleaseNotes = (output: ValidationOutput): ValidationOutput => ({
  * @internal
  */
 const emitReleaseOutput = (
-	outputs: ActionOutputs["Type"],
+	outputs: ActionOutputsShape,
 	output: ReleaseOutput,
 	scalars: { readonly packageCount: number; readonly releasePrNumber: number | null },
 ): Effect.Effect<void> =>
@@ -178,7 +179,7 @@ const emitReleaseOutput = (
 		yield* outputs
 			.setJson("result", output, ReleaseOutput)
 			.pipe(
-				Effect.catchAll((e) =>
+				Effect.catch((e) =>
 					Effect.logWarning(`Failed to emit structured "result" output: ${e instanceof Error ? e.message : String(e)}`),
 				),
 			);
@@ -206,7 +207,7 @@ const runBranchManagement = Effect.gen(function* () {
 			// one entry per package, taking the highest bump across all changesets.
 			const analyzer = yield* ChangesetAnalyzer;
 			const parsedChangesets = yield* analyzer.parseAll().pipe(
-				Effect.catchAll(() =>
+				Effect.catch(() =>
 					Effect.succeed(
 						[] as Array<{
 							id: string;
@@ -311,19 +312,19 @@ const runValidation = Effect.gen(function* () {
 			const runner = yield* CommandRunner;
 			const shallow = yield* runner
 				.execCapture("git", ["rev-parse", "--is-shallow-repository"])
-				.pipe(Effect.catchAll(() => Effect.succeed({ stdout: "false\n", stderr: "", exitCode: 0 })));
+				.pipe(Effect.catch(() => Effect.succeed({ stdout: "false\n", stderr: "", exitCode: 0 })));
 			if (shallow.stdout.trim() === "true") {
 				yield* Effect.logDebug("Repository is shallow, fetching full history");
-				yield* Effect.either(runner.exec("git", ["fetch", "--unshallow", "origin"]));
+				yield* Effect.result(runner.exec("git", ["fetch", "--unshallow", "origin"]));
 			}
-			yield* Effect.either(runner.exec("git", ["fetch", "origin", `${targetBranch}:${targetBranch}`]));
+			yield* Effect.result(runner.exec("git", ["fetch", "origin", `${targetBranch}:${targetBranch}`]));
 			yield* Effect.logDebug(`Fetched ${targetBranch} as a local ref`);
 
 			// Step 1 — link issues from commits (migrated).
 			const issuesResult = yield* logger.group(
 				"Link issues from commits",
 				linkIssuesFromCommits.pipe(
-					Effect.catchAll((e) =>
+					Effect.catch((e) =>
 						Effect.gen(function* () {
 							yield* Effect.logWarning(`linkIssuesFromCommits failed: ${String(e)}`);
 							return {
@@ -342,7 +343,7 @@ const runValidation = Effect.gen(function* () {
 			const buildResult = yield* logger.group(
 				"Validate builds",
 				validateBuilds(packageManager).pipe(
-					Effect.catchAll((e) =>
+					Effect.catch((e) =>
 						Effect.gen(function* () {
 							yield* Effect.logError(`validateBuilds failed: ${String(e)}`);
 							return { success: false, errors: String(e), checkId: 0, htmlUrl: "" };
@@ -381,7 +382,7 @@ const runValidation = Effect.gen(function* () {
 			if (buildResult.success) {
 				yield* Effect.logInfo("Validate publishing");
 				const report = yield* runValidationEffect({ packageManager, targetBranch, dryRun }).pipe(
-					Effect.catchAll((e) =>
+					Effect.catch((e) =>
 						Effect.gen(function* () {
 							const message =
 								e instanceof Error
@@ -583,7 +584,7 @@ const runValidation = Effect.gen(function* () {
 			): Effect.Effect<string> =>
 				Effect.gen(function* () {
 					const created = yield* checksSvc.create(title, sha).pipe(
-						Effect.catchAll((e) =>
+						Effect.catch((e) =>
 							Effect.gen(function* () {
 								yield* Effect.logWarning(`Failed to create check run "${title}": ${e.message}`);
 								return null;
@@ -595,7 +596,7 @@ const runValidation = Effect.gen(function* () {
 					}
 					yield* checksSvc
 						.complete(created.id, conclusion, { title, summary: capCheckSummary(summary) })
-						.pipe(Effect.catchAll((e) => Effect.logWarning(`Failed to complete check run "${title}": ${e.message}`)));
+						.pipe(Effect.catch((e) => Effect.logWarning(`Failed to complete check run "${title}": ${e.message}`)));
 					return created.htmlUrl;
 				});
 
@@ -690,7 +691,7 @@ const runValidation = Effect.gen(function* () {
 			};
 
 			// Step 7 — sticky comment on the release PR (migrated).
-			const prsResult = yield* Effect.either(
+			const prsResult = yield* Effect.result(
 				client.rest<ReadonlyArray<{ number: number }>>("pulls.list.validation", (octokit) =>
 					(
 						octokit as {
@@ -715,8 +716,8 @@ const runValidation = Effect.gen(function* () {
 					}),
 				),
 			);
-			if (prsResult._tag === "Right" && prsResult.right.length > 0) {
-				const pr = prsResult.right[0];
+			if (prsResult._tag === "Success" && prsResult.success.length > 0) {
+				const pr = prsResult.success[0];
 				// Redesigned Phase-2 comment: a worst-state header icon, the 3-state
 				// checks table, the findings table (rendered only when non-empty),
 				// the build-grouped "What will be released" forecast, and a
@@ -729,7 +730,7 @@ const runValidation = Effect.gen(function* () {
 				yield* logger.group(
 					"Update PR comment",
 					updateStickyComment(pr.number, commentBody, "release-validation").pipe(
-						Effect.catchAll((e) =>
+						Effect.catch((e) =>
 							Effect.gen(function* () {
 								yield* Effect.logWarning(`Failed to update sticky comment: ${String(e)}`);
 								return { commentId: 0 };
@@ -753,11 +754,11 @@ const runValidation = Effect.gen(function* () {
 				releasePrNumber: null,
 			});
 		}).pipe(
-			Effect.catchAll((e) =>
+			Effect.catch((e) =>
 				Effect.gen(function* () {
 					yield* Effect.logError(`Phase 2 failed: ${String(e)}`);
 					yield* cleanupValidationChecks([], `Phase 2 failed: ${String(e)}`, dryRun).pipe(
-						Effect.catchAll(() => Effect.succeed({ cleanedUp: 0, failed: 0, errors: [] })),
+						Effect.catch(() => Effect.succeed({ cleanedUp: 0, failed: 0, errors: [] })),
 					);
 					return yield* Effect.fail(e);
 				}),
@@ -799,11 +800,11 @@ const runPublishing = (mergedReleasePRNumber: number | undefined) =>
 			yield* Effect.logDebug(`Detected package manager: ${packageManager}`);
 			const shallow = yield* runner
 				.execCapture("git", ["rev-parse", "--is-shallow-repository"])
-				.pipe(Effect.catchAll(() => Effect.succeed({ stdout: "false\n", stderr: "", exitCode: 0 })));
+				.pipe(Effect.catch(() => Effect.succeed({ stdout: "false\n", stderr: "", exitCode: 0 })));
 			if (shallow.stdout.trim() === "true") {
-				yield* Effect.either(runner.exec("git", ["fetch", "--unshallow", "origin"]));
+				yield* Effect.result(runner.exec("git", ["fetch", "--unshallow", "origin"]));
 			}
-			yield* Effect.either(runner.exec("git", ["fetch", "origin", `${targetBranch}:${targetBranch}`]));
+			yield* Effect.result(runner.exec("git", ["fetch", "origin", `${targetBranch}:${targetBranch}`]));
 
 			const args = { packageManager, targetBranch, dryRun, mergedReleasePRNumber };
 
@@ -911,7 +912,7 @@ const runPublishing = (mergedReleasePRNumber: number | undefined) =>
 				packageManager,
 				dryRun,
 			}).pipe(
-				Effect.catchAll((e) =>
+				Effect.catch((e) =>
 					Effect.gen(function* () {
 						yield* Effect.logWarning(`runReleases failed: ${String(e)}`);
 						return { success: false, releases: [] as ReleaseInfo[], errors: [String(e)] };
@@ -929,7 +930,7 @@ const runPublishing = (mergedReleasePRNumber: number | undefined) =>
 				const closeResult = yield* logger.group(
 					"Close linked issues",
 					closeLinkedIssues(mergedReleasePRNumber, dryRun).pipe(
-						Effect.catchAll((e) =>
+						Effect.catch((e) =>
 							Effect.gen(function* () {
 								yield* Effect.logWarning(`closeLinkedIssues failed: ${String(e)}`);
 								return null;
@@ -947,7 +948,7 @@ const runPublishing = (mergedReleasePRNumber: number | undefined) =>
 			for (const tag of tagStrategy.tags) {
 				const rev = yield* runner
 					.execCapture("git", ["rev-parse", tag.name])
-					.pipe(Effect.catchAll(() => Effect.succeed({ stdout: "", stderr: "", exitCode: 1 })));
+					.pipe(Effect.catch(() => Effect.succeed({ stdout: "", stderr: "", exitCode: 1 })));
 				tagShas[tag.name] = rev.stdout.trim();
 			}
 			yield* emitPublishing(publishResult, tagStrategy.tags, releasesResult.releases, tagShas);
@@ -974,11 +975,11 @@ const readEventPullRequestNumber = Effect.gen(function* () {
 	const pathOpt = yield* env.getOptional("GITHUB_EVENT_PATH");
 	if (Option.isNone(pathOpt) || pathOpt.value === "") return Option.none<number>();
 
-	const result = yield* Effect.either(fs.readFileString(pathOpt.value));
-	if (result._tag === "Left") return Option.none<number>();
+	const result = yield* Effect.result(fs.readFileString(pathOpt.value));
+	if (result._tag === "Failure") return Option.none<number>();
 
 	try {
-		const parsed = JSON.parse(result.right) as { pull_request?: { number?: number } };
+		const parsed = JSON.parse(result.success) as { pull_request?: { number?: number } };
 		const num = parsed.pull_request?.number;
 		return typeof num === "number" ? Option.some(num) : Option.none<number>();
 	} catch {
@@ -1083,22 +1084,22 @@ export const main = Effect.gen(function* () {
  * `GitHubToken.client()` layer — no `process.env.GITHUB_TOKEN` involved.
  * `GitHubToken.client()` needs `ActionState`; `Action.run`'s `layer` option
  * requires a self-contained layer, so `ActionStateLive` (backed by
- * `NodeFileSystem`) is provided here. `Layer.orDie` turns a missing or
+ * `NodeServices`) is provided here. `Layer.orDie` turns a missing or
  * unreadable token into a fatal defect rather than a partial boot.
  */
-const actionStateLayer = ActionStateLive.pipe(Layer.provide(NodeFileSystem.layer));
+const actionStateLayer = ActionStateLive.pipe(Layer.provide(NodeServices.layer));
 const githubClient = GitHubToken.client().pipe(Layer.provide(actionStateLayer), Layer.orDie);
 const githubGraphQL = GitHubGraphQLLive.pipe(Layer.provide(githubClient));
 const githubApiBase = Layer.merge(githubClient, githubGraphQL);
 
-const releaseLive = ReleaseLive.pipe(Layer.provide(Layer.merge(NodeFileSystem.layer, NodePath.layer)), Layer.orDie);
+const releaseLive = ReleaseLive.pipe(Layer.provide(NodeServices.layer), Layer.orDie);
 const npmRegistryLive = NpmRegistryLive.pipe(Layer.provide(CommandRunnerLive));
 // 2.0: `PackagePublishLive.setupAuth` masks the registry token via
 // `ActionOutputs.setSecret`, so the layer now requires `ActionOutputs`.
 // `Action.run`'s `layer` option must be self-contained, so provide a
-// `NodeFileSystem`-backed `ActionOutputsLive` here rather than leaking the
+// `NodeServices`-backed `ActionOutputsLive` here rather than leaking the
 // requirement up to `MainLive`.
-const actionOutputsLive = ActionOutputsLive.pipe(Layer.provide(NodeFileSystem.layer));
+const actionOutputsLive = ActionOutputsLive.pipe(Layer.provide(NodeServices.layer));
 const packagePublishLive = PackagePublishLive.pipe(
 	Layer.provide(Layer.mergeAll(CommandRunnerLive, npmRegistryLive, actionOutputsLive)),
 );
@@ -1124,8 +1125,8 @@ export const MainLive = Layer.mergeAll(
 	GitHubCommitLive.pipe(Layer.provide(githubClient)),
 	GitHubContentLive.pipe(Layer.provide(githubClient)),
 	CommandRunnerLive,
-	NodeFileSystem.layer,
-	ChangesetAnalyzerLive.pipe(Layer.provide(NodeFileSystem.layer)),
+	NodeServices.layer,
+	ChangesetAnalyzerLive.pipe(Layer.provide(NodeServices.layer)),
 	releaseLive,
 	npmRegistryLive,
 	packagePublishLive,

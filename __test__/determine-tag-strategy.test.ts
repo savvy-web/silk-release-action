@@ -1,6 +1,6 @@
+import { PublishabilityDetector, WorkspaceDiscovery } from "@effected/workspaces";
 import { Effect, Layer } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { PublishabilityDetector, WorkspaceDiscovery } from "workspaces-effect";
 import { ChangesetConfig } from "../src/release/changeset-config.js";
 import type { PackagePublishResult } from "../src/release/types.js";
 import {
@@ -22,9 +22,12 @@ interface WsPkgStub {
 /** Build a WorkspaceDiscovery test layer that returns the given package stubs. */
 const makeDiscoveryLayer = (packages: WsPkgStub[]): Layer.Layer<WorkspaceDiscovery> =>
 	Layer.succeed(WorkspaceDiscovery, {
+		info: () => Effect.die("not implemented"),
 		listPackages: () => Effect.succeed(packages as never),
-		getPackage: () => Effect.die("not implemented"),
 		importerMap: () => Effect.die("not implemented"),
+		getPackage: () => Effect.die("not implemented"),
+		resolveFile: () => Effect.die("not implemented"),
+		resolveFiles: () => Effect.die("not implemented"),
 		refresh: () => Effect.void,
 	});
 

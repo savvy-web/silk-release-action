@@ -69,7 +69,7 @@ export const countChangesetsPerPackage = (
 		// List the changeset files tracked on the target branch.
 		const listing = yield* runner
 			.execLines("git", ["ls-tree", "--name-only", targetBranch, ".changeset/"])
-			.pipe(Effect.catchAll(() => Effect.succeed<ReadonlyArray<string>>([])));
+			.pipe(Effect.catch(() => Effect.succeed<ReadonlyArray<string>>([])));
 
 		const changesetFiles = listing.filter((path) => {
 			if (!path.endsWith(".md")) {
@@ -86,7 +86,7 @@ export const countChangesetsPerPackage = (
 			// skipped so one bad file does not discard the whole count.
 			const content = yield* runner.execCapture("git", ["show", `${targetBranch}:${filePath}`]).pipe(
 				Effect.map((output) => output.stdout),
-				Effect.catchAll(() => Effect.succeed<string | null>(null)),
+				Effect.catch(() => Effect.succeed<string | null>(null)),
 			);
 
 			if (content === null) {

@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
+import type { WorkspacePackage } from "@effected/workspaces";
+import { findWorkspaceRootSync, getWorkspacePackagesSync } from "@effected/workspaces";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { WorkspacePackage } from "workspaces-effect";
-import { findWorkspaceRootSync, getWorkspacePackagesSync } from "workspaces-effect";
 import { detectRepoType, isSinglePackage } from "../src/utils/detect-repo-type.js";
 
 // Helper to create a WorkspacePackage-shaped fixture with the fields the
@@ -31,8 +31,8 @@ vi.mock("node:fs/promises", () => ({
 	readFile: vi.fn(),
 }));
 
-vi.mock("workspaces-effect", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("workspaces-effect")>();
+vi.mock("@effected/workspaces", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("@effected/workspaces")>();
 	return {
 		...actual,
 		findWorkspaceRootSync: vi.fn(),

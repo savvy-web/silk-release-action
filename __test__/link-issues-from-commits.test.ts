@@ -169,10 +169,7 @@ const runStage = (
 		GitHubIssueTest.layer(f.issueState),
 	);
 	return Effect.runPromise(
-		getLinkedIssuesFromCommits(TARGET_BRANCH).pipe(
-			Effect.provide(layer),
-			Effect.provide(Logger.replace(Logger.defaultLogger, Logger.none)),
-		),
+		getLinkedIssuesFromCommits(TARGET_BRANCH).pipe(Effect.provide(layer), Effect.provide(Logger.layer([]))),
 	);
 };
 
@@ -194,10 +191,7 @@ const runGetLatestTagSha = (tags: Array<{ tag: string; sha: string }>): Promise<
 		state.tags.set(tag, sha);
 	}
 	return Effect.runPromise(
-		getLatestTagSha.pipe(
-			Effect.provide(GitTagTest.layer(state)),
-			Effect.provide(Logger.replace(Logger.defaultLogger, Logger.none)),
-		),
+		getLatestTagSha.pipe(Effect.provide(GitTagTest.layer(state)), Effect.provide(Logger.layer([]))),
 	);
 };
 
@@ -369,17 +363,15 @@ const runTopLevel = (f: TopLevelFixtures, dryRun: boolean) => {
 		GitHubIssueTest.layer(f.issueState),
 		PullRequestTest.layer(f.prState),
 	);
-	const config = ConfigProvider.fromMap(
-		new Map([
-			["target-branch", TARGET_BRANCH],
-			["dry-run", String(dryRun)],
-		]),
-	);
+	const config = ConfigProvider.fromUnknown({
+		"target-branch": TARGET_BRANCH,
+		"dry-run": String(dryRun),
+	});
 	return Effect.runPromise(
 		linkIssuesFromCommits.pipe(
 			Effect.provide(layer),
-			Effect.provide(Logger.replace(Logger.defaultLogger, Logger.none)),
-			Effect.withConfigProvider(config),
+			Effect.provide(Logger.layer([])),
+			Effect.provide(ConfigProvider.layer(config)),
 		),
 	);
 };

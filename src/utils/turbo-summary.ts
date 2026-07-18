@@ -11,17 +11,16 @@
  * job/check summaries.
  *
  * The whole flow is strictly **non-fatal**: callers wrap via
- * {@link Effect.catchAllCause} and demote any failure to a warning, so build
+ * {@link Effect.catchCause} and demote any failure to a warning, so build
  * validation never depends on turbo parsing.
  *
  * @module utils/turbo-summary
  */
 
 import { basename, join } from "node:path";
-import { FileSystem } from "@effect/platform";
-import type { PlatformError } from "@effect/platform/Error";
 import { Step } from "@savvy-web/github-action-effects";
-import { Effect, Option } from "effect";
+import { Effect, FileSystem, Option } from "effect";
+import type { PlatformError } from "effect/PlatformError";
 import { summaryWriter } from "./summary-writer.js";
 
 /**
@@ -218,7 +217,7 @@ export const listTurboRunSummaryPaths = (cwd: string): Effect.Effect<string[], P
  * @remarks
  * File read failures surface as the typed {@link PlatformError}. Malformed JSON
  * throws synchronously and becomes an Effect defect (Cause.die), not a typed
- * error; callers handle via {@link Effect.catchAllCause}.
+ * error; callers handle via {@link Effect.catchCause}.
  *
  * @param path - Absolute path to the `.json` summary file.
  * @returns The parsed summary.
@@ -394,7 +393,7 @@ export const readTurboDiagnostics = (
 		for (const path of paths) {
 			const result = yield* readTurboRunSummary(path).pipe(
 				Effect.map((summary) => ({ path, summary })),
-				Effect.catchAllCause((cause) =>
+				Effect.catchCause((cause) =>
 					Effect.logDebug(`Turbo summary: skipping unreadable/malformed ${path}: ${cause}`).pipe(
 						Effect.as(null as { path: string; summary: TurboRunSummary } | null),
 					),

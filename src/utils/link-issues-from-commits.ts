@@ -42,7 +42,6 @@ import {
 	PullRequest,
 	SemverResolver,
 } from "@savvy-web/github-action-effects";
-import type { ConfigError } from "effect";
 import { Config, Effect, Layer } from "effect";
 import { summaryWriter } from "./summary-writer.js";
 import { appToken } from "./tokens.js";
@@ -142,20 +141,20 @@ const extractVersionFromTag = (tag: string): string => {
  */
 export const getLatestTagSha = Effect.gen(function* () {
 	const gitTag = yield* GitTag;
-	const result = yield* Effect.either(gitTag.list());
-	if (result._tag === "Left") {
-		yield* Effect.logWarning(`Failed to get latest tag: ${result.left.reason}`);
+	const result = yield* Effect.result(gitTag.list());
+	if (result._tag === "Failure") {
+		yield* Effect.logWarning(`Failed to get latest tag: ${result.failure.reason}`);
 		return null;
 	}
-	const tags = result.right;
+	const tags = result.success;
 	if (tags.length === 0) return null;
 
 	// Filter to tags with parseable semver versions.
 	const parseable: TagEntry[] = [];
 	for (const entry of tags) {
 		const version = extractVersionFromTag(entry.tag);
-		const parseResult = yield* Effect.either(SemverResolver.parse(version));
-		if (parseResult._tag === "Right") {
+		const parseResult = yield* Effect.result(SemverResolver.parse(version));
+		if (parseResult._tag === "Success") {
 			parseable.push({ ...entry, version });
 		}
 	}
@@ -166,9 +165,9 @@ export const getLatestTagSha = Effect.gen(function* () {
 	let latest = parseable[0] as TagEntry;
 	for (let i = 1; i < parseable.length; i++) {
 		const candidate = parseable[i] as TagEntry;
-		const cmp = yield* Effect.either(SemverResolver.compare(candidate.version, latest.version));
+		const cmp = yield* Effect.result(SemverResolver.compare(candidate.version, latest.version));
 		// On parse failure, keep the current latest.
-		if (cmp._tag === "Right" && cmp.right === 1) {
+		if (cmp._tag === "Success" && cmp.success === 1) {
 			latest = candidate;
 		}
 	}
@@ -187,7 +186,7 @@ const getAllCommitsOnBranch = (branch: string): Effect.Effect<CommitInfo[], neve
 		yield* Effect.logInfo(`Fetching all commits from ${branch} branch...`);
 
 		const all = yield* commits.list(branch).pipe(
-			Effect.catchAll((e) =>
+			Effect.catch((e) =>
 				Effect.gen(function* () {
 					yield* Effect.logWarning(`Failed to fetch commits: ${e.reason}`);
 					return [] as ReadonlyArray<{ sha: string; message: string; author: string }>;
@@ -258,19 +257,19 @@ const getLinkedIssuesFromPR = (
 		const env = yield* ActionEnvironment;
 		const { repository } = yield* env.github;
 		const [owner, repo] = repository.split("/");
-		const result = yield* Effect.either(
+		const result = yield* Effect.result(
 			client.graphql<ClosingIssuesResponse>(CLOSING_ISSUES_QUERY, { owner, repo, prNumber }),
 		);
-		if (result._tag === "Left") {
-			yield* Effect.logWarning(`Failed to get linked issues for PR #${prNumber}: ${result.left.reason}`);
+		if (result._tag === "Failure") {
+			yield* Effect.logWarning(`Failed to get linked issues for PR #${prNumber}: ${result.failure.reason}`);
 			return [];
 		}
 
 		const issuesMap = new Map<number, { number: number; title: string; state: string; url: string; node_id: string }>();
-		for (const node of result.right.repository.pullRequest.allLinked.nodes) {
+		for (const node of result.success.repository.pullRequest.allLinked.nodes) {
 			issuesMap.set(node.number, { ...node, node_id: node.id });
 		}
-		for (const node of result.right.repository.pullRequest.manuallyLinked.nodes) {
+		for (const node of result.success.repository.pullRequest.manuallyLinked.nodes) {
 			if (!issuesMap.has(node.number)) {
 				issuesMap.set(node.number, { ...node, node_id: node.id });
 			}
@@ -287,12 +286,12 @@ const getLinkedIssuesFromPR = (
 const fetchIssueDetails = (issueNumber: number): Effect.Effect<IssueData | null, GitHubIssueError, GitHubIssue> =>
 	Effect.gen(function* () {
 		const issues = yield* GitHubIssue;
-		const result = yield* Effect.either(issues.get(issueNumber));
-		if (result._tag === "Left") {
-			yield* Effect.logWarning(`Failed to fetch issue #${issueNumber}: ${result.left.reason}`);
+		const result = yield* Effect.result(issues.get(issueNumber));
+		if (result._tag === "Failure") {
+			yield* Effect.logWarning(`Failed to fetch issue #${issueNumber}: ${result.failure.reason}`);
 			return null;
 		}
-		return result.right;
+		return result.success;
 	});
 
 /**
@@ -315,12 +314,12 @@ export const getLinkedIssuesFromCommits = (
 		let commits: CommitInfo[];
 		if (latestTagSha !== null) {
 			yield* Effect.logInfo(`Comparing ${latestTagSha}...${targetBranch}`);
-			const compareResult = yield* Effect.either(commitsSvc.compare(latestTagSha, targetBranch));
-			if (compareResult._tag === "Left") {
-				yield* Effect.logWarning(`Failed to compare commits: ${compareResult.left.reason}`);
+			const compareResult = yield* Effect.result(commitsSvc.compare(latestTagSha, targetBranch));
+			if (compareResult._tag === "Failure") {
+				yield* Effect.logWarning(`Failed to compare commits: ${compareResult.failure.reason}`);
 				commits = [];
 			} else {
-				commits = compareResult.right.commits.map((c) => ({ sha: c.sha, message: c.message, author: c.author }));
+				commits = compareResult.success.commits.map((c) => ({ sha: c.sha, message: c.message, author: c.author }));
 				yield* Effect.logInfo(`Found ${commits.length} commit(s) since last release`);
 			}
 		} else {
@@ -425,24 +424,24 @@ const linkIssuesToPR = (
 
 		yield* Effect.logInfo(`Looking for PR associated with commit ${sha}`);
 
-		const prsResult = yield* Effect.either(prSvc.listAssociatedWithCommit(sha));
+		const prsResult = yield* Effect.result(prSvc.listAssociatedWithCommit(sha));
 
-		if (prsResult._tag === "Left") {
-			yield* Effect.logWarning(`Failed to look up PR for commit: ${prsResult.left.reason}`);
+		if (prsResult._tag === "Failure") {
+			yield* Effect.logWarning(`Failed to look up PR for commit: ${prsResult.failure.reason}`);
 			return;
 		}
-		if (prsResult.right.length === 0) {
+		if (prsResult.success.length === 0) {
 			yield* Effect.logWarning("No PR found for current commit, skipping issue linking");
 			return;
 		}
 
-		const pr = prsResult.right[0];
-		yield* Effect.logInfo(`Found ${prsResult.right.length} PR(s) associated with commit`);
+		const pr = prsResult.success[0];
+		yield* Effect.logInfo(`Found ${prsResult.success.length} PR(s) associated with commit`);
 		yield* Effect.logInfo(`Found PR #${pr.number}: ${pr.title}`);
 
 		let linkedCount = 0;
 		for (const issue of linkedIssues) {
-			const timelineResult = yield* Effect.either(
+			const timelineResult = yield* Effect.result(
 				client.graphql<{
 					repository: {
 						issue: {
@@ -472,12 +471,12 @@ const linkIssuesToPR = (
 				),
 			);
 
-			if (timelineResult._tag === "Left") {
-				yield* Effect.logWarning(`Failed to inspect issue #${issue.number} timeline: ${timelineResult.left.reason}`);
+			if (timelineResult._tag === "Failure") {
+				yield* Effect.logWarning(`Failed to inspect issue #${issue.number} timeline: ${timelineResult.failure.reason}`);
 				continue;
 			}
 
-			const alreadyLinked = timelineResult.right.repository.issue.timelineItems.nodes.some(
+			const alreadyLinked = timelineResult.success.repository.issue.timelineItems.nodes.some(
 				(node) => node.source?.__typename === "PullRequest" && node.source.number === pr.number,
 			);
 
@@ -486,7 +485,7 @@ const linkIssuesToPR = (
 				continue;
 			}
 
-			const addCommentResult = yield* Effect.either(
+			const addCommentResult = yield* Effect.result(
 				client.graphql(
 					`
 					mutation ($subjectId: ID!, $body: String!) {
@@ -499,8 +498,8 @@ const linkIssuesToPR = (
 				),
 			);
 
-			if (addCommentResult._tag === "Left") {
-				yield* Effect.logWarning(`  Failed to link issue #${issue.number}: ${addCommentResult.left.reason}`);
+			if (addCommentResult._tag === "Failure") {
+				yield* Effect.logWarning(`  Failed to link issue #${issue.number}: ${addCommentResult.failure.reason}`);
 				continue;
 			}
 
@@ -526,7 +525,7 @@ export const linkIssuesFromCommits: Effect.Effect<
 	| ActionEnvironmentError
 	| ActionOutputError
 	| CheckRunError
-	| ConfigError.ConfigError
+	| Config.ConfigError
 	| GitHubClientError
 	| GitHubIssueError
 	| PullRequestError,

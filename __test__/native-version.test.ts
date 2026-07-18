@@ -1,7 +1,6 @@
-import { FileSystem } from "@effect/platform";
 import { CommandRunnerTest } from "@savvy-web/github-action-effects/testing";
 import { Changesets } from "@savvy-web/silk-effects";
-import { Effect, Exit, Layer, Logger } from "effect";
+import { Effect, Exit, FileSystem, Layer, Logger } from "effect";
 import { describe, expect, it } from "vitest";
 import { CHANGELOG_MODULES, runNativeVersion } from "../src/utils/native-version.js";
 
@@ -30,7 +29,7 @@ const fsWithConfig = FileSystem.layerNoop({
 const noCommands = CommandRunnerTest.layer(new Map());
 
 const run = <A, E>(effect: Effect.Effect<A, E, never>) =>
-	Effect.runPromiseExit(effect.pipe(Effect.provide(Logger.replace(Logger.defaultLogger, Logger.none))));
+	Effect.runPromiseExit(effect.pipe(Effect.provide(Logger.layer([]))));
 
 describe("CHANGELOG_MODULES", () => {
 	it("maps all four known ids onto the two bundled modules", () => {

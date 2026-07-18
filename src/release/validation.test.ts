@@ -5,7 +5,8 @@
  * registry, git, or SBOM tooling is exercised.
  */
 
-import { NodeContext } from "@effect/platform-node";
+import { NodeServices } from "@effect/platform-node";
+import { PublishTarget, PublishabilityDetector, WorkspaceDiscovery, WorkspacePackage } from "@effected/workspaces";
 import { ActionsConfigProvider } from "@savvy-web/github-action-effects";
 import type { CommandResponse } from "@savvy-web/github-action-effects/testing";
 import {
@@ -17,15 +18,8 @@ import {
 	PackagePublishTest,
 	SbomTest,
 } from "@savvy-web/github-action-effects/testing";
-import { Effect, Layer } from "effect";
+import { ConfigProvider, Effect, Layer, Option } from "effect";
 import { describe, expect, it } from "vitest";
-import {
-	PublishTarget,
-	PublishabilityDetector,
-	TopologicalSorter,
-	WorkspaceDiscovery,
-	WorkspacePackage,
-} from "workspaces-effect";
 
 import { matchesIgnorePattern } from "../utils/detect-repo-type.js";
 import { ChangesetConfig } from "./changeset-config.js";
@@ -79,14 +73,17 @@ const makeGhPkgsTarget = (name: string, directory = "."): PublishTarget =>
  */
 const makeWorkspaceDiscoveryLayer = (packages: WorkspacePackage[]): Layer.Layer<WorkspaceDiscovery> =>
 	Layer.succeed(WorkspaceDiscovery, {
-		listPackages: (_cwd?: string) => Effect.succeed(packages as ReadonlyArray<WorkspacePackage>),
+		info: () => Effect.die(new Error("info() not stubbed")),
+		listPackages: () => Effect.succeed(packages as ReadonlyArray<WorkspacePackage>),
 		getPackage: (name: string) => {
 			const found = packages.find((p) => p.name === name);
 			if (!found) return Effect.die(new Error(`Package not found: ${name}`));
 			return Effect.succeed(found);
 		},
-		importerMap: (_cwd?: string) =>
+		importerMap: () =>
 			Effect.succeed(new Map(packages.map((p) => [p.relativePath, p])) as ReadonlyMap<string, WorkspacePackage>),
+		resolveFile: () => Effect.succeed(Option.none()),
+		resolveFiles: () => Effect.succeed([] as ReadonlyArray<WorkspacePackage>),
 		refresh: () => Effect.void,
 	});
 
@@ -95,7 +92,7 @@ const makeWorkspaceDiscoveryLayer = (packages: WorkspacePackage[]): Layer.Layer<
  */
 const makePublishabilityLayer = (targetsByName: Map<string, PublishTarget[]>): Layer.Layer<PublishabilityDetector> =>
 	Layer.succeed(PublishabilityDetector, {
-		detect: (pkg: WorkspacePackage, _root: string) =>
+		detect: (pkg: WorkspacePackage) =>
 			Effect.succeed((targetsByName.get(pkg.name) ?? []) as ReadonlyArray<PublishTarget>),
 	});
 
@@ -131,14 +128,12 @@ const changesetConfigDefaultLayer = Layer.succeed(ChangesetConfig, {
 	refresh: () => Effect.void,
 });
 
-// TopologicalSorter mock: runValidation orders released packages via `sortSubset`.
-// Return the requested names unchanged so ordering is a no-op in tests (the real
-// dependency-order behavior is exercised by the publish phase / workspaces-effect).
-const topoSorterLayer = Layer.succeed(TopologicalSorter, {
-	sort: () => Effect.succeed([] as ReadonlyArray<string>),
-	sortSubset: (names: ReadonlyArray<string>) => Effect.succeed(names),
-	levels: () => Effect.succeed([] as ReadonlyArray<ReadonlyArray<string>>),
-} as typeof TopologicalSorter.Service);
+// Ordering is now derived from the workspace dependency graph
+// (`sortReleasesTopologically` builds a `DependencyGraph` from the packages the
+// mocked `WorkspaceDiscovery.listPackages()` returns), so there is no longer a
+// `TopologicalSorter` service to stub. Packages with no declared dependencies
+// keep their discovery order; the "topological ordering" test declares a real
+// dependency edge to exercise reordering.
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
@@ -160,9 +155,8 @@ describe("runValidation", () => {
 			const { state: pubState, layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
-				NodeContext.layer,
+				NodeServices.layer,
 				loggerLayer,
-				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -226,9 +220,8 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
-				NodeContext.layer,
+				NodeServices.layer,
 				loggerLayer,
-				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -271,9 +264,8 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.layer({ dryRunOk: false });
 
 			const layers = Layer.mergeAll(
-				NodeContext.layer,
+				NodeServices.layer,
 				loggerLayer,
-				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -314,9 +306,8 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.layer({ dryRunOk: false });
 
 			const layers = Layer.mergeAll(
-				NodeContext.layer,
+				NodeServices.layer,
 				loggerLayer,
-				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -356,9 +347,8 @@ describe("runValidation", () => {
 			const { state: pubState, layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
-				NodeContext.layer,
+				NodeServices.layer,
 				loggerLayer,
-				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -397,9 +387,8 @@ describe("runValidation", () => {
 			const { state: pubState, layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
-				NodeContext.layer,
+				NodeServices.layer,
 				loggerLayer,
-				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -440,9 +429,8 @@ describe("runValidation", () => {
 			const { state: pubState, layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
-				NodeContext.layer,
+				NodeServices.layer,
 				loggerLayer,
-				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -486,9 +474,8 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
-				NodeContext.layer,
+				NodeServices.layer,
 				loggerLayer,
-				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -532,9 +519,8 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
-				NodeContext.layer,
+				NodeServices.layer,
 				loggerLayer,
-				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -592,9 +578,8 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
-				NodeContext.layer,
+				NodeServices.layer,
 				loggerLayer,
-				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -634,9 +619,8 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
-				NodeContext.layer,
+				NodeServices.layer,
 				loggerLayer,
-				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -688,9 +672,8 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
-				NodeContext.layer,
+				NodeServices.layer,
 				loggerLayer,
-				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -732,9 +715,8 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
-				NodeContext.layer,
+				NodeServices.layer,
 				loggerLayer,
-				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -773,9 +755,8 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.layer({ dryRunOk: false });
 
 			const layers = Layer.mergeAll(
-				NodeContext.layer,
+				NodeServices.layer,
 				loggerLayer,
-				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -817,9 +798,8 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
-				NodeContext.layer,
+				NodeServices.layer,
 				loggerLayer,
-				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -886,9 +866,8 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
-				NodeContext.layer,
+				NodeServices.layer,
 				loggerLayer,
-				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -954,9 +933,8 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
-				NodeContext.layer,
+				NodeServices.layer,
 				loggerLayer,
-				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -1019,9 +997,8 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
-				NodeContext.layer,
+				NodeServices.layer,
 				loggerLayer,
-				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -1084,9 +1061,8 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
-				NodeContext.layer,
+				NodeServices.layer,
 				loggerLayer,
-				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -1139,9 +1115,8 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
-				NodeContext.layer,
+				NodeServices.layer,
 				loggerLayer,
-				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -1215,9 +1190,8 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
-				NodeContext.layer,
+				NodeServices.layer,
 				loggerLayer,
-				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -1246,7 +1220,7 @@ describe("runValidation", () => {
 				Effect.runPromise(
 					runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(
 						Effect.provide(layers),
-						Effect.withConfigProvider(ActionsConfigProvider),
+						Effect.provide(ConfigProvider.layer(ActionsConfigProvider)),
 					),
 				);
 			const report = await runReport().finally(() => {
@@ -1290,9 +1264,8 @@ describe("runValidation", () => {
 			const { layer: pubLayer } = PackagePublishTest.empty();
 
 			const layers = Layer.mergeAll(
-				NodeContext.layer,
+				NodeServices.layer,
 				loggerLayer,
-				topoSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,
@@ -1320,9 +1293,21 @@ describe("runValidation", () => {
 	describe("topological ordering", () => {
 		it("validates released packages in dependency order, not workspace glob order", async () => {
 			// Discovery returns alphabetical glob order [alpha, beta]; the dependency
-			// order is [beta, alpha] (alpha depends on beta). Validation must follow
-			// the TopologicalSorter, so beta is dry-run/SBOM'd before alpha.
-			const alpha = makeWsPkg("@test/alpha", "1.1.0", "packages/alpha");
+			// order is [beta, alpha] (alpha depends on beta). Validation orders
+			// released packages via `sortReleasesTopologically`, which builds a
+			// `DependencyGraph` from the discovered packages — so beta is
+			// dry-run/SBOM'd before alpha. The dependency edge is declared on the
+			// real `WorkspacePackage`, driving the graph sort rather than a stubbed
+			// sorter.
+			const alpha = new WorkspacePackage({
+				name: "@test/alpha",
+				version: "1.1.0",
+				path: "/tmp/test-workspace/@test/alpha",
+				packageJsonPath: "/tmp/test-workspace/@test/alpha/package.json",
+				relativePath: "packages/alpha",
+				private: false,
+				dependencies: { "@test/beta": "workspace:*" },
+			});
 			const beta = makeWsPkg("@test/beta", "1.1.0", "packages/beta");
 			const alphaTarget = makeNpmTarget("@test/alpha", "/tmp/dist/alpha");
 			const betaTarget = makeNpmTarget("@test/beta", "/tmp/dist/beta");
@@ -1340,24 +1325,9 @@ describe("runValidation", () => {
 
 			const { state: pubState, layer: pubLayer } = PackagePublishTest.empty();
 
-			// Reordering sorter: ranks the actual input names into dependency order
-			// (beta before alpha). Sorting the input — rather than returning a constant —
-			// means the test fails if runValidation passes the wrong subset to sortSubset.
-			const depOrder = ["@test/beta", "@test/alpha"];
-			const rank = (name: string) => {
-				const i = depOrder.indexOf(name);
-				return i === -1 ? Number.MAX_SAFE_INTEGER : i;
-			};
-			const reorderingSorterLayer = Layer.succeed(TopologicalSorter, {
-				sort: () => Effect.succeed([...depOrder] as ReadonlyArray<string>),
-				sortSubset: (names: ReadonlyArray<string>) => Effect.succeed([...names].sort((a, b) => rank(a) - rank(b))),
-				levels: () => Effect.succeed([] as ReadonlyArray<ReadonlyArray<string>>),
-			} as typeof TopologicalSorter.Service);
-
 			const layers = Layer.mergeAll(
-				NodeContext.layer,
+				NodeServices.layer,
 				loggerLayer,
-				reorderingSorterLayer,
 				actionStateLayer,
 				makeCommandRunnerLayer(commandResponses),
 				pubLayer,

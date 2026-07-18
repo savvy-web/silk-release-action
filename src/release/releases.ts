@@ -17,6 +17,7 @@
 
 import { copyFileSync, existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { WorkspaceDiscovery } from "@effected/workspaces";
 import type {
 	AttestError,
 	CommandRunner,
@@ -40,7 +41,6 @@ import {
 } from "@savvy-web/github-action-effects";
 import { Effect } from "effect";
 
-import { WorkspaceDiscovery } from "workspaces-effect";
 import { getGroupId, insertGroupToken } from "../utils/group-id.js";
 import { buildProvenancePredicate } from "./attest-helpers.js";
 import { ReleasesError } from "./errors.js";
@@ -294,7 +294,7 @@ const createStorageRecord = (
 
 		return ids;
 	}).pipe(
-		Effect.catchAll((e: GitHubArtifactMetadataError | GitHubClientError) =>
+		Effect.catch((e: GitHubArtifactMetadataError | GitHubClientError) =>
 			Effect.gen(function* () {
 				yield* Effect.logWarning(
 					`runReleases: failed to create storage record for ${packageName}@${version}: ${e instanceof Error ? e.message : String(e)}`,
@@ -338,7 +338,7 @@ const attestAsset = (
 				predicate,
 			})
 			.pipe(
-				Effect.catchAll((e: AttestError) =>
+				Effect.catch((e: AttestError) =>
 					Effect.gen(function* () {
 						yield* Effect.logWarning(`runReleases: attestation failed for ${basename(artifactPath)}: ${e.message}`);
 						return null;
@@ -408,7 +408,7 @@ const processOneTag = (
 			`tag ${tag.name}`,
 			gitTagSvc.create(tag.name, headSha).pipe(
 				Effect.tap(() => Step.success(`created at ${headSha}`)),
-				Effect.catchAll((createErr: GitTagError) =>
+				Effect.catch((createErr: GitTagError) =>
 					// Distinguish the idempotent "tag already exists at the right SHA"
 					// case from a true divergence. Resolve the existing tag's SHA and
 					// compare against the head we tried to point at: equal → info-level
@@ -431,7 +431,7 @@ const processOneTag = (
 										yield* Step.success(`diverged — existing ${existingSha} ≠ head ${headSha} (proceeding)`);
 									}),
 						),
-						Effect.catchAll((resolveErr: GitTagError) =>
+						Effect.catch((resolveErr: GitTagError) =>
 							Effect.gen(function* () {
 								yield* Effect.logWarning(
 									`runReleases: tag ${tag.name} create failed (${createErr.reason}) and resolve failed (${resolveErr.reason}) — proceeding`,
@@ -459,7 +459,7 @@ const processOneTag = (
 				prerelease: tag.version.includes("-"),
 			})
 			.pipe(
-				Effect.catchAll((createErr: GitHubReleaseError) =>
+				Effect.catch((createErr: GitHubReleaseError) =>
 					// On re-run the release may already exist — fall back to getByTag.
 					createErr.reason?.match(/already_exists|already exists/i)
 						? releaseSvc.getByTag(tag.name)
@@ -477,7 +477,7 @@ const processOneTag = (
 		// the `existingAssetsByName` pre-fetch from `create-github-releases.ts`).
 		const existingAssetsByName = yield* releaseSvc.listReleaseAssets(releaseData.id).pipe(
 			Effect.map((assets) => new Map(assets.map((a) => [a.name, { url: a.url, size: a.size }] as const))),
-			Effect.catchAll((e) =>
+			Effect.catch((e) =>
 				Effect.gen(function* () {
 					yield* Effect.logWarning(
 						`runReleases: failed to list existing assets for ${tag.name}: ${e instanceof Error ? e.message : String(e)}`,
@@ -551,7 +551,7 @@ const processOneTag = (
 					const asset = yield* releaseSvc
 						.uploadAsset(releaseData.id, fileName, fileContent, "application/octet-stream")
 						.pipe(
-							Effect.catchAll((e: GitHubReleaseError) =>
+							Effect.catch((e: GitHubReleaseError) =>
 								Effect.gen(function* () {
 									yield* Effect.logWarning(`runReleases: upload failed for ${fileName}: ${e.reason}`);
 									return null;
@@ -601,12 +601,12 @@ const processOneTag = (
 					if (!existingAssetsByName.has(metaName)) {
 						const metaOut = join(dirname(metaDir), metaName);
 						yield* tarMetaFolder(metaDir, metaOut).pipe(
-							Effect.catchAll((e) => Effect.logWarning(`runReleases: meta tar failed for ${metaName}: ${String(e)}`)),
+							Effect.catch((e) => Effect.logWarning(`runReleases: meta tar failed for ${metaName}: ${String(e)}`)),
 						);
 						if (existsSync(metaOut)) {
 							const metaAsset = yield* releaseSvc
 								.uploadAsset(releaseData.id, metaName, readFileSync(metaOut), "application/gzip")
-								.pipe(Effect.catchAll(() => Effect.succeed(null)));
+								.pipe(Effect.catch(() => Effect.succeed(null)));
 							if (metaAsset !== null) {
 								existingAssetsByName.set(metaName, { url: metaAsset.url, size: metaAsset.size });
 								assets.push({ name: metaName, downloadUrl: metaAsset.url, size: metaAsset.size });
@@ -630,7 +630,7 @@ const processOneTag = (
 						const sbomAsset = yield* releaseSvc
 							.uploadAsset(releaseData.id, sbomFileName, sbomContent, "application/json")
 							.pipe(
-								Effect.catchAll((e: GitHubReleaseError) =>
+								Effect.catch((e: GitHubReleaseError) =>
 									Effect.gen(function* () {
 										yield* Effect.logWarning(`runReleases: SBOM upload failed for ${sbomFileName}: ${e.reason}`);
 										return null;
@@ -667,7 +667,7 @@ const processOneTag = (
 						const apiDocAsset = yield* releaseSvc
 							.uploadAsset(releaseData.id, apiDocFileName, apiDocContent, "application/json")
 							.pipe(
-								Effect.catchAll((e: GitHubReleaseError) =>
+								Effect.catch((e: GitHubReleaseError) =>
 									Effect.gen(function* () {
 										yield* Effect.logWarning(`runReleases: API doc upload failed for ${apiDocFileName}: ${e.reason}`);
 										return null;
@@ -726,7 +726,7 @@ const processOneTag = (
 			yield* releaseSvc
 				.updateRelease(releaseData.id, { body: releaseNotes.trim() })
 				.pipe(
-					Effect.catchAll((e) =>
+					Effect.catch((e) =>
 						Effect.logWarning(
 							`runReleases: failed to update release body for ${tag.name}: ${e instanceof Error ? e.message : String(e)}`,
 						),
@@ -741,7 +741,7 @@ const processOneTag = (
 		);
 		return [releaseInfo, null] as const;
 	}).pipe(
-		Effect.catchAll((e: unknown) => {
+		Effect.catch((e: unknown) => {
 			const msg = `runReleases: failed to create release for ${tag.name}: ${e instanceof Error ? e.message : String(e)}`;
 			return Effect.gen(function* () {
 				yield* Effect.logWarning(msg);
@@ -851,7 +851,7 @@ export const runReleases = (
 			} satisfies ReleasesReport;
 		}),
 	).pipe(
-		Effect.catchAll((e: unknown) =>
+		Effect.catch((e: unknown) =>
 			Effect.fail(
 				new ReleasesError({
 					reason: "release",

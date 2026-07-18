@@ -1,8 +1,8 @@
 import { relative, sep } from "node:path";
+import type { PublishabilityDetector, WorkspaceDiscovery } from "@effected/workspaces";
 import type { PublishablePackage } from "@savvy-web/silk-effects";
 import { SilkPublishability } from "@savvy-web/silk-effects";
 import type { Effect } from "effect";
-import type { PublishabilityDetector, WorkspaceDiscovery } from "workspaces-effect";
 
 export type { PublishablePackage };
 

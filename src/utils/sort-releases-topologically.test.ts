@@ -5,36 +5,48 @@
  * SBOM, publish, releases) surfaces packages in dependency-first order.
  */
 
+import { WorkspaceDiscovery, WorkspacePackage } from "@effected/workspaces";
 import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
-import { CyclicDependencyError, TopologicalSorter } from "workspaces-effect";
 
 import { sortReleasesTopologically } from "./sort-releases-topologically.js";
 
-/** TopologicalSorter test layer that returns names in the pre-configured order. */
-const makeSorterLayer = (orderedNames: string[]): Layer.Layer<TopologicalSorter> =>
-	Layer.succeed(TopologicalSorter, {
-		sort: () => Effect.succeed(orderedNames as ReadonlyArray<string>),
-		sortSubset: (names: ReadonlyArray<string>) => {
-			const sorted = orderedNames.filter((n) => (names as string[]).includes(n));
-			const missing = (names as string[]).filter((n) => !orderedNames.includes(n));
-			return Effect.succeed([...sorted, ...missing] as ReadonlyArray<string>);
-		},
-		levels: () => Effect.succeed([orderedNames] as ReadonlyArray<ReadonlyArray<string>>),
+/** Build a WorkspacePackage fixture whose workspace dependency edges point at `deps`. */
+const pkg = (name: string, deps: ReadonlyArray<string> = []): WorkspacePackage =>
+	WorkspacePackage.make({
+		name,
+		version: "1.0.0",
+		path: `/repo/${name}`,
+		packageJsonPath: `/repo/${name}/package.json`,
+		relativePath: name,
+		dependencies: Object.fromEntries(deps.map((d) => [d, "workspace:*"])),
 	});
 
-/** TopologicalSorter test layer whose sortSubset always fails (e.g. a cycle). */
-const makeFailingSorterLayer = (): Layer.Layer<TopologicalSorter> =>
-	Layer.succeed(TopologicalSorter, {
-		sort: () => Effect.die("sort should not be called"),
-		sortSubset: () => Effect.fail(new CyclicDependencyError({ cycle: ["@scope/a", "@scope/b"] })),
-		levels: () => Effect.die("levels should not be called"),
+/**
+ * WorkspaceDiscovery test layer whose `listPackages` returns the given packages.
+ *
+ * `sortReleasesTopologically` builds a real `DependencyGraph` from these, so the
+ * fixtures' dependency edges — not a mocked sorter — drive the topological order.
+ */
+const makeDiscoveryLayer = (packages: ReadonlyArray<WorkspacePackage>): Layer.Layer<WorkspaceDiscovery> =>
+	Layer.succeed(WorkspaceDiscovery, {
+		info: () => Effect.die("not implemented"),
+		listPackages: () => Effect.succeed(packages),
+		importerMap: () => Effect.die("not implemented"),
+		getPackage: () => Effect.die("not implemented"),
+		resolveFile: () => Effect.die("not implemented"),
+		resolveFiles: () => Effect.die("not implemented"),
+		refresh: () => Effect.void,
 	});
 
 describe("sortReleasesTopologically", () => {
-	it("orders names dependency-first using the topological sorter", async () => {
-		// Sorter knows the dependency order: dep before its dependents.
-		const layer = makeSorterLayer(["@scope/dep", "@scope/a", "@scope/b"]);
+	it("orders names dependency-first using the workspace dependency graph", async () => {
+		// dep depends on nothing; a and b each depend on dep.
+		const layer = makeDiscoveryLayer([
+			pkg("@scope/dep"),
+			pkg("@scope/a", ["@scope/dep"]),
+			pkg("@scope/b", ["@scope/dep"]),
+		]);
 
 		// Caller passes them in detection (alphabetical) order.
 		const result = await Effect.runPromise(
@@ -45,12 +57,13 @@ describe("sortReleasesTopologically", () => {
 	});
 
 	it("keeps only the requested packages, dropping non-released transitive deps", async () => {
-		// sortSubset returns the transitive closure including a non-released dep.
-		const layer = Layer.succeed(TopologicalSorter, {
-			sort: () => Effect.succeed([] as ReadonlyArray<string>),
-			sortSubset: () => Effect.succeed(["@scope/non-released", "@scope/dep", "@scope/a"] as ReadonlyArray<string>),
-			levels: () => Effect.succeed([] as ReadonlyArray<ReadonlyArray<string>>),
-		});
+		// a → dep → non-released. sortSubset pulls the whole transitive closure;
+		// the non-released dependency must be filtered back out.
+		const layer = makeDiscoveryLayer([
+			pkg("@scope/non-released"),
+			pkg("@scope/dep", ["@scope/non-released"]),
+			pkg("@scope/a", ["@scope/dep"]),
+		]);
 
 		const result = await Effect.runPromise(
 			sortReleasesTopologically(["@scope/a", "@scope/dep"]).pipe(Effect.provide(layer)),
@@ -60,7 +73,9 @@ describe("sortReleasesTopologically", () => {
 	});
 
 	it("falls back to the input order when the sort fails", async () => {
-		const layer = makeFailingSorterLayer();
+		// a ↔ b form a cycle, so DependencyGraph.sortSubset fails with a
+		// CyclicDependencyError and the helper returns the input order unchanged.
+		const layer = makeDiscoveryLayer([pkg("@scope/a", ["@scope/b"]), pkg("@scope/b", ["@scope/a"]), pkg("@scope/dep")]);
 
 		const result = await Effect.runPromise(
 			sortReleasesTopologically(["@scope/a", "@scope/b", "@scope/dep"]).pipe(Effect.provide(layer)),

@@ -68,17 +68,15 @@ const runStage = (
 		CommandRunnerTest.layer(new Map(commandResponses)),
 		NodeFileSystem.layer,
 	);
-	const config = ConfigProvider.fromMap(
-		new Map([
-			["build-command", ""],
-			["dry-run", "false"],
-		]),
-	);
+	const config = ConfigProvider.fromUnknown({
+		"build-command": "",
+		"dry-run": "false",
+	});
 	return Effect.runPromise(
 		validateBuilds("pnpm").pipe(
 			Effect.provide(layer),
-			Effect.provide(Logger.replace(Logger.defaultLogger, Logger.none)),
-			Effect.withConfigProvider(config),
+			Effect.provide(Logger.layer([])),
+			Effect.provide(ConfigProvider.layer(config)),
 		),
 	);
 };
@@ -149,18 +147,16 @@ describe("validateBuilds", () => {
 			CommandRunnerTest.empty(),
 			NodeFileSystem.layer,
 		);
-		const config = ConfigProvider.fromMap(
-			new Map([
-				["build-command", ""],
-				["dry-run", "true"],
-			]),
-		);
+		const config = ConfigProvider.fromUnknown({
+			"build-command": "",
+			"dry-run": "true",
+		});
 
 		await Effect.runPromise(
 			validateBuilds("pnpm").pipe(
 				Effect.provide(layer),
-				Effect.provide(Logger.replace(Logger.defaultLogger, Logger.none)),
-				Effect.withConfigProvider(config),
+				Effect.provide(Logger.layer([])),
+				Effect.provide(ConfigProvider.layer(config)),
 			),
 		);
 

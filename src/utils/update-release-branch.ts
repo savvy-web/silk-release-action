@@ -15,7 +15,8 @@
  * any open release PR and deletes the release branch.
  */
 
-import { FileSystem } from "@effect/platform";
+import type { PublishabilityDetector } from "@effected/workspaces";
+import { WorkspaceDiscovery } from "@effected/workspaces";
 import type {
 	ActionEnvironmentError,
 	ActionOutputError,
@@ -40,10 +41,7 @@ import {
 	PullRequest,
 } from "@savvy-web/github-action-effects";
 import type { Changesets } from "@savvy-web/silk-effects";
-import type { ConfigError } from "effect";
-import { Config, Effect } from "effect";
-import type { PublishabilityDetector } from "workspaces-effect";
-import { WorkspaceDiscovery } from "workspaces-effect";
+import { Config, Effect, FileSystem } from "effect";
 import type { ChangesetConfig } from "../release/changeset-config.js";
 import { resolveSignoff } from "./commit-signoff.js";
 import { isSinglePackage } from "./detect-repo-type.js";
@@ -134,7 +132,7 @@ export const updateReleaseBranch = (): Effect.Effect<
 	| Changesets.ConfigurationError
 	| Changesets.ReleasePlanError
 	| CommandRunnerError
-	| ConfigError.ConfigError
+	| Config.ConfigError
 	| GitBranchError
 	| GitCommitError
 	| GitHubClientError
@@ -182,27 +180,27 @@ export const updateReleaseBranch = (): Effect.Effect<
 		let prNumber: number | null = null;
 		let prWasClosed = false;
 
-		const openPrs = yield* Effect.either(
+		const openPrs = yield* Effect.result(
 			pr.list({ state: "open", head: `${owner}:${releaseBranch}`, base: targetBranch }),
 		);
 
-		if (openPrs._tag === "Right" && openPrs.right.length > 0) {
-			prNumber = openPrs.right[0].number;
-		} else if (openPrs._tag === "Left") {
-			yield* Effect.logWarning(`Could not list open PRs: ${openPrs.left.reason}`);
+		if (openPrs._tag === "Success" && openPrs.success.length > 0) {
+			prNumber = openPrs.success[0].number;
+		} else if (openPrs._tag === "Failure") {
+			yield* Effect.logWarning(`Could not list open PRs: ${openPrs.failure.reason}`);
 		} else {
-			const closedPrs = yield* Effect.either(
+			const closedPrs = yield* Effect.result(
 				pr.list({ state: "closed", head: `${owner}:${releaseBranch}`, base: targetBranch }),
 			);
-			if (closedPrs._tag === "Right") {
-				const unmerged = closedPrs.right.find((p) => (p.mergedAt ?? null) === null);
+			if (closedPrs._tag === "Success") {
+				const unmerged = closedPrs.success.find((p) => (p.mergedAt ?? null) === null);
 				if (unmerged) {
 					prNumber = unmerged.number;
 					prWasClosed = true;
 					yield* Effect.logInfo(`Found closed (unmerged) PR #${prNumber} - will reopen after branch update`);
 				}
 			} else {
-				yield* Effect.logWarning(`Could not list closed PRs: ${closedPrs.left.reason}`);
+				yield* Effect.logWarning(`Could not list closed PRs: ${closedPrs.failure.reason}`);
 			}
 		}
 
@@ -218,7 +216,7 @@ export const updateReleaseBranch = (): Effect.Effect<
 		// ---------- Recreate the release branch from main locally ----------
 		yield* Effect.logInfo(`Recreating release branch '${releaseBranch}' from '${targetBranch}'`);
 		if (!dryRun) {
-			yield* Effect.either(runner.exec("git", ["branch", "-D", releaseBranch]));
+			yield* Effect.result(runner.exec("git", ["branch", "-D", releaseBranch]));
 			yield* runner.exec("git", ["checkout", "-b", releaseBranch]);
 		} else {
 			yield* Effect.logInfo(`[DRY RUN] Would recreate branch: ${releaseBranch} from ${targetBranch}`);
@@ -282,17 +280,17 @@ export const updateReleaseBranch = (): Effect.Effect<
 			const releasingPackages = detectedReleasing.length > 0 ? detectedReleasing : publishablePackages;
 			let singlePackageRepoVersion: string | undefined;
 			if (releasingPackages.length === 0 && isSinglePackage()) {
-				const readResult = yield* Effect.either(fs.readFileString("package.json"));
-				if (readResult._tag === "Right") {
+				const readResult = yield* Effect.result(fs.readFileString("package.json"));
+				if (readResult._tag === "Success") {
 					try {
-						singlePackageRepoVersion = (JSON.parse(readResult.right) as { version?: string }).version;
+						singlePackageRepoVersion = (JSON.parse(readResult.success) as { version?: string }).version;
 					} catch (error) {
 						yield* Effect.logWarning(
 							`Failed to read version for PR title: ${error instanceof Error ? error.message : String(error)}`,
 						);
 					}
 				} else {
-					yield* Effect.logWarning(`Failed to read package.json: ${readResult.left.message}`);
+					yield* Effect.logWarning(`Failed to read package.json: ${readResult.failure.message}`);
 				}
 			}
 			prTitle = resolveReleasePrTitle({
@@ -333,22 +331,22 @@ export const updateReleaseBranch = (): Effect.Effect<
 				// PR records a clean "closed" rather than the auto-close GitHub emits
 				// when a head branch disappears. Already-closed PRs are left as-is.
 				if (prNumber !== null && !prWasClosed) {
-					const closed = yield* Effect.either(pr.update(prNumber, { state: "closed" }));
-					if (closed._tag === "Right") {
+					const closed = yield* Effect.result(pr.update(prNumber, { state: "closed" }));
+					if (closed._tag === "Success") {
 						yield* Effect.logInfo(`✓ Closed stale release PR #${prNumber} (nothing to release)`);
 					} else {
-						yield* Effect.logWarning(`Could not close release PR #${prNumber}: ${closed.left.reason}`);
+						yield* Effect.logWarning(`Could not close release PR #${prNumber}: ${closed.failure.reason}`);
 					}
 				} else if (prNumber !== null && prWasClosed) {
 					yield* Effect.logInfo(`Release PR #${prNumber} is already closed`);
 				}
 
 				// Delete the release branch — it is in an invalid state.
-				const deleted = yield* Effect.either(branches.delete(releaseBranch));
-				if (deleted._tag === "Right") {
+				const deleted = yield* Effect.result(branches.delete(releaseBranch));
+				if (deleted._tag === "Success") {
 					yield* Effect.logInfo(`✓ Deleted release branch '${releaseBranch}'`);
 				} else {
-					yield* Effect.logWarning(`Could not delete release branch '${releaseBranch}': ${deleted.left.reason}`);
+					yield* Effect.logWarning(`Could not delete release branch '${releaseBranch}': ${deleted.failure.reason}`);
 				}
 			} else {
 				yield* Effect.logInfo(
@@ -360,11 +358,11 @@ export const updateReleaseBranch = (): Effect.Effect<
 
 		// ---------- Reopen PR if it was closed ----------
 		if (!branchDeleted && prWasClosed && prNumber !== null && !dryRun) {
-			const reopen = yield* Effect.either(pr.update(prNumber, { state: "open" }));
-			if (reopen._tag === "Right") {
+			const reopen = yield* Effect.result(pr.update(prNumber, { state: "open" }));
+			if (reopen._tag === "Success") {
 				yield* Effect.logInfo(`✓ Reopened PR #${prNumber}`);
 			} else {
-				yield* Effect.logWarning(`Could not reopen PR #${prNumber}: ${reopen.left.reason}`);
+				yield* Effect.logWarning(`Could not reopen PR #${prNumber}: ${reopen.failure.reason}`);
 				yield* Effect.logInfo("Will create a new PR instead");
 				prNumber = null;
 			}
@@ -374,11 +372,11 @@ export const updateReleaseBranch = (): Effect.Effect<
 
 		// ---------- Update PR title for existing open PRs ----------
 		if (!branchDeleted && prNumber !== null && !prWasClosed && !dryRun) {
-			const update = yield* Effect.either(pr.update(prNumber, { title: prTitle }));
-			if (update._tag === "Right") {
+			const update = yield* Effect.result(pr.update(prNumber, { title: prTitle }));
+			if (update._tag === "Success") {
 				yield* Effect.logInfo(`✓ Updated PR #${prNumber} title to: ${prTitle}`);
 			} else {
-				yield* Effect.logWarning(`Could not update PR title: ${update.left.reason}`);
+				yield* Effect.logWarning(`Could not update PR title: ${update.failure.reason}`);
 			}
 		}
 
@@ -401,11 +399,11 @@ export const updateReleaseBranch = (): Effect.Effect<
 
 		// ---------- Update PR body with linked issues ----------
 		if (prNumber !== null && linkedIssues.length > 0 && !dryRun) {
-			const getPr = yield* Effect.either(pr.get(prNumber));
+			const getPr = yield* Effect.result(pr.get(prNumber));
 
-			if (getPr._tag === "Right") {
+			if (getPr._tag === "Success") {
 				const linkedSection = buildLinkedIssuesSection(linkedIssues);
-				let currentBody = getPr.right.body ?? "";
+				let currentBody = getPr.success.body ?? "";
 				const existingIdx = currentBody.indexOf("## Linked Issues");
 				if (existingIdx !== -1) {
 					const nextHeadingIdx = currentBody.indexOf("\n## ", existingIdx + 1);
@@ -416,14 +414,14 @@ export const updateReleaseBranch = (): Effect.Effect<
 				}
 				const newBody = `${linkedSection}\n${currentBody.trim()}`;
 
-				const update = yield* Effect.either(pr.update(prNumber, { body: newBody }));
-				if (update._tag === "Right") {
+				const update = yield* Effect.result(pr.update(prNumber, { body: newBody }));
+				if (update._tag === "Success") {
 					yield* Effect.logInfo(`✓ Updated PR #${prNumber} with ${linkedIssues.length} linked issue(s)`);
 				} else {
-					yield* Effect.logWarning(`Could not update PR body: ${update.left.reason}`);
+					yield* Effect.logWarning(`Could not update PR body: ${update.failure.reason}`);
 				}
 			} else {
-				yield* Effect.logWarning(`Could not fetch PR for body update: ${getPr.left.reason}`);
+				yield* Effect.logWarning(`Could not fetch PR for body update: ${getPr.failure.reason}`);
 			}
 		}
 
@@ -534,14 +532,14 @@ export const updateReleaseBranch = (): Effect.Effect<
 			CommandRunner | FileSystem.FileSystem | GitHubClient | GitHubIssue
 		> {
 			return Effect.gen(function* () {
-				const dirEntries = yield* fs.readDirectory(".changeset").pipe(Effect.catchAll(() => Effect.succeed([])));
+				const dirEntries = yield* fs.readDirectory(".changeset").pipe(Effect.catch(() => Effect.succeed([])));
 				const changesetFiles = dirEntries.filter((f) => f.endsWith(".md") && f !== "README.md");
 				yield* Effect.logInfo(`Found ${changesetFiles.length} changeset file(s): ${changesetFiles.join(", ")}`);
 				if (changesetFiles.length === 0) return [];
 
 				yield* Effect.logInfo(`Fetching origin/${args.targetBranch} to get full history...`);
-				yield* Effect.either(runner.exec("git", ["fetch", "origin", args.targetBranch, "--unshallow"]));
-				yield* Effect.either(
+				yield* Effect.result(runner.exec("git", ["fetch", "origin", args.targetBranch, "--unshallow"]));
+				yield* Effect.result(
 					runner.exec("git", ["fetch", "origin", `${args.targetBranch}:refs/remotes/origin/${args.targetBranch}`]),
 				);
 
@@ -562,7 +560,7 @@ export const updateReleaseBranch = (): Effect.Effect<
 							"--",
 							filePath,
 						])
-						.pipe(Effect.catchAll(() => Effect.succeed({ stdout: "", stderr: "", exitCode: 0 })));
+						.pipe(Effect.catch(() => Effect.succeed({ stdout: "", stderr: "", exitCode: 0 })));
 					const output = logResult.stdout;
 					if (output.trim() === "") {
 						yield* Effect.logInfo(`Changeset ${file}: no commit found in ${remoteBranch} history`);
@@ -594,9 +592,9 @@ export const updateReleaseBranch = (): Effect.Effect<
 					const prNum = extractPRNumber(commit.message);
 					if (prNum !== null) {
 						yield* Effect.logInfo(`  PR reference: #${prNum}`);
-						const prIssuesResult = yield* Effect.either(issues.getLinkedIssues(prNum));
-						if (prIssuesResult._tag === "Right") {
-							const prIssues = prIssuesResult.right.map((n) => n.number);
+						const prIssuesResult = yield* Effect.result(issues.getLinkedIssues(prNum));
+						if (prIssuesResult._tag === "Success") {
+							const prIssues = prIssuesResult.success.map((n) => n.number);
 							if (prIssues.length > 0) {
 								yield* Effect.logInfo(`  PR #${prNum} has ${prIssues.length} linked issue(s):`);
 								for (const n of prIssues) {
@@ -618,9 +616,9 @@ export const updateReleaseBranch = (): Effect.Effect<
 
 				const result: LinkedIssue[] = [];
 				for (const [issueNumber, commitShas] of issueMap) {
-					const issueResult = yield* Effect.either(issues.get(issueNumber));
-					if (issueResult._tag === "Right") {
-						const i = issueResult.right;
+					const issueResult = yield* Effect.result(issues.get(issueNumber));
+					if (issueResult._tag === "Success") {
+						const i = issueResult.success;
 						result.push({
 							number: issueNumber,
 							title: i.title,
@@ -631,7 +629,7 @@ export const updateReleaseBranch = (): Effect.Effect<
 						});
 						yield* Effect.logInfo(`✓ Issue #${issueNumber}: ${i.title} (${i.state})`);
 					} else {
-						yield* Effect.logWarning(`Failed to fetch issue #${issueNumber}: ${issueResult.left.reason}`);
+						yield* Effect.logWarning(`Failed to fetch issue #${issueNumber}: ${issueResult.failure.reason}`);
 					}
 				}
 				return result;
@@ -682,9 +680,9 @@ export const updateReleaseBranch = (): Effect.Effect<
 					if (statusCode === "D" || statusCode === "DD" || statusCode === "AD") {
 						files.push({ path: filePath, mode: "100644", sha: null });
 					} else {
-						const content = yield* fs.readFileString(filePath).pipe(Effect.catchAll(() => Effect.succeed("")));
-						const statResult = yield* Effect.either(fs.stat(filePath));
-						const isExecutable = statResult._tag === "Right" && (Number(statResult.right.mode ?? 0n) & 0o111) !== 0;
+						const content = yield* fs.readFileString(filePath).pipe(Effect.catch(() => Effect.succeed("")));
+						const statResult = yield* Effect.result(fs.stat(filePath));
+						const isExecutable = statResult._tag === "Success" && (Number(statResult.success.mode ?? 0n) & 0o111) !== 0;
 						files.push({ path: filePath, mode: isExecutable ? "100755" : "100644", content });
 					}
 				}

@@ -74,10 +74,7 @@ const runStage = (prNumber: number, dryRun: boolean, f: Fixtures): Promise<unkno
 		GitHubIssueTest.layer(f.issueState),
 	);
 	return Effect.runPromise(
-		closeLinkedIssues(prNumber, dryRun).pipe(
-			Effect.provide(layer),
-			Effect.provide(Logger.replace(Logger.defaultLogger, Logger.none)),
-		),
+		closeLinkedIssues(prNumber, dryRun).pipe(Effect.provide(layer), Effect.provide(Logger.layer([]))),
 	);
 };
 

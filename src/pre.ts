@@ -14,8 +14,7 @@
  * State is grouped into Schema.Class bundles defined in `./state.ts`.
  */
 
-import { FetchHttpClient } from "@effect/platform";
-import { NodeFileSystem } from "@effect/platform-node";
+import { NodeServices } from "@effect/platform-node";
 import {
 	Action,
 	ActionOutputs,
@@ -25,6 +24,7 @@ import {
 	OctokitAuthAppLive,
 } from "@savvy-web/github-action-effects";
 import { Config, Effect, Layer, Redacted } from "effect";
+import { FetchHttpClient } from "effect/unstable/http";
 import { GithubPackagesTokenState, STATE_KEYS, StartTimeState } from "./state.js";
 
 /**
@@ -90,11 +90,11 @@ export const pre = Effect.gen(function* () {
  * `GitHubToken.provision` needs a `GitHubApp` layer — composed here from
  * `GitHubAppLive` over `OctokitAuthAppLive`. In 2.0 `GitHubAppLive` also
  * requires `HttpClient.HttpClient`, provided here via `FetchHttpClient.layer`.
- * `NodeFileSystem.layer` backs `ActionStateLive`.
+ * `NodeServices.layer` backs `ActionStateLive`.
  */
 export const PreLive = Layer.mergeAll(
 	GitHubAppLive.pipe(Layer.provide(OctokitAuthAppLive), Layer.provide(FetchHttpClient.layer)),
-	NodeFileSystem.layer,
+	NodeServices.layer,
 );
 
 /* v8 ignore next 3 -- entry-point guard, only runs in GitHub Actions */

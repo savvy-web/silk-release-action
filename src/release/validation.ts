@@ -17,7 +17,8 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
-
+import type { PublishTarget, WorkspacePackage } from "@effected/workspaces";
+import { WorkspaceDiscovery } from "@effected/workspaces";
 import type { PackagePublishError, ResolvedDependency, SbomError, SbomInput } from "@savvy-web/github-action-effects";
 import {
 	ActionState,
@@ -29,8 +30,6 @@ import {
 	isNpmRegistry,
 } from "@savvy-web/github-action-effects";
 import { Config, Effect, Option, Redacted } from "effect";
-import type { PublishTarget, WorkspacePackage } from "workspaces-effect";
-import { WorkspaceDiscovery } from "workspaces-effect";
 import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
 import type { EnhancedCycloneDXDocument, ResolvedSBOMMetadata, SBOMMetadataConfig } from "../types/sbom-config.js";
 import { countChangesetsPerPackage } from "../utils/count-changesets.js";
@@ -314,7 +313,7 @@ const readVersionOnBranch = (
 				return null;
 			}
 		}),
-		Effect.catchAll(() =>
+		Effect.catch(() =>
 			// git show fails when the path doesn't exist on the target branch →
 			// brand-new package, treat as released with null base version.
 			Effect.succeed(null),
@@ -425,7 +424,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 		// caught and treated as "no token".
 		const ghPkgsTokenOpt = yield* state
 			.getOptional(STATE_KEYS.githubPackagesToken, GithubPackagesTokenState)
-			.pipe(Effect.catchAll(() => Effect.succeed(Option.none<GithubPackagesTokenState>())));
+			.pipe(Effect.catch(() => Effect.succeed(Option.none<GithubPackagesTokenState>())));
 		const ghPkgsToken: string | null =
 			Option.isSome(ghPkgsTokenOpt) && ghPkgsTokenOpt.value.token !== "" ? ghPkgsTokenOpt.value.token : null;
 
@@ -441,7 +440,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 		// finding and proceed with an empty resolved metadata (preserving the
 		// "continue on bad template" behaviour of the prior cast).
 		const sbomConfigResult = yield* loadSBOMConfig().pipe(
-			Effect.catchAllDefect((e) => {
+			Effect.catchDefect((e) => {
 				const message = e instanceof Error ? e.message : String(e);
 				return Effect.succeed({ ok: false as const, error: message, source: { source: "none" as const } });
 			}),
@@ -582,9 +581,9 @@ export const runValidation = (args: ValidationInputArgs) =>
 			// a dev build was about to be packed. Record it as an error finding rather
 			// than aborting the whole run: the check fails, auto-merge is blocked, and
 			// the remaining packages still get validated and reported.
-			const resolved = yield* Effect.either(resolvePublishableTargets(pkg, workspaceRoot));
-			if (resolved._tag === "Left") {
-				const bindingError = resolved.left;
+			const resolved = yield* Effect.result(resolvePublishableTargets(pkg, workspaceRoot));
+			if (resolved._tag === "Failure") {
+				const bindingError = resolved.failure;
 				yield* Effect.logError(bindingError.message);
 				findings.push({
 					severity: "error",
@@ -602,7 +601,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 				});
 				continue;
 			}
-			const targets = resolved.right;
+			const targets = resolved.success;
 
 			// Read the CHANGELOG.md `changeset version` already wrote — the
 			// release branch carries the per-version section. The extractor
@@ -668,7 +667,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 										yield* publish
 											.setupAuth(sizingTarget.registry, Redacted.make(token))
 											.pipe(
-												Effect.catchAll((e: PackagePublishError) =>
+												Effect.catch((e: PackagePublishError) =>
 													Effect.logWarning(`setupAuth failed for ${sizingTarget.registry}: ${e.message}`),
 												),
 											);
@@ -694,7 +693,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 											unpackedSize: dryRunResult.unpackedSize,
 											fileCount: dryRunResult.fileCount,
 										})),
-										Effect.catchAll((e: PackagePublishError) =>
+										Effect.catch((e: PackagePublishError) =>
 											Effect.succeed({
 												success: false as const,
 												output: e.message,
@@ -828,7 +827,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 												return { ok: true as const, sbom, findings: sbomFindings };
 											}),
 										),
-										Effect.catchAll((e: SbomError) =>
+										Effect.catch((e: SbomError) =>
 											Effect.gen(function* () {
 												yield* Step.failure(`generation failed: ${e.message}`);
 												return {

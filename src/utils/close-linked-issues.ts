@@ -46,18 +46,18 @@ const closeOne = (
 		}
 
 		const issues = yield* GitHubIssue;
-		const result = yield* Effect.either(
+		const result = yield* Effect.result(
 			issues
 				.comment(issueNumber, `Closed by release PR #${prNumber} merge.\n\n🤖 _Automated by silk-release-action_`)
 				.pipe(Effect.flatMap(() => issues.close(issueNumber, "completed"))),
 		);
 
-		if (result._tag === "Right") {
+		if (result._tag === "Success") {
 			yield* Effect.logInfo(`✓ Closed issue #${issueNumber}: ${title}`);
 			return { number: issueNumber, title, closed: true } satisfies ClosedIssue;
 		}
 
-		const reason = (result.left as GitHubIssueError).reason ?? String(result.left);
+		const reason = (result.failure as GitHubIssueError).reason ?? String(result.failure);
 		yield* Effect.logWarning(`Failed to close issue #${issueNumber}: ${reason}`);
 		return { number: issueNumber, title, closed: false, error: reason } satisfies ClosedIssue;
 	});
@@ -89,7 +89,7 @@ export const closeLinkedIssues = (
 		yield* Effect.logInfo(`Querying linked issues for PR #${prNumber}`);
 
 		const linked = yield* ghIssues.getLinkedIssues(prNumber).pipe(
-			Effect.catchAll((e) =>
+			Effect.catch((e) =>
 				Effect.gen(function* () {
 					yield* Effect.logWarning(`Failed to query linked issues: ${e.reason}`);
 					return [] as Array<{ number: number; title: string }>;
@@ -152,7 +152,7 @@ export const closeLinkedIssues = (
 		// Defense-in-depth: the check-run / output / issue services can fail;
 		// we collapse to an empty result rather than propagating, since this
 		// stage is best-effort.
-		Effect.catchAll((e) =>
+		Effect.catch((e) =>
 			Effect.gen(function* () {
 				yield* Effect.logError(`close-linked-issues failed: ${String(e)}`);
 				return { closedCount: 0, failedCount: 0, issues: [] } satisfies CloseLinkedIssuesResult;

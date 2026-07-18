@@ -4,8 +4,8 @@ category: integration
 status: current
 completeness: 92
 created: 2026-02-07
-updated: 2026-07-09
-last-synced: 2026-07-09
+updated: 2026-07-17
+last-synced: 2026-07-17
 module: release-action
 related:
   - architecture.md
@@ -42,7 +42,7 @@ Publish and release operate on the `@savvy-web/bundler` per-byte-group prod layo
 
 ### Publishability Detection (Silk Rules)
 
-The silk publishability rules live in `src/release/publishability.ts`. Two Effect Layer implementations wrap the `PublishabilityDetector` Context.Tag from `workspaces-effect`:
+The silk publishability rules live in `src/release/publishability.ts`. Two Effect Layer implementations wrap the `PublishabilityDetector` Context.Tag from `@effected/workspaces` (the Effect-v4 successor to `workspaces-effect`):
 
 **`SilkPublishabilityDetectorLive`** (`silkDetect`) consults `publishConfig` first, treating the `private` flag only as a last-resort default. In silk mode `private: true` is the norm on workspace `package.json` — it keeps the package out of accidental `npm publish` and out of transitive public installs — so publishability is derived from `publishConfig`, regardless of `private`. The build pipeline rewrites `private: false` onto the real publish artifact (e.g. `dist/npm`) while leaving the dev/link artifact (`publishConfig.directory`, e.g. `dist/dev`) private. Precedence:
 
@@ -55,11 +55,11 @@ This precedence fixed a regression where a public source package (`private: fals
 
 **`PublishabilityDetectorAdaptiveLive`** is the single ignore-aware detector. It short-circuits to `[]` for any package whose name matches the changeset `ignore` globs (via `ChangesetConfig.isIgnored`, which uses the shared `matchesIgnorePattern` matcher exported from `src/utils/detect-repo-type.ts`), regardless of mode. It then reads `ChangesetConfig.mode` per-call and dispatches to the silk override (silk mode), the library's built-in `PublishabilityDetectorLive` (vanilla mode), or a no-op detector that returns an empty array for every package (none mode). Every publishability path resolves through this layer: Phase 1 (`listPublishablePackages` / `isMonorepoForTagging`), Phase 2 (`runValidation` via `resolvePublishableTargets`) and Phase 3 (`runPublishTargets` via `PublishabilityDetector`).
 
-`ChangesetConfig.mode` is itself decoded by the bundled silk-effects `ChangesetConfigReader` from the changelog id in the consumer's `.changeset/config.json`, which makes the library's silk-marker id set load-bearing: an id the bundled reader does not recognize silently degrades the repo to vanilla rules, where the workspaces-effect default resolves the single target at `publishConfig.directory` (the private `dist/dev/pkg` dev artifact) instead of the prod byte groups. That failure mode shipped once — silk-effects 3.0.0 recognized only the two legacy ids, so repos declaring the canonical `@savvy-web/changelog` id (what current `savvy init` writes) had Phase 3 publish their dev target with unresolved `catalog:` specifiers (issue #143, `yaml-effect@0.7.1`). The bundled silk-effects 3.0.1+ adds `@savvy-web/changelog` to the silk markers, so those repos detect as silk workspaces again.
+`ChangesetConfig.mode` is itself decoded by the bundled silk-effects `ChangesetConfigReader` from the changelog id in the consumer's `.changeset/config.json`, which makes the library's silk-marker id set load-bearing: an id the bundled reader does not recognize silently degrades the repo to vanilla rules, where the `@effected/workspaces` default resolves the single target at `publishConfig.directory` (the private `dist/dev/pkg` dev artifact) instead of the prod byte groups. That failure mode shipped once — silk-effects 3.0.0 recognized only the two legacy ids, so repos declaring the canonical `@savvy-web/changelog` id (what current `savvy init` writes) had Phase 3 publish their dev target with unresolved `catalog:` specifiers (issue #143, `yaml-effect@0.7.1`). The bundled silk-effects 3.0.1+ adds `@savvy-web/changelog` to the silk markers, so those repos detect as silk workspaces again.
 
 Ignored packages are excluded from detection entirely, not just from publishing: Phase-2 `detectReleasedPackages` and Phase-3 `detectReleases` both drop changeset-ignored names via `ChangesetConfig.isIgnored`, so they never appear in validation or publish output — not even as version-only rows.
 
-The implementation reads raw `package.json` from disk (not the typed `WorkspacePackage`) so it can see `publishConfig.targets`, which is not surfaced by the typed `PublishConfig` schema in `workspaces-effect`. The same rules are encoded identically in `silk-update-action` and the silk `changesets` package.
+The implementation reads raw `package.json` from disk (not the typed `WorkspacePackage`) so it can see `publishConfig.targets`, which is not surfaced by the typed `PublishConfig` schema in `@effected/workspaces`. The same rules are encoded identically in `silk-update-action` and the silk `changesets` package.
 
 ### Registry Infrastructure
 
@@ -98,11 +98,11 @@ Layered configuration with three sources in priority order:
 2. **Action input**: `sbom-config` action parameter (useful for reusable workflows where env vars do not propagate through `workflow_call`). Decoded through `SilkReleaseConfig` schema (`src/schema/silk-release-config.ts`) before use.
 3. **Environment variable**: `SILK_RELEASE_SBOM_TEMPLATE` (for organization-wide defaults).
 
-The first source found wins. All sources support JSONC via `jsonc-parser`.
+The first source found wins. All sources support JSONC via `@effected/jsonc` (`Jsonc.parse`, an Effect-returning error-recovery parser that replaced the plain `jsonc-parser` dependency in the v4 migration).
 
 ### Native versioning and zero-install Phase 1
 
-Phase 1 (branch management) runs zero-install: the shared workflow passes `install-deps: false` and the action versions in-process via the bundled silk-effects v3 `ReleasePlanner` (`src/utils/native-version.ts`). Consumer `ci:version` scripts are no longer invoked and the `version-command` input is removed from `action.yml` and the composite actions.
+Phase 1 (branch management) runs zero-install: the shared workflow passes `install-deps: false` and the action versions in-process via the bundled silk-effects v4 `ReleasePlanner` (`src/utils/native-version.ts`). Consumer `ci:version` scripts are no longer invoked and the `version-command` input is removed from `action.yml` and the composite actions.
 
 **Changelog id map** — the consumer's changeset config names a changelog generator by module id; `CHANGELOG_MODULES` maps the known ids onto action-shipped ESM bundles so no consumer `node_modules` is required. Supported ids: `@savvy-web/changelog`, `@savvy-web/silk/changesets/changelog` and `@savvy-web/changesets/changelog` → `dist/changelog-silk.js` (silk-effects `changelogFunctions`); `@changesets/cli/changelog` → `dist/changelog-default.js` (`@changesets/changelog-git`). Any other id fails inside `ReleasePlanner.apply` with a typed error naming it. The bundles are emitted as `workers` entries in `action.config.ts`.
 
@@ -186,7 +186,7 @@ See `src/release/types.ts` for the current `TargetPublishResult.status` three-wa
 
 `@actions/attest` had three structural problems that the library's Effect service solves:
 
-1. **Bundler incompatibility**: `@actions/core`'s barrel statically imports `oidc-utils.js` → `@actions/http-client` → `undici`. webpack/rspack cannot emit undici as CJS without producing `Class extends value [object Module] is not a constructor` at the `Dispatcher` class definition. The Effect service uses `@effect/platform` `HttpClient`, which is fully bundler-compatible.
+1. **Bundler incompatibility**: `@actions/core`'s barrel statically imports `oidc-utils.js` → `@actions/http-client` → `undici`. webpack/rspack cannot emit undici as CJS without producing `Class extends value [object Module] is not a constructor` at the `Dispatcher` class definition. The Effect service uses the core `HttpClient` (from `effect/unstable/http` in Effect v4, where the standalone `@effect/platform` package dissolved into core `effect`), which is fully bundler-compatible.
 2. **Opaque failure surface**: `@actions/attest` error messages did not surface the root cause from Fulcio or Rekor. The new `AttestError` carries a `reason` discriminator and `cause` chain.
 3. **Private to the action**: `@actions/attest` is tightly coupled to the `@actions/` environment. The service is designed to live in `@savvy-web/github-action-effects` — it has been there since 1.2.0.
 
@@ -200,7 +200,7 @@ Calling `Attest.listForSubject` before writing enables safe retries without dupl
 
 ### Why Silk-Specific Publishability Rules?
 
-`workspaces-effect`'s built-in `PublishabilityDetectorLive` treats `private: true` as a hard "not publishable" stop. Silk's convention inverts that: in silk mode `private: true` is the norm on workspace `package.json` (so a package never leaks into a public npm install transitively) and publishability comes from `publishConfig.targets` / `publishConfig.access`, with the `private` flag consulted only as a last-resort default. Consulting `publishConfig` before `private` is what lets a public source package that declares `targets` resolve to those targets rather than collapsing to a single default target at the private dev artifact. The `PublishabilityDetectorAdaptiveLive` dispatches to the silk override only when the repo uses the silk changesets preset, so vanilla repos are unaffected.
+`@effected/workspaces`'s built-in `PublishabilityDetectorLive` treats `private: true` as a hard "not publishable" stop. Silk's convention inverts that: in silk mode `private: true` is the norm on workspace `package.json` (so a package never leaks into a public npm install transitively) and publishability comes from `publishConfig.targets` / `publishConfig.access`, with the `private` flag consulted only as a last-resort default. Consulting `publishConfig` before `private` is what lets a public source package that declares `targets` resolve to those targets rather than collapsing to a single default target at the private dev artifact. The `PublishabilityDetectorAdaptiveLive` dispatches to the silk override only when the repo uses the silk changesets preset, so vanilla repos are unaffected.
 
 ### Why OIDC-First Authentication?
 

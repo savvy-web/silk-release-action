@@ -40,36 +40,36 @@ export const cleanupValidationChecks = (
 				continue;
 			}
 
-			const current = yield* Effect.either(checks.get(checkId));
+			const current = yield* Effect.result(checks.get(checkId));
 
-			if (current._tag === "Left") {
-				yield* Effect.logWarning(`Failed to fetch check ${checkId}: ${current.left.reason}`);
+			if (current._tag === "Failure") {
+				yield* Effect.logWarning(`Failed to fetch check ${checkId}: ${current.failure.reason}`);
 				result.failed++;
-				result.errors.push(`Check ${checkId}: ${current.left.reason}`);
+				result.errors.push(`Check ${checkId}: ${current.failure.reason}`);
 				continue;
 			}
 
-			if (current.right.status === "completed") {
+			if (current.success.status === "completed") {
 				yield* Effect.logInfo(
-					`⏭️ Skipped check ${checkId} (${current.right.name}) - already ${current.right.conclusion}`,
+					`⏭️ Skipped check ${checkId} (${current.success.name}) - already ${current.success.conclusion}`,
 				);
 				continue;
 			}
 
-			const update = yield* Effect.either(
+			const update = yield* Effect.result(
 				checks.complete(checkId, "cancelled", {
 					title: "Workflow Cancelled",
 					summary: `This check was cancelled due to workflow interruption.\n\n**Reason**: ${reason}`,
 				}),
 			);
 
-			if (update._tag === "Right") {
-				yield* Effect.logInfo(`✓ Marked check ${checkId} (${current.right.name}) as cancelled`);
+			if (update._tag === "Success") {
+				yield* Effect.logInfo(`✓ Marked check ${checkId} (${current.success.name}) as cancelled`);
 				result.cleanedUp++;
 			} else {
-				yield* Effect.logWarning(`Failed to cleanup check ${checkId}: ${update.left.reason}`);
+				yield* Effect.logWarning(`Failed to cleanup check ${checkId}: ${update.failure.reason}`);
 				result.failed++;
-				result.errors.push(`Check ${checkId}: ${update.left.reason}`);
+				result.errors.push(`Check ${checkId}: ${update.failure.reason}`);
 			}
 		}
 

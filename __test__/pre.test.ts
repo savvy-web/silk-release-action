@@ -54,14 +54,12 @@ const makeFixtures = (): Fixtures => {
  * the App credentials and an optional `github-token` input.
  */
 const runPre = (fixtures: Fixtures, githubToken = ""): Promise<void> => {
-	const config = ConfigProvider.fromMap(
-		new Map([
-			["app-client-id", "test-client-id"],
-			["app-private-key", "test-private-key"],
-			["github-token", githubToken],
-		]),
-	);
-	return pre.pipe(Effect.provide(fixtures.layer), Effect.withConfigProvider(config), Effect.runPromise);
+	const config = ConfigProvider.fromUnknown({
+		"app-client-id": "test-client-id",
+		"app-private-key": "test-private-key",
+		"github-token": githubToken,
+	});
+	return pre.pipe(Effect.provide(fixtures.layer), Effect.provide(ConfigProvider.layer(config)), Effect.runPromise);
 };
 
 /** Look up an action output by name. */

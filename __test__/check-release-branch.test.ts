@@ -95,7 +95,7 @@ const runStage = (
 	return Effect.runPromise(
 		checkReleaseBranch(releaseBranch, targetBranch, dryRun).pipe(
 			Effect.provide(layer),
-			Effect.provide(Logger.replace(Logger.defaultLogger, Logger.none)),
+			Effect.provide(Logger.layer([])),
 		),
 	);
 };

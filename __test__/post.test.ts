@@ -56,8 +56,8 @@ const provisionToken = (fixtures: Fixtures): Promise<void> =>
 
 /** Run `post` with a `ConfigProvider` controlling the `skip-token-revoke` input. */
 const runPost = (fixtures: Fixtures, skipTokenRevoke = false): Promise<void> => {
-	const config = ConfigProvider.fromMap(new Map([["skip-token-revoke", String(skipTokenRevoke)]]));
-	return post.pipe(Effect.provide(fixtures.layer), Effect.withConfigProvider(config), Effect.runPromise);
+	const config = ConfigProvider.fromUnknown({ "skip-token-revoke": String(skipTokenRevoke) });
+	return post.pipe(Effect.provide(fixtures.layer), Effect.provide(ConfigProvider.layer(config)), Effect.runPromise);
 };
 
 describe("post", () => {

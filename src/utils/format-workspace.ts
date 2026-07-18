@@ -14,10 +14,9 @@
  * formatting and it genuinely errored.
  */
 
-import { FileSystem } from "@effect/platform";
 import type { CommandRunnerError } from "@savvy-web/github-action-effects";
 import { CommandRunner } from "@savvy-web/github-action-effects";
-import { Effect } from "effect";
+import { Effect, FileSystem } from "effect";
 
 /** Conditionally format the working tree with the standalone Biome binary. @public */
 export const formatWorkspaceWithBiome = (): Effect.Effect<
@@ -29,27 +28,29 @@ export const formatWorkspaceWithBiome = (): Effect.Effect<
 		const fs = yield* FileSystem.FileSystem;
 		const runner = yield* CommandRunner;
 
-		const hasConfig = yield* Effect.reduce(["biome.jsonc", "biome.json"], false, (found, candidate) =>
-			found ? Effect.succeed(true) : fs.exists(candidate).pipe(Effect.orElseSucceed(() => false)),
-		);
+		let hasConfig = false;
+		for (const candidate of ["biome.jsonc", "biome.json"]) {
+			if (hasConfig) break;
+			hasConfig = yield* fs.exists(candidate).pipe(Effect.orElseSucceed(() => false));
+		}
 		if (!hasConfig) return;
 
-		const probe = yield* Effect.either(runner.execCapture("biome", ["--version"]));
-		if (probe._tag === "Left") {
+		const probe = yield* Effect.result(runner.execCapture("biome", ["--version"]));
+		if (probe._tag === "Failure") {
 			yield* Effect.logWarning("biome.json(c) present but biome is not on PATH; skipping post-version format");
 			return;
 		}
 
 		yield* Effect.logInfo("Formatting version output with Biome");
-		const format = yield* Effect.either(runner.execCapture("biome", ["format", "--write", "."]));
-		if (format._tag === "Left") {
-			const detail = `${format.left.stderr ?? ""} ${format.left.reason}`;
+		const format = yield* Effect.result(runner.execCapture("biome", ["format", "--write", "."]));
+		if (format._tag === "Failure") {
+			const detail = `${format.failure.stderr ?? ""} ${format.failure.reason}`;
 			if (/could not resolve|module not found/i.test(detail)) {
 				yield* Effect.logWarning(
 					`biome config depends on installed packages, unavailable in a zero-install phase; skipping post-version format: ${detail.trim()}`,
 				);
 				return;
 			}
-			return yield* Effect.fail(format.left);
+			return yield* Effect.fail(format.failure);
 		}
 	});

@@ -53,10 +53,7 @@ const runCleanup = (
 ): Promise<CleanupResult> => {
 	const layer = Layer.mergeAll(ActionOutputsTest.layer(f.outputsState), CheckRunTest.layer(f.checkRunState));
 	return Effect.runPromise(
-		cleanupValidationChecks(checkIds, reason, dryRun).pipe(
-			Effect.provide(layer),
-			Effect.provide(Logger.replace(Logger.defaultLogger, Logger.none)),
-		),
+		cleanupValidationChecks(checkIds, reason, dryRun).pipe(Effect.provide(layer), Effect.provide(Logger.layer([]))),
 	);
 };
 

@@ -11,6 +11,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join } from "node:path";
+import { PublishabilityDetector, WorkspaceDiscovery, WorkspacePackage } from "@effected/workspaces";
 import type {
 	AttestError,
 	CommandRunnerError,
@@ -36,7 +37,6 @@ import {
 	isJsrRegistry,
 } from "@savvy-web/github-action-effects";
 import { Config, Effect, Option, Redacted } from "effect";
-import { PublishabilityDetector, WorkspaceDiscovery, WorkspacePackage } from "workspaces-effect";
 
 import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
 import { getGroupId } from "../utils/group-id.js";
@@ -129,7 +129,7 @@ const detectFromPR = (
 		const content = yield* GitHubContent;
 
 		// List files changed in the merged PR
-		const files = yield* pr.listFiles(prNumber).pipe(Effect.catchAll((_: PullRequestError) => Effect.succeed([])));
+		const files = yield* pr.listFiles(prNumber).pipe(Effect.catch((_: PullRequestError) => Effect.succeed([])));
 
 		// Filter to package.json files that were modified
 		const modifiedPkgJsonFiles = files.filter(
@@ -147,7 +147,7 @@ const detectFromPR = (
 		// Get the base SHA from the PR
 		const prData = yield* pr
 			.get(prNumber)
-			.pipe(Effect.catchAll((_: PullRequestError) => Effect.succeed({ baseSha: "" } as { baseSha?: string })));
+			.pipe(Effect.catch((_: PullRequestError) => Effect.succeed({ baseSha: "" } as { baseSha?: string })));
 
 		const baseSha = prData.baseSha ?? "";
 		const releases: DetectedRelease[] = [];
@@ -167,9 +167,7 @@ const detectFromPR = (
 			let oldVersion = "0.0.0";
 
 			if (baseSha) {
-				const oldContent = yield* content
-					.getFile(file.filename, baseSha)
-					.pipe(Effect.catchAll(() => Effect.succeed("")));
+				const oldContent = yield* content.getFile(file.filename, baseSha).pipe(Effect.catch(() => Effect.succeed("")));
 				if (oldContent) {
 					try {
 						const oldPkg = JSON.parse(oldContent) as { version?: string };
@@ -196,7 +194,7 @@ const detectFromPR = (
 		}
 
 		return releases;
-	}).pipe(Effect.catchAll(() => Effect.succeed([] as ReadonlyArray<DetectedRelease>)));
+	}).pipe(Effect.catch(() => Effect.succeed([] as ReadonlyArray<DetectedRelease>)));
 
 /**
  * Detect released packages by comparing HEAD with its first parent via the
@@ -215,7 +213,7 @@ const detectFromCommit = (): Effect.Effect<ReadonlyArray<DetectedRelease>, never
 
 		const commitData = yield* commits
 			.get(sha)
-			.pipe(Effect.catchAll(() => Effect.succeed({ parents: [] as ReadonlyArray<{ sha: string }> })));
+			.pipe(Effect.catch(() => Effect.succeed({ parents: [] as ReadonlyArray<{ sha: string }> })));
 
 		const parents = commitData.parents;
 		if (parents.length === 0) return [];
@@ -229,7 +227,7 @@ const detectFromCommit = (): Effect.Effect<ReadonlyArray<DetectedRelease>, never
 		// sorts past #300. `changedFiles` paginates `getCommit` and returns them all.
 		const changedFiles = yield* commits
 			.changedFiles(sha)
-			.pipe(Effect.catchAll(() => Effect.succeed([] as ReadonlyArray<{ filename: string; status: string }>)));
+			.pipe(Effect.catch(() => Effect.succeed([] as ReadonlyArray<{ filename: string; status: string }>)));
 
 		const modifiedPkgJsonFiles = changedFiles.filter(
 			(f) => f.filename.endsWith("package.json") && (f.status === "modified" || f.status === "changed"),
@@ -253,7 +251,7 @@ const detectFromCommit = (): Effect.Effect<ReadonlyArray<DetectedRelease>, never
 			const newVersion = currentContent.version ?? "0.0.0";
 			let oldVersion = "0.0.0";
 
-			const oldContent = yield* content.getFile(file.filename, baseSha).pipe(Effect.catchAll(() => Effect.succeed("")));
+			const oldContent = yield* content.getFile(file.filename, baseSha).pipe(Effect.catch(() => Effect.succeed("")));
 			if (oldContent) {
 				try {
 					const oldPkg = JSON.parse(oldContent) as { version?: string };
@@ -276,7 +274,7 @@ const detectFromCommit = (): Effect.Effect<ReadonlyArray<DetectedRelease>, never
 		}
 
 		return releases;
-	}).pipe(Effect.catchAll(() => Effect.succeed([] as ReadonlyArray<DetectedRelease>)));
+	}).pipe(Effect.catch(() => Effect.succeed([] as ReadonlyArray<DetectedRelease>)));
 
 // ─── Per-target publish ───────────────────────────────────────────────────────
 
@@ -389,7 +387,7 @@ const runAttestationsForBuild = (
 		const existingProvenance = yield* attestSvc
 			.listForSubject(subjectSha256, { predicateType: SLSA_PROVENANCE_V1 })
 			.pipe(
-				Effect.catchAll((e: AttestError) =>
+				Effect.catch((e: AttestError) =>
 					Effect.gen(function* () {
 						yield* Effect.logDebug(
 							`[attest] provenance: listForSubject failed for ${subjectSha256}, will attempt fresh write: ${e.message}`,
@@ -419,7 +417,7 @@ const runAttestationsForBuild = (
 						predicate,
 					})
 					.pipe(
-						Effect.catchAll((e: AttestError) =>
+						Effect.catch((e: AttestError) =>
 							Effect.gen(function* () {
 								yield* Effect.logWarning(`Provenance attestation failed for ${packageName}@${version}: ${e.message}`);
 								return null;
@@ -441,7 +439,7 @@ const runAttestationsForBuild = (
 		let sbomRecovered = false;
 
 		const existingSbom = yield* attestSvc.listForSubject(subjectSha256, { predicateType: CYCLONEDX_BOM }).pipe(
-			Effect.catchAll((e: AttestError) =>
+			Effect.catch((e: AttestError) =>
 				Effect.gen(function* () {
 					yield* Effect.logDebug(
 						`[attest] SBOM: listForSubject failed for ${subjectSha256}, will attempt fresh write: ${e.message}`,
@@ -488,7 +486,7 @@ const runAttestationsForBuild = (
 							},
 				)
 				.pipe(
-					Effect.catchAll((e) => {
+					Effect.catch((e) => {
 						const msg = e instanceof Error ? e.message : String(e);
 						return Effect.gen(function* () {
 							yield* Effect.logWarning(`SBOM attestation failed for ${packageName}@${version}: ${msg}`);
@@ -592,7 +590,7 @@ const publishDirectoryGroup = (
 					// publish/dry-run so every phase packs with the identical npm.
 					const outcome = yield* publishSvc.pack(directory, { packageManager }).pipe(
 						Effect.map((r) => ({ ok: true as const, result: r })),
-						Effect.catchAll((e: PackagePublishError) => Effect.succeed({ ok: false as const, error: e.message })),
+						Effect.catch((e: PackagePublishError) => Effect.succeed({ ok: false as const, error: e.message })),
 					);
 					if (outcome.ok) {
 						const r = outcome.result;
@@ -660,7 +658,7 @@ const publishDirectoryGroup = (
 							yield* publishSvc
 								.setupAuth(t.registry, Redacted.make(token))
 								.pipe(
-									Effect.catchAll((e: PackagePublishError) =>
+									Effect.catch((e: PackagePublishError) =>
 										Effect.logWarning(`setupAuth failed for ${t.registry}: ${e.message}`),
 									),
 								);
@@ -670,7 +668,7 @@ const publishDirectoryGroup = (
 							.getPublishedIntegrity(packResult.name, packResult.version, { registry: t.registry })
 							.pipe(
 								Effect.map((opt) => ({ ok: true as const, value: opt })),
-								Effect.catchAll((e) =>
+								Effect.catch((e) =>
 									Effect.succeed({ ok: false as const, error: e instanceof Error ? e.message : String(e) }),
 								),
 							);
@@ -718,7 +716,7 @@ const publishDirectoryGroup = (
 								})
 								.pipe(
 									Effect.map((r) => ({ ok: true as const, provenanceUrl: r.provenanceUrl })),
-									Effect.catchAll((e: PackagePublishError) => Effect.succeed({ ok: false as const, error: e.message })),
+									Effect.catch((e: PackagePublishError) => Effect.succeed({ ok: false as const, error: e.message })),
 								);
 
 							// Token-auth fallback for the npm registry. Trusted publishing (the OIDC
@@ -741,9 +739,7 @@ const publishDirectoryGroup = (
 									})
 									.pipe(
 										Effect.map((r) => ({ ok: true as const, provenanceUrl: r.provenanceUrl })),
-										Effect.catchAll((e: PackagePublishError) =>
-											Effect.succeed({ ok: false as const, error: e.message }),
-										),
+										Effect.catch((e: PackagePublishError) => Effect.succeed({ ok: false as const, error: e.message })),
 									);
 							}
 
@@ -1051,7 +1047,7 @@ export const runBuildAndSbom = (detected: ReadonlyArray<DetectedRelease>, args: 
 							error: undefined as string | undefined,
 							output: output.stdout,
 						})),
-						Effect.catchAll((e: CommandRunnerError) =>
+						Effect.catch((e: CommandRunnerError) =>
 							Effect.succeed({ success: false as const, error: e.stderr ?? e.message, output: "" }),
 						),
 					);
@@ -1085,7 +1081,7 @@ export const runBuildAndSbom = (detected: ReadonlyArray<DetectedRelease>, args: 
 				// Resolve the WorkspacePackage for its dependency map; synthesise a
 				// minimal one if discovery fails (e.g. a deleted monorepo member).
 				const wsPkg = yield* discovery.getPackage(rel.name).pipe(
-					Effect.catchAll(() =>
+					Effect.catch(() =>
 						Effect.succeed(
 							new WorkspacePackage({
 								name: rel.name,
@@ -1127,7 +1123,7 @@ export const runBuildAndSbom = (detected: ReadonlyArray<DetectedRelease>, args: 
 									// in-memory BOM build, not the disk write.
 									yield* sbomSvc.save(bom, sbomDestPath).pipe(
 										Effect.tap(() => Effect.sync(() => sbomPaths.set(rel.name, sbomDestPath))),
-										Effect.catchAll((e: SbomError) =>
+										Effect.catch((e: SbomError) =>
 											Effect.logWarning(
 												`SBOM save failed for ${rel.name} at ${sbomDestPath}: ${e.message}; release asset will be skipped`,
 											),
@@ -1139,7 +1135,7 @@ export const runBuildAndSbom = (detected: ReadonlyArray<DetectedRelease>, args: 
 									return true as const;
 								}),
 							),
-							Effect.catchAll((e: SbomError) =>
+							Effect.catch((e: SbomError) =>
 								Effect.gen(function* () {
 									yield* Effect.logError(`SBOM generation failed for ${rel.name}: ${e.message}`);
 									return false as const;
@@ -1202,7 +1198,7 @@ export const runPublishTargets = (
 
 		const ghPkgsTokenOpt = yield* state
 			.getOptional(STATE_KEYS.githubPackagesToken, GithubPackagesTokenState)
-			.pipe(Effect.catchAll(() => Effect.succeed(Option.none<GithubPackagesTokenState>())));
+			.pipe(Effect.catch(() => Effect.succeed(Option.none<GithubPackagesTokenState>())));
 		const ghPkgsToken: string | null =
 			Option.isSome(ghPkgsTokenOpt) && ghPkgsTokenOpt.value.token !== "" ? ghPkgsTokenOpt.value.token : null;
 
@@ -1220,8 +1216,6 @@ export const runPublishTargets = (
 		// ── Resolve publish targets ────────────────────────────────────────────
 		yield* Effect.logDebug("runPublishTargets: resolving publish targets");
 
-		const workspaceRoot = process.cwd();
-
 		interface PkgEntry {
 			readonly version: string;
 			readonly targets: ReadonlyArray<{
@@ -1235,7 +1229,7 @@ export const runPublishTargets = (
 
 		for (const rel of detected) {
 			const wsPkg = yield* discovery.getPackage(rel.name).pipe(
-				Effect.catchAll(() =>
+				Effect.catch(() =>
 					Effect.succeed(
 						new WorkspacePackage({
 							name: rel.name,
@@ -1248,8 +1242,8 @@ export const runPublishTargets = (
 				),
 			);
 
-			const publishTargets = yield* detector.detect(wsPkg, workspaceRoot).pipe(
-				Effect.catchAll((e: unknown) =>
+			const publishTargets = yield* detector.detect(wsPkg).pipe(
+				Effect.catch((e: unknown) =>
 					Effect.gen(function* () {
 						yield* Effect.logWarning(`Failed to resolve targets for ${rel.name}: ${String(e)}`);
 						return [] as ReadonlyArray<{

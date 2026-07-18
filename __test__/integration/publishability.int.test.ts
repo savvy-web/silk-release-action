@@ -25,10 +25,10 @@
  */
 
 import { fileURLToPath } from "node:url";
-import { NodeContext } from "@effect/platform-node";
+import { NodeServices } from "@effect/platform-node";
+import { WorkspacePackage } from "@effected/workspaces";
 import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
-import { WorkspacePackage } from "workspaces-effect";
 import { ChangesetConfig, ChangesetConfigLive } from "../../src/release/changeset-config.js";
 import {
 	PublishabilityDetectorAdaptiveLive,
@@ -60,7 +60,7 @@ const resolveFixture = (name: string) =>
 		return { publishTargets, versionable: publishTargets.length > 0 || versionPrivate };
 	}).pipe(
 		Effect.provide(
-			Layer.mergeAll(SilkPublishabilityDetectorLive, ChangesetConfigLive).pipe(Layer.provideMerge(NodeContext.layer)),
+			Layer.mergeAll(SilkPublishabilityDetectorLive, ChangesetConfigLive).pipe(Layer.provideMerge(NodeServices.layer)),
 		),
 	);
 
@@ -205,7 +205,7 @@ const resolveWorkspacePackage = (workspace: string, subPath: string, name: strin
 			Layer.mergeAll(
 				PublishabilityDetectorAdaptiveLive.pipe(Layer.provide(ChangesetConfigLive)),
 				ChangesetConfigLive,
-			).pipe(Layer.provideMerge(NodeContext.layer)),
+			).pipe(Layer.provideMerge(NodeServices.layer)),
 		),
 	);
 

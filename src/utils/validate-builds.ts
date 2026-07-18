@@ -9,7 +9,6 @@
  * catches breakage anywhere in the repo.
  */
 
-import type { FileSystem } from "@effect/platform";
 import type {
 	ActionEnvironmentError,
 	ActionOutputError,
@@ -18,7 +17,7 @@ import type {
 	CommandRunnerError,
 } from "@savvy-web/github-action-effects";
 import { ActionEnvironment, ActionOutputs, CheckRun, CommandRunner } from "@savvy-web/github-action-effects";
-import type { ConfigError } from "effect";
+import type { FileSystem } from "effect";
 import { Cause, Config, Effect } from "effect";
 import { capCheckSummary } from "./create-validation-check.js";
 import { summaryWriter } from "./summary-writer.js";
@@ -97,7 +96,7 @@ export const validateBuilds = (
 	packageManager: string,
 ): Effect.Effect<
 	BuildValidationResult,
-	ActionEnvironmentError | ActionOutputError | CheckRunError | CommandRunnerError | ConfigError.ConfigError,
+	ActionEnvironmentError | ActionOutputError | CheckRunError | CommandRunnerError | Config.ConfigError,
 	ActionEnvironment | ActionOutputs | CheckRun | CommandRunner | FileSystem.FileSystem
 > =>
 	Effect.gen(function* () {
@@ -118,15 +117,15 @@ export const validateBuilds = (
 		let buildExitCode = 0;
 
 		if (!dryRun) {
-			const result = yield* Effect.either(runner.execCapture(buildCmd, buildArgs));
-			if (result._tag === "Right") {
-				buildExitCode = result.right.exitCode;
-				buildError = result.right.stderr;
-				if (result.right.stdout !== "") process.stdout.write(result.right.stdout);
-				if (result.right.stderr !== "") process.stderr.write(result.right.stderr);
+			const result = yield* Effect.result(runner.execCapture(buildCmd, buildArgs));
+			if (result._tag === "Success") {
+				buildExitCode = result.success.exitCode;
+				buildError = result.success.stderr;
+				if (result.success.stdout !== "") process.stdout.write(result.success.stdout);
+				if (result.success.stderr !== "") process.stderr.write(result.success.stderr);
 			} else {
 				buildExitCode = 1;
-				buildError = result.left.reason;
+				buildError = result.failure.reason;
 				yield* Effect.logError(`Build command failed: ${buildError}`);
 			}
 		} else {
@@ -156,7 +155,7 @@ export const validateBuilds = (
 						return renderTurboCacheSection(diag.aggregate);
 					}),
 				),
-				Effect.catchAllCause((cause) =>
+				Effect.catchCause((cause) =>
 					Effect.logWarning(`Turbo summary logging failed: ${Cause.pretty(cause)}`).pipe(Effect.as(null)),
 				),
 			);
