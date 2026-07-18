@@ -15,10 +15,9 @@
  * - **none** — anything else.
  */
 
-import { FileSystem } from "@effect/platform";
 import type { ActionEnvironmentError, PullRequestError } from "@savvy-web/github-action-effects";
 import { ActionEnvironment, PullRequest } from "@savvy-web/github-action-effects";
-import { Duration, Effect, Option } from "effect";
+import { Duration, Effect, FileSystem, Option } from "effect";
 
 /**
  * The five phases this action knows how to dispatch.
@@ -78,10 +77,10 @@ const readEventPayload = Effect.gen(function* () {
 	const pathOpt = yield* env.getOptional("GITHUB_EVENT_PATH");
 	if (Option.isNone(pathOpt) || pathOpt.value === "") return {} as EventPayload;
 
-	const result = yield* Effect.either(fs.readFileString(pathOpt.value));
-	if (result._tag === "Left") return {} as EventPayload;
+	const result = yield* Effect.result(fs.readFileString(pathOpt.value));
+	if (result._tag === "Failure") return {} as EventPayload;
 	try {
-		return JSON.parse(result.right) as EventPayload;
+		return JSON.parse(result.success) as EventPayload;
 	} catch {
 		return {} as EventPayload;
 	}
@@ -112,10 +111,10 @@ const attemptReleaseCommitDetection = (
 		const [owner] = repository.split("/");
 
 		// Strategy 1: associated PRs.
-		const associated = yield* Effect.either(pr.listAssociatedWithCommit(sha));
+		const associated = yield* Effect.result(pr.listAssociatedWithCommit(sha));
 
-		if (associated._tag === "Right") {
-			const match = associated.right.find(
+		if (associated._tag === "Success") {
+			const match = associated.success.find(
 				(p) => (p.mergedAt ?? null) !== null && p.head === releaseBranch && p.base === targetBranch,
 			);
 			if (match) {
@@ -125,17 +124,17 @@ const attemptReleaseCommitDetection = (
 				return { isReleaseCommit: true, mergedPR: { number: match.number } };
 			}
 		} else {
-			yield* Effect.logWarning(`Failed to check for associated PRs: ${associated.left.reason}`);
+			yield* Effect.logWarning(`Failed to check for associated PRs: ${associated.failure.reason}`);
 		}
 
 		// Strategy 2: list closed PRs from the release branch.
 		yield* Effect.logInfo(`Checking for merged release PRs with merge_commit_sha matching ${sha}`);
-		const closed = yield* Effect.either(
+		const closed = yield* Effect.result(
 			pr.list({ state: "closed", head: `${owner}:${releaseBranch}`, base: targetBranch }),
 		);
 
-		if (closed._tag === "Right") {
-			const match = closed.right.find((p) => (p.mergedAt ?? null) !== null && p.mergeCommitSha === sha);
+		if (closed._tag === "Success") {
+			const match = closed.success.find((p) => (p.mergedAt ?? null) !== null && p.mergeCommitSha === sha);
 			if (match) {
 				yield* Effect.logInfo(
 					`Detected merged release PR #${match.number} from ${releaseBranch} (via merge_commit_sha match)`,
@@ -146,7 +145,7 @@ const attemptReleaseCommitDetection = (
 			return { isReleaseCommit: false };
 		}
 
-		yield* Effect.logWarning(`Failed to check for merged PRs: ${closed.left.reason}`);
+		yield* Effect.logWarning(`Failed to check for merged PRs: ${closed.failure.reason}`);
 		return { isReleaseCommit: false };
 	});
 

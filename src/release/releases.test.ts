@@ -15,6 +15,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PackageNotFoundError, WorkspaceDiscovery } from "@effected/workspaces";
 import { CommandRunner, CommandRunnerError } from "@savvy-web/github-action-effects";
 import {
 	ActionLoggerTest,
@@ -27,9 +28,8 @@ import {
 	OidcTokenIssuerTest,
 	SigstoreSignerTest,
 } from "@savvy-web/github-action-effects/testing";
-import { Effect, Layer, LogLevel, Logger } from "effect";
+import { Effect, Layer, Option, References } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { PackageNotFoundError, WorkspaceDiscovery } from "workspaces-effect";
 import { getGroupId, insertGroupToken } from "../utils/group-id.js";
 import type { ReleasesInputArgs, ReleasesReport } from "./releases.js";
 import { copySbomIntoMeta, findApiDocFile, metaDirFor, runReleases } from "./releases.js";
@@ -96,10 +96,13 @@ const sigstoreLayer = SigstoreSignerTest;
  * need real workspace paths.
  */
 const workspaceDiscoveryLayer = Layer.succeed(WorkspaceDiscovery, {
+	info: () => Effect.die(new Error("info() not stubbed")),
 	listPackages: () => Effect.succeed([]),
-	getPackage: (name: string, _cwd?: string) =>
+	getPackage: (name: string) =>
 		Effect.fail(new PackageNotFoundError({ name, available: [] })) as Effect.Effect<never, PackageNotFoundError>,
-	importerMap: (_cwd?: string) => Effect.succeed(new Map()),
+	importerMap: () => Effect.succeed(new Map()),
+	resolveFile: () => Effect.succeed(Option.none()),
+	resolveFiles: () => Effect.succeed([]),
 	refresh: () => Effect.void,
 });
 
@@ -465,7 +468,7 @@ describe("runReleases", () => {
 				result = await Effect.runPromise(
 					runReleases(args).pipe(
 						Effect.provide(layers),
-						Logger.withMinimumLogLevel(LogLevel.All),
+						Effect.provideService(References.MinimumLogLevel, "All"),
 					) as Effect.Effect<ReleasesReport>,
 				);
 			} finally {

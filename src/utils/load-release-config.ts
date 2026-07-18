@@ -1,9 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ParseResult } from "effect";
-import { Config, Effect, Either, Schema } from "effect";
-import { ArrayFormatter } from "effect/ParseResult";
-import { parse as parseJsonc } from "jsonc-parser";
+import { Jsonc } from "@effected/jsonc";
+import { Config, Effect, Result, Schema } from "effect";
+import type { SchemaError } from "effect/SchemaError";
 import { SilkReleaseConfig } from "../schema/silk-release-config.js";
 import type { ReleaseConfig, SBOMMetadataConfig } from "../types/sbom-config.js";
 
@@ -43,27 +42,18 @@ function detectUnwrappedSBOMFields(config: Record<string, unknown>): string[] {
 }
 
 /**
- * Format a Schema decode error as a human-readable, multi-path message.
+ * Format a Schema decode error as a human-readable message.
  *
  * @remarks
- * `ArrayFormatter` walks the parse error and emits one entry per failing
- * path; we join the path, message, and tag into a compact form so the
- * finding consumer sees exactly which key was wrong.
+ * v4's {@link SchemaError} renders its structured issue tree — including the
+ * path to each failing key and the expected type — through its `message`
+ * getter, so the finding consumer still sees exactly which key was wrong.
  */
-function formatDecodeError(error: ParseResult.ParseError): string {
-	const issues = ArrayFormatter.formatErrorSync(error);
-	if (issues.length === 0) {
-		return error.message;
-	}
-	return issues
-		.map((issue) => {
-			const path = issue.path.length > 0 ? issue.path.join(".") : "(root)";
-			return `${path}: ${issue.message}`;
-		})
-		.join("; ");
+function formatDecodeError(error: SchemaError): string {
+	return error.message;
 }
 
-const decodeSilkReleaseConfig = Schema.decodeUnknownEither(SilkReleaseConfig);
+const decodeSilkReleaseConfig = Schema.decodeUnknownResult(SilkReleaseConfig);
 
 /**
  * Parse and decode a raw config string into a typed {@link ReleaseConfig}.
@@ -82,42 +72,33 @@ const decodeSilkReleaseConfig = Schema.decodeUnknownEither(SilkReleaseConfig);
  * @param source - Source description for error messages
  * @returns `Right(config)` on success, `Left(error)` on parse or decode failure
  */
-function parseConfigContent(content: string, source: string): Either.Either<ReleaseConfig, string> {
-	const jsonErrors: Array<{ error: number; offset: number; length: number }> = [];
-	let parsed: unknown;
-	try {
-		parsed = parseJsonc(content, jsonErrors);
-	} catch (e) {
-		// jsonc-parser populates the `jsonErrors` array for syntax errors and
-		// does not throw — the `errors.length > 0` check below handles the
-		// expected failure mode. This catch only fires on an extraordinary
-		// runtime failure (e.g. a host-environment defect) and is here so the
-		// loader cannot tear down the validation phase.
-		const message = e instanceof Error ? e.message : String(e);
-		return Either.left(`failed to parse ${source} as JSON: ${message}`);
+function parseConfigContent(content: string, source: string): Result.Result<ReleaseConfig, string> {
+	// `Jsonc.parse` is an error-recovery parser that fails once with an aggregate
+	// `JsoncParseError`. It is a pure, synchronous computation, so it is safe to
+	// settle here with `Effect.runSync` to keep this loader a plain function.
+	const parsedResult = Effect.runSync(Effect.result(Jsonc.parse(content)));
+	if (Result.isFailure(parsedResult)) {
+		return Result.fail(`failed to parse ${source} as JSON (${parsedResult.failure.errors.length} syntax error(s))`);
 	}
-
-	if (jsonErrors.length > 0) {
-		return Either.left(`failed to parse ${source} as JSON (${jsonErrors.length} syntax error(s))`);
-	}
+	const parsed = parsedResult.success;
 
 	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-		return Either.left(`${source} must be a JSON object`);
+		return Result.fail(`${source} must be a JSON object`);
 	}
 
 	const unwrappedFields = detectUnwrappedSBOMFields(parsed as Record<string, unknown>);
 	if (unwrappedFields.length > 0 && (parsed as Record<string, unknown>).sbom === undefined) {
-		return Either.left(
+		return Result.fail(
 			`${source} has SBOM fields at the root (${unwrappedFields.join(", ")}); wrap them in an "sbom" key`,
 		);
 	}
 
 	const decoded = decodeSilkReleaseConfig(parsed);
-	if (Either.isLeft(decoded)) {
-		return Either.left(`${source}: ${formatDecodeError(decoded.left)}`);
+	if (Result.isFailure(decoded)) {
+		return Result.fail(`${source}: ${formatDecodeError(decoded.failure)}`);
 	}
 
-	return Either.right(decoded.right);
+	return Result.succeed(decoded.success);
 }
 
 /**
@@ -144,10 +125,10 @@ function loadConfigFromFile(configPath: string): LocalRepoLookup {
 
 	const content = readFileSync(configPath, "utf-8");
 	const parsed = parseConfigContent(content, configPath);
-	if (Either.isLeft(parsed)) {
-		return { kind: "error", error: parsed.left, path: configPath };
+	if (Result.isFailure(parsed)) {
+		return { kind: "error", error: parsed.failure, path: configPath };
 	}
-	return { kind: "found", config: parsed.right, path: configPath };
+	return { kind: "found", config: parsed.success, path: configPath };
 }
 
 /**
@@ -193,11 +174,11 @@ function loadConfigFromLocalRepo(rootDir: string): LocalRepoLookup {
  * @returns `Right(config)` when set and valid, `Right(undefined)` when unset,
  *   `Left(error)` when set but malformed.
  */
-function loadConfigFromEnvVar(): Either.Either<ReleaseConfig | undefined, string> {
+function loadConfigFromEnvVar(): Result.Result<ReleaseConfig | undefined, string> {
 	const envValue = process.env[CONFIG_ENV_VAR];
 
 	if (!envValue) {
-		return Either.right(undefined);
+		return Result.succeed(undefined);
 	}
 
 	return parseConfigContent(envValue, `${CONFIG_ENV_VAR} variable`);
@@ -224,11 +205,11 @@ function loadConfigFromEnvVar(): Either.Either<ReleaseConfig | undefined, string
 // surfaced as a defect via `Effect.orDie` so the loader's success type stays
 // pure and `loadReleaseConfig`'s caller does not have to thread `ConfigError`
 // through its error channel.
-const loadConfigFromInput: Effect.Effect<Either.Either<ReleaseConfig | undefined, string>> = Effect.gen(function* () {
+const loadConfigFromInput: Effect.Effect<Result.Result<ReleaseConfig | undefined, string>> = Effect.gen(function* () {
 	const inputValue = (yield* Config.string(CONFIG_INPUT_NAME).pipe(Config.withDefault(""))).trim();
 
 	if (!inputValue) {
-		return Either.right(undefined);
+		return Result.succeed(undefined);
 	}
 
 	return parseConfigContent(inputValue, `${CONFIG_INPUT_NAME} input`);
@@ -320,19 +301,19 @@ export function loadReleaseConfig(rootDir?: string): Effect.Effect<LoadReleaseCo
 		}
 
 		const input = yield* loadConfigFromInput;
-		if (Either.isLeft(input)) {
-			return { ok: false, error: input.left, source: { source: "input", location: CONFIG_INPUT_NAME } } as const;
+		if (Result.isFailure(input)) {
+			return { ok: false, error: input.failure, source: { source: "input", location: CONFIG_INPUT_NAME } } as const;
 		}
-		if (input.right !== undefined) {
-			return { ok: true, config: input.right, source: { source: "input", location: CONFIG_INPUT_NAME } } as const;
+		if (input.success !== undefined) {
+			return { ok: true, config: input.success, source: { source: "input", location: CONFIG_INPUT_NAME } } as const;
 		}
 
 		const env = loadConfigFromEnvVar();
-		if (Either.isLeft(env)) {
-			return { ok: false, error: env.left, source: { source: "variable", location: CONFIG_ENV_VAR } } as const;
+		if (Result.isFailure(env)) {
+			return { ok: false, error: env.failure, source: { source: "variable", location: CONFIG_ENV_VAR } } as const;
 		}
-		if (env.right !== undefined) {
-			return { ok: true, config: env.right, source: { source: "variable", location: CONFIG_ENV_VAR } } as const;
+		if (env.success !== undefined) {
+			return { ok: true, config: env.success, source: { source: "variable", location: CONFIG_ENV_VAR } } as const;
 		}
 
 		return { ok: true, config: undefined, source: { source: "none" } } as const;

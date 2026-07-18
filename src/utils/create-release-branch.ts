@@ -10,7 +10,8 @@
  * established. PR creation is retried once on failure (network blip).
  */
 
-import { FileSystem } from "@effect/platform";
+import type { PublishabilityDetector } from "@effected/workspaces";
+import { WorkspaceDiscovery } from "@effected/workspaces";
 import type {
 	ActionEnvironmentError,
 	ActionOutputError,
@@ -35,10 +36,7 @@ import {
 	PullRequest,
 } from "@savvy-web/github-action-effects";
 import type { Changesets } from "@savvy-web/silk-effects";
-import type { ConfigError } from "effect";
-import { Config, Effect } from "effect";
-import type { PublishabilityDetector } from "workspaces-effect";
-import { WorkspaceDiscovery } from "workspaces-effect";
+import { Config, Effect, FileSystem } from "effect";
 import type { ChangesetConfig } from "../release/changeset-config.js";
 import { resolveSignoff } from "./commit-signoff.js";
 import { isSinglePackage } from "./detect-repo-type.js";
@@ -112,7 +110,7 @@ export const createReleaseBranch = (): Effect.Effect<
 	| Changesets.ConfigurationError
 	| Changesets.ReleasePlanError
 	| CommandRunnerError
-	| ConfigError.ConfigError
+	| Config.ConfigError
 	| GitCommitError
 	| GitHubClientError
 	| GitHubIssueError
@@ -232,17 +230,17 @@ export const createReleaseBranch = (): Effect.Effect<
 		const releasingPackages = detectedReleasing.length > 0 ? detectedReleasing : publishablePackages;
 		let singlePackageRepoVersion: string | undefined;
 		if (releasingPackages.length === 0 && isSinglePackage()) {
-			const readResult = yield* Effect.either(fs.readFileString("package.json"));
-			if (readResult._tag === "Right") {
+			const readResult = yield* Effect.result(fs.readFileString("package.json"));
+			if (readResult._tag === "Success") {
 				try {
-					singlePackageRepoVersion = (JSON.parse(readResult.right) as { version?: string }).version;
+					singlePackageRepoVersion = (JSON.parse(readResult.success) as { version?: string }).version;
 				} catch (error) {
 					yield* Effect.logWarning(
 						`Failed to read version for PR title: ${error instanceof Error ? error.message : String(error)}`,
 					);
 				}
 			} else {
-				yield* Effect.logWarning(`Failed to read package.json: ${readResult.left.message}`);
+				yield* Effect.logWarning(`Failed to read package.json: ${readResult.failure.message}`);
 			}
 		}
 		const prTitle = resolveReleasePrTitle({
@@ -288,9 +286,9 @@ export const createReleaseBranch = (): Effect.Effect<
 				if (statusCode === "D" || statusCode === "DD" || statusCode === "AD") {
 					files.push({ path: filePath, mode: "100644", sha: null });
 				} else {
-					const content = yield* fs.readFileString(filePath).pipe(Effect.catchAll(() => Effect.succeed("")));
-					const statResult = yield* Effect.either(fs.stat(filePath));
-					const isExecutable = statResult._tag === "Right" && (Number(statResult.right.mode ?? 0n) & 0o111) !== 0;
+					const content = yield* fs.readFileString(filePath).pipe(Effect.catch(() => Effect.succeed("")));
+					const statResult = yield* Effect.result(fs.stat(filePath));
+					const isExecutable = statResult._tag === "Success" && (Number(statResult.success.mode ?? 0n) & 0o111) !== 0;
 					files.push({ path: filePath, mode: isExecutable ? "100755" : "100644", content });
 				}
 			}
@@ -317,8 +315,8 @@ export const createReleaseBranch = (): Effect.Effect<
 				finalCommitSha = yield* gitCommit.createCommit(commitMessage, treeSha, [parentSha]);
 				// updateRef fails 404/422 for a brand-new branch — fall back to createRef.
 				// GitCommit.updateRef prefixes "heads/" itself — pass the bare branch name.
-				const updateResult = yield* Effect.either(gitCommit.updateRef(releaseBranch, finalCommitSha, true));
-				if (updateResult._tag === "Left") {
+				const updateResult = yield* Effect.result(gitCommit.updateRef(releaseBranch, finalCommitSha, true));
+				if (updateResult._tag === "Failure") {
 					yield* Effect.logInfo(`Ref heads/${releaseBranch} does not exist yet; creating it`);
 					yield* client.rest<undefined>("git.createRef", (octokit) =>
 						(
@@ -375,7 +373,7 @@ export const createReleaseBranch = (): Effect.Effect<
 				}
 				yield* Effect.logInfo(`Linking branch '${releaseBranch}' at commit ${finalCommitSha} to issues...`);
 				for (const issue of linkedIssues) {
-					const linkResult = yield* Effect.either(
+					const linkResult = yield* Effect.result(
 						client.graphql<CreateLinkedBranchResponse>(CREATE_LINKED_BRANCH_MUTATION, {
 							issueId: issue.node_id,
 							name: releaseBranch,
@@ -383,10 +381,10 @@ export const createReleaseBranch = (): Effect.Effect<
 							repositoryId: repoNodeId,
 						}),
 					);
-					if (linkResult._tag === "Right") {
+					if (linkResult._tag === "Success") {
 						yield* Effect.logInfo(`  ✓ Linked branch to issue #${issue.number}`);
 					} else {
-						yield* Effect.logWarning(`  Failed to link issue #${issue.number}: ${linkResult.left.reason}`);
+						yield* Effect.logWarning(`  Failed to link issue #${issue.number}: ${linkResult.failure.reason}`);
 					}
 				}
 				yield* Effect.logInfo(`✓ Successfully linked branch to ${linkedIssues.length} issue(s)`);

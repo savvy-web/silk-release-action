@@ -1,5 +1,5 @@
+import { DependencyGraph, WorkspaceDiscovery } from "@effected/workspaces";
 import { Effect } from "effect";
-import { TopologicalSorter } from "workspaces-effect";
 
 /**
  * Order a set of released package names topologically (dependencies first).
@@ -11,7 +11,7 @@ import { TopologicalSorter } from "workspaces-effect";
  * dependency-first ordering so that registry publishes, GitHub releases, tag
  * creation, and build/SBOM steps surface packages consistently.
  *
- * `TopologicalSorter.sortSubset` returns the transitive-dependency closure of
+ * `DependencyGraph.sortSubset` returns the transitive-dependency closure of
  * the requested names, so the closure is filtered back down to only the
  * requested (released) packages — a non-bumped dependency pulled into the
  * closure is not a release target.
@@ -25,13 +25,17 @@ import { TopologicalSorter } from "workspaces-effect";
  */
 export const sortReleasesTopologically = (
 	names: ReadonlyArray<string>,
-): Effect.Effect<ReadonlyArray<string>, never, TopologicalSorter> =>
+): Effect.Effect<ReadonlyArray<string>, never, WorkspaceDiscovery> =>
 	Effect.gen(function* () {
-		const sorter = yield* TopologicalSorter;
+		const discovery = yield* WorkspaceDiscovery;
 		const requested = new Set(names);
-		return yield* sorter.sortSubset(names).pipe(
-			Effect.map((closure) => closure.filter((name) => requested.has(name))),
-			Effect.catchAll((e: unknown) =>
+		return yield* Effect.gen(function* () {
+			const packages = yield* discovery.listPackages();
+			const graph = DependencyGraph.make({ packages: [...packages] });
+			const closure = yield* graph.sortSubset(names);
+			return closure.filter((name) => requested.has(name));
+		}).pipe(
+			Effect.catch((e) =>
 				Effect.gen(function* () {
 					yield* Effect.logWarning(`Topological sort failed, using detection order: ${String(e)}`);
 					return names;

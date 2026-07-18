@@ -1,18 +1,19 @@
 import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import type { WorkspacePackage } from "workspaces-effect";
-import { findWorkspaceRootSync, getWorkspacePackagesSync } from "workspaces-effect";
+import type { WorkspacePackage } from "@effected/workspaces";
+import { findWorkspaceRootSync, getWorkspacePackagesSync } from "@effected/workspaces";
+import { nodeSyncOps } from "@effected/workspaces/node-sync";
 
 /**
- * Discover workspace packages from `cwd` using `workspaces-effect`'s sync API.
+ * Discover workspace packages from `cwd` using `@effected/workspaces`'s sync API.
  *
  * @returns Array of workspace packages (root + children), or `[]` if the cwd
  *   is not inside a project.
  */
 function listWorkspacePackages(): ReadonlyArray<WorkspacePackage> {
-	const root = findWorkspaceRootSync(process.cwd());
+	const root = findWorkspaceRootSync({ ...nodeSyncOps, cwd: process.cwd() });
 	if (!root) return [];
-	return getWorkspacePackagesSync(root);
+	return getWorkspacePackagesSync(root, nodeSyncOps);
 }
 
 /**

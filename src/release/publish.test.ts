@@ -15,7 +15,8 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { NodeFileSystem } from "@effect/platform-node";
+import { NodeServices } from "@effect/platform-node";
+import { PublishTarget, PublishabilityDetector, WorkspaceDiscovery, WorkspacePackage } from "@effected/workspaces";
 import type {
 	GitHubCommit,
 	GitHubCommitTestState,
@@ -38,15 +39,8 @@ import {
 	SigstoreSignerTest,
 } from "@savvy-web/github-action-effects/testing";
 import type { Redacted } from "effect";
-import { ConfigProvider, Effect, Layer } from "effect";
+import { ConfigProvider, Effect, Layer, Option } from "effect";
 import { describe, expect, it, vi } from "vitest";
-import {
-	PublishTarget,
-	PublishabilityDetector,
-	TopologicalSorter,
-	WorkspaceDiscovery,
-	WorkspacePackage,
-} from "workspaces-effect";
 
 import { matchesIgnorePattern } from "../utils/detect-repo-type.js";
 import { ChangesetConfig } from "./changeset-config.js";
@@ -101,36 +95,25 @@ const makeDetected = (name: string, version = "1.0.0", path = `/tmp/test/${name}
 /** Build a WorkspaceDiscovery test layer returning the given packages. */
 const makeWorkspaceDiscoveryLayer = (packages: WorkspacePackage[]): Layer.Layer<WorkspaceDiscovery> =>
 	Layer.succeed(WorkspaceDiscovery, {
-		listPackages: (_cwd?: string) => Effect.succeed(packages as ReadonlyArray<WorkspacePackage>),
+		info: () => Effect.die(new Error("info() not stubbed")),
+		listPackages: () => Effect.succeed(packages as ReadonlyArray<WorkspacePackage>),
 		getPackage: (name: string) => {
 			const found = packages.find((p) => p.name === name);
 			if (!found) return Effect.die(new Error(`Package not found: ${name}`));
 			return Effect.succeed(found);
 		},
-		importerMap: (_cwd?: string) =>
+		importerMap: () =>
 			Effect.succeed(new Map(packages.map((p) => [p.relativePath, p])) as ReadonlyMap<string, WorkspacePackage>),
+		resolveFile: () => Effect.succeed(Option.none()),
+		resolveFiles: () => Effect.succeed([] as ReadonlyArray<WorkspacePackage>),
 		refresh: () => Effect.void,
 	});
 
 /** Build a PublishabilityDetector test layer returning targets per package name. */
 const makePublishabilityLayer = (targetsByName: Map<string, PublishTarget[]>): Layer.Layer<PublishabilityDetector> =>
 	Layer.succeed(PublishabilityDetector, {
-		detect: (pkg: WorkspacePackage, _root: string) =>
+		detect: (pkg: WorkspacePackage) =>
 			Effect.succeed((targetsByName.get(pkg.name) ?? []) as ReadonlyArray<PublishTarget>),
-	});
-
-/** Build a TopologicalSorter test layer that returns names in the order given. */
-const makeTopologicalSorterLayer = (orderedNames: string[]): Layer.Layer<TopologicalSorter> =>
-	Layer.succeed(TopologicalSorter, {
-		sort: () => Effect.succeed(orderedNames as ReadonlyArray<string>),
-		sortSubset: (names: ReadonlyArray<string>) => {
-			// Return only the names that were requested, in the pre-configured order
-			const sorted = orderedNames.filter((n) => (names as string[]).includes(n));
-			// Any names not in orderedNames go at the end (new packages)
-			const missing = (names as string[]).filter((n) => !orderedNames.includes(n));
-			return Effect.succeed([...sorted, ...missing] as ReadonlyArray<string>);
-		},
-		levels: () => Effect.succeed([orderedNames] as ReadonlyArray<ReadonlyArray<string>>),
 	});
 
 /**
@@ -216,7 +199,7 @@ const sigstoreSignerLayer = SigstoreSignerTest;
 // Empty ActionState (no tokens persisted) — tests exercise the "no token" / OIDC path.
 const actionStateLayer = ActionStateTest.layer(ActionStateTest.empty());
 // Empty ConfigProvider — `npm-token` is absent, Config.option returns None (OIDC path).
-const configProviderLayer = Layer.setConfigProvider(ConfigProvider.fromMap(new Map<string, string>()));
+const configProviderLayer = ConfigProvider.layer(ConfigProvider.fromUnknown({}));
 // Default ChangesetConfig stub: no packages ignored (isIgnored always false).
 const changesetConfigDefaultLayer = Layer.succeed(ChangesetConfig, {
 	mode: () => Effect.succeed("silk" as const),
@@ -541,7 +524,7 @@ describe("runBuildAndSbom", () => {
 				loggerLayer,
 				failingBuildLayer,
 				sbomLayer,
-				NodeFileSystem.layer,
+				NodeServices.layer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 			);
 
@@ -601,7 +584,7 @@ describe("runBuildAndSbom", () => {
 				loggerLayer,
 				buildLayer,
 				SbomLive,
-				NodeFileSystem.layer,
+				NodeServices.layer,
 				makeWorkspaceDiscoveryLayer([pkgA, pkgB]),
 			);
 
@@ -657,7 +640,7 @@ describe("runBuildAndSbom", () => {
 				loggerLayer,
 				buildLayer,
 				partialSbomLayer,
-				NodeFileSystem.layer,
+				NodeServices.layer,
 				makeWorkspaceDiscoveryLayer([pkgGood, pkgBad]),
 			);
 
@@ -732,7 +715,6 @@ describe("runPublishTargets", () => {
 			GitHubClientTest.empty(),
 			makeWorkspaceDiscoveryLayer([wsPkg]),
 			makePublishabilityLayer(new Map([[wsPkg.name, targets]])),
-			makeTopologicalSorterLayer([wsPkg.name]),
 		);
 
 	describe("first-publish path (version absent from registry)", () => {
@@ -962,7 +944,6 @@ describe("runPublishTargets", () => {
 				GitHubClientTest.empty(),
 				makeWorkspaceDiscoveryLayer([wsPkg]),
 				makePublishabilityLayer(new Map([[wsPkg.name, targets]])),
-				makeTopologicalSorterLayer([wsPkg.name]),
 			);
 		};
 
@@ -1138,7 +1119,6 @@ describe("runPublishTargets", () => {
 				GitHubClientTest.empty(),
 				makeWorkspaceDiscoveryLayer([wsPkg]),
 				makePublishabilityLayer(new Map([[wsPkg.name, [target]]])),
-				makeTopologicalSorterLayer([wsPkg.name]),
 			);
 
 			// Act
@@ -1192,7 +1172,6 @@ describe("runPublishTargets", () => {
 				GitHubClientTest.empty(),
 				makeWorkspaceDiscoveryLayer([wsPkg]),
 				makePublishabilityLayer(new Map([[wsPkg.name, [target]]])),
-				makeTopologicalSorterLayer([wsPkg.name]),
 			);
 
 			// Act
@@ -1253,7 +1232,6 @@ describe("runPublishTargets", () => {
 				GitHubClientTest.empty(),
 				makeWorkspaceDiscoveryLayer([wsPkg]),
 				makePublishabilityLayer(new Map([[wsPkg.name, [target]]])),
-				makeTopologicalSorterLayer([wsPkg.name]),
 			);
 
 			// Act
@@ -1321,7 +1299,6 @@ describe("runPublishTargets", () => {
 				GitHubClientTest.empty(),
 				makeWorkspaceDiscoveryLayer([wsPkg]),
 				makePublishabilityLayer(new Map([[wsPkg.name, [target]]])),
-				makeTopologicalSorterLayer([wsPkg.name]),
 			);
 
 			// Act
@@ -1511,7 +1488,6 @@ describe("runPublishTargets", () => {
 						["@test/ok-pkg", [targetB]],
 					]),
 				),
-				makeTopologicalSorterLayer(["@test/fail-pkg", "@test/ok-pkg"]),
 			);
 
 			// Act

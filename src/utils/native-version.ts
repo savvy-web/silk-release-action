@@ -15,11 +15,10 @@
 
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { FileSystem } from "@effect/platform";
 import type { CommandRunnerError } from "@savvy-web/github-action-effects";
 import { CommandRunner } from "@savvy-web/github-action-effects";
 import { Changesets } from "@savvy-web/silk-effects";
-import { Duration, Effect, Redacted } from "effect";
+import { Duration, Effect, FileSystem, Redacted } from "effect";
 import { appToken } from "./tokens.js";
 
 /** At runtime `import.meta.url` is `dist/main.js`, so this resolves into `dist/`. */
@@ -115,11 +114,13 @@ export const runNativeVersion = (
 		// Effect value.
 		const applyOnce = () => withGithubTokenEnv(planner.apply(cwd, { changelogModules: CHANGELOG_MODULES }));
 
-		const first = yield* Effect.either(applyOnce());
-		if (first._tag === "Right") return first.right;
-		if (!isTransient(first.left.reason)) return yield* Effect.fail(first.left);
+		const first = yield* Effect.result(applyOnce());
+		if (first._tag === "Success") return first.success;
+		if (!isTransient(first.failure.reason)) return yield* Effect.fail(first.failure);
 
-		yield* Effect.logWarning(`Native version failed transiently (${first.left.reason}); resetting and retrying once`);
+		yield* Effect.logWarning(
+			`Native version failed transiently (${first.failure.reason}); resetting and retrying once`,
+		);
 		yield* runner.exec("git", ["checkout", "--", "."]);
 		yield* runner.exec("git", ["clean", "-fd"]);
 		yield* Effect.sleep(Duration.seconds(1));

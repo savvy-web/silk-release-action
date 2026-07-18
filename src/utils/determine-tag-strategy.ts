@@ -1,5 +1,5 @@
+import type { PublishabilityDetector, WorkspaceDiscovery } from "@effected/workspaces";
 import { Effect } from "effect";
-import type { PublishabilityDetector, WorkspaceDiscovery } from "workspaces-effect";
 import { ChangesetConfig } from "../release/changeset-config.js";
 import type { PackagePublishResult } from "../release/types.js";
 import { listPublishablePackages } from "./release-summary-helpers.js";

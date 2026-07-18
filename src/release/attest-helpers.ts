@@ -31,7 +31,7 @@ export const buildProvenancePredicate = (): Effect.Effect<Record<string, unknown
 		const predicate = yield* buildSLSAProvenancePredicate(claims);
 		return predicate;
 	}).pipe(
-		Effect.catchAll((e: unknown) =>
+		Effect.catch((e: unknown) =>
 			Effect.gen(function* () {
 				yield* Effect.logWarning(
 					`Failed to build SLSA provenance predicate: ${e instanceof Error ? e.message : String(e)}`,

@@ -1,6 +1,5 @@
-import { FileSystem } from "@effect/platform";
 import { CommandRunnerTest } from "@savvy-web/github-action-effects/testing";
-import { Effect, Exit, Layer, Logger } from "effect";
+import { Effect, Exit, FileSystem, Layer, Logger } from "effect";
 import { describe, expect, it } from "vitest";
 import { formatWorkspaceWithBiome } from "../src/utils/format-workspace.js";
 
@@ -11,12 +10,12 @@ const run = (
 	Effect.runPromiseExit(
 		formatWorkspaceWithBiome().pipe(
 			Effect.provide(Layer.mergeAll(fsLayer, CommandRunnerTest.layer(commands))),
-			Effect.provide(Logger.replace(Logger.defaultLogger, Logger.none)),
+			Effect.provide(Logger.layer([])),
 		),
 	);
 
 const fsWith = (files: string[]) =>
-	FileSystem.layerNoop({ exists: (path) => Effect.succeed(files.some((f) => path.endsWith(f))) });
+	FileSystem.layerNoop({ exists: (path: string) => Effect.succeed(files.some((f) => path.endsWith(f))) });
 
 describe("formatWorkspaceWithBiome", () => {
 	it("is a no-op when no biome config exists", async () => {

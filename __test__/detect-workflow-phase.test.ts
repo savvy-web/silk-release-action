@@ -12,11 +12,10 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FileSystem } from "@effect/platform";
 import { NodeFileSystem } from "@effect/platform-node";
 import type { PullRequestInfo, PullRequestTestState } from "@savvy-web/github-action-effects/testing";
 import { ActionEnvironmentTest, GitHubClientTest, PullRequestTest } from "@savvy-web/github-action-effects/testing";
-import { Effect, Layer, Logger } from "effect";
+import { Effect, FileSystem, Layer, Logger } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PhaseDetectionOptions, PhaseDetectionResult } from "../src/utils/detect-workflow-phase.js";
 import { detectWorkflowPhase } from "../src/utils/detect-workflow-phase.js";
@@ -105,7 +104,7 @@ const runDetect = (f: Fixtures): Promise<PhaseDetectionResult> => {
 	return Effect.runPromise(
 		detectWorkflowPhase({ releaseBranch: RELEASE_BRANCH, targetBranch: TARGET_BRANCH }).pipe(
 			Effect.provide(layer),
-			Effect.provide(Logger.replace(Logger.defaultLogger, Logger.none)),
+			Effect.provide(Logger.layer([])),
 		),
 	);
 };
@@ -268,7 +267,7 @@ const runDetectFull = (params: FullParams): Promise<PhaseDetectionResult> => {
 			releaseBranch: RELEASE_BRANCH,
 			targetBranch: TARGET_BRANCH,
 			...params.options,
-		}).pipe(Effect.provide(layer), Effect.provide(Logger.replace(Logger.defaultLogger, Logger.none))),
+		}).pipe(Effect.provide(layer), Effect.provide(Logger.layer([]))),
 	).finally(() => rmSync(tmp, { recursive: true, force: true }));
 };
 

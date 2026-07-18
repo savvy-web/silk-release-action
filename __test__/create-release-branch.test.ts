@@ -14,7 +14,7 @@
  * fixture setup while still exercising the PR creation and label steps.
  */
 
-import { FileSystem } from "@effect/platform";
+import { PublishabilityDetector, WorkspaceDiscovery } from "@effected/workspaces";
 import type {
 	ActionOutputsTestState,
 	ActionStateTestState,
@@ -37,18 +37,20 @@ import {
 	PullRequestTest,
 } from "@savvy-web/github-action-effects/testing";
 import { Changesets } from "@savvy-web/silk-effects";
-import { ConfigProvider, Effect, Layer, Logger } from "effect";
+import { ConfigProvider, Effect, FileSystem, Layer, Logger, Option } from "effect";
 import { describe, expect, it } from "vitest";
-import { PublishabilityDetector, WorkspaceDiscovery } from "workspaces-effect";
 import { ChangesetConfig } from "../src/release/changeset-config.js";
 import type { CreateReleaseBranchResult } from "../src/utils/create-release-branch.js";
 import { CREATE_PULL_REQUEST_MUTATION, createReleaseBranch } from "../src/utils/create-release-branch.js";
 
 /** Minimal WorkspaceDiscovery stub: no packages. */
 const workspaceDiscoveryStub = Layer.succeed(WorkspaceDiscovery, {
+	info: () => Effect.die("not implemented"),
 	listPackages: () => Effect.succeed([]),
 	getPackage: () => Effect.die("not implemented"),
-	importerMap: () => Effect.die("not implemented"),
+	importerMap: () => Effect.succeed(new Map()),
+	resolveFile: () => Effect.succeed(Option.none()),
+	resolveFiles: () => Effect.succeed([]),
 	refresh: () => Effect.void,
 });
 
@@ -215,19 +217,17 @@ const runStage = (
 		plannerLayer,
 		configInspectorStub,
 	);
-	const config = ConfigProvider.fromMap(
-		new Map([
-			["release-branch", RELEASE_BRANCH],
-			["target-branch", TARGET_BRANCH],
-			["pr-title-prefix", "chore: release"],
-			["dry-run", "false"],
-		]),
-	);
+	const config = ConfigProvider.fromUnknown({
+		"release-branch": RELEASE_BRANCH,
+		"target-branch": TARGET_BRANCH,
+		"pr-title-prefix": "chore: release",
+		"dry-run": "false",
+	});
 	return Effect.runPromise(
 		createReleaseBranch().pipe(
 			Effect.provide(layer),
-			Effect.provide(Logger.replace(Logger.defaultLogger, Logger.none)),
-			Effect.withConfigProvider(config),
+			Effect.provide(Logger.layer([])),
+			Effect.provide(ConfigProvider.layer(config)),
 		),
 	);
 };

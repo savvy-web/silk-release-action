@@ -54,7 +54,7 @@ export const checkReleaseBranch = (
 
 		// 1. Does the branch exist?
 		const branchExists = yield* branches.exists(releaseBranch).pipe(
-			Effect.catchAll((e) =>
+			Effect.catch((e) =>
 				Effect.gen(function* () {
 					yield* Effect.logWarning(`Failed to check if branch '${releaseBranch}' exists: ${e.reason}`);
 					return false;
@@ -73,7 +73,7 @@ export const checkReleaseBranch = (
 		let prNumber: number | null = null;
 		if (branchExists) {
 			const found = yield* prs.list({ state: "open", head: `${owner}:${releaseBranch}`, base: targetBranch }).pipe(
-				Effect.catchAll((e) =>
+				Effect.catch((e) =>
 					Effect.gen(function* () {
 						yield* Effect.logWarning(`Failed to check for open PRs: ${e.reason}`);
 						return [] as ReadonlyArray<{ number: number; url: string }>;

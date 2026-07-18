@@ -29,6 +29,6 @@ const FALLBACK_IDENTITY = {
  */
 export const resolveSignoff = (): Effect.Effect<string, never, ActionState> =>
 	GitHubToken.botIdentity().pipe(
-		Effect.catchAll(() => Effect.succeed(FALLBACK_IDENTITY)),
+		Effect.catch(() => Effect.succeed(FALLBACK_IDENTITY)),
 		Effect.map((identity) => `Signed-off-by: ${identity.name} <${identity.email}>`),
 	);

@@ -33,27 +33,27 @@ export const INPUT_SCHEMA_URL =
 /** Contact information for a supplier, author, or security contact. */
 export const SbomContact = Schema.Struct({
 	name: Schema.optional(
-		Schema.String.annotations({
+		Schema.String.annotate({
 			title: "Contact name",
 			description: "Display name of the contact person or team.",
 			examples: ["Security Team", "Jane Doe"],
 		}),
 	),
 	email: Schema.optional(
-		Schema.String.annotations({
+		Schema.String.annotate({
 			title: "Contact email",
 			description: "Email address used to reach the contact.",
 			examples: ["security@example.com"],
 		}),
 	),
 	phone: Schema.optional(
-		Schema.String.annotations({
+		Schema.String.annotate({
 			title: "Contact phone",
 			description: "Phone number used to reach the contact, in E.164 format when possible.",
 			examples: ["+1-555-0100"],
 		}),
 	),
-}).annotations({
+}).annotate({
 	identifier: "SbomContact",
 	title: "SBOM contact",
 	description:
@@ -70,14 +70,14 @@ export type SbomContact = Schema.Schema.Type<typeof SbomContact>;
  * scalar-or-array form that `resolveSBOMMetadata` already normalises.
  */
 export const SbomSupplier = Schema.Struct({
-	name: Schema.String.annotations({
+	name: Schema.String.annotate({
 		title: "Supplier name",
 		description:
 			"Supplier display name. Required when a supplier block is provided — this is the NTIA minimum-elements 'Supplier Name' field that compliance checks key on.",
 		examples: ["Savvy Web"],
 	}),
 	url: Schema.optional(
-		Schema.Union(Schema.String, Schema.Array(Schema.String)).annotations({
+		Schema.Union([Schema.String, Schema.Array(Schema.String)]).annotate({
 			title: "Supplier URL(s)",
 			description:
 				"One supplier URL or an array of URLs. The scalar-or-array form is normalised by `resolveSBOMMetadata`; both shapes are accepted by Phase 2.",
@@ -85,13 +85,13 @@ export const SbomSupplier = Schema.Struct({
 		}),
 	),
 	contact: Schema.optional(
-		Schema.Union(SbomContact, Schema.Array(SbomContact)).annotations({
+		Schema.Union([SbomContact, Schema.Array(SbomContact)]).annotate({
 			title: "Supplier contact(s)",
 			description:
 				"One contact object or an array of contacts. The scalar-or-array form is normalised by `resolveSBOMMetadata`; both shapes are accepted by Phase 2.",
 		}),
 	),
-}).annotations({
+}).annotate({
 	identifier: "SbomSupplier",
 	title: "SBOM Supplier",
 	description:
@@ -111,7 +111,7 @@ export type SbomSupplier = Schema.Schema.Type<typeof SbomSupplier>;
  */
 export const SbomCopyright = Schema.Struct({
 	holder: Schema.optional(
-		Schema.String.annotations({
+		Schema.String.annotate({
 			title: "Copyright holder",
 			description:
 				"Copyright holder name. Appears in the BOM's `metadata.component.copyright` formatted as 'Copyright (c) <range> <holder>'.",
@@ -119,14 +119,14 @@ export const SbomCopyright = Schema.Struct({
 		}),
 	),
 	startYear: Schema.optional(
-		Schema.Int.annotations({
+		Schema.Int.annotate({
 			title: "Copyright start year",
 			description:
 				"Year the copyright begins, used to format a year range against the current year. Most users should NOT set this — it is auto-detected from the npm registry's first-publication date. Override only when registry lookup is unreliable or the copyright predates first npm publication.",
 			examples: [2024, 2021],
 		}),
 	),
-}).annotations({
+}).annotate({
 	identifier: "SbomCopyright",
 	title: "SBOM Copyright",
 	description:
@@ -145,14 +145,14 @@ export type SbomCopyright = Schema.Schema.Type<typeof SbomCopyright>;
 export const SbomConfig = Schema.Struct({
 	supplier: Schema.optional(SbomSupplier),
 	authors: Schema.optional(
-		Schema.Array(SbomContact).annotations({
+		Schema.Array(SbomContact).annotate({
 			title: "Authors",
 			description:
 				"Author contacts written to the BOM's `metadata.authors`. Used when `package.json` `author`/`contributors` are insufficient or need explicit override.",
 		}),
 	),
 	publisher: Schema.optional(
-		Schema.String.annotations({
+		Schema.String.annotate({
 			title: "Publisher",
 			description:
 				"Publisher name written to the BOM's `metadata.component.publisher`. Defaults to the supplier name when unset.",
@@ -161,14 +161,14 @@ export const SbomConfig = Schema.Struct({
 	),
 	copyright: Schema.optional(SbomCopyright),
 	documentationUrl: Schema.optional(
-		Schema.String.annotations({
+		Schema.String.annotate({
 			title: "Documentation URL",
 			description:
 				"Documentation URL written to the BOM as an external reference of type 'documentation'. Typically the project's docs site or repository docs path.",
 			examples: ["https://savvy-web.github.io/silk", "https://github.com/savvy-web/silk-release-action#readme"],
 		}),
 	),
-}).annotations({
+}).annotate({
 	identifier: "SbomConfig",
 	title: "SBOM Configuration",
 	description:
@@ -188,7 +188,7 @@ export type SbomConfig = Schema.Schema.Type<typeof SbomConfig>;
  */
 export const SilkReleaseConfig = Schema.Struct({
 	$schema: Schema.optional(
-		Schema.String.annotations({
+		Schema.String.annotate({
 			title: "JSON Schema reference",
 			description:
 				"Optional URL of the JSON Schema this config conforms to. Editors and json-schema-aware tools use this for completion and validation; the action itself does not require it.",
@@ -198,7 +198,7 @@ export const SilkReleaseConfig = Schema.Struct({
 		}),
 	),
 	sbom: Schema.optional(SbomConfig),
-}).annotations({
+}).annotate({
 	identifier: "SilkReleaseConfig",
 	title: "Silk Release Action input config",
 	description:

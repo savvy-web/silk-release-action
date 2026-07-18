@@ -4,8 +4,8 @@ category: testing
 status: current
 completeness: 90
 created: 2026-02-07
-updated: 2026-07-05
-last-synced: 2026-07-06
+updated: 2026-07-17
+last-synced: 2026-07-17
 module: release-action
 related:
   - architecture.md
@@ -37,7 +37,7 @@ dependencies:
 
 ## Overview
 
-The project uses Vitest 4.0.8 with a comprehensive test suite covering Phase-3 Effect orchestration, the silk publishability rules, and all utility modules. Tests enforce type-safe mocking with zero `any` types and maintain 85%+ coverage per file via the V8 provider. All external dependencies (GitHub API, exec, file system, `workspaces-effect`) are mocked or replaced with in-memory Effect test layers to ensure tests are fast, reliable, and isolated.
+The project uses Vitest 4.0.8 with a comprehensive test suite covering Phase-3 Effect orchestration, the silk publishability rules, and all utility modules. Tests enforce type-safe mocking with zero `any` types and maintain 85%+ coverage per file via the V8 provider. All external dependencies (GitHub API, exec, file system, `@effected/workspaces`) are mocked or replaced with in-memory Effect test layers to ensure tests are fast, reliable, and isolated.
 
 Phase-3 code (`src/release/`) is tested using Effect service test layers provided by `@savvy-web/github-action-effects/testing`. There are no hand-rolled Octokit factories; the old `createMockOctokit()` / `MockOctokit` patterns from `__test__/utils/test-types.ts` were removed in the migration. For imperative utility modules (Phase 1/2), tests use `vi.mock()` for external dependencies and the environment helpers from `__test__/utils/github-mocks.ts`.
 
@@ -145,6 +145,14 @@ vi.mock("node:fs");
 
 ### Specialized Testing Patterns
 
+#### Effect v4 Log Silencing and Log-Level Wiring
+
+The Effect v3 log-silencing idioms were both removed in v4, so tests were rewired:
+
+- **Silence logs** — `Logger.replace(Logger.defaultLogger, Logger.none)` → `Effect.provide(Logger.layer([]))`. An empty logger array installs no loggers, so log output is dropped. This is the standard tail on nearly every effect-under-test in `__test__/*.test.ts` (e.g. `.pipe(Effect.provide(layer), Effect.provide(Logger.layer([])))`).
+- **Raise the minimum log level** — `Logger.withMinimumLogLevel(LogLevel.All)` → `Effect.provideService(References.MinimumLogLevel, "All")`. Log levels are plain string literals in v4 (`"All"`, `"Debug"`, …); `releases.test.ts` uses this to assert debug-level output.
+- **`SchemaError` bracket notation** — a v4 `SchemaError` renders the failing path in bracket notation, so path assertions match `["field"]` rather than the v3 dotted form. `load-release-config.test.ts` asserts against the bracketed message.
+
 #### Exec Mocking with Listeners (stdout/stderr Capture)
 
 Tests that mock `@actions/exec` capture output via listener callbacks. Used extensively in tests for modules that shell out to CLI tools:
@@ -197,13 +205,13 @@ vi.mocked(readFile).mockImplementation(async (path) => {
 });
 ```
 
-#### Workspace Mocking (`workspaces-effect`)
+#### Workspace Mocking (`@effected/workspaces`)
 
-Workspace-related tests mock `workspaces-effect`'s sync API via `WorkspaceDiscovery` or direct `vi.mock`:
+Workspace-related tests mock `@effected/workspaces`'s sync API via `WorkspaceDiscovery` or direct `vi.mock`. The sync helpers now take `nodeSyncOps` from `@effected/workspaces/node-sync` in production, but the test still mocks the top-level `findWorkspaceRootSync` / `getWorkspacePackagesSync` exports:
 
 ```typescript
-import { findWorkspaceRootSync, getWorkspacePackagesSync } from "workspaces-effect";
-vi.mock("workspaces-effect");
+import { findWorkspaceRootSync, getWorkspacePackagesSync } from "@effected/workspaces";
+vi.mock("@effected/workspaces");
 
 vi.mocked(findWorkspaceRootSync).mockReturnValue("/test/workspace");
 vi.mocked(getWorkspacePackagesSync).mockReturnValue([
@@ -223,7 +231,9 @@ vi.mocked(getWorkspacePackagesSync).mockReturnValue([
 ]);
 ```
 
-`workspaces-effect` services that have no `/testing` layer are stubbed inline with `Layer.succeed`. `runValidation` orders released packages through `TopologicalSorter.sortSubset`, so its tests provide a `TopologicalSorter` stub — a no-op that returns the input names unchanged for most cases, and a reordering stub for the dedicated "dependency order, not glob order" test that asserts both the report order and the `dryRunCalls` order follow the sorter.
+`@effected/workspaces` services that have no `/testing` layer are stubbed inline with `Layer.succeed`. The `WorkspaceDiscovery` shape grew across the v4 migration, so the in-memory doubles stub more methods — `info`, `resolveFile`, and `resolveFiles` alongside `listPackages`, `getPackage`, `importerMap`, and `refresh` (unexercised methods return `Effect.die(...)` so an accidental call fails loudly).
+
+The standalone `TopologicalSorter` service is gone. `runValidation` (and the Phase-3 orchestration) order released packages via `sortReleasesTopologically`, which builds a real `DependencyGraph.make({ packages })` from `WorkspaceDiscovery.listPackages()` and calls `sortSubset` — there is no sorter to stub. The dedicated "dependency order, not workspace glob order" test in `validation.test.ts` therefore declares a real `workspace:*` dependency edge on a `WorkspacePackage` fixture (alpha depends on beta) and asserts both the report order and the `dryRunCalls` order follow the graph's dependency-first sort, rather than injecting a reordering sorter stub.
 
 #### Publishability Integration Tests
 
@@ -286,7 +296,7 @@ Co-located tests live in `src/release/*.test.ts`. Integration tests live in `__t
 | `__test__/determine-tag-strategy.test.ts` | `determine-tag-strategy.ts` | Phase 3 |
 | `__test__/detect-workflow-phase.test.ts` | `detect-workflow-phase.ts` | Routing |
 | `__test__/extract-release-notes.test.ts` | `extract-release-notes.ts` | Infra |
-| `__test__/generate-schema.test.ts` | `src/schema/release-output.ts` | Schema |
+| `__test__/generate-schema.test.ts` | `lib/scripts/generate-schema.ts` (drift guard over both committed JSON Schemas) | Schema |
 | `__test__/infer-sbom-metadata.test.ts` | `infer-sbom-metadata.ts` | SBOM |
 | `__test__/link-issues-from-commits.test.ts` | `link-issues-from-commits.ts` | Phase 2 |
 | `__test__/load-release-config.test.ts` | `load-release-config.ts` | Infra |

@@ -54,10 +54,7 @@ const runStage = (
 		CheckRunTest.layer(f.checkRunState),
 	);
 	return Effect.runPromise(
-		createValidationCheck(validations, dryRun, extraBody).pipe(
-			Effect.provide(layer),
-			Effect.provide(Logger.replace(Logger.defaultLogger, Logger.none)),
-		),
+		createValidationCheck(validations, dryRun, extraBody).pipe(Effect.provide(layer), Effect.provide(Logger.layer([]))),
 	);
 };
 

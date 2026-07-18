@@ -19,13 +19,17 @@ Load design docs when working on the relevant subsystem:
 - `@./.claude/design/release-action/integration.md` - Multi-registry publishing, OIDC auth, native versioning/changelog module map, token plumbing, SBOM/NTIA compliance, publish summaries
 - `@./.claude/design/release-action/testing.md` - Test strategy, test-layer patterns, silk-effects test factories, coverage map, specialized testing patterns
 
+### Vendored reference repos (`.repos/`)
+
+`.repos/effect-smol` is a read-only submodule pinned to `effect@4.0.0-beta.98` (sparse: `packages/effect`, `migration`, `MIGRATION.md`, `LLMS.md`) — the authority on what Effect v4 actually exports plus the v3→v4 migration notes. Managed via `savvy repos` (config in `.repos/config.json`, submodule wiring in `.gitmodules`). Consult it before assuming a v4 API shape; do not edit it.
+
 ## Silk Release Action
 
 TypeScript-based GitHub Action for automated release management with changesets. Entry points: `pre.ts`, `main.ts`, `post.ts`. Source layout: `src/release/` (phase orchestration, publishability, reporting), `src/schema/` (output schema and projections), `src/utils/` (utility modules), `src/types/` (shared types). JSON Schema artifacts at `silk-release-action.input.schema.json` and `silk-release-action.output.schema.json`.
 
 **Three-phase workflow:**
 
-1. **Phase 1 (Branch Management)** - Push to `main` triggers changeset detection, creates/updates `changeset-release/main` branch and release PR. Versioning runs in-process (zero-install) via the bundled silk-effects v3 `ReleasePlanner` — no consumer `ci:version` script, no `version-command` input
+1. **Phase 1 (Branch Management)** - Push to `main` triggers changeset detection, creates/updates `changeset-release/main` branch and release PR. Versioning runs in-process (zero-install) via the bundled silk-effects v4 `ReleasePlanner` — no consumer `ci:version` script, no `version-command` input
 2. **Phase 2 (Validation)** - Push to release branch triggers build validation, publish dry-runs, release notes preview, and sticky comment updates
 3. **Phase 3 (Publishing)** - Merge of release PR triggers multi-registry publishing, GitHub releases, and SBOM/attestation generation
 
@@ -79,23 +83,23 @@ We author every dependency in the table below, so a bug or missing API in one ca
 | `@savvy-web/github-action-effects` | `savvy-web/systems` (monorepo) | `../systems/packages/github-action-effects` |
 | `@savvy-web/github-action-builder` | `savvy-web/systems` (monorepo) | `../systems/packages/github-action-builder` |
 | `@savvy-web/silk-effects` | `savvy-web/systems` (monorepo) | `../systems/packages/silk-effects` |
-| `workspaces-effect` | `spencerbeggs/workspaces-effect` | `../../spencerbeggs/workspaces-effect` |
-| `json-schema-effect` | `spencerbeggs/json-schema-effect` | `../../spencerbeggs/json-schema-effect` |
+| `@effected/workspaces` | `spencerbeggs/effected` (monorepo) | `../../spencerbeggs/effected/packages/workspaces` |
+| `@effected/jsonc` | `spencerbeggs/effected` (monorepo) | `../../spencerbeggs/effected/packages/jsonc` |
 
-`@savvy-web/silk-effects` itself depends on `workspaces-effect` and `json-schema-effect`, so those resolve **both directly and transitively** — which decides the linking mechanism below.
+`@savvy-web/silk-effects` itself depends on `@effected/workspaces` (which in turn pulls in `@effected/jsonc`), so both resolve **directly and transitively** — which decides the linking mechanism below.
 
 **Two ways to link a local library build:**
 
 - **Direct-only dependency → `pnpm link`.** e.g. `pnpm link ../systems/packages/github-action-effects` symlinks `node_modules/@savvy-web/github-action-effects` to the local build. Verify the linked `package.json` via `node:fs` (NOT `require(...package.json)` — the `exports` map does not expose `./package.json`), or `pnpm why <pkg>`.
-- **Also a transitive dependency → `pnpm-workspace.yaml` override.** A bare `pnpm link` redirects only the direct import, leaving the transitive copy (e.g. `workspaces-effect` pulled in by `silk-effects`) on the registry version and bundling **two** copies. A `link:` override forces every resolution to one local copy:
+- **Also a transitive dependency → `pnpm-workspace.yaml` override.** A bare `pnpm link` redirects only the direct import, leaving the transitive copy (e.g. `@effected/workspaces` pulled in by `silk-effects`) on the registry version and bundling **two** copies. A `link:` override forces every resolution to one local copy:
 
   ```yaml
   # pnpm-workspace.yaml
   overrides:
-    workspaces-effect: "link:../../spencerbeggs/workspaces-effect/dist/dev"
+    "@effected/workspaces": "link:../../spencerbeggs/effected/packages/workspaces/dist/dev/pkg"
   ```
 
-  then `pnpm install`. `dist/dev` is the rslib-builder link target (`publishConfig.directory` + `linkDirectory: true`). Effect resolves services by the tag's string id, so the one provided layer is shared even across duplicate copies — but the override keeps the bundle to a single copy. Verify every resolution points at the link: `find node_modules -name workspaces-effect`.
+  then `pnpm install`. `dist/dev/pkg` is the builder link target (`publishConfig.directory` + `linkDirectory: true`; `pnpm link` ignores `publishConfig.directory`, so target it explicitly). Effect resolves services by the tag's string id, so the one provided layer is shared even across duplicate copies — but the override keeps the bundle to a single copy. Verify every resolution points at the link: `find node_modules -name '@effected+workspaces*'`.
 
 **Procedure (either mechanism):**
 
@@ -109,7 +113,13 @@ We author every dependency in the table below, so a bug or missing API in one ca
 
 **Committing while a link/override is active:** commit the **full dogfood state** to `dev` — `src` + rebuilt `dist` + changeset **and** the `pnpm-workspace.yaml` override + `pnpm-lock.yaml`. The override holds a machine-specific link path, so `dev` only installs cleanly with the sibling repos checked out at the paths in the table above; that is the accepted dogfooding trade-off, and the cleanup in step 7 reverts it. No CI runs on a plain `dev` push, so the committed `dev` source may reference an unpublished library API until it publishes — expected during dogfooding. Commits must be GPG-signed with the GitHub-verified key for `C. Spencer Beggs <spencer@savvyweb.systems>` or the signature ruleset rejects them.
 
-**Currently active:** no dogfood link or override is active. All first-party dependencies are pinned to published registry versions: `@savvy-web/silk-effects ^3.2.0`, `@savvy-web/github-action-effects ^2.4.0`, `@savvy-web/github-action-builder ^1.1.1` (dev), `workspaces-effect ^2.0.2`, and `json-schema-effect ^0.3.0`. Unlike the earlier dependency-only major bumps, the silk-effects v3 and github-action-builder 1.1 upgrades are actively consumed: Phase-1 native versioning drives the v3 changesets `ReleasePlanner`/`ConfigInspector` engine and its `changelogModules` seam, and the builder's `build.nativeDynamicImports` keeps the changesets/workspaces-effect runtime dynamic imports native in the bundle. The `github-action-effects` 2.4 and `silk-effects` 3.2 minimums are load-bearing: the former pins the dlx-fetched npm to `npm@11` and reads npm 12's `pack --json` object shape, the latter exports `PublishTargetBindingError`, which Phase-2 validation catches to fail the check when a resolved publish directory is not bound by `dist/prod/targets.json`.
+**Currently active:** no dogfood link or override is active. All dependencies are pinned to published registry versions: `@savvy-web/silk-effects ^4.0.1`, `@savvy-web/github-action-effects ^3.0.1`, `@savvy-web/github-action-builder ^2.0.2` (dev), `@savvy-web/silk ^3.0.2` (dev), `@effected/workspaces ^0.3.1`, and `@effected/jsonc ^0.2.0`; `effect` and `@effect/platform-node` resolve via `catalog:effect` (`4.0.0-beta.98`, catalog injected by the `@effected/pnpm-plugin-effect` config dependency in `pnpm-workspace.yaml`). The Effect v4 + `@effected` line is actively consumed, not a passive bump:
+
+- **v4 Schema** (`Schema.Literals([…])`, `Schema.Union([…])`, `.annotate`) drives `src/schema/*`; schema generation now uses effect core `effect/JsonSchema` (`Schema.toJsonSchemaDocument` → `JsonSchema.toDocumentDraft07`) — `json-schema-effect` is gone (`ajv` retained for strict validation).
+- **`NodeServices.layer`** (from `@effect/platform-node`) replaces the old `NodeContext`/`NodeFileSystem`/`NodePath` stack and `@effect/platform` (dissolved into core `effect` in v4); it backs `ActionStateLive`/`ReleaseLive`/`ActionOutputsLive` in `main.ts` (`R` resolves to `never`).
+- **`@effected/workspaces`** provides `Workspaces.layer()` (`WorkspaceDiscovery` + `PublishabilityDetector`) and `DependencyGraph` (`DependencyGraph.make({ packages }).sortSubset(...)`, replacing the removed `TopologicalSorter`) for Phase-1 topological release ordering; `@effected/jsonc` `Jsonc.parse` (Effect-returning) parses release config in `src/utils/load-release-config.ts`.
+- **silk-effects v4** still exports `Changesets.ReleasePlanner`/`ConfigInspector` (Phase-1 native versioning, `changelogModules` seam) and `PublishTargetBindingError`, which Phase-2 validation catches to fail the check when a resolved publish directory is not bound by `dist/prod/targets.json`.
+- **github-action-builder 2** `build.nativeDynamicImports` keeps the `@changesets/apply-release-plan` / `@effected/workspaces` runtime dynamic imports native in the bundle; the bundled **github-action-effects 3** exposes class-based `Context.Service` services (import the exported `*Shape` interfaces, e.g. `ActionOutputsShape`), pins the dlx-fetched npm to `npm@11`, and reads npm 12's `pack --json` object shape.
 
 ## Development & Release Cycle
 

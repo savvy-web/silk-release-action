@@ -15,7 +15,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ActionsConfigProvider } from "@savvy-web/github-action-effects";
-import { Effect } from "effect";
+import { ConfigProvider, Effect } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { LoadReleaseConfigResult, LoadSBOMConfigResult } from "../src/utils/load-release-config.js";
 import {
@@ -34,10 +34,10 @@ const ENV_VARS = ["INPUT_SBOM-CONFIG", "SILK_RELEASE_SBOM_TEMPLATE"] as const;
  * so tests exercise the same env-var convention the action uses in CI.
  */
 const runLoadReleaseConfig = (rootDir?: string): LoadReleaseConfigResult =>
-	Effect.runSync(loadReleaseConfigEffect(rootDir).pipe(Effect.withConfigProvider(ActionsConfigProvider)));
+	Effect.runSync(loadReleaseConfigEffect(rootDir).pipe(Effect.provide(ConfigProvider.layer(ActionsConfigProvider))));
 
 const runLoadSBOMConfig = (rootDir?: string): LoadSBOMConfigResult =>
-	Effect.runSync(loadSBOMConfigEffect(rootDir).pipe(Effect.withConfigProvider(ActionsConfigProvider)));
+	Effect.runSync(loadSBOMConfigEffect(rootDir).pipe(Effect.provide(ConfigProvider.layer(ActionsConfigProvider))));
 
 // Thin sync façades so the existing tests below can keep their call shape.
 const loadReleaseConfig = runLoadReleaseConfig;
@@ -168,8 +168,8 @@ describe("loadReleaseConfig - structural failures", () => {
 
 		expect(result.ok).toBe(false);
 		if (result.ok) return;
-		// The ArrayFormatter prefix names the failing path.
-		expect(result.error).toMatch(/sbom\.supplier\.name/);
+		// v4's SchemaError message names the failing path in bracket notation.
+		expect(result.error).toMatch(/\["sbom"\]\["supplier"\]\["name"\]/);
 	});
 
 	it("rejects a fractional startYear (Schema.Int)", () => {
@@ -179,7 +179,7 @@ describe("loadReleaseConfig - structural failures", () => {
 
 		expect(result.ok).toBe(false);
 		if (result.ok) return;
-		expect(result.error).toMatch(/sbom\.copyright\.startYear/);
+		expect(result.error).toMatch(/\["sbom"\]\["copyright"\]\["startYear"\]/);
 	});
 
 	it("rejects invalid JSON syntax", () => {
@@ -282,7 +282,7 @@ describe("loadSBOMConfig", () => {
 
 		expect(result.ok).toBe(false);
 		if (result.ok) return;
-		expect(result.error).toMatch(/sbom\.supplier\.name/);
+		expect(result.error).toMatch(/\["sbom"\]\["supplier"\]\["name"\]/);
 		expect(result.source.source).toBe("local");
 	});
 });

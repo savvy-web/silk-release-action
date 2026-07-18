@@ -15,9 +15,13 @@ export default defineConfig({
 		// The changesets engine resolves the changelog module path at runtime and
 		// dynamic-imports it; without this, rspack compiles that import into a
 		// context module that throws "Cannot find module" for on-disk paths.
-		// workspaces-effect's pnpm config-dependency hook loader has the same
-		// runtime-path dynamic-import pattern.
-		nativeDynamicImports: ["@changesets/apply-release-plan", "workspaces-effect"],
+		// NOTE: do NOT add "@effected/workspaces" here. Its `ConfigDependencyHooks`
+		// has a computed `import(candidateUrl)` that rspack flags "Critical
+		// dependency: the request of a dependency is an expression." That warning is
+		// benign — a structure-reading action never runs the config-dependency-hooks
+		// path — and the builder's ignore-loader throws (`hasTraversalSegment`) on
+		// that file, failing the whole build if it is listed here.
+		nativeDynamicImports: ["@changesets/apply-release-plan"],
 		// `@cyclonedx/cyclonedx-library` ships optional plugins (XML
 		// serializers, XML validators, draft-2019 JSON validators) we
 		// never invoke — we only use the JSON serializer. They aren't

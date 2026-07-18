@@ -2,9 +2,9 @@ import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { NodeFileSystem } from "@effect/platform-node";
+import { NodeServices } from "@effect/platform-node";
 import { Step } from "@savvy-web/github-action-effects";
-import { Effect, LogLevel, Logger } from "effect";
+import { Effect, References } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	aggregateTurboRuns,
@@ -108,7 +108,7 @@ describe("listTurboRunSummaryPaths", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 	const run = (cwd: string): Promise<string[]> =>
-		Effect.runPromise(listTurboRunSummaryPaths(cwd).pipe(Effect.provide(NodeFileSystem.layer)));
+		Effect.runPromise(listTurboRunSummaryPaths(cwd).pipe(Effect.provide(NodeServices.layer)));
 
 	it("returns [] when .turbo/runs is absent", async () => {
 		await expect(run(dir)).resolves.toEqual([]);
@@ -153,7 +153,7 @@ describe("emitConciseMarker (buffer-bypass visibility)", () => {
 		try {
 			await Effect.runPromise(
 				Step.withStep("Validate builds", emitConciseMarker("/x/run.json", summary)).pipe(
-					Logger.withMinimumLogLevel(LogLevel.All),
+					Effect.provideService(References.MinimumLogLevel, "All"),
 				),
 			);
 		} finally {
@@ -279,7 +279,7 @@ describe("readTurboDiagnostics", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 	const run = (cwd: string, script: string, env: { TURBO_RUN_SUMMARY?: string } = {}) =>
-		Effect.runPromise(readTurboDiagnostics(cwd, script, env).pipe(Effect.provide(NodeFileSystem.layer)));
+		Effect.runPromise(readTurboDiagnostics(cwd, script, env).pipe(Effect.provide(NodeServices.layer)));
 	const writePkg = (body: string) =>
 		writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts: { "ci:build": body } }));
 
