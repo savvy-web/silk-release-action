@@ -1,5 +1,17 @@
 # @savvy-web/silk-release-action
 
+## 3.2.1
+
+### Bug Fixes
+
+* Adapt to `@effected/workspaces` 0.6.0 breaking changes: `findWorkspaceRootSync` is now path-first (`findWorkspaceRootSync(cwd, options)`), and `WorkspacePackage` requires a `workspaceRoot` field. Also bumps `@effected/jsonc` to 0.5.0 and pnpm to 11.15.1. [#174][#174]
+
+### Patch Changes
+
+Thanks to [@spencerbeggs](https://github.com/spencerbeggs) for their contributions!
+
+[#174]: https://github.com/savvy-web/silk-release-action/pull/174
+
 ## 3.2.0
 
 ### Refactoring
