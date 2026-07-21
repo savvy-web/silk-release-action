@@ -73,6 +73,7 @@ const makeWsPkg = (name: string, version = "1.0.0", path = `/tmp/test/${name}`):
 		path,
 		packageJsonPath: `${path}/package.json`,
 		relativePath: name,
+		workspaceRoot: "/tmp/test",
 	});
 
 /** Build a minimal npm PublishTarget. */

@@ -11,7 +11,7 @@ import { nodeSyncOps } from "@effected/workspaces/node-sync";
  *   is not inside a project.
  */
 function listWorkspacePackages(): ReadonlyArray<WorkspacePackage> {
-	const root = findWorkspaceRootSync({ ...nodeSyncOps, cwd: process.cwd() });
+	const root = findWorkspaceRootSync(process.cwd(), nodeSyncOps);
 	if (!root) return [];
 	return getWorkspacePackagesSync(root, nodeSyncOps);
 }

@@ -19,6 +19,7 @@ const pkg = (name: string, deps: ReadonlyArray<string> = []): WorkspacePackage =
 		path: `/repo/${name}`,
 		packageJsonPath: `/repo/${name}/package.json`,
 		relativePath: name,
+		workspaceRoot: "/repo",
 		dependencies: Object.fromEntries(deps.map((d) => [d, "workspace:*"])),
 	});
 

@@ -53,6 +53,7 @@ const resolveFixture = (name: string) =>
 			path: dir,
 			packageJsonPath: fileURLToPath(new URL(`fixtures/${name}/package.json`, import.meta.url)),
 			relativePath: ".",
+			workspaceRoot: dir,
 		});
 		const config = yield* ChangesetConfig;
 		const publishTargets = yield* resolvePublishableTargets(pkg, dir);
@@ -198,6 +199,7 @@ const resolveWorkspacePackage = (workspace: string, subPath: string, name: strin
 			path: dir,
 			packageJsonPath: fileURLToPath(new URL(`fixtures/${workspace}/${subPath}/package.json`, import.meta.url)),
 			relativePath: subPath,
+			workspaceRoot: root,
 		});
 		return yield* resolvePublishableTargets(pkg, root);
 	}).pipe(

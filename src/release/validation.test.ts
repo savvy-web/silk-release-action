@@ -42,6 +42,7 @@ const makeWsPkg = (name: string, version = "1.0.0", relativePath = name, isPriva
 		packageJsonPath: `/tmp/test-workspace/${name}/package.json`,
 		relativePath,
 		private: isPrivate,
+		workspaceRoot: "/tmp/test-workspace",
 	});
 
 /**
@@ -203,6 +204,7 @@ describe("runValidation", () => {
 				packageJsonPath: "/tmp/test-workspace/package.json",
 				relativePath: ".", // identifies this as the root workspace
 				private: true,
+				workspaceRoot: "/tmp/test-workspace",
 			});
 			const target = makeNpmTarget("@savvy-web/github-action-builder", "/tmp/test-workspace/dist/npm");
 
@@ -1306,6 +1308,7 @@ describe("runValidation", () => {
 				packageJsonPath: "/tmp/test-workspace/@test/alpha/package.json",
 				relativePath: "packages/alpha",
 				private: false,
+				workspaceRoot: "/tmp/test-workspace",
 				dependencies: { "@test/beta": "workspace:*" },
 			});
 			const beta = makeWsPkg("@test/beta", "1.1.0", "packages/beta");
