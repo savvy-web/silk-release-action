@@ -49,7 +49,9 @@ jobs:
           source-branch: dev
           config-dependencies: |
             @savvy-web/pnpm-plugin-silk
+            @effected/pnpm-plugin-effect
           dependencies: |
+            @effected/*
             @savvy-web/*
             @vitest-agent/*
             ajv
