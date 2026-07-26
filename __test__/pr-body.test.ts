@@ -17,16 +17,16 @@ import {
 	MANAGED_END,
 	MANAGED_START,
 	SQUASH_FENCE_LANGUAGE,
+	SUMMARY_END,
+	SUMMARY_START,
 	buildClosingReferences,
 	buildManagedPrBody,
+	buildSquashClosingReferences,
+	extractSummary,
 	upsertManagedRegion,
 } from "../src/utils/pr-body.js";
 
 const SIGNOFF = "Signed-off-by: C. Spencer Beggs <spencer@savvyweb.systems>";
-// Deliberately NOT https://github.com. A fixture equal to the production
-// default cannot distinguish "the code read it" from "the code ignored it" —
-// the assertion would pass against a hardcoded host.
-const GHES = "https://github.example.com";
 
 const openIssue = (number: number, title = "Some title"): LinkedIssueRef => ({ number, title, state: "open" });
 const closedIssue = (number: number, title = "Done already"): LinkedIssueRef => ({ number, title, state: "closed" });
@@ -36,10 +36,7 @@ const body = (linkedIssues: ReadonlyArray<LinkedIssueRef>): string =>
 		subject: "release: 2.0.0",
 		linkedIssues,
 		signoff: SIGNOFF,
-		owner: "savvy-web",
-		repo: "silk-integration",
-		runId: "42",
-		serverUrl: GHES,
+		summary: "",
 	});
 
 /**
@@ -90,8 +87,9 @@ describe("buildManagedPrBody — the linking contract", () => {
 		const lines = plain.split("\n").map((l) => l.trim());
 		expect(lines).toContain("Closes #10");
 		expect(lines).not.toContain("Closes #11");
-		// It still appears in the human-readable list, struck through.
-		expect(body([openIssue(10), closedIssue(11)])).toContain("~~#11: Done already~~");
+		// And nowhere else either: the human-readable list is gone, so a closed
+		// issue leaves no trace rather than a struck-through one.
+		expect(body([openIssue(10), closedIssue(11)])).not.toContain("#11");
 	});
 
 	it("produces no closing references when nothing is linked", () => {
@@ -119,10 +117,7 @@ describe("buildManagedPrBody — the proposed squash-commit block", () => {
 			subject: "release: 1.0.0",
 			linkedIssues: [openIssue(5)],
 			signoff: "Signed-off-by: Someone Else <other@example.com>",
-			serverUrl: GHES,
-			owner: "o",
-			repo: "r",
-			runId: "1",
+			summary: "",
 		});
 		expect(other).toContain("Signed-off-by: Someone Else <other@example.com>");
 		expect(other).not.toContain("savvyweb.systems");
@@ -167,5 +162,78 @@ describe("upsertManagedRegion", () => {
 		const seeded = upsertManagedRegion("", body([openIssue(168)]));
 		expect(seeded.startsWith(MANAGED_START)).toBe(true);
 		expect(seeded.trimEnd().endsWith(MANAGED_END)).toBe(true);
+	});
+});
+
+describe("the two Closes spellings", () => {
+	it("comma-joins inside the squash block and one-per-line outside it", () => {
+		const rendered = body([openIssue(170), openIssue(171)]);
+		const fenced = /```proposed-squash-commit\n([\s\S]*?)```/.exec(rendered)?.[1] ?? "";
+		const plain = outsideFences(rendered)
+			.split("\n")
+			.map((l) => l.trim());
+
+		// commitlint reads one comma-joined trailer…
+		expect(fenced).toContain("Closes #170, #171");
+		expect(fenced).not.toContain("Closes #170\nCloses #171");
+		// …GitHub's linker reads one bare reference per line. Neither accepts the
+		// other's spelling, which is why both are emitted.
+		expect(plain).toContain("Closes #170");
+		expect(plain).toContain("Closes #171");
+		expect(plain).not.toContain("Closes #170, #171");
+	});
+
+	it("emits no squash trailer when nothing is linked", () => {
+		expect(buildSquashClosingReferences([])).toBe("");
+	});
+
+	it("omits a closed issue from the comma-joined form too", () => {
+		expect(buildSquashClosingReferences([openIssue(1), closedIssue(2)])).toBe("Closes #1");
+	});
+});
+
+describe("the AI summary region", () => {
+	it("reserves the region even when empty, and puts it first", () => {
+		const rendered = body([openIssue(170)]);
+
+		expect(rendered).toContain(SUMMARY_START);
+		expect(rendered).toContain(SUMMARY_END);
+		// Nothing of ours may sit above it — a reader meets the prose first.
+		expect(rendered.indexOf(SUMMARY_START)).toBeLessThan(rendered.indexOf("proposed-squash-commit"));
+	});
+
+	it("carries an existing summary through a regeneration", () => {
+		// The destructive case: the managed region is rebuilt on every run, so a
+		// summariser's work must survive the next release commit.
+		const withSummary = buildManagedPrBody({
+			subject: "release: 2.0.0",
+			linkedIssues: [openIssue(170)],
+			signoff: SIGNOFF,
+			summary: "This release fixes the widget.",
+		});
+
+		expect(extractSummary(withSummary)).toBe("This release fixes the widget.");
+		expect(withSummary).toContain("This release fixes the widget.");
+	});
+
+	it("reads back nothing from a body that has no region", () => {
+		expect(extractSummary("just some prose")).toBe("");
+	});
+
+	it("reads back nothing from an empty region", () => {
+		expect(extractSummary(body([openIssue(170)]))).toBe("");
+	});
+});
+
+describe("what the body no longer carries", () => {
+	it("has no run attribution", () => {
+		// GitHub already shows the run in the checks.
+		expect(body([openIssue(170)])).not.toContain("Generated with");
+	});
+
+	it("has no human-readable issue list", () => {
+		// It duplicated the closing references directly below it.
+		const rendered = body([openIssue(170)]);
+		expect(rendered).not.toContain("Linked Issues");
 	});
 });

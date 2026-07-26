@@ -44,7 +44,7 @@ import { isMonorepoForTagging } from "./determine-tag-strategy.js";
 import { formatWorkspaceWithBiome } from "./format-workspace.js";
 import { pullRequestUrl, resolveServerUrl } from "./github-urls.js";
 import { runNativeVersion } from "./native-version.js";
-import { buildManagedPrBody, upsertManagedRegion } from "./pr-body.js";
+import { buildManagedPrBody, extractSummary, upsertManagedRegion } from "./pr-body.js";
 import {
 	formatReleasePackageList,
 	getReleasingPackages,
@@ -154,7 +154,7 @@ export const updateReleaseBranch = (): Effect.Effect<
 		const prTitlePrefix = yield* ActionInput.string("pr-title-prefix").pipe(Config.withDefault("chore: release"));
 		const dryRun = yield* ActionInput.boolean("dry-run").pipe(Config.withDefault(false));
 
-		const { sha, repository, runId } = yield* env.github;
+		const { sha, repository } = yield* env.github;
 		const [owner, repo] = repository.split("/");
 		// GHES. `getOptional` rather than `env.github.serverUrl`: absence has a
 		// correct default rather than being a failure, and only GHES sets it.
@@ -432,10 +432,8 @@ export const updateReleaseBranch = (): Effect.Effect<
 				subject: prTitle,
 				linkedIssues,
 				signoff,
-				serverUrl,
-				owner,
-				repo,
-				runId: String(runId),
+				// A PR being created has no prior body, so nothing to carry through.
+				summary: "",
 			});
 			const create = (): Effect.Effect<PullRequestInfo, GitHubError, Repo> =>
 				pr.create({ title: prTitle, body: prBody, head: releaseBranch, base: targetBranch });
@@ -468,16 +466,17 @@ export const updateReleaseBranch = (): Effect.Effect<
 				// Regenerate only OUR marker-delimited region; anything a human wrote
 				// around it survives verbatim. The heading splice this replaces keyed
 				// on `## Linked Issues` and could not tell our text from theirs.
+				const existingBody = getPr.success.body ?? "";
 				const managed = buildManagedPrBody({
 					subject: prTitle,
 					linkedIssues,
 					signoff,
-					serverUrl,
-					owner,
-					repo,
-					runId: String(runId),
+					// Carried through, not regenerated. The managed region is rebuilt
+					// each run, so re-emitting an empty summary region would delete
+					// whatever the summariser wrote as soon as any commit landed.
+					summary: extractSummary(existingBody),
 				});
-				const newBody = upsertManagedRegion(getPr.success.body ?? "", managed);
+				const newBody = upsertManagedRegion(existingBody, managed);
 
 				const update = yield* Effect.result(pr.update(prNumber, { body: newBody }));
 				if (update._tag === "Success") {

@@ -5,7 +5,7 @@
 // window would be both slow and flaky. `adjust` advances the clock and lets the
 // forked writer run, so each assertion is about a definite moment.
 
-import { Duration, Effect, Layer, Scope } from "effect";
+import { Duration, Effect, Layer } from "effect";
 import { TestClock } from "effect/testing";
 import { describe, expect, it } from "vitest";
 import type { Section } from "../src/utils/managed-sections.js";

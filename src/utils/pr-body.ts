@@ -6,16 +6,13 @@
 // PR #242 (and #232 before it): empty body, `closingIssuesReferences: []`.
 //
 // **What actually triggers GitHub's linking is a bare `Closes #N` line**, which
-// is why `buildManagedPrBody` emits one per open issue as plain text.
-// The rich `Linked Issues` list is for humans and carries the issue titles; it
-// is deliberately not relied on for linking.
+// is why `buildManagedPrBody` emits one per open issue as plain text, outside
+// any fence. The comma-joined form inside the squash block is for commitlint and
+// is inert to GitHub — the two spellings are not interchangeable.
 //
 // This is a narrow, local body builder, not a document primitive. A
 // marker-delimited managed-section construct is being built upstream; this is
 // sized to be replaced by it.
-
-import { workflowRunUrl } from "./github-urls.js";
-import { summaryWriter } from "./summary-writer.js";
 
 /** Opening marker of the region this module owns. */
 export const MANAGED_START = "<!-- silk-release:start -->";
@@ -53,21 +50,55 @@ export interface LinkedIssueRef {
 /** Whether an issue should attract a closing reference — closed ones must not. */
 const isOpen = (issue: LinkedIssueRef): boolean => issue.state !== "closed";
 
+/** Opening marker of the region an AI summariser owns. */
+export const SUMMARY_START = "<!-- silk-release:summary:start -->";
+/** Closing marker of the region an AI summariser owns. */
+export const SUMMARY_END = "<!-- silk-release:summary:end -->";
+
 /**
- * The human-readable issue list, with titles.
+ * The summary region's current content, or `""` when it is empty or absent.
  *
  * @remarks
- * Closed issues are struck through and carry no `Closes` keyword: re-closing a
- * closed issue is noise, and the keyword is what GitHub acts on.
+ * **This action never writes into the region — it only reserves it.** A
+ * separate action generates the summary; this one has no AI of its own and is
+ * not going to grow one.
+ *
+ * Extraction exists because the managed region is *regenerated* on every run.
+ * Re-emitting the region empty would delete a summary the moment any commit
+ * landed on the release branch, which is both destructive and silent — the
+ * summariser would have no way to know its work had been discarded.
+ *
+ * @param existing - The current PR description.
+ * @returns The summary region's content, trimmed.
  *
  * @public
  */
-export const buildLinkedIssuesSection = (linkedIssues: ReadonlyArray<LinkedIssueRef>): string => {
-	if (linkedIssues.length === 0) return "";
-	const items = linkedIssues.map((issue) =>
-		isOpen(issue) ? `Closes #${issue.number}: ${issue.title}` : `~~#${issue.number}: ${issue.title}~~ (already closed)`,
-	);
-	return summaryWriter.build([{ heading: "Linked Issues", content: summaryWriter.list(items) }]);
+export const extractSummary = (existing: string): string => {
+	const from = existing.indexOf(SUMMARY_START);
+	const to = existing.indexOf(SUMMARY_END);
+	if (from === -1 || to === -1 || to < from) return "";
+	return existing.slice(from + SUMMARY_START.length, to).trim();
+};
+
+/**
+ * The comma-joined closing references the **squash commit message** carries.
+ *
+ * @remarks
+ * `Closes #1, #2` on one line — deliberately NOT the newline-separated form
+ * used outside the fence. The two consumers disagree: commitlint reads a single
+ * comma-joined trailer, GitHub's linker reads one bare reference per line.
+ * Verified by hand in the console against a real pull request rather than
+ * inferred from either project's documentation.
+ *
+ * Emitting one form in both places satisfies one consumer and breaks the other,
+ * so the duplication below is load-bearing. Do not "simplify" it.
+ *
+ * @public
+ */
+export const buildSquashClosingReferences = (linkedIssues: ReadonlyArray<LinkedIssueRef>): string => {
+	const open = linkedIssues.filter(isOpen);
+	if (open.length === 0) return "";
+	return `Closes ${open.map((issue) => `#${issue.number}`).join(", ")}`;
 };
 
 /**
@@ -109,7 +140,7 @@ const buildSquashBlock = (args: {
 	readonly linkedIssues: ReadonlyArray<LinkedIssueRef>;
 	readonly signoff: string;
 }): string => {
-	const closing = buildClosingReferences(args.linkedIssues);
+	const closing = buildSquashClosingReferences(args.linkedIssues);
 	const message = [args.subject, closing, args.signoff].filter((part) => part !== "").join("\n\n");
 	return `${FENCE}${SQUASH_FENCE_LANGUAGE}\n${message}\n${FENCE}`;
 };
@@ -128,41 +159,44 @@ export const buildManagedPrBody = (args: {
 	readonly subject: string;
 	readonly linkedIssues: ReadonlyArray<LinkedIssueRef>;
 	readonly signoff: string;
-	readonly owner: string;
-	readonly repo: string;
-	readonly runId: string;
-	/** The GitHub instance this run executes against; see `resolveServerUrl`. */
-	readonly serverUrl: string;
+	/**
+	 * The summary region's current content, from {@link extractSummary}.
+	 *
+	 * @remarks
+	 * Passed in rather than read here so this stays a pure function of its
+	 * arguments. `""` reserves an empty region.
+	 */
+	readonly summary: string;
 }): string => {
-	const sections: Array<{ heading?: string; level?: 2 | 3; content: string }> = [];
+	const parts: Array<string> = [];
 
-	if (args.linkedIssues.length > 0) {
-		sections.push({ content: buildLinkedIssuesSection(args.linkedIssues) });
-	}
-	// No "Release PR" preamble and no "Version Changes" listing.
+	// The summary region, reserved first and left to its owner.
 	//
-	// The preamble told a reader what the PR's title, branch and author already
-	// say. The listing was a `git status --porcelain` dump — two lines per
-	// package, naming `CHANGELOG.md` and `package.json` for every release — which
-	// says nothing the release table does not say better: the table names the
-	// packages, their versions, and their bumps, and it is on the same page.
+	// Emitted whether or not it has content, so a summariser has somewhere to
+	// write on a PR this action created. Its existing content is carried
+	// through: the managed region is rebuilt on every run, so re-emitting it
+	// empty would silently delete a summary as soon as any commit landed.
 	//
-	// The file-level view still exists where it earns its place — the check-run
-	// and job summaries — which build it from their own scope.
-	sections.push({
-		content: buildSquashBlock({ subject: args.subject, linkedIssues: args.linkedIssues, signoff: args.signoff }),
-	});
+	// Nothing else in the body may be placed above it — a reader should meet the
+	// prose summary before the machinery.
+	parts.push(`${SUMMARY_START}\n${args.summary === "" ? "" : `${args.summary}\n`}${SUMMARY_END}`);
 
-	// The plain-text closing references, OUTSIDE the fence. This is the line
-	// GitHub links on; everything above is presentation.
+	// No preamble, no file listing, no linked-issues list, no run attribution.
+	//
+	// Each said something already on the page: the preamble restated the title
+	// and branch, the listing dumped `git status` where the release table names
+	// the same packages with their versions, the issue list duplicated the
+	// closing references below it, and the attribution linked a run GitHub
+	// already shows in the checks.
+	parts.push(buildSquashBlock({ subject: args.subject, linkedIssues: args.linkedIssues, signoff: args.signoff }));
+
+	// The bare references, OUTSIDE the fence and one per line. This is what
+	// GitHub links on — the comma-joined form inside the fence is for
+	// commitlint, and neither consumer accepts the other's spelling.
 	const closing = buildClosingReferences(args.linkedIssues);
-	if (closing !== "") sections.push({ content: closing });
+	if (closing !== "") parts.push(closing);
 
-	sections.push({
-		content: `---\n🤖 Generated with [GitHub Actions](${workflowRunUrl(args.serverUrl, args.owner, args.repo, args.runId)})`,
-	});
-
-	return `${MANAGED_START}\n${summaryWriter.build(sections).trim()}\n${MANAGED_END}`;
+	return `${MANAGED_START}\n${parts.join("\n\n")}\n${MANAGED_END}`;
 };
 
 /**

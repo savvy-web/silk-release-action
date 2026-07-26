@@ -39,7 +39,6 @@ import { resolveSignoff } from "./commit-signoff.js";
 import { isSinglePackage } from "./detect-repo-type.js";
 import { isMonorepoForTagging } from "./determine-tag-strategy.js";
 import { formatWorkspaceWithBiome } from "./format-workspace.js";
-import { resolveServerUrl } from "./github-urls.js";
 import type { LinkedIssue } from "./link-issues-from-commits.js";
 import { getLinkedIssuesFromCommits } from "./link-issues-from-commits.js";
 import { runNativeVersion } from "./native-version.js";
@@ -106,7 +105,6 @@ export const createReleaseBranch = (): Effect.Effect<
 		const pr = yield* PullRequest;
 		const fs = yield* FileSystem.FileSystem;
 		const signoff = yield* resolveSignoff();
-		const serverUrl = yield* resolveServerUrl();
 
 		const releaseBranch = yield* ActionInput.string("release-branch").pipe(
 			Config.withDefault("changeset-release/main"),
@@ -115,8 +113,7 @@ export const createReleaseBranch = (): Effect.Effect<
 		const prTitlePrefix = yield* ActionInput.string("pr-title-prefix").pipe(Config.withDefault("chore: release"));
 		const dryRun = yield* ActionInput.boolean("dry-run").pipe(Config.withDefault(false));
 
-		const { sha, repository, runId } = yield* env.github;
-		const [owner = "", repo = ""] = repository.split("/");
+		const { sha, repository } = yield* env.github;
 
 		yield* Effect.logInfo(`Creating branch '${releaseBranch}' from '${targetBranch}' HEAD`);
 		if (!dryRun) {
@@ -348,10 +345,8 @@ export const createReleaseBranch = (): Effect.Effect<
 			subject: prTitle,
 			linkedIssues,
 			signoff,
-			serverUrl,
-			owner,
-			repo,
-			runId: String(runId),
+			// A PR being created has no prior body, so nothing to carry through.
+			summary: "",
 		});
 
 		if (!dryRun) {
