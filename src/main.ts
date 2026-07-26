@@ -223,180 +223,278 @@ const emitReleaseOutput = (
 		yield* outputs.set("release-pr-number", scalars.releasePrNumber === null ? "" : String(scalars.releasePrNumber));
 	});
 
-const runBranchManagement = Effect.gen(function* () {
-	const packageManager = yield* detectPackageManager;
-	const planner = yield* Changesets.ReleasePlanner;
+/**
+ * What Phase 1 learned about the release branch, however it learned it.
+ *
+ * @remarks
+ * Both branch flows are normalised to this before the orchestrator sees them,
+ * so the reporting below is written once rather than per-arm.
+ *
+ * @public
+ */
+export interface BranchFlowOutcome {
+	readonly created: boolean;
+	readonly updated: boolean;
+	readonly hasConflicts: boolean;
+	readonly prNumber: number | null;
+}
 
-	yield* grouped(
-		"Phase 1: Release Branch Management",
-		Effect.gen(function* () {
-			const releaseBranch = yield* ActionInput.string("release-branch").pipe(
-				Config.withDefault("changeset-release/main"),
-			);
-			const targetBranch = yield* ActionInput.string("target-branch").pipe(Config.withDefault("main"));
-			const dryRun = yield* ActionInput.boolean("dry-run").pipe(Config.withDefault(false));
-			yield* Effect.logInfo(`Detected package manager: ${packageManager}`);
-			const branchCheck = yield* checkReleaseBranch(releaseBranch, targetBranch, dryRun);
+/**
+ * The seams {@link runBranchManagement} runs against.
+ *
+ * @remarks
+ * Injected rather than imported so the orchestration can be driven directly.
+ * What the phase decides — which arm brackets the reporting section, what is
+ * published on a failure, whether anything is published at all in a dry run —
+ * is only observable by varying the flow's *outcome*, and a flow that fails,
+ * dies with a defect, or is interrupted is one line to supply here versus
+ * twenty stubbed services scripted to break at the right moment.
+ *
+ * Every field defaults to the real implementation, so production behaviour is
+ * whatever it was before this became injectable.
+ *
+ * @public
+ */
+export interface BranchManagementSeams<R = never> {
+	/** Probe the release branch and any open PR. */
+	readonly checkBranch: (
+		releaseBranch: string,
+		targetBranch: string,
+		dryRun: boolean,
+	) => Effect.Effect<Effect.Success<ReturnType<typeof checkReleaseBranch>>, SeamError, R>;
+	/** Update an existing release branch. */
+	readonly updateFlow: () => Effect.Effect<Effect.Success<ReturnType<typeof updateReleaseBranch>>, SeamError, R>;
+	/** Cut a new release branch. */
+	readonly createFlow: () => Effect.Effect<Effect.Success<ReturnType<typeof createReleaseBranch>>, SeamError, R>;
+	/**
+	 * Give changesets the history it needs before the plan is read.
+	 *
+	 * @remarks
+	 * A seam for the same reason the flows are: it shells out to git, and a test
+	 * that wanted to vary the phase's reporting should not have to script a
+	 * subprocess to do it.
+	 */
+	readonly ensureHistory: (targetBranch: string) => Effect.Effect<void, SeamError, R>;
+	/** Write a rendered section to a PR. Failures are the caller's to swallow. */
+	readonly publishComment: (
+		prNumber: number,
+		body: string,
+		key: string,
+	) => Effect.Effect<Effect.Success<ReturnType<typeof updateStickyComment>>, SeamError, R>;
+}
 
-			// Phase 1's job is to answer "what is about to be released" before the
-			// next phase runs, so this reads the RELEASE PLAN — not the changeset
-			// files, and not the applied result.
-			//
-			// `preview` must run before the branch flow, because `apply` deletes the
-			// `.changeset/*.md` files it consumes. It is read-only (one of
-			// `ReleasePlannerShape`'s two non-mutating members), so running it first
-			// costs nothing but the history it needs.
-			//
-			// **That history is why `ensureFullHistory` moved above this.** `preview`
-			// computes a plan against the target branch, and the runner's checkout is
-			// shallow — so on integration run 30214971138 the plan failed and the
-			// count read zero while five packages were being versioned. The update
-			// flow already unshallows for its own work; hoisting the fetch pays the
-			// same cost earlier rather than a second one.
-			//
-			// Reading the plan rather than the frontmatter is what makes a
-			// dependency-driven release visible. If a changeset names A and B depends
-			// on A, both are versioned and both get changelogs, but only A has a
-			// changeset. `changesetIds` is empty for exactly those packages, which is
-			// what `explicit` reports — so the file count and the release set stay
-			// distinguishable instead of one standing in for the other.
-			yield* ensureFullHistory(targetBranch);
-			const preview = yield* planner.preview(process.cwd());
-			// Projected in `release-plan`, where it is tested. `changesetIds` is
-			// empty for a package released only because a dependency moved — the
-			// `—` in the release table's changeset column — and the file count is
-			// not the package count.
-			const { packages: changesets, changesetFileCount } = toReleasePlanReport(preview);
+/**
+ * The failures a seam may report.
+ *
+ * @remarks
+ * The union the real implementations already raise. Named so a stub can widen
+ * to it without restating the list, and so `R` is the only parameter a caller
+ * has to think about.
+ *
+ * @public
+ */
+export type SeamError =
+	| Effect.Error<ReturnType<typeof checkReleaseBranch>>
+	| Effect.Error<ReturnType<typeof updateReleaseBranch>>
+	| Effect.Error<ReturnType<typeof createReleaseBranch>>
+	| Effect.Error<ReturnType<typeof updateStickyComment>>;
 
-			// The release plan, published to the PR as soon as it is known rather than
-			// held back until validation has something to say about it.
-			//
-			// Every column but `targets` comes from the plan, so a reader sees what
-			// will be published — versions included — while the build is still
-			// running. `targets` renders pending: blank is indistinguishable from "no
-			// targets", and a tick would claim a result validation has not produced.
-			const planBody = `${releaseTable.render(toPendingReleaseRows(changesets))}\n\n${RELEASE_TABLE_LEGEND}`;
-			const { sha: headSha, runId: planRunId } = yield* (yield* ActionEnvironment).github;
+const REAL_SEAMS: BranchManagementSeams<
+	| Effect.Services<ReturnType<typeof checkReleaseBranch>>
+	| Effect.Services<ReturnType<typeof updateReleaseBranch>>
+	| Effect.Services<ReturnType<typeof createReleaseBranch>>
+	| Effect.Services<ReturnType<typeof updateStickyComment>>
+> = {
+	checkBranch: checkReleaseBranch,
+	ensureHistory: ensureFullHistory,
+	updateFlow: updateReleaseBranch,
+	createFlow: createReleaseBranch,
+	publishComment: updateStickyComment,
+};
 
-			const publishPlan = (target: number) => (section: Section) =>
-				Effect.result(updateStickyComment(target, upsertSection("", section, headSha), "release-plan")).pipe(
-					Effect.flatMap((posted) =>
-						posted._tag === "Failure"
-							? // A reporting write must never fail a release that otherwise
-								// succeeded, and `withSection` types `publish` as infallible for
-								// that reason: a finalizer that could fail on the way out would
-								// replace the caller's real error with a reporting one.
-								Effect.logWarning(`Could not publish the release plan comment: ${posted.failure.reason}`)
-							: Effect.void,
-					),
+/**
+ * Phase 1 — create or update the release branch and its pull request.
+ *
+ * @param seams - Overrides for the operations this phase orchestrates. Defaults
+ *   to the real implementations; tests supply flows with chosen outcomes.
+ *
+ * @public
+ */
+export const runBranchManagement = <R = never>(seams: BranchManagementSeams<R> = REAL_SEAMS as never) =>
+	Effect.gen(function* () {
+		const packageManager = yield* detectPackageManager;
+		const planner = yield* Changesets.ReleasePlanner;
+
+		yield* grouped(
+			"Phase 1: Release Branch Management",
+			Effect.gen(function* () {
+				const releaseBranch = yield* ActionInput.string("release-branch").pipe(
+					Config.withDefault("changeset-release/main"),
 				);
+				const targetBranch = yield* ActionInput.string("target-branch").pipe(Config.withDefault("main"));
+				const dryRun = yield* ActionInput.boolean("dry-run").pipe(Config.withDefault(false));
+				yield* Effect.logInfo(`Detected package manager: ${packageManager}`);
+				const branchCheck = yield* seams.checkBranch(releaseBranch, targetBranch, dryRun);
 
-			// The branch flow, normalised so both arms report the same four facts.
-			const runBranchFlow = branchCheck.exists
-				? Effect.gen(function* () {
-						yield* Effect.logInfo("Release branch exists — running update flow");
-						const result = yield* updateReleaseBranch();
-						return {
-							created: false,
-							// A deleted branch (nothing to release) is neither an update nor
-							// a live PR — drop the stale PR number so the output reports none.
-							updated: result.success && !result.deleted,
-							hasConflicts: result.hadConflicts,
-							prNumber: result.deleted ? null : (result.prNumber ?? branchCheck.prNumber),
-						};
-					})
-				: Effect.gen(function* () {
-						yield* Effect.logInfo("Release branch does not exist — running create flow");
-						const result = yield* createReleaseBranch();
-						return {
-							created: result.created,
-							updated: false,
-							hasConflicts: false,
-							prNumber: result.prNumber ?? branchCheck.prNumber,
-						};
+				// Phase 1's job is to answer "what is about to be released" before the
+				// next phase runs, so this reads the RELEASE PLAN — not the changeset
+				// files, and not the applied result.
+				//
+				// `preview` must run before the branch flow, because `apply` deletes the
+				// `.changeset/*.md` files it consumes. It is read-only (one of
+				// `ReleasePlannerShape`'s two non-mutating members), so running it first
+				// costs nothing but the history it needs.
+				//
+				// **That history is why `ensureFullHistory` moved above this.** `preview`
+				// computes a plan against the target branch, and the runner's checkout is
+				// shallow — so on integration run 30214971138 the plan failed and the
+				// count read zero while five packages were being versioned. The update
+				// flow already unshallows for its own work; hoisting the fetch pays the
+				// same cost earlier rather than a second one.
+				//
+				// Reading the plan rather than the frontmatter is what makes a
+				// dependency-driven release visible. If a changeset names A and B depends
+				// on A, both are versioned and both get changelogs, but only A has a
+				// changeset. `changesetIds` is empty for exactly those packages, which is
+				// what `explicit` reports — so the file count and the release set stay
+				// distinguishable instead of one standing in for the other.
+				yield* seams.ensureHistory(targetBranch);
+				const preview = yield* planner.preview(process.cwd());
+				// Projected in `release-plan`, where it is tested. `changesetIds` is
+				// empty for a package released only because a dependency moved — the
+				// `—` in the release table's changeset column — and the file count is
+				// not the package count.
+				const { packages: changesets, changesetFileCount } = toReleasePlanReport(preview);
+
+				// The release plan, published to the PR as soon as it is known rather than
+				// held back until validation has something to say about it.
+				//
+				// Every column but `targets` comes from the plan, so a reader sees what
+				// will be published — versions included — while the build is still
+				// running. `targets` renders pending: blank is indistinguishable from "no
+				// targets", and a tick would claim a result validation has not produced.
+				const planBody = `${releaseTable.render(toPendingReleaseRows(changesets))}\n\n${RELEASE_TABLE_LEGEND}`;
+				const { sha: headSha, runId: planRunId } = yield* (yield* ActionEnvironment).github;
+
+				const publishPlan = (target: number) => (section: Section) =>
+					Effect.result(seams.publishComment(target, upsertSection("", section, headSha), "release-plan")).pipe(
+						Effect.flatMap((posted) =>
+							posted._tag === "Failure"
+								? // A reporting write must never fail a release that otherwise
+									// succeeded, and `withSection` types `publish` as infallible for
+									// that reason: a finalizer that could fail on the way out would
+									// replace the caller's real error with a reporting one.
+									Effect.logWarning(`Could not publish the release plan comment: ${String(posted.failure)}`)
+								: Effect.void,
+						),
+					);
+
+				// The branch flow, normalised so both arms report the same four facts.
+				const runBranchFlow = branchCheck.exists
+					? Effect.gen(function* () {
+							yield* Effect.logInfo("Release branch exists — running update flow");
+							const result = yield* seams.updateFlow();
+							return {
+								created: false,
+								// A deleted branch (nothing to release) is neither an update nor
+								// a live PR — drop the stale PR number so the output reports none.
+								updated: result.success && !result.deleted,
+								hasConflicts: result.hadConflicts,
+								prNumber: result.deleted ? null : (result.prNumber ?? branchCheck.prNumber),
+							};
+						})
+					: Effect.gen(function* () {
+							yield* Effect.logInfo("Release branch does not exist — running create flow");
+							const result = yield* seams.createFlow();
+							return {
+								created: result.created,
+								updated: false,
+								hasConflicts: false,
+								prNumber: result.prNumber ?? branchCheck.prNumber,
+							};
+						});
+
+				// Bracket the flow ONLY when a PR already exists to write to.
+				//
+				// The create path has nothing to comment on until it has created the PR,
+				// so there is no `running` state to show and the plan is published once,
+				// after. The update path does have one, so the section goes `running`
+				// before the flow and reaches a terminal state on every exit — including
+				// a defect or an interrupt, which is the case a `tap`/`tapError` pair
+				// misses and which would otherwise leave the section reading `running`
+				// forever.
+				const flow =
+					branchCheck.prNumber !== null && !dryRun
+						? withSection(
+								{
+									key: "release-plan",
+									title: "🚀 What will be released",
+									sha: headSha,
+									runId: String(planRunId),
+									now: () => new Date().toISOString(),
+									// Retained on every non-success exit: the plan stays readable,
+									// marked, rather than being blanked to signal freshness.
+									previousBody: planBody,
+									render: () => planBody,
+									publish: publishPlan(branchCheck.prNumber),
+								},
+								runBranchFlow,
+							)
+						: runBranchFlow;
+
+				const { created, updated, hasConflicts, prNumber } = yield* flow;
+
+				// The create path publishes once, after the fact — see above.
+				if (branchCheck.prNumber === null && prNumber !== null && !dryRun) {
+					yield* publishPlan(prNumber)({
+						key: "release-plan",
+						title: "🚀 What will be released",
+						stamp: { state: "complete", sha: headSha, runId: String(planRunId), at: new Date().toISOString() },
+						body: planBody,
 					});
+				}
 
-			// Bracket the flow ONLY when a PR already exists to write to.
-			//
-			// The create path has nothing to comment on until it has created the PR,
-			// so there is no `running` state to show and the plan is published once,
-			// after. The update path does have one, so the section goes `running`
-			// before the flow and reaches a terminal state on every exit — including
-			// a defect or an interrupt, which is the case a `tap`/`tapError` pair
-			// misses and which would otherwise leave the section reading `running`
-			// forever.
-			const flow =
-				branchCheck.prNumber !== null && !dryRun
-					? withSection(
-							{
-								key: "release-plan",
-								title: "🚀 What will be released",
-								sha: headSha,
-								runId: String(planRunId),
-								now: () => new Date().toISOString(),
-								// Retained on every non-success exit: the plan stays readable,
-								// marked, rather than being blanked to signal freshness.
-								previousBody: planBody,
-								render: () => planBody,
-								publish: publishPlan(branchCheck.prNumber),
-							},
-							runBranchFlow,
-						)
-					: runBranchFlow;
+				// The PR URL is built from the instance the run is executing against,
+				// not a hardcoded host — see `github-urls`, which owns that decision for
+				// every link this action emits.
+				const environment = yield* ActionEnvironment;
+				const serverUrl = yield* resolveServerUrl();
+				const repositorySlug = Option.getOrElse(yield* environment.getOptional("GITHUB_REPOSITORY"), () => "");
 
-			const { created, updated, hasConflicts, prNumber } = yield* flow;
-
-			// The create path publishes once, after the fact — see above.
-			if (branchCheck.prNumber === null && prNumber !== null && !dryRun) {
-				yield* publishPlan(prNumber)({
-					key: "release-plan",
-					title: "🚀 What will be released",
-					stamp: { state: "complete", sha: headSha, runId: String(planRunId), at: new Date().toISOString() },
-					body: planBody,
+				const output = toBranchManagementOutput({
+					releaseBranchName: releaseBranch,
+					existed: branchCheck.exists,
+					created,
+					updated,
+					hasConflicts,
+					releasePr:
+						prNumber === null
+							? null
+							: {
+									number: prNumber,
+									url: `${serverUrl}/${repositorySlug}/pull/${prNumber}`,
+									action: branchCheck.exists ? "updated" : "created",
+								},
+					changesets,
+					changesetFileCount,
+					dryRun,
 				});
-			}
+				const outputs = yield* ActionOutputs;
+				yield* emitReleaseOutput(outputs, output, { packageCount: changesets.length, releasePrNumber: prNumber });
 
-			// The PR URL is built from the instance the run is executing against,
-			// not a hardcoded host — see `github-urls`, which owns that decision for
-			// every link this action emits.
-			const environment = yield* ActionEnvironment;
-			const serverUrl = yield* resolveServerUrl();
-			const repositorySlug = Option.getOrElse(yield* environment.getOptional("GITHUB_REPOSITORY"), () => "");
-
-			const output = toBranchManagementOutput({
-				releaseBranchName: releaseBranch,
-				existed: branchCheck.exists,
-				created,
-				updated,
-				hasConflicts,
-				releasePr:
-					prNumber === null
-						? null
-						: {
-								number: prNumber,
-								url: `${serverUrl}/${repositorySlug}/pull/${prNumber}`,
-								action: branchCheck.exists ? "updated" : "created",
-							},
-				changesets,
-				changesetFileCount,
-				dryRun,
-			});
-			const outputs = yield* ActionOutputs;
-			yield* emitReleaseOutput(outputs, output, { packageCount: changesets.length, releasePrNumber: prNumber });
-
-			// Phase 1's own summary line. Phases 2 and 3 already ended with one;
-			// Phase 1 relied on the `Step.groupStep` envelope to emit it, and
-			// `logger.group` has no such envelope — so without this the phase now
-			// closes its group silently.
-			const verb = branchCheck.exists ? (updated ? "updated" : "unchanged") : created ? "created" : "not created";
-			yield* Effect.logInfo(
-				`Release branch management: ✅ ${releaseBranch} ${verb}` +
-					`, ${changesets.length} package(s) with changesets` +
-					(prNumber === null ? "" : `, PR #${prNumber}`),
-			);
-		}),
-	);
-});
+				// Phase 1's own summary line. Phases 2 and 3 already ended with one;
+				// Phase 1 relied on the `Step.groupStep` envelope to emit it, and
+				// `logger.group` has no such envelope — so without this the phase now
+				// closes its group silently.
+				const verb = branchCheck.exists ? (updated ? "updated" : "unchanged") : created ? "created" : "not created";
+				yield* Effect.logInfo(
+					`Release branch management: ✅ ${releaseBranch} ${verb}` +
+						`, ${changesets.length} package(s) with changesets` +
+						(prNumber === null ? "" : `, PR #${prNumber}`),
+				);
+			}),
+		);
+	});
 
 /**
  * Phase 2 validation orchestrator. Runs the migrated Effect steps
@@ -1159,7 +1257,7 @@ export const main = Effect.gen(function* () {
 
 	switch (phaseResult.phase) {
 		case "branch-management":
-			yield* runBranchManagement;
+			yield* runBranchManagement();
 			return;
 		case "validation":
 			yield* runValidation;
