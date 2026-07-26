@@ -71,6 +71,7 @@ import { linkIssuesFromCommits } from "./utils/link-issues-from-commits.js";
 import type { ConfigSource } from "./utils/load-release-config.js";
 import type { Section } from "./utils/managed-sections.js";
 import { upsertSection, withSection } from "./utils/managed-sections.js";
+import { toReleasePlanReport } from "./utils/release-plan.js";
 import {
 	RELEASE_TABLE_LEGEND,
 	releaseTable,
@@ -261,16 +262,11 @@ const runBranchManagement = Effect.gen(function* () {
 			// distinguishable instead of one standing in for the other.
 			yield* ensureFullHistory(targetBranch);
 			const preview = yield* planner.preview(process.cwd());
-			const changesets = preview.releases.map((release) => ({
-				name: release.name,
-				bumpType: release.type,
-				// `changesetIds` is empty for a package released only because a
-				// dependency moved — the `—` in a release table's changeset column.
-				changesetCount: release.changesetIds.length,
-				oldVersion: release.oldVersion,
-				newVersion: release.newVersion,
-			}));
-			const changesetFileCount = preview.changesets.length;
+			// Projected in `release-plan`, where it is tested. `changesetIds` is
+			// empty for a package released only because a dependency moved — the
+			// `—` in the release table's changeset column — and the file count is
+			// not the package count.
+			const { packages: changesets, changesetFileCount } = toReleasePlanReport(preview);
 
 			// The release plan, published to the PR as soon as it is known rather than
 			// held back until validation has something to say about it.
