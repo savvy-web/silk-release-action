@@ -14,14 +14,14 @@
 // goes red here.
 
 import { describe, expect, it } from "vitest";
-import type { PreviewLike } from "../src/utils/release-plan.js";
+import type { PlanLike } from "../src/utils/release-plan.js";
 import { toReleasePlanReport } from "../src/utils/release-plan.js";
 
 /** One changeset for `zulu`; `alpha` releases only because it depends on it. */
-const DEPENDENCY_DRIVEN: PreviewLike = {
+const DEPENDENCY_DRIVEN: PlanLike = {
 	releases: [
-		{ name: "@scope/zulu", type: "minor", oldVersion: "1.4.0", newVersion: "1.5.0", changesetIds: ["brave-cats"] },
-		{ name: "@scope/alpha", type: "patch", oldVersion: "2.0.3", newVersion: "2.0.4", changesetIds: [] },
+		{ name: "@scope/zulu", type: "minor", oldVersion: "1.4.0", newVersion: "1.5.0", changesets: ["brave-cats"] },
+		{ name: "@scope/alpha", type: "patch", oldVersion: "2.0.3", newVersion: "2.0.4", changesets: [] },
 	],
 	changesets: [{ id: "brave-cats" }],
 };
@@ -61,7 +61,7 @@ describe("toReleasePlanReport", () => {
 					type: "major",
 					oldVersion: "1.0.0",
 					newVersion: "2.0.0",
-					changesetIds: ["one", "two"],
+					changesets: ["one", "two"],
 				},
 			],
 			changesets: [{ id: "one" }, { id: "two" }],
@@ -99,6 +99,20 @@ describe("toReleasePlanReport", () => {
 
 		expect(report.packages).toEqual([]);
 		expect(report.changesetFileCount).toBe(0);
+	});
+
+	it("drops a package the plan decided not to version", () => {
+		// A `"none"` release has no new version and no changelog entry, so it is
+		// not part of "what will be released" and has no honest bump to show.
+		const report = toReleasePlanReport({
+			releases: [
+				{ name: "@scope/bumped", type: "patch", oldVersion: "1.0.0", newVersion: "1.0.1", changesets: ["c"] },
+				{ name: "@scope/untouched", type: "none", oldVersion: "3.0.0", newVersion: "3.0.0", changesets: [] },
+			],
+			changesets: [{ id: "c" }],
+		});
+
+		expect(report.packages.map((p) => p.name)).toEqual(["@scope/bumped"]);
 	});
 
 	it("reports files that release nothing", () => {

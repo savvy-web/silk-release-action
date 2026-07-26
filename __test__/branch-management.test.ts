@@ -30,24 +30,22 @@ interface Published {
 	readonly body: string;
 }
 
-const previewFixture = {
-	preMode: null,
+const planFixture = {
+	preState: undefined,
 	releases: [
 		{
 			name: "@scope/zulu",
 			type: "minor" as const,
 			oldVersion: "1.4.0",
 			newVersion: "1.5.0",
-			changesetIds: ["brave-cats"],
-			changelogEntry: "",
+			changesets: ["brave-cats"],
 		},
 		{
 			name: "@scope/alpha",
 			type: "patch" as const,
 			oldVersion: "2.0.3",
 			newVersion: "2.0.4",
-			changesetIds: [],
-			changelogEntry: "",
+			changesets: [],
 		},
 	],
 	changesets: [{ id: "brave-cats", summary: "a change", releases: [{ name: "@scope/zulu", type: "minor" as const }] }],
@@ -122,7 +120,7 @@ const run = async (
 				GITHUB_WORKSPACE: "/workspace",
 			}),
 		).pipe(Layer.provide(NodeFileSystem.layer)),
-		Changesets.makeReleasePlannerTest({ preview: previewFixture }),
+		Changesets.makeReleasePlannerTest({ plan: planFixture }),
 		// `detectPackageManager` reads `package.json` off disk; the repo's own
 		// manifest is a fine fixture and keeps the harness honest about what the
 		// phase actually touches.

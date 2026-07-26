@@ -345,26 +345,30 @@ export const runBranchManagement = <R = never>(seams: BranchManagementSeams<R> =
 				// `ReleasePlannerShape`'s two non-mutating members), so running it first
 				// costs nothing but the history it needs.
 				//
-				// **That history is why `ensureFullHistory` moved above this.** `preview`
-				// computes a plan against the target branch, and the runner's checkout is
-				// shallow — so on integration run 30214971138 the plan failed and the
-				// count read zero while five packages were being versioned. The update
-				// flow already unshallows for its own work; hoisting the fetch pays the
-				// same cost earlier rather than a second one.
+				// **`plan`, never `preview`.** Both describe the same release, but
+				// `preview` additionally renders each package's changelog entry, which
+				// means resolving the configured changelog module — and Phase 1 is the
+				// ZERO-INSTALL phase, so there is no `node_modules` to resolve it from.
+				// `preview` therefore dies inside module resolution
+				// (`expected to be defined`, from `import-meta-resolve`), which is what
+				// failed integration runs 30212579721 and 30217825158. `apply` avoids it
+				// with a `changelogModules` option mapping ids to bundled paths;
+				// `preview` has no such option. `plan` renders nothing and needs nothing.
 				//
-				// Reading the plan rather than the frontmatter is what makes a
-				// dependency-driven release visible. If a changeset names A and B depends
+				// The fetch below is kept as ordinary hygiene for the flows that follow,
+				// not as a fix for the above — an earlier reading blamed the shallow
+				// clone, and that was wrong.
+				//
+				// Reading the plan rather than the changeset files is what makes a
+				// dependency-driven release visible: if a changeset names A and B depends
 				// on A, both are versioned and both get changelogs, but only A has a
-				// changeset. `changesetIds` is empty for exactly those packages, which is
-				// what `explicit` reports — so the file count and the release set stay
-				// distinguishable instead of one standing in for the other.
+				// changeset.
 				yield* seams.ensureHistory(targetBranch);
-				const preview = yield* planner.preview(process.cwd());
-				// Projected in `release-plan`, where it is tested. `changesetIds` is
-				// empty for a package released only because a dependency moved — the
-				// `—` in the release table's changeset column — and the file count is
-				// not the package count.
-				const { packages: changesets, changesetFileCount } = toReleasePlanReport(preview);
+				const plan = yield* planner.plan(process.cwd());
+				// Projected in `release-plan`, where it is tested. A package's `changesets`
+				// list is empty when it releases only because a dependency moved — the
+				// `—` in the release table — and the file count is not the package count.
+				const { packages: changesets, changesetFileCount } = toReleasePlanReport(plan);
 
 				// The release plan, published to the PR as soon as it is known rather than
 				// held back until validation has something to say about it.

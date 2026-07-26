@@ -87,10 +87,12 @@ a cancellation, which previously would have left a stale result looking current.
 
 ### Phase 1 reported zero changesets while cutting a release
 
-The branch-management phase asked for a release plan before anything fetched the target branch,
-so on the shallow clone a runner checks out, the plan could not be computed and the changeset
-report silently read zero — in one observed run, immediately after five packages had been
-versioned. The history fetch now happens before the plan is read.
+The branch-management phase asked for a changeset *preview*, which renders each package's
+changelog entry and therefore resolves the configured changelog module. Phase 1 runs before
+dependencies are installed, so there was nothing to resolve it from and the read died inside
+module resolution — silently, because the failure was swallowed into an empty result. The
+report then read zero changesets immediately after five packages had been versioned. The phase
+now reads the release *plan*, which describes the same release without rendering changelogs.
 
 ### Releases could be published from a closed, unmerged pull request
 
