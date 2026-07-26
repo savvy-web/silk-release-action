@@ -2,26 +2,29 @@
  * Fixture tests for the link-issues-from-commits module.
  *
  * @remarks
- * Everything runs through kit seams: `GitTag`, `GitHubCommit`, `GitHubIssue`,
+ * Everything runs through kit seams: `GitHubCommit`, `GitHubIssue`,
  * `PullRequest` and `CheckRun` `layerTest` doubles over one mutable fixture.
  * The three hand-written GraphQL documents the predecessor carried are gone —
  * `GitHubIssue.linkedIssues`, `GitHubIssue.isCrossReferencedBy` and
  * `GitHubIssue.comment` own them — so there is no `GitHubClient` here at all.
  *
- * The tag-selection unit tests are gone with `getLatestTagSha`: picking the
- * semver-highest tag is `GitTag.latestSemver`'s job now, and re-testing it here
- * would be testing the kit. What is pinned instead is what this module still
- * decides, none of it visible to the typechecker:
+ * What is pinned here is what this module decides, none of it visible to the
+ * typechecker:
  *
- * 1. **`latestSemver` returning `Option.none` takes the list path.** The
- *    result is an `Option`, not a nullable — the branch is `Option.isSome`.
- * 2. **A `latestSemver` failure degrades to the list path**, rather than
+ * 1. **The release boundary is the last merged release PR, not a tag.** The
+ *    version-ordering test below is the regression guard for the production
+ *    defect: a tag lookup ordered monorepo tags by version, which is not the
+ *    same as by recency, and pinned the boundary behind the actual last
+ *    release for as long as one package held the highest version.
+ * 2. **No merged release PR takes the list path**, rather than comparing
+ *    against nothing.
+ * 3. **A `PullRequest.list` failure degrades to the list path**, rather than
  *    failing the stage.
- * 3. **`isCrossReferencedBy` gates the comment.** Without the guard a re-run
+ * 4. **`isCrossReferencedBy` gates the comment.** Without the guard a re-run
  *    comments a second time on every linked issue.
  */
 
-import type { CheckRunOutput, IssueInfo, PullRequestInfo, SemverTag } from "@effected/github";
+import type { CheckRunOutput, IssueInfo, PullRequestInfo } from "@effected/github";
 import {
 	CheckRun,
 	CheckRunRef,
@@ -30,15 +33,12 @@ import {
 	GitHubCommit,
 	GitHubError,
 	GitHubIssue,
-	GitTag,
 	LinkedIssue as KitLinkedIssue,
-	SemverTag as KitSemverTag,
 	PullRequest,
 	Repo,
 	RepoRef,
 } from "@effected/github";
 import { ActionEnvironment, ActionInput, ActionOutputs } from "@effected/github-actions";
-import { SemVer } from "@effected/semver";
 import { Effect, Layer, Logger, Option } from "effect";
 import { describe, expect, it } from "vitest";
 import type { LinkIssuesResult } from "../src/utils/link-issues-from-commits.js";
@@ -47,6 +47,7 @@ import { getLinkedIssuesFromCommits, linkIssuesFromCommits } from "../src/utils/
 const OWNER = "owner";
 const REPO = "repo";
 const TARGET_BRANCH = "main";
+const RELEASE_BRANCH = "changeset-release/main";
 const HEAD_SHA = "headsha123";
 
 // --- fixture builders ----------------------------------------------------
@@ -62,12 +63,33 @@ const commit = (sha: string, message: string, author = "Test Author"): CommitSum
 		parents: [],
 	});
 
-const semverTag = (tag: string, sha: string, [major, minor, patch]: [number, number, number]): SemverTag =>
-	KitSemverTag.make({
-		tag,
-		sha,
-		version: SemVer.make({ major, minor, patch, prerelease: [], build: [] }),
-	});
+/**
+ * A closed pull request as `PullRequest.list` would return it.
+ *
+ * @remarks
+ * Defaults describe a **merged release PR** — the shape the boundary lookup is
+ * looking for — so each test overrides only the one field it is about.
+ */
+const releasePr = (
+	number: number,
+	mergeCommitSha: string | undefined,
+	overrides: { head?: string; merged?: boolean } = {},
+): PullRequestInfo =>
+	({
+		number,
+		nodeId: `PR_${number}`,
+		url: `https://github.com/${OWNER}/${REPO}/pull/${number}`,
+		title: `chore: release #${number}`,
+		state: "closed",
+		head: overrides.head ?? RELEASE_BRANCH,
+		headSha: `head-${number}`,
+		base: TARGET_BRANCH,
+		baseSha: `base-${number}`,
+		draft: false,
+		merged: overrides.merged ?? true,
+		mergedAt: Option.none(),
+		...(mergeCommitSha === undefined ? {} : { mergeCommitSha }),
+	}) as unknown as PullRequestInfo;
 
 const issueInfo = (number: number, title: string, state: "open" | "closed" = "open"): IssueInfo =>
 	({
@@ -104,8 +126,8 @@ const associatedPr = (number: number): PullRequestInfo =>
 	}) as unknown as PullRequestInfo;
 
 interface Fixtures {
-	/** `GitTag.latestSemver`'s answer. `null` makes the call fail instead. */
-	latest: SemverTag | null | "fail";
+	/** What `PullRequest.list` returns. `"fail"` makes the call fail instead. */
+	releasePrs: PullRequestInfo[] | "fail";
 	/** Keyed `${base}...${head}` for `GitHubCommit.compare`. */
 	comparisons: Map<string, CommitSummary[]>;
 	/** Keyed by ref for `GitHubCommit.list`. */
@@ -126,7 +148,7 @@ interface Fixtures {
 }
 
 const makeFixtures = (params: Partial<Fixtures> = {}): Fixtures => ({
-	latest: params.latest ?? null,
+	releasePrs: params.releasePrs ?? [],
 	comparisons: params.comparisons ?? new Map(),
 	commitLists: params.commitLists ?? new Map(),
 	issues: params.issues ?? new Map(),
@@ -143,14 +165,18 @@ const makeFixtures = (params: Partial<Fixtures> = {}): Fixtures => ({
 /** Every `GitHubCommit.compare` call, recorded so the base can be asserted. */
 const compareCalls: Array<{ base: string; head: string }> = [];
 
-const gitHubServices = (f: Fixtures): Layer.Layer<GitHubCommit | GitHubIssue | GitTag | PullRequest | Repo> =>
+/**
+ * Every `PullRequest.list` call, recorded so the filter can be asserted.
+ *
+ * @remarks
+ * `head` is expected to be **absent**: GitHub wants an `owner:ref` there while
+ * the projection returns a bare ref, so the head branch is matched locally.
+ * Passing it would silently return nothing.
+ */
+const listCalls: Array<{ base: string | undefined; state: string | undefined; head: string | undefined }> = [];
+
+const gitHubServices = (f: Fixtures): Layer.Layer<GitHubCommit | GitHubIssue | PullRequest | Repo> =>
 	Layer.mergeAll(
-		GitTag.layerTest({
-			latestSemver: () =>
-				f.latest === "fail"
-					? Effect.fail(GitHubError.rejected("GitTag.latestSemver", 500, "boom"))
-					: Effect.succeed(Option.fromNullOr(f.latest)),
-		}),
 		GitHubCommit.layerTest({
 			compare: (base, head) =>
 				Effect.sync(() => {
@@ -186,6 +212,16 @@ const gitHubServices = (f: Fixtures): Layer.Layer<GitHubCommit | GitHubIssue | G
 						}),
 		}),
 		PullRequest.layerTest({
+			list: (options) =>
+				Effect.sync(() => {
+					listCalls.push({ base: options?.base, state: options?.state, head: options?.head });
+				}).pipe(
+					Effect.andThen(
+						f.releasePrs === "fail"
+							? Effect.fail(GitHubError.rejected("PullRequest.list", 500, "boom"))
+							: Effect.succeed(f.releasePrs),
+					),
+				),
 			listAssociatedWithCommit: (sha) => Effect.succeed(f.associated.get(sha) ?? []),
 		}),
 		Layer.succeed(Repo, RepoRef.make({ owner: OWNER, repo: REPO })),
@@ -195,7 +231,10 @@ const runCollect = (
 	f: Fixtures,
 ): Promise<{ linkedIssues: ReadonlyArray<{ number: number; title: string; state: string; url: string }> }> =>
 	Effect.runPromise(
-		getLinkedIssuesFromCommits(TARGET_BRANCH).pipe(Effect.provide(gitHubServices(f)), Effect.provide(Logger.layer([]))),
+		getLinkedIssuesFromCommits(TARGET_BRANCH, RELEASE_BRANCH).pipe(
+			Effect.provide(gitHubServices(f)),
+			Effect.provide(Logger.layer([])),
+		),
 	);
 
 const runStage = (f: Fixtures, dryRun = false): Promise<LinkIssuesResult> => {
@@ -247,25 +286,85 @@ const runStage = (f: Fixtures, dryRun = false): Promise<LinkIssuesResult> => {
 // --- getLinkedIssuesFromCommits ------------------------------------------
 
 describe("getLinkedIssuesFromCommits", () => {
-	it("compares against the latest semver tag's SHA when there is one", async () => {
+	it("compares against the merge commit of the last merged release PR", async () => {
 		compareCalls.length = 0;
+		listCalls.length = 0;
 		const f = makeFixtures({
-			latest: semverTag("v2.0.0", "sha-v2", [2, 0, 0]),
-			comparisons: new Map([[`sha-v2...${TARGET_BRANCH}`, [commit("commit-abc", "feat: add feature")]]]),
-			// Seeded but must NOT be read — the tag path wins.
+			releasePrs: [releasePr(245, "sha-245")],
+			comparisons: new Map([[`sha-245...${TARGET_BRANCH}`, [commit("commit-abc", "feat: add feature")]]]),
+			// Seeded but must NOT be read — the release-PR path wins.
 			commitLists: new Map([[TARGET_BRANCH, [commit("from-list", "chore: never read")]]]),
 		});
 
 		const result = await runCollect(f);
 
-		expect(compareCalls).toEqual([{ base: "sha-v2", head: TARGET_BRANCH }]);
+		expect(compareCalls).toEqual([{ base: "sha-245", head: TARGET_BRANCH }]);
 		expect(result.linkedIssues).toHaveLength(0);
 	});
 
-	it("falls back to listing the branch when latestSemver is None", async () => {
+	it("filters the head branch locally rather than through the list option", async () => {
+		listCalls.length = 0;
+		const f = makeFixtures({ releasePrs: [releasePr(245, "sha-245")] });
+
+		await runCollect(f);
+
+		// `head` must be absent. GitHub expects `owner:ref` there while the
+		// projection carries the bare ref, so passing it returns nothing at all
+		// and the boundary silently falls back to walking the whole branch.
+		expect(listCalls).toEqual([{ base: TARGET_BRANCH, state: "closed", head: undefined }]);
+	});
+
+	it("picks the newest release PR by number, not by any version ordering", async () => {
 		compareCalls.length = 0;
 		const f = makeFixtures({
-			latest: null,
+			// The regression guard. Release #244 published the package holding the
+			// repository's numerically highest version, #245 published lower-versioned
+			// ones. A tag lookup ordered by version chose #244 and pulled #245's own
+			// merge commit into the range, re-harvesting issues it had already closed
+			// — and stayed pinned there for every release afterwards.
+			releasePrs: [releasePr(244, "sha-244"), releasePr(245, "sha-245")],
+			comparisons: new Map([[`sha-245...${TARGET_BRANCH}`, [commit("commit-abc", "feat: add feature")]]]),
+		});
+
+		await runCollect(f);
+
+		expect(compareCalls).toEqual([{ base: "sha-245", head: TARGET_BRANCH }]);
+	});
+
+	it("ignores closed-but-unmerged PRs and PRs from another head branch", async () => {
+		compareCalls.length = 0;
+		const f = makeFixtures({
+			releasePrs: [
+				// Higher-numbered but abandoned: closed without merging.
+				releasePr(250, "sha-250", { merged: false }),
+				// Higher-numbered but not a release at all.
+				releasePr(249, "sha-249", { head: "feat/something" }),
+				releasePr(245, "sha-245"),
+			],
+			comparisons: new Map([[`sha-245...${TARGET_BRANCH}`, [commit("commit-abc", "feat: add feature")]]]),
+		});
+
+		await runCollect(f);
+
+		expect(compareCalls).toEqual([{ base: "sha-245", head: TARGET_BRANCH }]);
+	});
+
+	it("skips a merged release PR carrying no merge commit SHA", async () => {
+		compareCalls.length = 0;
+		const f = makeFixtures({
+			releasePrs: [releasePr(246, undefined), releasePr(245, "sha-245")],
+			comparisons: new Map([[`sha-245...${TARGET_BRANCH}`, [commit("commit-abc", "feat: add feature")]]]),
+		});
+
+		await runCollect(f);
+
+		expect(compareCalls).toEqual([{ base: "sha-245", head: TARGET_BRANCH }]);
+	});
+
+	it("falls back to listing the branch when nothing has been released yet", async () => {
+		compareCalls.length = 0;
+		const f = makeFixtures({
+			releasePrs: [],
 			commitLists: new Map([
 				[TARGET_BRANCH, [commit("sha-first", "chore: initial"), commit("sha-second", "feat: widget")]],
 			]),
@@ -273,15 +372,15 @@ describe("getLinkedIssuesFromCommits", () => {
 
 		const result = await runCollect(f);
 
-		// `latestSemver` answered `Option.none`, so `compare` was never reached.
+		// No boundary, so `compare` was never reached.
 		expect(compareCalls).toHaveLength(0);
 		expect(result.linkedIssues).toHaveLength(0);
 	});
 
-	it("degrades to the list path when latestSemver fails outright", async () => {
+	it("degrades to the list path when listing pull requests fails outright", async () => {
 		compareCalls.length = 0;
 		const f = makeFixtures({
-			latest: "fail",
+			releasePrs: "fail",
 			commitLists: new Map([[TARGET_BRANCH, [commit("sha-only", "fix: bug\n\nCloses #5")]]]),
 			issues: new Map([[5, issueInfo(5, "Issue 5")]]),
 		});
@@ -294,7 +393,7 @@ describe("getLinkedIssuesFromCommits", () => {
 
 	it("backfills a message-only issue reference from the issue API", async () => {
 		const f = makeFixtures({
-			latest: semverTag("v1.0.0", "sha-latest", [1, 0, 0]),
+			releasePrs: [releasePr(240, "sha-latest")],
 			comparisons: new Map([[`sha-latest...${TARGET_BRANCH}`, [commit("abc0001", "fix: resolve bug\n\nCloses #7")]]]),
 			issues: new Map([[7, issueInfo(7, "Bug report", "closed")]]),
 		});

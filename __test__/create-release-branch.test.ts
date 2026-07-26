@@ -264,6 +264,10 @@ const runStage = async (
 			linkedIssues: (prNumber) => Effect.succeed(f.linkedIssues.get(prNumber) ?? []),
 		}),
 		PullRequest.layerTest({
+			// The release boundary asks for merged release PRs before walking
+			// commits. Empty means "nothing released yet", which sends the walk
+			// down the list-the-whole-branch path these fixtures already expect.
+			list: () => Effect.succeed([]),
 			create: (input) =>
 				Effect.sync(() => {
 					const created = {

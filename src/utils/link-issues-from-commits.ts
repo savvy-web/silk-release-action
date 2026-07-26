@@ -18,7 +18,7 @@
  */
 
 import type { GitHubError, Repo } from "@effected/github";
-import { CheckRun, CheckRunOutput, GitHubCommit, GitHubIssue, GitTag, PullRequest } from "@effected/github";
+import { CheckRun, CheckRunOutput, GitHubCommit, GitHubIssue, PullRequest } from "@effected/github";
 import type { ActionEnvironmentError, ActionOutputError } from "@effected/github-actions";
 import { ActionEnvironment, ActionInput, ActionOutputs } from "@effected/github-actions";
 import { Config, Effect, Option } from "effect";
@@ -81,25 +81,71 @@ const extractPRNumber = (message: string): number | null => {
 };
 
 /**
- * The commit SHA of the newest version-shaped tag, or `Option.none` when
- * there is no such tag or the listing failed.
+ * The merge commit of the most recently merged release pull request, or
+ * `Option.none` when this repository has not released through one yet.
  *
  * @remarks
- * `includePrerelease` is on because this answers "what did we last ship",
- * not "what is the current stable line" — a prerelease tag is still a
- * release boundary for the purposes of walking commits since it.
+ * **A tag lookup is the wrong instrument here, and this is the bug it caused.**
+ * The predecessor asked `GitTag.latestSemver` for "the last release", which
+ * orders tags by version. In a monorepo the per-package version lines are not
+ * comparable — `@scope/a@5.0.25` outranks `@scope/b@2.3.7` numerically while
+ * being several releases older. On `savvy-web/silk-integration` that selected
+ * release #244's tag as the boundary for a run whose previous release was
+ * actually #245, so #245's own merge commit fell *inside* the range and the
+ * issues it had already closed were harvested into the next release.
+ *
+ * The compounding part was worse than the double count: the boundary was
+ * **stuck**. Nothing advances it until some package out-bumps the highest
+ * version anywhere in the repository, so every subsequent release walked a
+ * range one release longer than the last and re-harvested every release in
+ * between.
+ *
+ * `GitTag.list` is not the repair — GitHub returns tags grouped by name rather
+ * than by creation, so its first entry is the alphabetically-last package's
+ * newest version. The release pull request is the only boundary that means
+ * "everything after this is unreleased" no matter how packages are versioned
+ * or tags are named.
  *
  * @internal
  */
-const latestReleaseTagSha = Effect.gen(function* () {
-	const gitTag = yield* GitTag;
-	const result = yield* Effect.result(gitTag.latestSemver({ includePrerelease: true }));
-	if (result._tag === "Failure") {
-		yield* Effect.logWarning(`Failed to get latest tag: ${result.failure.reason}`);
-		return Option.none<string>();
-	}
-	return Option.map(result.success, (tag) => tag.sha);
-});
+const lastReleaseBoundary = (
+	targetBranch: string,
+	releaseBranch: string,
+): Effect.Effect<Option.Option<string>, never, PullRequest | Repo> =>
+	Effect.gen(function* () {
+		const pulls = yield* PullRequest;
+		const result = yield* Effect.result(pulls.list({ base: targetBranch, state: "closed" }));
+		if (result._tag === "Failure") {
+			yield* Effect.logWarning(`Failed to list release pull requests: ${result.failure.reason}`);
+			return Option.none<string>();
+		}
+
+		// The head branch is matched here rather than through `list`'s own `head`
+		// option: GitHub expects an `owner:ref` there, while the projection hands
+		// back the bare ref (`raw.head.ref`), so filtering locally compares like
+		// with like instead of guessing at the qualified spelling.
+		//
+		// Highest number wins rather than latest `mergedAt`. Only one release PR
+		// is open against a given head branch at a time and they merge in order,
+		// so the numbers are already the merge order — and an integer comparison
+		// cannot go wrong the way an absent or unparsed timestamp can.
+		// `flatMap` rather than `filter` so the merge SHA arrives as a plain
+		// `string`: `mergeCommitSha` is an optional key, and a predicate that
+		// rules out `undefined` does not narrow the element type.
+		const released = result.success
+			.filter((pr) => pr.merged && pr.head === releaseBranch)
+			.flatMap((pr) => (pr.mergeCommitSha === undefined ? [] : [{ number: pr.number, sha: pr.mergeCommitSha }]))
+			.sort((a, b) => b.number - a.number);
+
+		const newest = released[0];
+		if (newest === undefined) {
+			yield* Effect.logInfo(`No merged '${releaseBranch}' pull request found`);
+			return Option.none<string>();
+		}
+
+		yield* Effect.logInfo(`Last release: PR #${newest.number} (${newest.sha})`);
+		return Option.some(newest.sha);
+	});
 
 /**
  * Fetch all commits on a branch, paginated.
@@ -184,19 +230,20 @@ const fetchIssueDetails = (
  */
 export const getLinkedIssuesFromCommits = (
 	targetBranch: string,
+	releaseBranch: string,
 ): Effect.Effect<
 	{ linkedIssues: LinkedIssue[]; commits: CommitInfo[] },
 	never,
-	GitHubCommit | GitHubIssue | GitTag | Repo
+	GitHubCommit | GitHubIssue | PullRequest | Repo
 > =>
 	Effect.gen(function* () {
 		const commitsSvc = yield* GitHubCommit;
-		const latestTagSha = yield* latestReleaseTagSha;
+		const boundary = yield* lastReleaseBoundary(targetBranch, releaseBranch);
 
 		let commits: CommitInfo[];
-		if (Option.isSome(latestTagSha)) {
-			yield* Effect.logInfo(`Comparing ${latestTagSha.value}...${targetBranch}`);
-			const compareResult = yield* Effect.result(commitsSvc.compare(latestTagSha.value, targetBranch));
+		if (Option.isSome(boundary)) {
+			yield* Effect.logInfo(`Comparing ${boundary.value}...${targetBranch}`);
+			const compareResult = yield* Effect.result(commitsSvc.compare(boundary.value, targetBranch));
 			if (compareResult._tag === "Failure") {
 				yield* Effect.logWarning(`Failed to compare commits: ${compareResult.failure.reason}`);
 				commits = [];
@@ -205,7 +252,7 @@ export const getLinkedIssuesFromCommits = (
 				yield* Effect.logInfo(`Found ${commits.length} commit(s) since last release`);
 			}
 		} else {
-			yield* Effect.logInfo("No tags found - fetching all commits from branch");
+			yield* Effect.logInfo("No previous release - fetching all commits from branch");
 			commits = yield* getAllCommitsOnBranch(targetBranch);
 		}
 
@@ -225,12 +272,15 @@ export const getLinkedIssuesFromCommits = (
 		}
 
 		// Pass 2: for each merge commit, query the linked issues on its PR.
-		yield* Effect.logInfo("Checking merged PRs for linked issues...");
-		let prCount = 0;
-		for (const commit of commits) {
+		//
+		// The count is computed up front so it can be logged *before* the
+		// per-commit lines it describes. Printed afterwards it read as a total
+		// for whatever came next.
+		const mergeCommits = commits.filter((commit) => extractPRNumber(commit.message) !== null);
+		yield* Effect.logInfo(`Checking ${mergeCommits.length} merged PR(s) for linked issues...`);
+		for (const commit of mergeCommits) {
 			const prNumber = extractPRNumber(commit.message);
 			if (prNumber === null) continue;
-			prCount++;
 			yield* Effect.logInfo(
 				`  Commit ${commit.sha.slice(0, 7)}: "${commit.message.split("\n")[0]}" -> PR #${prNumber}`,
 			);
@@ -259,7 +309,6 @@ export const getLinkedIssuesFromCommits = (
 				}
 			}
 		}
-		yield* Effect.logInfo(`Found ${prCount} PR merge commit(s) to check`);
 		yield* Effect.logInfo(`Found ${issueMap.size} unique issue reference(s)`);
 
 		// Pass 3: backfill details for issues only found via commit-message text.
@@ -366,7 +415,7 @@ const linkIssuesToPR = (
 export const linkIssuesFromCommits: Effect.Effect<
 	LinkIssuesResult,
 	ActionEnvironmentError | ActionOutputError | Config.ConfigError | GitHubError,
-	ActionEnvironment | ActionOutputs | CheckRun | GitHubCommit | GitHubIssue | GitTag | PullRequest | Repo
+	ActionEnvironment | ActionOutputs | CheckRun | GitHubCommit | GitHubIssue | PullRequest | Repo
 > = Effect.gen(function* () {
 	const serverUrl = yield* resolveServerUrl();
 	const env = yield* ActionEnvironment;
@@ -374,13 +423,14 @@ export const linkIssuesFromCommits: Effect.Effect<
 	const checks = yield* CheckRun;
 
 	const targetBranch = yield* ActionInput.string("target-branch").pipe(Config.withDefault("main"));
+	const releaseBranch = yield* ActionInput.string("release-branch").pipe(Config.withDefault("changeset-release/main"));
 	const dryRun = yield* ActionInput.boolean("dry-run").pipe(Config.withDefault(false));
 
 	const { sha, repository } = yield* env.github;
 	const [owner, repo] = repository.split("/");
 
 	yield* Effect.logInfo("Linking issues from commits");
-	const { linkedIssues, commits } = yield* getLinkedIssuesFromCommits(targetBranch);
+	const { linkedIssues, commits } = yield* getLinkedIssuesFromCommits(targetBranch, releaseBranch);
 
 	const checkTitle = dryRun ? "🧪 Link Issues from Commits (Dry Run)" : "Link Issues from Commits";
 	const checkSummary =

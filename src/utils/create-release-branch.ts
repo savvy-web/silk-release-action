@@ -300,7 +300,7 @@ export const createReleaseBranch = (): Effect.Effect<
 
 		if (!dryRun && finalCommitSha) {
 			yield* Effect.logInfo(`Searching for linked issues from commits on branch: ${targetBranch}`);
-			const found = yield* getLinkedIssuesFromCommits(targetBranch);
+			const found = yield* getLinkedIssuesFromCommits(targetBranch, releaseBranch);
 			const commits = found.commits;
 			linkedIssues = found.linkedIssues;
 			yield* Effect.logInfo(`Found ${commits.length} commit(s) to analyze`);
