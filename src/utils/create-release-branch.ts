@@ -39,6 +39,7 @@ import { resolveSignoff } from "./commit-signoff.js";
 import { isSinglePackage } from "./detect-repo-type.js";
 import { isMonorepoForTagging } from "./determine-tag-strategy.js";
 import { formatWorkspaceWithBiome } from "./format-workspace.js";
+import { resolveServerUrl } from "./github-urls.js";
 import type { LinkedIssue } from "./link-issues-from-commits.js";
 import { getLinkedIssuesFromCommits } from "./link-issues-from-commits.js";
 import { runNativeVersion } from "./native-version.js";
@@ -105,6 +106,7 @@ export const createReleaseBranch = (): Effect.Effect<
 		const pr = yield* PullRequest;
 		const fs = yield* FileSystem.FileSystem;
 		const signoff = yield* resolveSignoff();
+		const serverUrl = yield* resolveServerUrl();
 
 		const releaseBranch = yield* ActionInput.string("release-branch").pipe(
 			Config.withDefault("changeset-release/main"),
@@ -347,6 +349,7 @@ export const createReleaseBranch = (): Effect.Effect<
 			versionSummary,
 			linkedIssues,
 			signoff,
+			serverUrl,
 			owner,
 			repo,
 			runId: String(runId),

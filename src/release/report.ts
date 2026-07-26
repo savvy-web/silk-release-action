@@ -3,6 +3,7 @@ import { classifyRegistry } from "@effected/npm";
 import type { SbomMetadata } from "@effected/sbom";
 import { Result } from "effect";
 import type { ValidationOutput } from "../schema/release-output.js";
+import { DEFAULT_SERVER_URL, orgPackagePageUrl } from "../utils/github-urls.js";
 import type { ConfigSource } from "../utils/load-release-config.js";
 import { registryDisplayName } from "../utils/registry-label.js";
 
@@ -114,6 +115,11 @@ export function getPackagePageUrl(
 	packageName: string,
 	version: string,
 	owner?: string | undefined,
+	// Optional with a public default: every other branch of this function points
+	// at a public registry (npm, JSR) whose host is fixed, so only the GitHub
+	// Packages branch varies by instance, and only a GHES caller has a value to
+	// pass. Defaulting keeps the twelve public-registry call sites unchanged.
+	serverUrl: string = DEFAULT_SERVER_URL,
 ): string | undefined {
 	if (!registry) {
 		// JSR
@@ -132,8 +138,7 @@ export function getPackagePageUrl(
 		// https://github.com/orgs/{owner}/packages/npm/package/{package-name-without-scope}
 		const repoOwner = owner ?? "unknown";
 		// Remove scope from package name (e.g. @savvy-web/standalone-package -> standalone-package)
-		const pkgNameWithoutScope = packageName.startsWith("@") ? packageName.split("/")[1] : packageName;
-		return `https://github.com/orgs/${repoOwner}/packages/npm/package/${pkgNameWithoutScope}`;
+		return orgPackagePageUrl(serverUrl, repoOwner, packageName);
 	}
 
 	// Custom registries — no standard web UI

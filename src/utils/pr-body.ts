@@ -14,6 +14,7 @@
 // marker-delimited managed-section construct is being built upstream; this is
 // sized to be replaced by it.
 
+import { workflowRunUrl } from "./github-urls.js";
 import { summaryWriter } from "./summary-writer.js";
 
 /** Opening marker of the region this module owns. */
@@ -131,6 +132,8 @@ export const buildManagedPrBody = (args: {
 	readonly owner: string;
 	readonly repo: string;
 	readonly runId: string;
+	/** The GitHub instance this run executes against; see `resolveServerUrl`. */
+	readonly serverUrl: string;
 }): string => {
 	const sections: Array<{ heading?: string; level?: 2 | 3; content: string }> = [];
 
@@ -155,7 +158,7 @@ export const buildManagedPrBody = (args: {
 	if (closing !== "") sections.push({ content: closing });
 
 	sections.push({
-		content: `---\n🤖 Generated with [GitHub Actions](https://github.com/${args.owner}/${args.repo}/actions/runs/${args.runId})`,
+		content: `---\n🤖 Generated with [GitHub Actions](${workflowRunUrl(args.serverUrl, args.owner, args.repo, args.runId)})`,
 	});
 
 	return `${MANAGED_START}\n${summaryWriter.build(sections).trim()}\n${MANAGED_END}`;

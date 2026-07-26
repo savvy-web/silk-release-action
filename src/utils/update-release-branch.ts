@@ -42,6 +42,7 @@ import { resolveSignoff } from "./commit-signoff.js";
 import { isSinglePackage } from "./detect-repo-type.js";
 import { isMonorepoForTagging } from "./determine-tag-strategy.js";
 import { formatWorkspaceWithBiome } from "./format-workspace.js";
+import { pullRequestUrl, resolveServerUrl } from "./github-urls.js";
 import { runNativeVersion } from "./native-version.js";
 import { buildManagedPrBody, upsertManagedRegion } from "./pr-body.js";
 import {
@@ -158,7 +159,7 @@ export const updateReleaseBranch = (): Effect.Effect<
 		// GHES. `getOptional` rather than `env.github.serverUrl`: absence has a
 		// correct default rather than being a failure, and only GHES sets it.
 		// Matches `attest-helpers.ts` and the PR-URL fix in `main.ts`.
-		const serverUrl = Option.getOrElse(yield* env.getOptional("GITHUB_SERVER_URL"), () => "https://github.com");
+		const serverUrl = yield* resolveServerUrl();
 
 		// ---------- Find existing PR (open, or closed-not-merged) ----------
 		let prNumber: number | null = null;
@@ -432,6 +433,7 @@ export const updateReleaseBranch = (): Effect.Effect<
 				versionSummary,
 				linkedIssues,
 				signoff,
+				serverUrl,
 				owner,
 				repo,
 				runId: String(runId),
@@ -472,6 +474,7 @@ export const updateReleaseBranch = (): Effect.Effect<
 					versionSummary,
 					linkedIssues,
 					signoff,
+					serverUrl,
 					owner,
 					repo,
 					runId: String(runId),
@@ -499,7 +502,7 @@ export const updateReleaseBranch = (): Effect.Effect<
 			{ key: "Linked Issues", value: linkedIssues.length > 0 ? `${linkedIssues.length} issue(s)` : "_None_" },
 			{
 				key: "PR",
-				value: prNumber ? `[#${prNumber}](${serverUrl}/${owner}/${repo}/pull/${prNumber})` : "_N/A_",
+				value: prNumber ? `[#${prNumber}](${pullRequestUrl(serverUrl, owner, repo, prNumber)})` : "_N/A_",
 			},
 		]);
 

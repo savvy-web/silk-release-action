@@ -23,6 +23,10 @@ import {
 } from "../src/utils/pr-body.js";
 
 const SIGNOFF = "Signed-off-by: C. Spencer Beggs <spencer@savvyweb.systems>";
+// Deliberately NOT https://github.com. A fixture equal to the production
+// default cannot distinguish "the code read it" from "the code ignored it" —
+// the assertion would pass against a hardcoded host.
+const GHES = "https://github.example.com";
 
 const openIssue = (number: number, title = "Some title"): LinkedIssueRef => ({ number, title, state: "open" });
 const closedIssue = (number: number, title = "Done already"): LinkedIssueRef => ({ number, title, state: "closed" });
@@ -36,6 +40,7 @@ const body = (linkedIssues: ReadonlyArray<LinkedIssueRef>, versionSummary = "@sc
 		owner: "savvy-web",
 		repo: "silk-integration",
 		runId: "42",
+		serverUrl: GHES,
 	});
 
 /**
@@ -97,6 +102,7 @@ describe("buildManagedPrBody — the proposed squash-commit block", () => {
 			versionSummary: "",
 			linkedIssues: [openIssue(5)],
 			signoff: "Signed-off-by: Someone Else <other@example.com>",
+			serverUrl: GHES,
 			owner: "o",
 			repo: "r",
 			runId: "1",

@@ -12,6 +12,7 @@ import type { GitHubError, LinkedIssue, Repo } from "@effected/github";
 import { CheckRun, CheckRunOutput, GitHubIssue } from "@effected/github";
 import { ActionEnvironment, ActionOutputs } from "@effected/github-actions";
 import { Effect } from "effect";
+import { issueUrl, resolveServerUrl } from "./github-urls.js";
 import { summaryWriter } from "./summary-writer.js";
 
 /** Per-issue result. */
@@ -79,6 +80,7 @@ export const closeLinkedIssues = (
 	dryRun: boolean,
 ): Effect.Effect<CloseLinkedIssuesResult, never, ActionEnvironment | ActionOutputs | CheckRun | GitHubIssue | Repo> =>
 	Effect.gen(function* () {
+		const serverUrl = yield* resolveServerUrl();
 		const env = yield* ActionEnvironment;
 		const outputs = yield* ActionOutputs;
 		const checks = yield* CheckRun;
@@ -130,7 +132,7 @@ export const closeLinkedIssues = (
 		const issuesTable = summaryWriter.table(
 			["Issue", "Title", "Status"],
 			issueResults.map((issue) => [
-				`[#${issue.number}](https://github.com/${owner}/${repo}/issues/${issue.number})`,
+				`[#${issue.number}](${issueUrl(serverUrl, owner, repo, issue.number)})`,
 				issue.title,
 				issue.closed ? "✅ Closed" : `❌ ${issue.error ?? "Unknown error"}`,
 			]),

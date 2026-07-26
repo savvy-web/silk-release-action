@@ -66,6 +66,7 @@ import { detectWorkflowPhase } from "./utils/detect-workflow-phase.js";
 import type { TagInfo } from "./utils/determine-tag-strategy.js";
 import { determineTagStrategy, isMonorepoForTagging } from "./utils/determine-tag-strategy.js";
 import { readEventPullRequestNumber } from "./utils/event-payload.js";
+import { resolveServerUrl } from "./utils/github-urls.js";
 import { linkIssuesFromCommits } from "./utils/link-issues-from-commits.js";
 import type { ConfigSource } from "./utils/load-release-config.js";
 import type { Section } from "./utils/managed-sections.js";
@@ -359,17 +360,11 @@ const runBranchManagement = Effect.gen(function* () {
 				});
 			}
 
-			// The PR URL is built from the environment rather than a hardcoded host:
-			// `GITHUB_SERVER_URL` is the enterprise instance on GHES and is absent on
-			// github.com, where the default is correct. `getOptional` rather than the
-			// `github` projection for the same reason it is used in `attest-helpers`:
-			// the projection fails typed when a `GITHUB_*` is missing, and a missing
-			// server URL has a correct default rather than a failure.
+			// The PR URL is built from the instance the run is executing against,
+			// not a hardcoded host — see `github-urls`, which owns that decision for
+			// every link this action emits.
 			const environment = yield* ActionEnvironment;
-			const serverUrl = Option.getOrElse(
-				yield* environment.getOptional("GITHUB_SERVER_URL"),
-				() => "https://github.com",
-			);
+			const serverUrl = yield* resolveServerUrl();
 			const repositorySlug = Option.getOrElse(yield* environment.getOptional("GITHUB_REPOSITORY"), () => "");
 
 			const output = toBranchManagementOutput({

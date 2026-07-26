@@ -172,12 +172,14 @@ The phase summary counted changesets through a fallback that turned any preview 
 empty result, so "nothing to release" and "the preview broke" were indistinguishable in the
 log. A preview failure is now named at error level.
 
-### Pull request and summary links pointed at github.com on GitHub Enterprise
+### Every GitHub link pointed at github.com on GitHub Enterprise
 
-Two link builders hard-coded the `github.com` host, so the release pull request URL in the
-action's output and the pull-request row in the validation check pointed at the public site
-from an Enterprise instance. Both now read `GITHUB_SERVER_URL`, defaulting to
-`https://github.com` where it is unset.
+Nine link builders hard-coded the `github.com` host, so from an Enterprise instance the release
+pull request URL, the validation check's pull-request row, issue and commit links, the run link
+in the pull request body, GitHub Packages pages, and **the URL reported for every GitHub
+release** all pointed at the public site. Links are now built against `GITHUB_SERVER_URL`,
+defaulting to `https://github.com` where it is unset — which is the github.com case, since only
+Enterprise sets the variable.
 
 ## Performance
 

@@ -25,6 +25,7 @@ import { Effect, Option } from "effect";
 import type { ChildProcessSpawner } from "effect/unstable/process";
 
 import { extractVersionReleaseNotes } from "../utils/extract-release-notes.js";
+import { packageArtifactUrl, releaseTagUrl, resolveServerUrl } from "../utils/github-urls.js";
 import { getGroupId, insertGroupToken } from "../utils/group-id.js";
 import { registryDisplayName } from "../utils/registry-label.js";
 import { attestSubject, buildProvenancePredicate } from "./attest-helpers.js";
@@ -246,8 +247,9 @@ const createStorageRecord = (
 	packageName: string,
 	version: string,
 	digest: string,
-): Effect.Effect<readonly number[] | undefined, never, ArtifactMetadata | Repo> =>
+): Effect.Effect<readonly number[] | undefined, never, ActionEnvironment | ArtifactMetadata | Repo> =>
 	Effect.gen(function* () {
+		const serverUrl = yield* resolveServerUrl();
 		const artifactMetadata = yield* ArtifactMetadata;
 		const { owner } = yield* Repo;
 
@@ -261,7 +263,7 @@ const createStorageRecord = (
 				name: purlName,
 				digest,
 				registryUrl: "https://npm.pkg.github.com/",
-				artifactUrl: `https://github.com/${owner}/pkgs/npm/${unscopedName}`,
+				artifactUrl: packageArtifactUrl(serverUrl, owner, unscopedName),
 				repository: unscopedName,
 			}),
 		);
@@ -338,6 +340,7 @@ const processOneTag = (
 	dryRun: boolean,
 ): Effect.Effect<readonly [ReleaseInfo | null, string | null], never, ReleasesServices> =>
 	Effect.gen(function* () {
+		const serverUrl = yield* resolveServerUrl();
 		yield* Effect.logDebug(`runReleases: processing ${tag.name}`);
 
 		if (associatedPackages.length === 0) {
@@ -351,7 +354,7 @@ const processOneTag = (
 			return [
 				{
 					tag: tag.name,
-					url: `https://github.com/${owner}/${repo}/releases/tag/${tag.name}`,
+					url: releaseTagUrl(serverUrl, owner, repo, tag.name),
 					id: 0,
 					assets: [],
 				} satisfies ReleaseInfo,
@@ -450,7 +453,7 @@ const processOneTag = (
 		const assets: AssetInfo[] = [];
 		const releaseInfo: ReleaseInfo = {
 			tag: tag.name,
-			url: `https://github.com/${owner}/${repo}/releases/tag/${tag.name}`,
+			url: releaseTagUrl(serverUrl, owner, repo, tag.name),
 			id: releaseData.id,
 			assets,
 		};

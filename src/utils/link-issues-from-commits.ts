@@ -22,6 +22,7 @@ import { CheckRun, CheckRunOutput, GitHubCommit, GitHubIssue, GitTag, PullReques
 import type { ActionEnvironmentError, ActionOutputError } from "@effected/github-actions";
 import { ActionEnvironment, ActionInput, ActionOutputs } from "@effected/github-actions";
 import { Config, Effect, Option } from "effect";
+import { commitUrl, resolveServerUrl } from "./github-urls.js";
 import { summaryWriter } from "./summary-writer.js";
 
 /** Linked issue, with the SHA(s) of the commits that reference it. */
@@ -367,6 +368,7 @@ export const linkIssuesFromCommits: Effect.Effect<
 	ActionEnvironmentError | ActionOutputError | Config.ConfigError | GitHubError,
 	ActionEnvironment | ActionOutputs | CheckRun | GitHubCommit | GitHubIssue | GitTag | PullRequest | Repo
 > = Effect.gen(function* () {
+	const serverUrl = yield* resolveServerUrl();
 	const env = yield* ActionEnvironment;
 	const outputs = yield* ActionOutputs;
 	const checks = yield* CheckRun;
@@ -398,9 +400,9 @@ export const linkIssuesFromCommits: Effect.Effect<
 			? commits
 					.map((commit) => {
 						const shortSha = commit.sha.slice(0, 7);
-						const commitUrl = `https://github.com/${owner}/${repo}/commit/${commit.sha}`;
+						const commitLink = commitUrl(serverUrl, owner, repo, commit.sha);
 						const firstLine = commit.message.split("\n")[0];
-						return `[\`${shortSha}\`](${commitUrl})\n> ${firstLine}`;
+						return `[\`${shortSha}\`](${commitLink})\n> ${firstLine}`;
 					})
 					.join("\n\n")
 			: "_No commits found_";
