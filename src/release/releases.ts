@@ -9,40 +9,29 @@
  * (`runCreateStorageRecord`) to a pure Effect program.
  *
  * Per-tag failures are collected into the `errors` array without aborting the
- * rest of the batch (mirrors the `ErrorAccumulator` pattern used in Phase 3
- * publish).  The overall `success` flag is `true` only when `errors` is empty.
+ * rest of the batch. The overall `success` flag is `true` only when `errors`
+ * is empty.
  *
  * @module release/releases
  */
 
 import { copyFileSync, existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import type { Attestation, GitHubError, ReleaseInfo as GitHubReleaseInfo } from "@effected/github";
+import { ArtifactMetadata, GitHubRelease, GitTag, Repo, StorageRecordInput } from "@effected/github";
+import type { OidcTokenIssuer } from "@effected/github-actions";
+import { ActionEnvironment, ActionLogger } from "@effected/github-actions";
+import { classifyRegistry } from "@effected/npm";
+import type { SigstoreSigner } from "@effected/sbom";
+import { SlsaProvenance } from "@effected/sbom";
 import { WorkspaceDiscovery } from "@effected/workspaces";
-import type {
-	AttestError,
-	CommandRunner,
-	GitHubArtifactMetadataError,
-	GitHubClientError,
-	GitHubReleaseError,
-	GitTagError,
-	OidcTokenIssuer,
-	SigstoreSigner,
-} from "@savvy-web/github-action-effects";
-import {
-	ActionLogger,
-	Attest,
-	GitHubArtifactMetadata,
-	GitHubClient,
-	GitHubRelease,
-	GitTag,
-	Step,
-	getRegistryDisplayName,
-	isGitHubPackagesRegistry,
-} from "@savvy-web/github-action-effects";
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
+import type { ChildProcessSpawner } from "effect/unstable/process";
 
+import { extractVersionReleaseNotes } from "../utils/extract-release-notes.js";
 import { getGroupId, insertGroupToken } from "../utils/group-id.js";
-import { buildProvenancePredicate } from "./attest-helpers.js";
+import { registryDisplayName } from "../utils/registry-label.js";
+import { attestSubject, buildProvenancePredicate } from "./attest-helpers.js";
 import { ReleasesError } from "./errors.js";
 import { tarMetaFolder } from "./meta-archive.js";
 import { getPackagePageUrl } from "./report.js";
@@ -80,46 +69,30 @@ export interface ReleasesReport {
 	readonly errors: ReadonlyArray<string>;
 }
 
-// ─── Internal helpers ─────────────────────────────────────────────────────────
-
 /**
- * Extract release notes from a CHANGELOG.md for a specific version.
+ * Every service {@link runReleases} and its helpers resolve.
  *
- * Ports `extractReleaseNotes` from `create-github-releases.ts` verbatim.
+ * @remarks
+ * Named once rather than spelled out on each helper: the union appeared three
+ * times and drifted, carrying a `CommandRunner` requirement no call site had
+ * used since `tarMetaFolder` moved onto `@effected/commands`.
+ *
+ * @public
  */
-function extractReleaseNotes(changelogPath: string, version: string): string | undefined {
-	if (!existsSync(changelogPath)) {
-		return undefined;
-	}
+export type ReleasesServices =
+	| ActionEnvironment
+	| ActionLogger
+	| ArtifactMetadata
+	| Attestation
+	| ChildProcessSpawner.ChildProcessSpawner
+	| GitHubRelease
+	| GitTag
+	| OidcTokenIssuer
+	| Repo
+	| SigstoreSigner
+	| WorkspaceDiscovery;
 
-	const content = readFileSync(changelogPath, "utf-8");
-	const lines = content.split("\n");
-
-	// Changesets format: ## 1.0.0 or ## @scope/pkg@1.0.0
-	const versionPattern = new RegExp(`^##\\s+(?:@[^@]+@)?${version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`);
-	const nextVersionPattern = /^##\s+/;
-
-	let inSection = false;
-	const sectionLines: string[] = [];
-
-	for (const line of lines) {
-		if (versionPattern.test(line)) {
-			inSection = true;
-			continue;
-		}
-		if (inSection) {
-			if (nextVersionPattern.test(line)) break;
-			sectionLines.push(line);
-		}
-	}
-
-	if (sectionLines.length === 0) return undefined;
-
-	while (sectionLines.length > 0 && sectionLines[0]?.trim() === "") sectionLines.shift();
-	while (sectionLines.length > 0 && sectionLines[sectionLines.length - 1]?.trim() === "") sectionLines.pop();
-
-	return sectionLines.join("\n");
-}
+// ─── Internal helpers ─────────────────────────────────────────────────────────
 
 /**
  * Return the unscoped package name.
@@ -197,14 +170,14 @@ const buildReleaseNotes = (
 		// Changelog sections
 		for (const pkg of packages) {
 			const wsPkg = yield* discovery.getPackage(pkg.name).pipe(Effect.option);
-			const pkgPath = wsPkg._tag === "Some" ? wsPkg.value.path : undefined;
+			const pkgPath = Option.isSome(wsPkg) ? wsPkg.value.path : undefined;
 			const changelogPaths: string[] = [];
 			if (pkgPath) changelogPaths.push(join(pkgPath, "CHANGELOG.md"));
 			changelogPaths.push(join(process.cwd(), "CHANGELOG.md"));
 
 			let changelog: string | undefined;
 			for (const cp of changelogPaths) {
-				changelog = extractReleaseNotes(cp, pkg.version);
+				changelog = extractVersionReleaseNotes(cp, pkg.version);
 				if (changelog) break;
 			}
 
@@ -223,7 +196,7 @@ const buildReleaseNotes = (
 
 		for (const pkg of packages) {
 			for (const target of pkg.targets.filter((t) => t.success)) {
-				const registryName = getRegistryDisplayName(target.target.registry ?? undefined);
+				const registryName = registryDisplayName(target.target.registry);
 				const packageUrl = getPackagePageUrl(target.target.registry ?? null, pkg.name, pkg.version, owner);
 				publishedTargets.push({ pkg, target, registryName, packageUrl });
 			}
@@ -263,41 +236,43 @@ const buildReleaseNotes = (
  * Create the artifact-metadata storage record that links an attestation to a
  * GitHub Packages artifact.
  *
- * Ports `runCreateStorageRecord` from `attest-runner.ts` as a pure Effect using
- * the `GitHubArtifactMetadata` service.  Non-fatal — failures are logged as
- * warnings.
+ * @remarks
+ * Non-fatal — failures are logged as warnings.  Only called for GitHub Packages
+ * targets.
  *
- * Only called for GitHub Packages targets.
+ * The body carries exactly the fields the endpoint declares. The predecessor's
+ * input shape additionally carried `version`, and spelled the repository field
+ * `repo`; neither appears in the endpoint's schema, so both were sent and
+ * ignored. `@effected/github` types the body from the generated route, which is
+ * why the difference is visible at all.
  */
 const createStorageRecord = (
 	packageName: string,
 	version: string,
 	digest: string,
-): Effect.Effect<readonly number[] | undefined, never, GitHubClient | GitHubArtifactMetadata> =>
+): Effect.Effect<readonly number[] | undefined, never, ArtifactMetadata | Repo> =>
 	Effect.gen(function* () {
-		const client = yield* GitHubClient;
-		const artifactMetadata = yield* GitHubArtifactMetadata;
-		const { owner } = yield* client.repo;
+		const artifactMetadata = yield* ArtifactMetadata;
+		const { owner } = yield* Repo;
 
 		const purlName = `pkg:npm/${packageName}@${version}`;
 		const unscopedName = getUnscopedName(packageName);
-		const artifactUrl = `https://github.com/${owner}/pkgs/npm/${unscopedName}`;
 
-		const ids = yield* artifactMetadata.createStorageRecord({
-			name: purlName,
-			digest,
-			version,
-			registryUrl: "https://npm.pkg.github.com/",
-			artifactUrl,
-			repo: unscopedName,
-		});
-
-		return ids;
+		return yield* artifactMetadata.createStorageRecord(
+			owner,
+			StorageRecordInput.make({
+				name: purlName,
+				digest,
+				registryUrl: "https://npm.pkg.github.com/",
+				artifactUrl: `https://github.com/${owner}/pkgs/npm/${unscopedName}`,
+				repository: unscopedName,
+			}),
+		);
 	}).pipe(
-		Effect.catch((e: GitHubArtifactMetadataError | GitHubClientError) =>
+		Effect.catch((e: GitHubError) =>
 			Effect.gen(function* () {
 				yield* Effect.logWarning(
-					`runReleases: failed to create storage record for ${packageName}@${version}: ${e instanceof Error ? e.message : String(e)}`,
+					`runReleases: failed to create storage record for ${packageName}@${version}: ${e.message}`,
 				);
 				return undefined;
 			}),
@@ -307,18 +282,23 @@ const createStorageRecord = (
 /**
  * Attest a single release asset (tarball) with SLSA provenance.
  *
- * Ports `createReleaseAssetAttestation` from `create-attestation.ts`.
- * Uses the real OIDC token path (no empty predicate).  Non-fatal — on failure
- * returns `undefined` so the batch can continue.
+ * @remarks
+ * Non-fatal — on failure returns `undefined` so the batch can continue. Three
+ * distinct things can go wrong and each is reported for what it is: no OIDC
+ * claims (no `id-token: write`), a digest that is not a SHA-256, or a signing /
+ * upload failure.
  */
 const attestAsset = (
 	artifactPath: string,
 	packageName: string,
 	version: string,
 	tarballDigest: string,
-): Effect.Effect<string | undefined, never, Attest | OidcTokenIssuer | GitHubClient | SigstoreSigner> =>
+): Effect.Effect<
+	string | undefined,
+	never,
+	ActionEnvironment | Attestation | OidcTokenIssuer | Repo | SigstoreSigner
+> =>
 	Effect.gen(function* () {
-		const attest = yield* Attest;
 		const predicate = yield* buildProvenancePredicate();
 
 		if (predicate === null) {
@@ -328,26 +308,19 @@ const attestAsset = (
 			return undefined;
 		}
 
-		const purlName = `pkg:npm/${packageName}@${version}`;
-		const sha256 = tarballDigest.replace(/^sha256:/i, "");
-
-		const record = yield* attest
-			.provenance({
-				subjectName: purlName,
-				subjectSha256: sha256,
-				predicate,
-			})
-			.pipe(
-				Effect.catch((e: AttestError) =>
-					Effect.gen(function* () {
-						yield* Effect.logWarning(`runReleases: attestation failed for ${basename(artifactPath)}: ${e.message}`);
-						return null;
-					}),
-				),
-			);
-
-		if (record === null) return undefined;
-		return record.attestationUrl;
+		return yield* attestSubject({
+			name: `pkg:npm/${packageName}@${version}`,
+			sha256: tarballDigest,
+			predicateType: SlsaProvenance.predicateType,
+			predicate,
+		}).pipe(
+			Effect.catch((e) =>
+				Effect.gen(function* () {
+					yield* Effect.logWarning(`runReleases: attestation failed for ${basename(artifactPath)}: ${e.message}`);
+					return undefined;
+				}),
+			),
+		);
 	});
 
 // ─── Per-tag processing ────────────────────────────────────────────────────────
@@ -366,19 +339,7 @@ const processOneTag = (
 	repo: string,
 	headSha: string,
 	dryRun: boolean,
-): Effect.Effect<
-	readonly [ReleaseInfo | null, string | null],
-	never,
-	| GitTag
-	| GitHubRelease
-	| GitHubArtifactMetadata
-	| Attest
-	| OidcTokenIssuer
-	| GitHubClient
-	| SigstoreSigner
-	| WorkspaceDiscovery
-	| CommandRunner
-> =>
+): Effect.Effect<readonly [ReleaseInfo | null, string | null], never, ReleasesServices> =>
 	Effect.gen(function* () {
 		yield* Effect.logDebug(`runReleases: processing ${tag.name}`);
 
@@ -402,43 +363,45 @@ const processOneTag = (
 		}
 
 		// ── Step 1: Create git tag ────────────────────────────────────────────────
+		// `GitTag.create`, deliberately NOT `GitTag.upsert`. Upsert would force the
+		// tag onto the new head, silently retagging a release that already shipped
+		// from a different commit. Here a divergence is reported and left alone.
 		const gitTagSvc = yield* GitTag;
 
-		yield* Step.withStep(
-			`tag ${tag.name}`,
-			gitTagSvc.create(tag.name, headSha).pipe(
-				Effect.tap(() => Step.success(`created at ${headSha}`)),
-				Effect.catch((createErr: GitTagError) =>
-					// Distinguish the idempotent "tag already exists at the right SHA"
-					// case from a true divergence. Resolve the existing tag's SHA and
-					// compare against the head we tried to point at: equal → info-level
-					// recovery (no GitHub Actions warning annotation), different →
-					// warning that names both SHAs so the divergence is forensically
-					// auditable, resolve-failure → preserve prior best-effort warning.
-					gitTagSvc.resolve(tag.name).pipe(
-						Effect.flatMap((existingSha) =>
-							existingSha === headSha
-								? Effect.gen(function* () {
-										yield* Effect.logDebug(
-											`runReleases: tag ${tag.name} already at ${headSha} — idempotent recovery, proceeding`,
-										);
-										yield* Step.success(`already at ${headSha} — idempotent recovery`);
-									})
-								: Effect.gen(function* () {
-										yield* Effect.logWarning(
-											`runReleases: tag ${tag.name} create failed (${createErr.reason}); existing tag points at ${existingSha} but head is ${headSha} — proceeding`,
-										);
-										yield* Step.success(`diverged — existing ${existingSha} ≠ head ${headSha} (proceeding)`);
-									}),
-						),
-						Effect.catch((resolveErr: GitTagError) =>
-							Effect.gen(function* () {
-								yield* Effect.logWarning(
-									`runReleases: tag ${tag.name} create failed (${createErr.reason}) and resolve failed (${resolveErr.reason}) — proceeding`,
-								);
-								yield* Step.success(`create+resolve failed — proceeding`);
-							}),
-						),
+		yield* gitTagSvc.create(tag.name, headSha).pipe(
+			Effect.tap(() => Effect.logInfo(`  🏷 ${tag.name} · created at ${headSha}`)),
+			Effect.catch((createErr: GitHubError) =>
+				// Distinguish the idempotent "tag already exists at the right SHA"
+				// case from a true divergence. Resolve the existing tag's SHA and
+				// compare against the head we tried to point at: equal → info-level
+				// recovery (no GitHub Actions warning annotation), different →
+				// warning that names both SHAs so the divergence is forensically
+				// auditable, resolve-failure → preserve prior best-effort warning.
+				gitTagSvc.resolve(tag.name).pipe(
+					Effect.flatMap((existingSha) =>
+						existingSha === headSha
+							? Effect.gen(function* () {
+									yield* Effect.logDebug(
+										`runReleases: tag ${tag.name} already at ${headSha} — idempotent recovery, proceeding`,
+									);
+									yield* Effect.logInfo(`  🏷 ${tag.name} · already at ${headSha} — idempotent recovery`);
+								})
+							: Effect.gen(function* () {
+									yield* Effect.logWarning(
+										`runReleases: tag ${tag.name} create failed (${createErr.kind}); existing tag points at ${existingSha} but head is ${headSha} — proceeding`,
+									);
+									yield* Effect.logInfo(
+										`  🏷 ${tag.name} · diverged — existing ${existingSha} ≠ head ${headSha} (proceeding)`,
+									);
+								}),
+					),
+					Effect.catch((resolveErr: GitHubError) =>
+						Effect.gen(function* () {
+							yield* Effect.logWarning(
+								`runReleases: tag ${tag.name} create failed (${createErr.kind}) and resolve failed (${resolveErr.kind}) — proceeding`,
+							);
+							yield* Effect.logInfo(`  🏷 ${tag.name} · create+resolve failed — proceeding`);
+						}),
 					),
 				),
 			),
@@ -450,7 +413,7 @@ const processOneTag = (
 		// ── Step 3: Create GitHub release ─────────────────────────────────────────
 		const releaseSvc = yield* GitHubRelease;
 
-		const releaseData = yield* releaseSvc
+		const releaseData: GitHubReleaseInfo = yield* releaseSvc
 			.create({
 				tag: tag.name,
 				name: tag.name,
@@ -459,11 +422,13 @@ const processOneTag = (
 				prerelease: tag.version.includes("-"),
 			})
 			.pipe(
-				Effect.catch((createErr: GitHubReleaseError) =>
-					// On re-run the release may already exist — fall back to getByTag.
-					createErr.reason?.match(/already_exists|already exists/i)
-						? releaseSvc.getByTag(tag.name)
-						: Effect.fail(createErr),
+				// On re-run the release may already exist — fall back to getByTag.
+				// Branch on the structural `kind`, never on the rendered message: the
+				// predecessor matched `/already_exists|already exists/i` against a
+				// free-text reason string.
+				Effect.catchIf(
+					(createErr: GitHubError) => createErr.kind === "alreadyExists",
+					() => releaseSvc.getByTag(tag.name),
 				),
 			);
 
@@ -475,13 +440,11 @@ const processOneTag = (
 		// encounters an asset name already attached to this release, skip the
 		// upload and reuse the existing URL (ports `uploadAssetIdempotent` +
 		// the `existingAssetsByName` pre-fetch from `create-github-releases.ts`).
-		const existingAssetsByName = yield* releaseSvc.listReleaseAssets(releaseData.id).pipe(
+		const existingAssetsByName = yield* releaseSvc.listAssets(releaseData.id).pipe(
 			Effect.map((assets) => new Map(assets.map((a) => [a.name, { url: a.url, size: a.size }] as const))),
-			Effect.catch((e) =>
+			Effect.catch((e: GitHubError) =>
 				Effect.gen(function* () {
-					yield* Effect.logWarning(
-						`runReleases: failed to list existing assets for ${tag.name}: ${e instanceof Error ? e.message : String(e)}`,
-					);
+					yield* Effect.logWarning(`runReleases: failed to list existing assets for ${tag.name}: ${e.message}`);
 					return new Map<string, { url: string; size: number }>();
 				}),
 			),
@@ -497,7 +460,7 @@ const processOneTag = (
 
 		// Mutable release-notes string; updated after asset uploads to replace
 		// placeholder cells (📦 / 📄) with real download URLs, then pushed back
-		// to GitHub via repos.updateRelease (same pattern as original).
+		// to GitHub via `GitHubRelease.update` (same pattern as original).
 		let releaseNotes = notes;
 
 		for (const pkg of associatedPackages) {
@@ -549,11 +512,15 @@ const processOneTag = (
 					yield* Effect.logDebug(`runReleases: uploading asset ${fileName}`);
 
 					const asset = yield* releaseSvc
-						.uploadAsset(releaseData.id, fileName, fileContent, "application/octet-stream")
+						.uploadAsset(releaseData, {
+							name: fileName,
+							data: fileContent,
+							contentType: "application/octet-stream",
+						})
 						.pipe(
-							Effect.catch((e: GitHubReleaseError) =>
+							Effect.catch((e: GitHubError) =>
 								Effect.gen(function* () {
-									yield* Effect.logWarning(`runReleases: upload failed for ${fileName}: ${e.reason}`);
+									yield* Effect.logWarning(`runReleases: upload failed for ${fileName}: ${e.message}`);
 									return null;
 								}),
 							),
@@ -567,9 +534,17 @@ const processOneTag = (
 					existingAssetsByName.set(fileName, { url: asset.url, size: asset.size });
 				}
 
-				// Attest the asset
-				const digest = targetResult.tarballDigest ?? `sha256:${fileName}`;
-				const attestationUrl = yield* attestAsset(artifactPath, pkg.name, pkg.version, digest);
+				// Attest the asset. A target with no recorded digest is NOT attested:
+				// the predecessor substituted `sha256:<filename>` here, which
+				// `InTotoSubject` accepted verbatim and signed, publishing an
+				// attestation whose subject digest was a file name. The kit validates
+				// the digest, so that path now reports and skips.
+				const attestationUrl =
+					targetResult.tarballDigest === undefined
+						? yield* Effect.logWarning(
+								`runReleases: no tarball digest for ${pkg.name}@${pkg.version} — skipping attestation for ${fileName}`,
+							).pipe(Effect.as(undefined))
+						: yield* attestAsset(artifactPath, pkg.name, pkg.version, targetResult.tarballDigest);
 
 				assets.push({
 					name: fileName,
@@ -580,8 +555,11 @@ const processOneTag = (
 				});
 
 				// Storage record for GitHub Packages
-				if (isGitHubPackagesRegistry(targetResult.target.registry ?? undefined)) {
-					const storageIds = yield* createStorageRecord(pkg.name, pkg.version, digest);
+				if (
+					classifyRegistry(targetResult.target.registry ?? undefined) === "github-packages" &&
+					targetResult.tarballDigest !== undefined
+				) {
+					const storageIds = yield* createStorageRecord(pkg.name, pkg.version, targetResult.tarballDigest);
 					if (storageIds && storageIds.length > 0) {
 						yield* Effect.logDebug(
 							`runReleases: storage record created for ${pkg.name}@${pkg.version} (IDs: ${storageIds.join(",")})`,
@@ -601,11 +579,15 @@ const processOneTag = (
 					if (!existingAssetsByName.has(metaName)) {
 						const metaOut = join(dirname(metaDir), metaName);
 						yield* tarMetaFolder(metaDir, metaOut).pipe(
-							Effect.catch((e) => Effect.logWarning(`runReleases: meta tar failed for ${metaName}: ${String(e)}`)),
+							Effect.catch((e) => Effect.logWarning(`runReleases: meta tar failed for ${metaName}: ${e.message}`)),
 						);
 						if (existsSync(metaOut)) {
 							const metaAsset = yield* releaseSvc
-								.uploadAsset(releaseData.id, metaName, readFileSync(metaOut), "application/gzip")
+								.uploadAsset(releaseData, {
+									name: metaName,
+									data: readFileSync(metaOut),
+									contentType: "application/gzip",
+								})
 								.pipe(Effect.catch(() => Effect.succeed(null)));
 							if (metaAsset !== null) {
 								existingAssetsByName.set(metaName, { url: metaAsset.url, size: metaAsset.size });
@@ -628,11 +610,15 @@ const processOneTag = (
 						yield* Effect.logDebug(`runReleases: uploading SBOM ${sbomFileName}`);
 
 						const sbomAsset = yield* releaseSvc
-							.uploadAsset(releaseData.id, sbomFileName, sbomContent, "application/json")
+							.uploadAsset(releaseData, {
+								name: sbomFileName,
+								data: sbomContent,
+								contentType: "application/json",
+							})
 							.pipe(
-								Effect.catch((e: GitHubReleaseError) =>
+								Effect.catch((e: GitHubError) =>
 									Effect.gen(function* () {
-										yield* Effect.logWarning(`runReleases: SBOM upload failed for ${sbomFileName}: ${e.reason}`);
+										yield* Effect.logWarning(`runReleases: SBOM upload failed for ${sbomFileName}: ${e.message}`);
 										return null;
 									}),
 								),
@@ -665,11 +651,15 @@ const processOneTag = (
 						yield* Effect.logDebug(`runReleases: uploading API doc ${apiDocFileName}`);
 
 						const apiDocAsset = yield* releaseSvc
-							.uploadAsset(releaseData.id, apiDocFileName, apiDocContent, "application/json")
+							.uploadAsset(releaseData, {
+								name: apiDocFileName,
+								data: apiDocContent,
+								contentType: "application/json",
+							})
 							.pipe(
-								Effect.catch((e: GitHubReleaseError) =>
+								Effect.catch((e: GitHubError) =>
 									Effect.gen(function* () {
-										yield* Effect.logWarning(`runReleases: API doc upload failed for ${apiDocFileName}: ${e.reason}`);
+										yield* Effect.logWarning(`runReleases: API doc upload failed for ${apiDocFileName}: ${e.message}`);
 										return null;
 									}),
 								),
@@ -724,25 +714,23 @@ const processOneTag = (
 		// ── Step 5: Refresh release body with real asset links ────────────────────
 		if (releaseInfo.assets.length > 0) {
 			yield* releaseSvc
-				.updateRelease(releaseData.id, { body: releaseNotes.trim() })
+				.update(releaseData.id, { body: releaseNotes.trim() })
 				.pipe(
-					Effect.catch((e) =>
-						Effect.logWarning(
-							`runReleases: failed to update release body for ${tag.name}: ${e instanceof Error ? e.message : String(e)}`,
-						),
+					Effect.catch((e: GitHubError) =>
+						Effect.logWarning(`runReleases: failed to update release body for ${tag.name}: ${e.message}`),
 					),
 				);
 			yield* Effect.logDebug(`runReleases: updated release body with asset links for ${tag.name}`);
 		}
 
 		const releaseAssetCount = releaseInfo.assets.length;
-		yield* Step.success(
-			`release created — ${releaseData.id} (${associatedPackages.length} package(s), ${releaseAssetCount} asset(s))`,
+		yield* Effect.logInfo(
+			`  ✅ release created — ${releaseData.id} (${associatedPackages.length} package(s), ${releaseAssetCount} asset(s))`,
 		);
 		return [releaseInfo, null] as const;
 	}).pipe(
-		Effect.catch((e: unknown) => {
-			const msg = `runReleases: failed to create release for ${tag.name}: ${e instanceof Error ? e.message : String(e)}`;
+		Effect.catch((e: GitHubError) => {
+			const msg = `runReleases: failed to create release for ${tag.name}: ${e.message}`;
 			return Effect.gen(function* () {
 				yield* Effect.logWarning(msg);
 				return [null, msg] as const;
@@ -763,94 +751,77 @@ const processOneTag = (
  * Per-tag failures are accumulated into the returned `errors` array — one
  * failure does not abort the rest of the batch.
  *
- * The effect never fails (all errors are captured into `ReleasesReport`).
- * Providing the Effect is the caller's responsibility (use
- * `GitTagLive`, `GitHubReleaseLive`, `GitHubArtifactMetadataLive`,
- * `AttestLive`, `GitHubClientLive`, and `OidcTokenIssuerLive` in production).
- *
  * @public
  */
-export const runReleases = (
-	args: ReleasesInputArgs,
-): Effect.Effect<
-	ReleasesReport,
-	ReleasesError,
-	| GitTag
-	| GitHubRelease
-	| GitHubArtifactMetadata
-	| Attest
-	| OidcTokenIssuer
-	| GitHubClient
-	| SigstoreSigner
-	| ActionLogger
-	| WorkspaceDiscovery
-	| CommandRunner
-> =>
-	Step.withStep(
-		"Create releases",
-		Effect.gen(function* () {
-			if (args.tags.length === 0) {
-				yield* Effect.logDebug("runReleases: no tags to process");
-				yield* Step.success("0 release(s) created — no tags");
-				return {
-					success: true,
-					releases: [],
-					errors: [],
-				} satisfies ReleasesReport;
-			}
+export const runReleases = (args: ReleasesInputArgs): Effect.Effect<ReleasesReport, ReleasesError, ReleasesServices> =>
+	Effect.gen(function* () {
+		const logger = yield* ActionLogger;
 
-			// Resolve owner/repo from GitHub client
-			const client = yield* GitHubClient;
-			const logger = yield* ActionLogger;
-			const { owner, repo } = yield* client.repo;
+		return yield* logger.group(
+			"Create releases",
+			Effect.gen(function* () {
+				if (args.tags.length === 0) {
+					yield* Effect.logDebug("runReleases: no tags to process");
+					yield* Effect.logInfo("  ✅ 0 release(s) created — no tags");
+					return {
+						success: true,
+						releases: [],
+						errors: [],
+					} satisfies ReleasesReport;
+				}
 
-			// Resolve HEAD SHA — used for git tag creation.
-			// `GITHUB_SHA` is always set in GitHub Actions; fall back to empty string
-			// so the Test layer can exercise the code path in tests.
-			const headSha = process.env.GITHUB_SHA ?? "";
+				const { owner, repo } = yield* Repo;
+				const environment = yield* ActionEnvironment;
 
-			yield* Effect.logDebug(`runReleases: processing ${args.tags.length} tag(s)`);
+				// The commit every tag is created at. `getOptional` rather than the
+				// `GitHubContext` projection: absent reads as `""`, preserving the
+				// predecessor's tolerance for a runner-less environment instead of
+				// failing the whole batch on one missing variable.
+				const headSha = Option.getOrElse(yield* environment.getOptional("GITHUB_SHA"), () => "");
 
-			const releases: ReleaseInfo[] = [];
-			const errors: string[] = [];
+				yield* Effect.logDebug(`runReleases: processing ${args.tags.length} tag(s)`);
 
-			for (const tag of args.tags) {
-				// Find packages associated with this tag (mirrors the original logic)
-				const associatedPackages = args.publishResult.packages.filter((pkg) => {
-					if (tag.packageName.includes(", ")) {
-						return tag.packageName.includes(pkg.name);
+				const releases: ReleaseInfo[] = [];
+				const errors: string[] = [];
+
+				for (const tag of args.tags) {
+					// Find packages associated with this tag (mirrors the original logic)
+					const associatedPackages = args.publishResult.packages.filter((pkg) => {
+						if (tag.packageName.includes(", ")) {
+							return tag.packageName.includes(pkg.name);
+						}
+						return pkg.name === tag.packageName;
+					});
+
+					const [releaseInfo, error] = yield* logger.group(
+						`Release · ${tag.packageName}@${tag.version}`,
+						processOneTag(tag, associatedPackages, owner, repo, headSha, args.dryRun),
+					);
+
+					if (error !== null) {
+						errors.push(error);
+					} else if (releaseInfo !== null) {
+						releases.push(releaseInfo);
 					}
-					return pkg.name === tag.packageName;
-				});
+				}
 
-				const [releaseInfo, error] = yield* logger.group(
-					`Release · ${tag.packageName}@${tag.version}`,
-					processOneTag(tag, associatedPackages, owner, repo, headSha, args.dryRun),
+				yield* Effect.logDebug(
+					`runReleases: complete — ${releases.length} release(s) created, ${errors.length} error(s)`,
+				);
+				yield* Effect.logInfo(
+					errors.length === 0
+						? `  ✅ ${releases.length} release(s) created`
+						: `  ⚠ ${releases.length} release(s) created, ${errors.length} error(s)`,
 				);
 
-				if (error !== null) {
-					errors.push(error);
-				} else if (releaseInfo !== null) {
-					releases.push(releaseInfo);
-				}
-			}
-
-			yield* Effect.logDebug(
-				`runReleases: complete — ${releases.length} release(s) created, ${errors.length} error(s)`,
-			);
-			yield* Step.success(
-				errors.length === 0
-					? `${releases.length} release(s) created`
-					: `${releases.length} release(s) created, ${errors.length} error(s)`,
-			);
-
-			return {
-				success: errors.length === 0,
-				releases,
-				errors,
-			} satisfies ReleasesReport;
-		}),
-	).pipe(
+				return {
+					success: errors.length === 0,
+					releases,
+					errors,
+				} satisfies ReleasesReport;
+			}),
+		);
+	}).pipe(
 		Effect.catch((e: unknown) =>
 			Effect.fail(
 				new ReleasesError({

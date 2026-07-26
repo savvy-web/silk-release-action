@@ -15,10 +15,12 @@
 
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { CommandRunnerError } from "@savvy-web/github-action-effects";
-import { CommandRunner } from "@savvy-web/github-action-effects";
+import type { CommandFailedError, CommandOutputError } from "@effected/commands";
+import { Retry, Run } from "@effected/commands";
 import { Changesets } from "@savvy-web/silk-effects";
 import { Duration, Effect, FileSystem, Redacted } from "effect";
+import type { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess } from "effect/unstable/process";
 import { appToken } from "./tokens.js";
 
 /** At runtime `import.meta.url` is `dist/main.js`, so this resolves into `dist/`. */
@@ -35,10 +37,26 @@ export const CHANGELOG_MODULES: Readonly<Record<string, string>> = {
 	"@changesets/cli/changelog": resolve(HERE, "changelog-default.js"),
 };
 
-/** Reason substrings treated as transient (mirrors the removed execWithRetry). */
-const TRANSIENT_REASONS = ["ECONNRESET", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN", "fetch failed"];
-
-const isTransient = (reason: string): boolean => TRANSIENT_REASONS.some((code) => reason.includes(code));
+/**
+ * Whether a release-plan failure looks transient enough to reset and retry.
+ *
+ * @remarks
+ * The pattern list is the kit's `Retry.TRANSIENT_PATTERNS` (11 entries), a
+ * strict superset of the 5 this module used to carry — it adds `ECONNABORTED`,
+ * `ECONNREFUSED`, `EHOSTUNREACH`, `ENETUNREACH`, `EPIPE` and `socket hang up`.
+ * A deliberate widening, in the intended direction.
+ *
+ * The kit's `Retry.isTransient` **classifier** cannot be used: it takes a
+ * `CommandFailedError` and reads `kind`/`stderr`/`stdout`/`cause`, none of
+ * which a silk-effects `ReleasePlanError` has. Only the pattern list transfers.
+ *
+ * Comparison is case-insensitive to match the kit's own `matches`, which
+ * lowercases both sides. The list this replaces compared case-sensitively.
+ */
+const isTransient = (reason: string): boolean => {
+	const haystack = reason.toLowerCase();
+	return Retry.TRANSIENT_PATTERNS.some((pattern) => haystack.includes(pattern.toLowerCase()));
+};
 
 /**
  * Require a valid `.changeset/config.json` when one exists (absent config
@@ -100,13 +118,15 @@ export const runNativeVersion = (
 	cwd: string,
 ): Effect.Effect<
 	Changesets.AppliedRelease,
-	Changesets.ReleasePlanError | Changesets.ConfigurationError | CommandRunnerError,
-	Changesets.ReleasePlanner | Changesets.ConfigInspector | CommandRunner | FileSystem.FileSystem
+	Changesets.ReleasePlanError | Changesets.ConfigurationError | CommandFailedError | CommandOutputError,
+	| Changesets.ReleasePlanner
+	| Changesets.ConfigInspector
+	| ChildProcessSpawner.ChildProcessSpawner
+	| FileSystem.FileSystem
 > =>
 	Effect.gen(function* () {
 		yield* requireValidConfig(cwd);
 		const planner = yield* Changesets.ReleasePlanner;
-		const runner = yield* CommandRunner;
 
 		// A thunk, not a constructed Effect: `planner.apply` must be invoked fresh
 		// on the retry so a stateful test double (or the live service) actually
@@ -121,8 +141,19 @@ export const runNativeVersion = (
 		yield* Effect.logWarning(
 			`Native version failed transiently (${first.failure.reason}); resetting and retrying once`,
 		);
-		yield* runner.exec("git", ["checkout", "--", "."]);
-		yield* runner.exec("git", ["clean", "-fd"]);
+		// RAW `Run`, not `@effected/git`, and not a bare `Effect.retry`.
+		//
+		// `apply` is NOT idempotent — it deletes the changesets it consumes — so a
+		// retry on a half-applied tree would corrupt the release. The tree must be
+		// reset first, and both halves of that reset have to be raw commands:
+		// `@effected/git` ships neither `reset` nor `clean`, and its `checkout`
+		// runs `rejectOptionLikeRefs`, which refuses `--` by design.
+		//
+		// `Run.text` (not `Run.collect`) because a non-zero exit must FAIL here,
+		// matching the `CommandRunner.exec` it replaces: a reset that silently did
+		// nothing would hand the retry the same dirty tree.
+		yield* Run.text(ChildProcess.make("git", ["checkout", "--", "."]));
+		yield* Run.text(ChildProcess.make("git", ["clean", "-fd"]));
 		yield* Effect.sleep(Duration.seconds(1));
 		return yield* applyOnce();
 	});

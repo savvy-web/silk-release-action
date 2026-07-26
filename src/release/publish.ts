@@ -10,47 +10,31 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
+import { Run } from "@effected/commands";
+import type { GitHubError } from "@effected/github";
+import { Attestation, GitHubClient, GitHubCommit, GitHubContent, Repo } from "@effected/github";
+import type { OidcTokenIssuer } from "@effected/github-actions";
+import { ActionEnvironment, ActionLogger, ActionOutputs, ActionState } from "@effected/github-actions";
+import { NpmExecutor, NpmRegistry, PackagePublish, classifyRegistry } from "@effected/npm";
+import type { SigstoreSigner } from "@effected/sbom";
+import { CYCLONEDX_BOM_PREDICATE, Sbom, SbomMetadataSource, SlsaProvenance } from "@effected/sbom";
 import { PublishabilityDetector, WorkspaceDiscovery, WorkspacePackage } from "@effected/workspaces";
-import type {
-	AttestError,
-	CommandRunnerError,
-	PackagePublishError,
-	PullRequestError,
-	ResolvedDependency,
-	SbomError,
-} from "@savvy-web/github-action-effects";
-import {
-	ActionLogger,
-	ActionState,
-	Attest,
-	CommandRunner,
-	ErrorAccumulator,
-	GitHubCommit,
-	GitHubContent,
-	NpmRegistry,
-	PackagePublish,
-	PullRequest,
-	Sbom,
-	Step,
-	isGitHubPackagesRegistry,
-	isJsrRegistry,
-} from "@savvy-web/github-action-effects";
+import type { FileSystem } from "effect";
 import { Config, Effect, Option, Redacted } from "effect";
+import type { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess } from "effect/unstable/process";
 
 import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
 import { getGroupId } from "../utils/group-id.js";
-import type { PackageManager } from "../utils/normalize-package-manager.js";
-import { normalizePackageManager } from "../utils/normalize-package-manager.js";
 import { registryHost, registryShortLabel } from "../utils/registry-label.js";
 import { sortReleasesTopologically } from "../utils/sort-releases-topologically.js";
-import { buildProvenancePredicate } from "./attest-helpers.js";
+import { attestSubject, buildProvenancePredicate } from "./attest-helpers.js";
 import { ChangesetConfig } from "./changeset-config.js";
 import { humanizeSize } from "./report.js";
 import { isTargetPrivate, pickToken } from "./resolve-targets.js";
 import type { PackagePublishResult, PublishPackagesResult, TargetPublishResult } from "./types.js";
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 // ─── Public interfaces ────────────────────────────────────────────────────────
 
@@ -88,6 +72,42 @@ interface TargetSpec {
 	readonly provenance: boolean;
 }
 
+/**
+ * Which `npm` every pack and publish in this phase runs through.
+ *
+ * @remarks
+ * **Pinned deliberately, and the pin is load-bearing.** OIDC trusted publishing
+ * needs npm ≥ 11.5.1 and GitHub-hosted runners ship 10.x, so the runner's
+ * ambient npm cannot publish this way at all; npm 12's publish is separately
+ * broken (it ships without sigstore). `NpmExecutor.dlx` resolves through the
+ * project's `LocalExec` launcher — `pnpm dlx npm@11` here — and **fails typed**
+ * when no launcher is provided rather than degrading to the ambient npm, which
+ * is the whole point: a silent downgrade would reintroduce the OIDC failure
+ * invisibly.
+ *
+ * This replaces the predecessor's `packageManager` option, which was repeated
+ * on five method signatures to express this one thing.
+ */
+const NPM_EXECUTOR = NpmExecutor.dlx("npm@11");
+
+/**
+ * The `.npmrc` `setupAuth` writes to and `npm publish` reads from.
+ *
+ * @remarks
+ * The kit made this caller-supplied on purpose: resolving `~` needs
+ * `node:os`, which a boundary package should not import. So the resolution
+ * lives here, at the edge, and reproduces the predecessor's rule exactly —
+ * `NPM_CONFIG_USERCONFIG` wins when set, because npm itself honours it and a
+ * CI image that sets it would otherwise have the token written to a file npm
+ * never reads.
+ *
+ * @internal
+ */
+export const userNpmrcPath = (env: Readonly<Record<string, string | undefined>> = process.env): string => {
+	const configured = env.NPM_CONFIG_USERCONFIG;
+	return configured !== undefined && configured !== "" ? configured : join(homedir(), ".npmrc");
+};
+
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
 /**
@@ -112,24 +132,87 @@ export function inferBumpType(oldVersion: string, newVersion: string): "major" |
 	return "patch";
 }
 
+/**
+ * Read a package's version out of a `package.json` on disk.
+ *
+ * Returns `undefined` when the file is absent or undecodable — both mean
+ * "nothing to compare", which the callers treat as "not a release".
+ */
+const readLocalManifest = (path: string): { name?: string; version?: string } | undefined => {
+	if (!existsSync(path)) return undefined;
+	try {
+		return JSON.parse(readFileSync(path, "utf-8")) as { name?: string; version?: string };
+	} catch {
+		return undefined;
+	}
+};
+
+/** The version recorded in a `package.json` at a git ref, or `"0.0.0"`. */
+const versionAtRef = (
+	content: GitHubContent["Service"],
+	path: string,
+	ref: string,
+): Effect.Effect<string, never, Repo> => {
+	if (ref === "") return Effect.succeed("0.0.0");
+	return content.getFileOption(path, { ref }).pipe(
+		Effect.map((maybe) =>
+			Option.match(maybe, {
+				onNone: () => "0.0.0",
+				onSome: (text) => {
+					try {
+						return (JSON.parse(text) as { version?: string }).version ?? "0.0.0";
+					} catch {
+						return "0.0.0";
+					}
+				},
+			}),
+		),
+		Effect.catch(() => Effect.succeed("0.0.0")),
+	);
+};
+
+/** Turn a changed `package.json` path plus its base version into a release, if it is one. */
+const releaseFor = (filename: string, oldVersion: string): DetectedRelease | undefined => {
+	const fullPath = join(process.cwd(), filename);
+	const current = readLocalManifest(fullPath);
+	if (current === undefined) return undefined;
+
+	const newVersion = current.version ?? "0.0.0";
+	if (oldVersion === newVersion) return undefined;
+
+	const packageDir = dirname(filename);
+	return {
+		name: current.name ?? packageDir,
+		version: newVersion,
+		path: packageDir === "." ? process.cwd() : join(process.cwd(), packageDir),
+	};
+};
+
 // ─── Detection helpers ────────────────────────────────────────────────────────
 
 /**
  * Detect released packages from the merged PR's file diff.
  *
- * Ports `detectReleasedPackagesFromPR`. Reads the current `package.json` from
- * disk (it exists on the filesystem after the merge) and fetches the
- * base-branch version via the `GitHubContent` service.
+ * @remarks
+ * Two reads go through `GitHubClient.request`/`paginate` rather than
+ * `PullRequest`, because the resource service does not surface the fields this
+ * needs: `PullRequest.listFiles` projects every file down to its `filename`
+ * alone (dropping `status`), and `PullRequestInfo` carries `base` as a **branch
+ * name**, not the base commit sha. The route is still the key — parameters and
+ * response are typed from the literal, and there is no cast. Reported upstream
+ * as a gap rather than worked around silently.
  */
 const detectFromPR = (
 	prNumber: number,
-): Effect.Effect<ReadonlyArray<DetectedRelease>, never, GitHubContent | PullRequest> =>
+): Effect.Effect<ReadonlyArray<DetectedRelease>, never, GitHubClient | GitHubContent | Repo> =>
 	Effect.gen(function* () {
-		const pr = yield* PullRequest;
+		const client = yield* GitHubClient;
 		const content = yield* GitHubContent;
+		const { owner, repo } = yield* Repo;
 
-		// List files changed in the merged PR
-		const files = yield* pr.listFiles(prNumber).pipe(Effect.catch((_: PullRequestError) => Effect.succeed([])));
+		const files = yield* client
+			.paginate("GET /repos/{owner}/{repo}/pulls/{pull_number}/files", { owner, repo, pull_number: prNumber })
+			.pipe(Effect.catch(() => Effect.succeed([])));
 
 		// Filter to package.json files that were modified
 		const modifiedPkgJsonFiles = files.filter(
@@ -144,93 +227,66 @@ const detectFromPR = (
 
 		if (allPkgJsonFiles.length === 0) return [];
 
-		// Get the base SHA from the PR
-		const prData = yield* pr
-			.get(prNumber)
-			.pipe(Effect.catch((_: PullRequestError) => Effect.succeed({ baseSha: "" } as { baseSha?: string })));
+		const prData = yield* client
+			.request("GET /repos/{owner}/{repo}/pulls/{pull_number}", { owner, repo, pull_number: prNumber })
+			.pipe(Effect.catch(() => Effect.succeed(undefined)));
 
-		const baseSha = prData.baseSha ?? "";
+		const baseSha = prData?.base.sha ?? "";
 		const releases: DetectedRelease[] = [];
 
 		for (const file of allPkgJsonFiles) {
-			const fullPath = join(process.cwd(), file.filename);
-			if (!existsSync(fullPath)) continue;
-
-			let currentContent: { name?: string; version?: string };
-			try {
-				currentContent = JSON.parse(readFileSync(fullPath, "utf-8")) as { name?: string; version?: string };
-			} catch {
-				continue;
-			}
-
-			const newVersion = currentContent.version ?? "0.0.0";
-			let oldVersion = "0.0.0";
-
-			if (baseSha) {
-				const oldContent = yield* content.getFile(file.filename, baseSha).pipe(Effect.catch(() => Effect.succeed("")));
-				if (oldContent) {
-					try {
-						const oldPkg = JSON.parse(oldContent) as { version?: string };
-						oldVersion = oldPkg.version ?? "0.0.0";
-					} catch {
-						// keep oldVersion
-					}
-				}
-			}
-
-			if (oldVersion === newVersion) continue;
-
-			const packageDir = dirname(file.filename);
-			const pkgPath = packageDir === "." ? process.cwd() : join(process.cwd(), packageDir);
-
-			const bumpType = inferBumpType(oldVersion, newVersion);
-			yield* Effect.logDebug(`  ${currentContent.name}: ${oldVersion} → ${newVersion} (${bumpType})`);
-
-			releases.push({
-				name: currentContent.name ?? packageDir,
-				version: newVersion,
-				path: pkgPath,
-			});
+			const oldVersion = yield* versionAtRef(content, file.filename, baseSha);
+			const release = releaseFor(file.filename, oldVersion);
+			if (release === undefined) continue;
+			yield* Effect.logDebug(
+				`  ${release.name}: ${oldVersion} → ${release.version} (${inferBumpType(oldVersion, release.version)})`,
+			);
+			releases.push(release);
 		}
 
 		return releases;
 	}).pipe(Effect.catch(() => Effect.succeed([] as ReadonlyArray<DetectedRelease>)));
 
 /**
- * Detect released packages by comparing HEAD with its first parent via the
- * GitHub compare API.
+ * Detect released packages by comparing HEAD with its first parent.
  *
- * Ports `detectReleasedPackagesFromCommit` using `GitHubCommit` for the
- * compare API and `GitHubContent` for the base-branch file read.
+ * @remarks
+ * The changed-file list comes from `GitHubCommit.changedFiles`, which
+ * paginates **by file** — the compare endpoint paginates by commit and is
+ * therefore permanently capped at 300 files for a one-commit comparison, which
+ * would silently drop packages whose `package.json` sorts past #300. That
+ * constraint is recorded in the kit's own `compare` docstring.
+ *
+ * The parent sha goes through `GitHubClient.request`: `CommitSummary` does not
+ * carry `parents`. Same posture as `detectFromPR` — typed route, no cast,
+ * reported as a gap.
  */
-const detectFromCommit = (): Effect.Effect<ReadonlyArray<DetectedRelease>, never, GitHubCommit | GitHubContent> =>
+const detectFromCommit = (): Effect.Effect<
+	ReadonlyArray<DetectedRelease>,
+	never,
+	ActionEnvironment | GitHubClient | GitHubCommit | GitHubContent | Repo
+> =>
 	Effect.gen(function* () {
+		const client = yield* GitHubClient;
 		const commits = yield* GitHubCommit;
 		const content = yield* GitHubContent;
+		const environment = yield* ActionEnvironment;
+		const { owner, repo } = yield* Repo;
 
-		const sha = process.env.GITHUB_SHA ?? "";
-		if (!sha) return [];
+		const sha = Option.getOrElse(yield* environment.getOptional("GITHUB_SHA"), () => "");
+		if (sha === "") return [];
 
-		const commitData = yield* commits
-			.get(sha)
-			.pipe(Effect.catch(() => Effect.succeed({ parents: [] as ReadonlyArray<{ sha: string }> })));
+		const commitData = yield* client
+			.request("GET /repos/{owner}/{repo}/commits/{ref}", { owner, repo, ref: sha })
+			.pipe(Effect.catch(() => Effect.succeed(undefined)));
 
-		const parents = commitData.parents;
-		if (parents.length === 0) return [];
+		const baseSha = commitData?.parents[0]?.sha ?? "";
+		if (baseSha === "") return [];
 
-		const baseSha = parents[0]?.sha ?? "";
-
-		// Use the single-commit file list (paginated by file) rather than the
-		// compare endpoint: a squash-merged release PR is one commit, and the
-		// compare API paginates by commit, so it caps a one-commit comparison at
-		// its first 300 files — silently dropping packages whose `package.json`
-		// sorts past #300. `changedFiles` paginates `getCommit` and returns them all.
-		const changedFiles = yield* commits
-			.changedFiles(sha)
-			.pipe(Effect.catch(() => Effect.succeed([] as ReadonlyArray<{ filename: string; status: string }>)));
+		const changedFiles = yield* commits.changedFiles(sha).pipe(Effect.catch(() => Effect.succeed([])));
 
 		const modifiedPkgJsonFiles = changedFiles.filter(
-			(f) => f.filename.endsWith("package.json") && (f.status === "modified" || f.status === "changed"),
+			(f) => f.path.endsWith("package.json") && (f.status === "modified" || f.status === "changed"),
 		);
 
 		if (modifiedPkgJsonFiles.length === 0) return [];
@@ -238,39 +294,9 @@ const detectFromCommit = (): Effect.Effect<ReadonlyArray<DetectedRelease>, never
 		const releases: DetectedRelease[] = [];
 
 		for (const file of modifiedPkgJsonFiles) {
-			const fullPath = join(process.cwd(), file.filename);
-			if (!existsSync(fullPath)) continue;
-
-			let currentContent: { name?: string; version?: string };
-			try {
-				currentContent = JSON.parse(readFileSync(fullPath, "utf-8")) as { name?: string; version?: string };
-			} catch {
-				continue;
-			}
-
-			const newVersion = currentContent.version ?? "0.0.0";
-			let oldVersion = "0.0.0";
-
-			const oldContent = yield* content.getFile(file.filename, baseSha).pipe(Effect.catch(() => Effect.succeed("")));
-			if (oldContent) {
-				try {
-					const oldPkg = JSON.parse(oldContent) as { version?: string };
-					oldVersion = oldPkg.version ?? "0.0.0";
-				} catch {
-					// keep oldVersion
-				}
-			}
-
-			if (oldVersion === newVersion) continue;
-
-			const packageDir = dirname(file.filename);
-			const pkgPath = packageDir === "." ? process.cwd() : join(process.cwd(), packageDir);
-
-			releases.push({
-				name: currentContent.name ?? packageDir,
-				version: newVersion,
-				path: pkgPath,
-			});
+			const oldVersion = yield* versionAtRef(content, file.path, baseSha);
+			const release = releaseFor(file.path, oldVersion);
+			if (release !== undefined) releases.push(release);
 		}
 
 		return releases;
@@ -304,30 +330,32 @@ interface AttestationsOutcome {
 	readonly sbomRecovered: boolean;
 }
 
-/** Predicate URIs used by the artifact-attestation list filter. */
-const SLSA_PROVENANCE_V1 = "https://slsa.dev/provenance/v1";
-const CYCLONEDX_BOM = "https://cyclonedx.org/bom";
+/** Every service the attestation and publish helpers resolve. */
+type PublishServices =
+	| ActionEnvironment
+	| ActionLogger
+	| ActionOutputs
+	| Attestation
+	| NpmRegistry
+	| OidcTokenIssuer
+	| PackagePublish
+	| Repo
+	| SigstoreSigner;
 
 /**
- * Read the on-disk SBOM document for the per-package sbomPath.
+ * Read the on-disk SBOM document written by the Build & SBOM step.
  *
  * @remarks
- * The Phase-2 Build & SBOM step writes a full NTIA-compliant
- * CycloneDX document to disk (with supplier metadata, components,
- * licenses); `Attest.sbom` now accepts a pre-built BOM via the
- * `bomDocument` field rather than re-deriving an empty-deps BOM.
- *
- * Returns `null` (and logs a debug warning) when the file does not
- * exist or fails to parse — the SBOM-attestation path then falls
- * back to the legacy `dependencies: []` behaviour so a malformed
- * BOM file never fails the publish run.
+ * Returns `null` when the file does not exist or fails to parse — the
+ * SBOM-attestation path then falls back to a minimal generated BOM, so a
+ * malformed file never fails the publish run.
  */
 const readSbomDocument = (sbomPath: string | null): Record<string, unknown> | null => {
 	if (sbomPath === null) return null;
 	try {
 		if (!existsSync(sbomPath)) return null;
 		const text = readFileSync(sbomPath, "utf-8");
-		const parsed = JSON.parse(text);
+		const parsed: unknown = JSON.parse(text);
 		if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
 		return parsed as Record<string, unknown>;
 	} catch {
@@ -354,9 +382,11 @@ const readSbomDocument = (sbomPath: string | null): Record<string, unknown> | nu
  * existing URL or no-op cleanly — so it is safe to run on every successful
  * publish state and dangerous to skip.
  *
- * `subjectSha256` MUST be the sha256-hex of the tarball (no `sha256:` prefix);
- * the GitHub artifact attestation API rejects npm's `sha512-<base64>`
- * integrity format.
+ * `subjectSha256` MUST be the sha256-hex of the tarball. `PackedTarball` also
+ * carries `integrity`, which is npm's `sha512-<base64>`; the two are a
+ * different algorithm **and** a different encoding, and the GitHub attestation
+ * API rejects the latter. The kit's own docstring warns that comparing them
+ * "silently fails".
  *
  * `provenance` is derived by the caller from the group: any target in the
  * group with `provenance: true` enables attestation for the whole group.
@@ -367,7 +397,7 @@ const runAttestationsForBuild = (
 	provenance: boolean,
 	subjectSha256: string,
 	sbomPath: string | null,
-) =>
+): Effect.Effect<AttestationsOutcome, never, PublishServices> =>
 	Effect.gen(function* () {
 		if (!provenance) {
 			return {
@@ -378,55 +408,54 @@ const runAttestationsForBuild = (
 			} satisfies AttestationsOutcome;
 		}
 
-		const attestSvc = yield* Attest;
+		const attestation = yield* Attestation;
+		const subjectName = `pkg:npm/${packageName}@${version}`;
+
+		/** 404 and 422 both mean "none" inside `listForSubject`; a read failure means "try a fresh write". */
+		const existingFor = (predicateType: string) =>
+			attestation.listForSubject(subjectSha256, { predicateType }).pipe(
+				Effect.catch((e: GitHubError) =>
+					Effect.gen(function* () {
+						yield* Effect.logDebug(
+							`[attest] ${predicateType}: listForSubject failed for ${subjectSha256}, will attempt fresh write: ${e.message}`,
+						);
+						return [];
+					}),
+				),
+			);
 
 		// ── Provenance: skip-on-presence ───────────────────────────────────
 		let attestationUrl: string | undefined;
 		let provenanceRecovered = false;
 
-		const existingProvenance = yield* attestSvc
-			.listForSubject(subjectSha256, { predicateType: SLSA_PROVENANCE_V1 })
-			.pipe(
-				Effect.catch((e: AttestError) =>
-					Effect.gen(function* () {
-						yield* Effect.logDebug(
-							`[attest] provenance: listForSubject failed for ${subjectSha256}, will attempt fresh write: ${e.message}`,
-						);
-						return [] as ReadonlyArray<{ readonly attestationUrl: string; readonly predicateType: string }>;
-					}),
-				),
-			);
+		const existingProvenance = yield* existingFor(SlsaProvenance.predicateType);
 
 		if (existingProvenance.length > 0) {
 			const existing = existingProvenance[0];
 			if (existing !== undefined) {
 				yield* Effect.logDebug(
-					`[attest] provenance: reusing existing attestation for ${subjectSha256} → ${existing.attestationUrl}`,
+					`[attest] provenance: reusing existing attestation for ${subjectSha256} → ${existing.url}`,
 				);
-				attestationUrl = existing.attestationUrl;
+				attestationUrl = existing.url;
 				provenanceRecovered = true;
 			}
 		} else {
 			const predicate = yield* buildProvenancePredicate();
 			if (predicate !== null) {
 				yield* Effect.logDebug(`[attest] provenance: writing new attestation for ${subjectSha256}`);
-				const provenanceRecord = yield* attestSvc
-					.provenance({
-						subjectName: `pkg:npm/${packageName}@${version}`,
-						subjectSha256,
-						predicate,
-					})
-					.pipe(
-						Effect.catch((e: AttestError) =>
-							Effect.gen(function* () {
-								yield* Effect.logWarning(`Provenance attestation failed for ${packageName}@${version}: ${e.message}`);
-								return null;
-							}),
-						),
-					);
-				if (provenanceRecord !== null) {
-					attestationUrl = provenanceRecord.attestationUrl;
-				}
+				attestationUrl = yield* attestSubject({
+					name: subjectName,
+					sha256: subjectSha256,
+					predicateType: SlsaProvenance.predicateType,
+					predicate,
+				}).pipe(
+					Effect.catch((e) =>
+						Effect.gen(function* () {
+							yield* Effect.logWarning(`Provenance attestation failed for ${packageName}@${version}: ${e.message}`);
+							return undefined;
+						}),
+					),
+				);
 			} else {
 				yield* Effect.logWarning(
 					`Skipping provenance attestation for ${packageName}@${version}: could not obtain OIDC claims`,
@@ -438,65 +467,47 @@ const runAttestationsForBuild = (
 		let sbomAttestationUrl: string | undefined;
 		let sbomRecovered = false;
 
-		const existingSbom = yield* attestSvc.listForSubject(subjectSha256, { predicateType: CYCLONEDX_BOM }).pipe(
-			Effect.catch((e: AttestError) =>
-				Effect.gen(function* () {
-					yield* Effect.logDebug(
-						`[attest] SBOM: listForSubject failed for ${subjectSha256}, will attempt fresh write: ${e.message}`,
-					);
-					return [] as ReadonlyArray<{ readonly attestationUrl: string; readonly predicateType: string }>;
-				}),
-			),
-		);
+		const existingSbom = yield* existingFor(CYCLONEDX_BOM_PREDICATE);
 
 		if (existingSbom.length > 0) {
 			const existing = existingSbom[0];
 			if (existing !== undefined) {
-				yield* Effect.logDebug(
-					`[attest] SBOM: reusing existing attestation for ${subjectSha256} → ${existing.attestationUrl}`,
-				);
-				sbomAttestationUrl = existing.attestationUrl;
+				yield* Effect.logDebug(`[attest] SBOM: reusing existing attestation for ${subjectSha256} → ${existing.url}`);
+				sbomAttestationUrl = existing.url;
 				sbomRecovered = true;
 			}
 		} else {
-			// Prefer the Phase-2 Build & SBOM document on disk; the empty-deps
-			// fallback (legacy behaviour) only fires when the file is missing
-			// or malformed. Either way attestation never fails the run.
-			const bomDocument = readSbomDocument(sbomPath);
-			yield* Effect.logDebug(`[attest] SBOM: writing new attestation for ${subjectSha256}`);
-			if (bomDocument === null && sbomPath !== null) {
+			// Prefer the Build & SBOM document on disk — it carries supplier
+			// metadata, components and licences. The generated fallback is a
+			// component-less BOM naming only the package itself, which is what the
+			// predecessor's `dependencies: []` branch produced.
+			const onDisk = readSbomDocument(sbomPath);
+			if (onDisk === null && sbomPath !== null) {
 				yield* Effect.logDebug(
-					`[attest] SBOM: failed to read ${sbomPath} for ${packageName}@${version}; falling back to empty-deps BOM`,
+					`[attest] SBOM: failed to read ${sbomPath} for ${packageName}@${version}; falling back to a minimal BOM`,
 				);
 			}
-			const sbomRecord = yield* attestSvc
-				.sbom(
-					bomDocument !== null
-						? {
-								rootName: packageName,
-								rootVersion: version,
-								subjectSha256,
-								bomDocument,
-							}
-						: {
-								rootName: packageName,
-								rootVersion: version,
-								subjectSha256,
-								dependencies: [],
-							},
-				)
-				.pipe(
-					Effect.catch((e) => {
-						const msg = e instanceof Error ? e.message : String(e);
-						return Effect.gen(function* () {
-							yield* Effect.logWarning(`SBOM attestation failed for ${packageName}@${version}: ${msg}`);
-							return null;
-						});
+			const predicate =
+				onDisk ??
+				Sbom.generate({
+					root: SbomMetadataSource.componentFor({ name: packageName, version }),
+					components: [],
+				});
+
+			yield* Effect.logDebug(`[attest] SBOM: writing new attestation for ${subjectSha256}`);
+			sbomAttestationUrl = yield* attestSubject({
+				name: subjectName,
+				sha256: subjectSha256,
+				predicateType: CYCLONEDX_BOM_PREDICATE,
+				predicate,
+			}).pipe(
+				Effect.catch((e) =>
+					Effect.gen(function* () {
+						yield* Effect.logWarning(`SBOM attestation failed for ${packageName}@${version}: ${e.message}`);
+						return undefined;
 					}),
-				);
-			if (sbomRecord !== null) {
-				sbomAttestationUrl = sbomRecord.attestationUrl;
-			}
+				),
+			);
 		}
 
 		return {
@@ -512,28 +523,19 @@ const runAttestationsForBuild = (
  * the self-recovering, pack-once flow.
  *
  * Decision tree per group:
- *  1. **Pack once.** Call `PackagePublish.pack(directory)` to get the
- *     tarball path and its integrity digest.
- *  2. **Per-target probe + decision.** For each target in the group, query
- *     `NpmRegistry.getPublishedIntegrity` against **the target's own
- *     registry** and branch:
- *     - `Option.none()` — the version is not on this registry. Set up auth
- *       (when a token is available) and call `publishTarball` to upload
+ *  1. **Pack once.** `PackagePublish.pack(directory)` writes the tarball and
+ *     reports both digests.
+ *  2. **Per-target probe + decision.** For each target, read the published
+ *     version off **the target's own registry** and branch:
+ *     - absent — set up auth (when a token is available) and `publishTarball`
  *       the bytes from step 1. Record `status: "published"`.
- *     - `Option.some(digest)` matching the local pack digest — the version
- *       is already there with the same content. Record `status: "skipped"`
- *       with `skipReason: "already-published-identical"` and the
- *       `recovery` digest pair.
- *     - `Option.some(digest)` differing from local — fatal mismatch.
- *       Record `status: "failed"` with the `recovery` digest pair and a
- *       message that names both digests.
- *  3. **Attest once per build.** Provenance + SBOM attestation runs ONCE
- *     for the build directory's tarball after every target has been probed.
- *     The same URLs are then attached to every successful target's result
- *     (`published` and `skipped-identical` alike); failed-mismatch targets
- *     do not receive attestation URLs. This collapses what used to be a
- *     per-target attestation (N provenance + N SBOM for N targets sharing
- *     a directory) down to a single pair.
+ *     - present with the same integrity — already there with the same content.
+ *       Record `status: "skipped"` with `skipReason:
+ *       "already-published-identical"` and the `recovery` digest pair.
+ *     - present and different, **or either integrity missing** — the version is
+ *       occupied and identity cannot be proven. Record `status: "failed"`.
+ *  3. **Attest once per build.** Provenance + SBOM attestation runs ONCE for
+ *     the build directory's tarball after every target has been probed.
  *
  * JSR targets are skipped with a warning — they require a separate publish
  * path that is outside this orchestrator's scope.
@@ -545,402 +547,347 @@ const publishDirectoryGroup = (
 	targetsInGroup: ReadonlyArray<TargetSpec>,
 	npmToken: string | null,
 	ghPkgsToken: string | null,
-	packageManager: PackageManager,
+	npmrcPath: string,
 	sbomPath: string | null,
-) =>
-	Step.withStep(
-		`Publish · ${packageName}@${version}`,
-		Effect.gen(function* () {
-			const publishSvc = yield* PackagePublish;
-			const registrySvc = yield* NpmRegistry;
+): Effect.Effect<ReadonlyArray<TargetPublishResult>, never, PublishServices> =>
+	Effect.gen(function* () {
+		const publishSvc = yield* PackagePublish;
+		const registrySvc = yield* NpmRegistry;
 
-			// JSR targets are not handled here — split them off so the npm flow
-			// is uncluttered. Each JSR target records a skipped result.
-			const jsrTargets: TargetSpec[] = [];
-			const npmTargets: TargetSpec[] = [];
-			for (const t of targetsInGroup) {
-				const isJsr = isJsrRegistry(t.registry);
-				(isJsr ? jsrTargets : npmTargets).push(t);
-			}
+		// JSR targets are not handled here — split them off so the npm flow
+		// is uncluttered. Each JSR target records a skipped result.
+		const jsrTargets: TargetSpec[] = [];
+		const npmTargets: TargetSpec[] = [];
+		for (const t of targetsInGroup) {
+			(classifyRegistry(t.registry) === "jsr" ? jsrTargets : npmTargets).push(t);
+		}
 
-			const results: TargetPublishResult[] = [];
+		const results: TargetPublishResult[] = [];
 
-			for (const t of jsrTargets) {
-				yield* Effect.logWarning(
-					`runPublishTargets: skipping JSR target for ${packageName}@${version} — JSR publishing is not yet supported in this orchestrator`,
-				);
+		for (const t of jsrTargets) {
+			yield* Effect.logWarning(
+				`runPublishTargets: skipping JSR target for ${packageName}@${version} — JSR publishing is not yet supported in this orchestrator`,
+			);
+			results.push({
+				target: toLegacyTarget(t, "jsr"),
+				success: true,
+				status: "skipped",
+			});
+		}
+
+		if (npmTargets.length === 0) {
+			yield* Effect.logInfo("  ✅ 0 published, 0 skipped-identical, 0 mismatch (JSR-only)");
+			return results;
+		}
+
+		// ── Pack stage — once per directory ───────────────────────────────────
+		yield* Effect.logDebug(`[publish] ${packageName}: packing ${directory}`);
+		const packOutcome = yield* publishSvc.pack(directory, { executor: NPM_EXECUTOR }).pipe(
+			Effect.map((result) => ({ ok: true as const, result })),
+			Effect.catch((e) => Effect.succeed({ ok: false as const, error: e.message })),
+		);
+
+		if (!packOutcome.ok) {
+			// Pack failed — every target in the group is recorded failed; no
+			// publish attempts are made.
+			yield* Effect.logError(`[publish] ${packageName}: pack ${directory} failed — ${packOutcome.error}`);
+			for (const t of npmTargets) {
 				results.push({
-					target: toLegacyTarget(t, "jsr"),
-					success: true,
-					status: "skipped",
+					target: toLegacyTarget(t),
+					success: false,
+					status: "failed",
+					error: packOutcome.error,
 				});
 			}
+			yield* Effect.logWarning(`  ❌ pack failed — ${npmTargets.length} target(s) marked failed`);
+			return results;
+		}
 
-			if (npmTargets.length === 0) {
-				yield* Step.success(`0 published, 0 skipped-identical, 0 mismatch (JSR-only)`);
-				return results;
+		const packResult = packOutcome.result;
+		const localIntegrity = packResult.integrity;
+		yield* Effect.logInfo(
+			`  📦 pack: ${packResult.packedSize !== undefined ? humanizeSize(packResult.packedSize) : "sized"} · ${
+				packResult.fileCount ?? "?"
+			} files · ${packResult.sha256Hex.slice(0, 32)}…`,
+		);
+
+		// ── Per-target decision stage ─────────────────────────────────────────
+		let publishedCount = 0;
+		let skippedIdenticalCount = 0;
+		let mismatchCount = 0;
+		let failedCount = 0;
+
+		const digestFields = {
+			tarballPath: packResult.tarballPath,
+			tarballDigest: `sha256:${packResult.sha256Hex}`,
+			...(packResult.packedSize !== undefined ? { packedSize: packResult.packedSize } : {}),
+			...(packResult.unpackedSize !== undefined ? { unpackedSize: packResult.unpackedSize } : {}),
+			...(packResult.fileCount !== undefined ? { fileCount: packResult.fileCount } : {}),
+		};
+
+		for (const t of npmTargets) {
+			const label = registryShortLabel(t.registry);
+			yield* Effect.logDebug(`[publish] ${packageName} ${directory} → ${t.registry}`);
+
+			// Auth is set up before the probe, unchanged from the predecessor.
+			// The reason has changed: the probe is now an HTTP read that takes its
+			// own token, so it no longer needs an npmrc. The ordering is kept
+			// anyway because reordering the authentication sequence of a publish
+			// pipeline buys tidiness and risks a failure mode discovered in
+			// production. Whether the setup can move after the probe is on the
+			// post-migration list.
+			const token = pickToken(t.registry, npmToken, ghPkgsToken);
+			const redactedToken = token === null ? null : Redacted.make(token);
+			if (redactedToken !== null) {
+				yield* publishSvc
+					.setupAuth({ registry: t.registry, token: redactedToken, npmrcPath })
+					.pipe(Effect.catch((e) => Effect.logWarning(`setupAuth failed for ${t.registry}: ${e.message}`)));
 			}
 
-			// ── Pack stage — once per directory ───────────────────────────────────
-			const packResultEither = yield* Step.withStep(
-				"pack",
-				Effect.gen(function* () {
-					yield* Effect.logDebug(`[publish] ${packageName}: packing ${directory}`);
-					// Pack through the active manager's npm executor — same dispatch as
-					// publish/dry-run so every phase packs with the identical npm.
-					const outcome = yield* publishSvc.pack(directory, { packageManager }).pipe(
-						Effect.map((r) => ({ ok: true as const, result: r })),
-						Effect.catch((e: PackagePublishError) => Effect.succeed({ ok: false as const, error: e.message })),
-					);
-					if (outcome.ok) {
-						const r = outcome.result;
-						yield* Effect.logDebug(
-							`[publish] ${packageName}: packed ${directory} (${r.packedSize} bytes, files=${r.fileCount}, digest=${r.digest})`,
-						);
-						// The step name already includes `pack <package> <directory>`;
-						// the success line provides only the outcome.
-						yield* Step.success(`${humanizeSize(r.packedSize)} · ${r.fileCount} files · ${r.digest.slice(0, 32)}…`);
-					} else {
-						yield* Effect.logError(`[publish] ${packageName}: pack ${directory} failed — ${outcome.error}`);
-						yield* Step.failure(`pack failed`);
-					}
-					return outcome;
-				}),
-				{ icon: "📦" },
-			);
+			const probe = yield* registrySvc
+				.version(packResult.name, packResult.version, {
+					registry: t.registry,
+					...(redactedToken !== null ? { token: redactedToken } : {}),
+				})
+				.pipe(
+					Effect.map((value) => ({ ok: true as const, value })),
+					Effect.catch((e) => Effect.succeed({ ok: false as const, error: e.message })),
+				);
 
-			if (!packResultEither.ok) {
-				// Pack failed — every target in the group is recorded failed; no
-				// publish attempts are made.
-				for (const t of npmTargets) {
+			if (!probe.ok) {
+				yield* Effect.logError(
+					`[publish] ${t.registry}: integrity probe for ${packResult.name}@${packResult.version} failed — ${probe.error}`,
+				);
+				yield* Effect.logWarning(`  ⬆ ${label} · probe-failed`);
+				results.push({
+					target: toLegacyTarget(t),
+					success: false,
+					status: "failed",
+					error: probe.error,
+					...digestFields,
+				});
+				failedCount += 1;
+				continue;
+			}
+
+			if (Option.isNone(probe.value)) {
+				// Not on registry → publish the pre-packed tarball.
+				yield* Effect.logDebug(
+					`[publish] ${t.registry}: ${packResult.name}@${packResult.version} not on registry; publishing tarball`,
+				);
+
+				// GitHub Packages never supports npm's tokenless OIDC trusted publishing —
+				// npm 11.5+ still attempts the `/-/npm/v1/oidc/token/exchange` POST
+				// whenever the Actions OIDC env is present (even without --provenance) and
+				// 404s, ignoring the configured _authToken. Publish GitHub Packages with
+				// token auth (OIDC env stripped) from the first attempt.
+				const isGhPkgs = classifyRegistry(t.registry) === "github-packages";
+				let publishOutcome = yield* publishSvc
+					.publishTarball(packResult.tarballPath, {
+						registry: t.registry,
+						access: t.access,
+						provenance: t.provenance,
+						tokenAuth: isGhPkgs,
+						executor: NPM_EXECUTOR,
+					})
+					.pipe(
+						Effect.map((r) => ({ ok: true as const, provenanceUrl: r.provenanceUrl })),
+						Effect.catch((e) => Effect.succeed({ ok: false as const, error: e.message })),
+					);
+
+				// Token-auth fallback for the npm registry. Trusted publishing (the OIDC
+				// path npm auto-takes) cannot bootstrap a package that has no trusted
+				// publisher configured yet — the exchange 404s ("package not found"). When
+				// it fails and a token is available, retry once with classic token auth
+				// (OIDC env stripped). Once the package exists and trusted publishing is
+				// configured, the first attempt succeeds and this retry never fires.
+				if (!publishOutcome.ok && !isGhPkgs && redactedToken !== null) {
+					yield* Effect.logWarning(
+						`[publish] ${t.registry}: trusted-publishing publish failed for ${packResult.name}@${packResult.version} (${publishOutcome.error}); retrying with token auth`,
+					);
+					publishOutcome = yield* publishSvc
+						.publishTarball(packResult.tarballPath, {
+							registry: t.registry,
+							access: t.access,
+							provenance: false,
+							tokenAuth: true,
+							executor: NPM_EXECUTOR,
+						})
+						.pipe(
+							Effect.map((r) => ({ ok: true as const, provenanceUrl: r.provenanceUrl })),
+							Effect.catch((e) => Effect.succeed({ ok: false as const, error: e.message })),
+						);
+				}
+
+				if (!publishOutcome.ok) {
+					yield* Effect.logError(
+						`[publish] ${t.registry}: publishTarball failed for ${packResult.name}@${packResult.version} — ${publishOutcome.error}`,
+					);
+					yield* Effect.logWarning(`  ⬆ ${label} · publish-failed`);
 					results.push({
 						target: toLegacyTarget(t),
 						success: false,
 						status: "failed",
-						error: packResultEither.error,
+						error: publishOutcome.error,
+						...digestFields,
 					});
+					failedCount += 1;
+					continue;
 				}
-				yield* Step.failure(`pack failed — ${npmTargets.length} target(s) marked failed`);
-				return results;
+
+				yield* Effect.logInfo(`  ⬆ ${label} · published · ${registryHost(t.registry)}`);
+				results.push({
+					target: toLegacyTarget(t),
+					success: true,
+					status: "published",
+					...digestFields,
+					// `provenanceUrl` is an `Option`, NOT `string | undefined`. A
+					// `!== undefined` check here would always be true and would stamp
+					// the Option object into a `string` field.
+					...(Option.isSome(publishOutcome.provenanceUrl)
+						? { npmProvenanceUrl: publishOutcome.provenanceUrl.value }
+						: {}),
+				});
+				publishedCount += 1;
+				continue;
 			}
 
-			const packResult = packResultEither.result;
-
-			// ── Per-target decision stage ─────────────────────────────────────────
-			// The probe + decide step is wrapped per-target. Phase B (Step.collapse)
-			// for the parallel probe phase was deferred — restructuring the
-			// interleaved probe/auth/publish loop into two passes would not be a
-			// mechanical change, and the per-target withStep already captures the
-			// step boundary correctly for the common all-published / all-skipped
-			// success path.
-			let publishedCount = 0;
-			let skippedIdenticalCount = 0;
-			let mismatchCount = 0;
-			let failedCount = 0;
-
-			for (const t of npmTargets) {
-				const perTargetResult = yield* Step.withStep(
-					registryShortLabel(t.registry),
-					Effect.gen(function* () {
-						yield* Effect.logDebug(`[publish] ${packageName} ${directory} → ${t.registry}`);
-
-						// Set up registry auth BEFORE the integrity probe — `npm view`
-						// against GitHub Packages requires authentication even for reads,
-						// so an anonymous probe returns 401/404 and the orchestrator can
-						// not distinguish "version absent" from "auth required." setupAuth
-						// writes the token to `~/.npmrc`; the probe inherits it. For
-						// registries that allow anonymous reads (npmjs.org) the token is
-						// `null` and setupAuth is skipped — the probe goes anonymous, as
-						// today. The same `.npmrc` entry is then reused by the publish
-						// step below, so we don't pay for the setup twice.
-						const token = pickToken(t.registry, npmToken, ghPkgsToken);
-						if (token !== null) {
-							yield* publishSvc
-								.setupAuth(t.registry, Redacted.make(token))
-								.pipe(
-									Effect.catch((e: PackagePublishError) =>
-										Effect.logWarning(`setupAuth failed for ${t.registry}: ${e.message}`),
-									),
-								);
-						}
-
-						const probe = yield* registrySvc
-							.getPublishedIntegrity(packResult.name, packResult.version, { registry: t.registry })
-							.pipe(
-								Effect.map((opt) => ({ ok: true as const, value: opt })),
-								Effect.catch((e) =>
-									Effect.succeed({ ok: false as const, error: e instanceof Error ? e.message : String(e) }),
-								),
-							);
-
-						if (!probe.ok) {
-							yield* Effect.logError(
-								`[publish] ${t.registry}: integrity probe for ${packResult.name}@${packResult.version} failed — ${probe.error}`,
-							);
-							yield* Step.failure(`probe-failed`);
-							return {
-								outcome: "failed" as const,
-								result: {
-									target: toLegacyTarget(t),
-									success: false,
-									status: "failed",
-									error: probe.error,
-									tarballPath: packResult.tarballPath,
-									tarballDigest: `sha256:${packResult.sha256Hex}`,
-									packedSize: packResult.packedSize,
-									unpackedSize: packResult.unpackedSize,
-									fileCount: packResult.fileCount,
-								} satisfies TargetPublishResult,
-							};
-						}
-
-						if (Option.isNone(probe.value)) {
-							// Not on registry → publish the pre-packed tarball.
-							yield* Effect.logDebug(
-								`[publish] ${t.registry}: ${packResult.name}@${packResult.version} not on registry; publishing tarball`,
-							);
-
-							// GitHub Packages never supports npm's tokenless OIDC trusted publishing —
-							// npm 11.5+ still attempts the `/-/npm/v1/oidc/token/exchange` POST
-							// whenever the Actions OIDC env is present (even without --provenance) and
-							// 404s, ignoring the configured _authToken. Publish GitHub Packages with
-							// token auth (OIDC env stripped) from the first attempt.
-							const isGhPkgs = isGitHubPackagesRegistry(t.registry);
-							let publishOutcome = yield* publishSvc
-								.publishTarball(packResult.tarballPath, {
-									registry: t.registry,
-									access: t.access,
-									provenance: t.provenance,
-									packageManager,
-									tokenAuth: isGhPkgs,
-								})
-								.pipe(
-									Effect.map((r) => ({ ok: true as const, provenanceUrl: r.provenanceUrl })),
-									Effect.catch((e: PackagePublishError) => Effect.succeed({ ok: false as const, error: e.message })),
-								);
-
-							// Token-auth fallback for the npm registry. Trusted publishing (the OIDC
-							// path npm auto-takes) cannot bootstrap a package that has no trusted
-							// publisher configured yet — the exchange 404s ("package not found"). When
-							// it fails and a token is available, retry once with classic token auth
-							// (OIDC env stripped). Once the package exists and trusted publishing is
-							// configured, the first attempt succeeds and this retry never fires.
-							if (!publishOutcome.ok && !isGhPkgs && token !== null) {
-								yield* Effect.logWarning(
-									`[publish] ${t.registry}: trusted-publishing publish failed for ${packResult.name}@${packResult.version} (${publishOutcome.error}); retrying with token auth`,
-								);
-								publishOutcome = yield* publishSvc
-									.publishTarball(packResult.tarballPath, {
-										registry: t.registry,
-										access: t.access,
-										provenance: false,
-										packageManager,
-										tokenAuth: true,
-									})
-									.pipe(
-										Effect.map((r) => ({ ok: true as const, provenanceUrl: r.provenanceUrl })),
-										Effect.catch((e: PackagePublishError) => Effect.succeed({ ok: false as const, error: e.message })),
-									);
-							}
-
-							if (!publishOutcome.ok) {
-								yield* Effect.logError(
-									`[publish] ${t.registry}: publishTarball failed for ${packResult.name}@${packResult.version} — ${publishOutcome.error}`,
-								);
-								yield* Step.failure(`publish-failed`);
-								return {
-									outcome: "failed" as const,
-									result: {
-										target: toLegacyTarget(t),
-										success: false,
-										status: "failed",
-										error: publishOutcome.error,
-										tarballPath: packResult.tarballPath,
-										tarballDigest: `sha256:${packResult.sha256Hex}`,
-										packedSize: packResult.packedSize,
-										unpackedSize: packResult.unpackedSize,
-										fileCount: packResult.fileCount,
-									} satisfies TargetPublishResult,
-								};
-							}
-
-							yield* Step.success(`published · ${registryHost(t.registry)}`);
-							return {
-								outcome: "published" as const,
-								result: {
-									target: toLegacyTarget(t),
-									success: true,
-									status: "published",
-									tarballPath: packResult.tarballPath,
-									tarballDigest: `sha256:${packResult.sha256Hex}`,
-									packedSize: packResult.packedSize,
-									unpackedSize: packResult.unpackedSize,
-									fileCount: packResult.fileCount,
-									...(publishOutcome.provenanceUrl !== undefined
-										? { npmProvenanceUrl: publishOutcome.provenanceUrl }
-										: {}),
-								} satisfies TargetPublishResult,
-							};
-						}
-
-						const remoteDigest = probe.value.value;
-						if (remoteDigest === packResult.digest) {
-							// Recovery skip — already on registry with identical bytes.
-							yield* Effect.logDebug(
-								`[publish] ${t.registry}: ${packResult.name}@${packResult.version} already published with identical integrity (digest=${remoteDigest}); recovery skip`,
-							);
-							yield* Step.success(`skipped-identical (recovery)`);
-							return {
-								outcome: "skipped-identical" as const,
-								result: {
-									target: toLegacyTarget(t),
-									success: true,
-									status: "skipped",
-									skipReason: "already-published-identical",
-									alreadyPublished: true,
-									alreadyPublishedReason: "identical",
-									recovery: { localDigest: packResult.digest, remoteDigest },
-									tarballPath: packResult.tarballPath,
-									tarballDigest: `sha256:${packResult.sha256Hex}`,
-									packedSize: packResult.packedSize,
-									unpackedSize: packResult.unpackedSize,
-									fileCount: packResult.fileCount,
-								} satisfies TargetPublishResult,
-							};
-						}
-
-						// Fatal mismatch — but recoverable downstream. We record the
-						// failure as a result and emit the failed-mismatch success
-						// line; the parent step continues with the rest of the loop.
-						yield* Effect.logError(
-							`[publish] ${t.registry}: integrity MISMATCH for ${packResult.name}@${packResult.version} (local=${packResult.digest}, remote=${remoteDigest}); fatal`,
-						);
-						yield* Step.failure(`failed-mismatch`);
-						return {
-							outcome: "mismatch" as const,
-							result: {
-								target: toLegacyTarget(t),
-								success: false,
-								status: "failed",
-								error: `integrity mismatch — local ${packResult.digest} ≠ remote ${remoteDigest}`,
-								alreadyPublished: true,
-								alreadyPublishedReason: "different",
-								recovery: { localDigest: packResult.digest, remoteDigest },
-								tarballPath: packResult.tarballPath,
-								tarballDigest: `sha256:${packResult.sha256Hex}`,
-								packedSize: packResult.packedSize,
-								unpackedSize: packResult.unpackedSize,
-								fileCount: packResult.fileCount,
-							} satisfies TargetPublishResult,
-						};
-					}),
-					{ icon: "⬆" },
+			const remoteIntegrity = probe.value.value.integrity;
+			if (localIntegrity !== undefined && remoteIntegrity !== undefined && remoteIntegrity === localIntegrity) {
+				// Recovery skip — already on registry with identical bytes.
+				yield* Effect.logDebug(
+					`[publish] ${t.registry}: ${packResult.name}@${packResult.version} already published with identical integrity (digest=${remoteIntegrity}); recovery skip`,
 				);
-
-				results.push(perTargetResult.result);
-				if (perTargetResult.outcome === "published") publishedCount += 1;
-				else if (perTargetResult.outcome === "skipped-identical") skippedIdenticalCount += 1;
-				else if (perTargetResult.outcome === "mismatch") mismatchCount += 1;
-				else if (perTargetResult.outcome === "failed") failedCount += 1;
+				yield* Effect.logInfo(`  ⬆ ${label} · skipped-identical (recovery)`);
+				results.push({
+					target: toLegacyTarget(t),
+					success: true,
+					status: "skipped",
+					skipReason: "already-published-identical",
+					alreadyPublished: true,
+					alreadyPublishedReason: "identical",
+					recovery: { localDigest: localIntegrity, remoteDigest: remoteIntegrity },
+					...digestFields,
+				});
+				skippedIdenticalCount += 1;
+				continue;
 			}
 
-			// ── One attestation per build directory, shared across successful targets.
-			//
-			// The tarball is byte-identical for every target in this group, so a
-			// single provenance + SBOM attestation pair applies to all of them.
-			// Provenance opts in at the package level — if any target in the group
-			// requested provenance the whole group attests; if none did, we skip.
-			// Failed-mismatch results do not receive the URLs.
-			const anySuccess = results.some((r) => r.status === "published" || r.status === "skipped");
-			const groupProvenance = npmTargets.some((t) => t.provenance);
-			let attestations: AttestationsOutcome = {
-				attestationUrl: undefined,
-				sbomAttestationUrl: undefined,
-				provenanceRecovered: false,
-				sbomRecovered: false,
-			};
-			let attestationsRan = false;
-			if (anySuccess && groupProvenance) {
-				// The action's own per-build attestation: one SLSA provenance + one SBOM
-				// over this group's tarball, shared across every target that publishes it.
-				// `runAttestationsForBuild` catches its own errors and degrades to undefined
-				// URLs, so no step envelope is needed for failure spill here.
-				attestations = yield* runAttestationsForBuild(
-					packageName,
-					version,
-					groupProvenance,
-					packResult.sha256Hex,
-					sbomPath,
-				);
-				attestationsRan = true;
-			}
-
-			// Emit the attestation rows beneath the publish targets — one per real URL,
-			// never an empty row. npm's native trusted-publishing provenance (captured per
-			// npm target during publish) and the action's own attestation are distinct
-			// anchors over the same artifact, so both render when present.
-			const npmProvenanceUrls = [
-				...new Set(results.map((r) => r.npmProvenanceUrl).filter((u): u is string => u !== undefined)),
-			];
-			for (const url of npmProvenanceUrls) {
-				yield* Step.line("🔏", `provenance: ${url} (npm native)`);
-			}
-			if (attestations.attestationUrl !== undefined) {
-				const reused = attestations.provenanceRecovered ? " — reused" : "";
-				yield* Step.line("🔏", `provenance: ${attestations.attestationUrl} (action)${reused}`);
-			}
-			if (attestations.sbomAttestationUrl !== undefined) {
-				const reused = attestations.sbomRecovered ? " — reused" : "";
-				yield* Step.line("📄", `sbom: ${attestations.sbomAttestationUrl}${reused}`);
-			}
-
-			// Attach the shared URLs (and the per-package sbomPath, threaded in from
-			// runBuildAndSbom) to every successful target's result. `recovered`
-			// surfaces only when the per-build attestation step actually ran —
-			// undefined when groupProvenance was false (no attestation attempted).
-			const enrichedResults = results.map((r) =>
-				r.status === "published" || r.status === "skipped"
-					? {
-							...r,
-							attestationUrl: attestations.attestationUrl,
-							sbomAttestationUrl: attestations.sbomAttestationUrl,
-							...(sbomPath !== null ? { sbomPath } : {}),
-							...(attestationsRan
-								? {
-										recovered: {
-											provenance: attestations.provenanceRecovered,
-											sbom: attestations.sbomRecovered,
-										},
-									}
-								: {}),
-						}
-					: r,
+			// The version is occupied and identity cannot be established — either
+			// the digests differ, or one side did not report one. Both are fatal for
+			// this target: publishing over it would fail, and calling it "identical"
+			// without proof would be a lie. Naming which side is missing is what
+			// makes the log actionable.
+			const localLabel = localIntegrity ?? "<not reported by npm pack>";
+			const remoteLabel = remoteIntegrity ?? "<not reported by the registry>";
+			yield* Effect.logError(
+				`[publish] ${t.registry}: integrity MISMATCH for ${packResult.name}@${packResult.version} (local=${localLabel}, remote=${remoteLabel}); fatal`,
 			);
+			yield* Effect.logWarning(`  ⬆ ${label} · failed-mismatch`);
+			results.push({
+				target: toLegacyTarget(t),
+				success: false,
+				status: "failed",
+				error: `integrity mismatch — local ${localLabel} ≠ remote ${remoteLabel}`,
+				alreadyPublished: true,
+				alreadyPublishedReason: "different",
+				recovery: { localDigest: localLabel, remoteDigest: remoteLabel },
+				...digestFields,
+			});
+			mismatchCount += 1;
+		}
 
-			// Render the group's tally honestly: when any target failed to
-			// publish or hit a fatal integrity mismatch, the group did not fully
-			// succeed, so emit the ❌ block rather than a misleading ✅. Only
-			// non-zero counts appear, so a clean run reads `2 targets published`
-			// rather than burying the signal under three zero columns.
-			const counts: string[] = [];
-			if (publishedCount > 0) counts.push(`${publishedCount} published`);
-			if (skippedIdenticalCount > 0) counts.push(`${skippedIdenticalCount} skipped-identical`);
-			if (mismatchCount > 0) counts.push(`${mismatchCount} mismatch`);
-			if (failedCount > 0) counts.push(`${failedCount} failed`);
-			const attestNote: string[] = [];
-			if (npmProvenanceUrls.length > 0 || attestations.attestationUrl !== undefined) attestNote.push("provenance");
-			if (attestations.sbomAttestationUrl !== undefined) attestNote.push("SBOM");
-			const summaryParts = [counts.length > 0 ? counts.join(", ") : "no targets"];
-			if (attestNote.length > 0) summaryParts.push(attestNote.join(" + "));
-			const groupSummary = summaryParts.join(" · ");
-			if (mismatchCount > 0 || failedCount > 0) {
-				yield* Step.failure(groupSummary);
-			} else {
-				yield* Step.success(groupSummary);
-			}
-			return enrichedResults;
-		}),
-	);
+		// ── One attestation per build directory, shared across successful targets.
+		//
+		// The tarball is byte-identical for every target in this group, so a
+		// single provenance + SBOM attestation pair applies to all of them.
+		// Provenance opts in at the package level — if any target in the group
+		// requested provenance the whole group attests; if none did, we skip.
+		// Failed-mismatch results do not receive the URLs.
+		const anySuccess = results.some((r) => r.status === "published" || r.status === "skipped");
+		const groupProvenance = npmTargets.some((t) => t.provenance);
+		let attestations: AttestationsOutcome = {
+			attestationUrl: undefined,
+			sbomAttestationUrl: undefined,
+			provenanceRecovered: false,
+			sbomRecovered: false,
+		};
+		let attestationsRan = false;
+		if (anySuccess && groupProvenance) {
+			attestations = yield* runAttestationsForBuild(
+				packageName,
+				version,
+				groupProvenance,
+				packResult.sha256Hex,
+				sbomPath,
+			);
+			attestationsRan = true;
+		}
+
+		// Emit the attestation rows beneath the publish targets — one per real URL,
+		// never an empty row. npm's native trusted-publishing provenance (captured per
+		// npm target during publish) and the action's own attestation are distinct
+		// anchors over the same artifact, so both render when present.
+		const npmProvenanceUrls = [
+			...new Set(results.map((r) => r.npmProvenanceUrl).filter((u): u is string => u !== undefined)),
+		];
+		for (const url of npmProvenanceUrls) {
+			yield* Effect.logInfo(`  🔏 provenance: ${url} (npm native)`);
+		}
+		if (attestations.attestationUrl !== undefined) {
+			const reused = attestations.provenanceRecovered ? " — reused" : "";
+			yield* Effect.logInfo(`  🔏 provenance: ${attestations.attestationUrl} (action)${reused}`);
+		}
+		if (attestations.sbomAttestationUrl !== undefined) {
+			const reused = attestations.sbomRecovered ? " — reused" : "";
+			yield* Effect.logInfo(`  📄 sbom: ${attestations.sbomAttestationUrl}${reused}`);
+		}
+
+		// Attach the shared URLs (and the per-package sbomPath, threaded in from
+		// runBuildAndSbom) to every successful target's result. `recovered`
+		// surfaces only when the per-build attestation step actually ran —
+		// undefined when groupProvenance was false (no attestation attempted).
+		const enrichedResults = results.map((r) =>
+			r.status === "published" || r.status === "skipped"
+				? {
+						...r,
+						attestationUrl: attestations.attestationUrl,
+						sbomAttestationUrl: attestations.sbomAttestationUrl,
+						...(sbomPath !== null ? { sbomPath } : {}),
+						...(attestationsRan
+							? {
+									recovered: {
+										provenance: attestations.provenanceRecovered,
+										sbom: attestations.sbomRecovered,
+									},
+								}
+							: {}),
+					}
+				: r,
+		);
+
+		// Render the group's tally honestly: when any target failed to publish or
+		// hit a fatal integrity mismatch, the group did not fully succeed. Only
+		// non-zero counts appear, so a clean run reads `2 targets published`
+		// rather than burying the signal under three zero columns.
+		const counts: string[] = [];
+		if (publishedCount > 0) counts.push(`${publishedCount} published`);
+		if (skippedIdenticalCount > 0) counts.push(`${skippedIdenticalCount} skipped-identical`);
+		if (mismatchCount > 0) counts.push(`${mismatchCount} mismatch`);
+		if (failedCount > 0) counts.push(`${failedCount} failed`);
+		const attestNote: string[] = [];
+		if (npmProvenanceUrls.length > 0 || attestations.attestationUrl !== undefined) attestNote.push("provenance");
+		if (attestations.sbomAttestationUrl !== undefined) attestNote.push("SBOM");
+		const summaryParts = [counts.length > 0 ? counts.join(", ") : "no targets"];
+		if (attestNote.length > 0) summaryParts.push(attestNote.join(" + "));
+		const groupSummary = summaryParts.join(" · ");
+		if (mismatchCount > 0 || failedCount > 0) {
+			yield* Effect.logWarning(`  ❌ ${groupSummary}`);
+		} else {
+			yield* Effect.logInfo(`  ✅ ${groupSummary}`);
+		}
+		return enrichedResults;
+	});
 
 // ─── detectReleases ────────────────────────────────────────────────────────────
 
@@ -956,41 +903,49 @@ const publishDirectoryGroup = (
  */
 export const detectReleases = (
 	args: PublishInputArgs,
-): Effect.Effect<ReadonlyArray<DetectedRelease>, never, GitHubCommit | GitHubContent | PullRequest | ChangesetConfig> =>
-	Step.withStep(
-		"Detect released packages",
-		Effect.gen(function* () {
-			let detected: ReadonlyArray<DetectedRelease>;
+): Effect.Effect<
+	ReadonlyArray<DetectedRelease>,
+	never,
+	ActionEnvironment | ActionLogger | ChangesetConfig | GitHubClient | GitHubCommit | GitHubContent | Repo
+> =>
+	Effect.gen(function* () {
+		const logger = yield* ActionLogger;
 
-			if (args.mergedReleasePRNumber !== undefined) {
-				yield* Effect.logDebug(`detectReleases: detecting from PR #${args.mergedReleasePRNumber}`);
-				detected = yield* detectFromPR(args.mergedReleasePRNumber);
-				if (detected.length === 0) {
-					yield* Effect.logDebug("detectReleases: PR detection returned nothing, falling back to commit diff");
+		return yield* logger.group(
+			"Detect released packages",
+			Effect.gen(function* () {
+				let detected: ReadonlyArray<DetectedRelease>;
+
+				if (args.mergedReleasePRNumber !== undefined) {
+					yield* Effect.logDebug(`detectReleases: detecting from PR #${args.mergedReleasePRNumber}`);
+					detected = yield* detectFromPR(args.mergedReleasePRNumber);
+					if (detected.length === 0) {
+						yield* Effect.logDebug("detectReleases: PR detection returned nothing, falling back to commit diff");
+						detected = yield* detectFromCommit();
+					}
+				} else {
+					yield* Effect.logDebug("detectReleases: detecting from commit diff");
 					detected = yield* detectFromCommit();
 				}
-			} else {
-				yield* Effect.logDebug("detectReleases: detecting from commit diff");
-				detected = yield* detectFromCommit();
-			}
 
-			yield* Effect.logDebug(`detectReleases: ${detected.length} package(s) detected`);
+				yield* Effect.logDebug(`detectReleases: ${detected.length} package(s) detected`);
 
-			// Drop packages whose names match the changeset ignore list so they
-			// are fully excluded from Phase-3 publishing, not just from the Phase-1
-			// changeset analysis.
-			const config = yield* ChangesetConfig;
-			const root = process.cwd();
-			const kept: DetectedRelease[] = [];
-			for (const d of detected) {
-				if (yield* config.isIgnored(d.name, root)) continue;
-				kept.push(d);
-			}
-			yield* Effect.logDebug(`detectReleases: ${kept.length} package(s) in scope after ignore filter`);
-			yield* Step.success(`${kept.length} package(s) in scope`);
-			return kept;
-		}),
-	);
+				// Drop packages whose names match the changeset ignore list so they
+				// are fully excluded from Phase-3 publishing, not just from the Phase-1
+				// changeset analysis.
+				const config = yield* ChangesetConfig;
+				const root = process.cwd();
+				const kept: DetectedRelease[] = [];
+				for (const d of detected) {
+					if (yield* config.isIgnored(d.name, root)) continue;
+					kept.push(d);
+				}
+				yield* Effect.logDebug(`detectReleases: ${kept.length} package(s) in scope after ignore filter`);
+				yield* Effect.logInfo(`  ✅ ${kept.length} package(s) in scope`);
+				return kept;
+			}),
+		);
+	});
 
 // ─── runBuildAndSbom ───────────────────────────────────────────────────────────
 
@@ -1010,7 +965,7 @@ export interface BuildSbomResult {
 	readonly packageCount: number;
 	/**
 	 * Per-package on-disk path of the saved CycloneDX SBOM JSON. The release
-	 * step uploads this file as a release asset; `null` entries indicate the
+	 * step uploads this file as a release asset; absent entries indicate the
 	 * SBOM was generated but not saved to disk (saving failed non-fatally).
 	 * Keyed by package name.
 	 */
@@ -1021,143 +976,131 @@ export interface BuildSbomResult {
  * Build all in-scope packages and generate each one's SBOM — Step 3 of the
  * Phase-3 flow and its fail-fast gate.
  *
- * Runs `ci:build` once, then `Sbom.generate` per package. The caller must
+ * @remarks
+ * Runs `ci:build` once, then assembles a BOM per package. The caller must
  * abort the phase (skip publish and releases) when `ok` is `false`.
+ *
+ * **`sbomFailures` can now only be populated by a failed disk write.**
+ * `Sbom.generate` and `Sbom.toJson` are **total** — assembling and serializing
+ * an owned model over validated values has nothing to fail at — so the
+ * predecessor's `SbomError` generation channel is gone along with the package
+ * that raised it. `Sbom.write` is the one fallible member, and it stays
+ * non-fatal exactly as the predecessor's `save` did.
  *
  * @public
  */
-export const runBuildAndSbom = (detected: ReadonlyArray<DetectedRelease>, args: PublishInputArgs) =>
-	Step.withStep(
-		"Build & SBOM",
-		Effect.gen(function* () {
-			const runner = yield* CommandRunner;
-			const discovery = yield* WorkspaceDiscovery;
-			const sbomSvc = yield* Sbom;
+export const runBuildAndSbom = (
+	detected: ReadonlyArray<DetectedRelease>,
+	args: PublishInputArgs,
+): Effect.Effect<
+	BuildSbomResult,
+	never,
+	ActionLogger | ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | WorkspaceDiscovery
+> =>
+	Effect.gen(function* () {
+		const logger = yield* ActionLogger;
+		const discovery = yield* WorkspaceDiscovery;
 
-			// ── Build (ci:build, once) ─────────────────────────────────────────────
-			const buildArgs = args.packageManager === "npm" ? ["run", "ci:build"] : ["ci:build"];
+		return yield* logger.group(
+			"Build & SBOM",
+			Effect.gen(function* () {
+				// ── Build (ci:build, once) ─────────────────────────────────────────
+				const buildArgs = args.packageManager === "npm" ? ["run", "ci:build"] : ["ci:build"];
+				yield* Effect.logDebug(`runBuildAndSbom: ${args.packageManager} ${buildArgs.join(" ")}`);
 
-			const buildResult = yield* Step.withStep(
-				"build (ci:build)",
-				Effect.gen(function* () {
-					yield* Effect.logDebug(`runBuildAndSbom: ${args.packageManager} ${buildArgs.join(" ")}`);
-					const result = yield* runner.execCapture(args.packageManager, buildArgs).pipe(
-						Effect.map((output) => ({
-							success: true as const,
-							error: undefined as string | undefined,
-							output: output.stdout,
-						})),
-						Effect.catch((e: CommandRunnerError) =>
-							Effect.succeed({ success: false as const, error: e.stderr ?? e.message, output: "" }),
+				// `Run.collect` treats a non-zero exit as a RESULT, not a failure —
+				// the same split the predecessor's `execCapture` had, so the
+				// exit-code branch below is reached identically. The error channel
+				// fires only when the process could not be run at all.
+				const buildOutcome = yield* Effect.result(Run.collect(ChildProcess.make(args.packageManager, buildArgs)));
+
+				const build =
+					buildOutcome._tag === "Success"
+						? {
+								success: buildOutcome.success.exitCode === 0,
+								error: buildOutcome.success.stderr,
+								output: buildOutcome.success.stdout,
+							}
+						: { success: false, error: buildOutcome.failure.message, output: "" };
+
+				if (build.success) {
+					yield* Effect.logDebug(build.output);
+					yield* Effect.logInfo("  ✅ ci:build succeeded");
+				} else {
+					yield* Effect.logError(`ci:build failed — ${build.error}`);
+					yield* Effect.logWarning("  ❌ aborted — build failed");
+					return {
+						ok: false,
+						buildError: build.error,
+						sbomFailures: [],
+						packageCount: detected.length,
+						sbomPaths: new Map<string, string>(),
+					} satisfies BuildSbomResult;
+				}
+
+				// ── SBOM generation (per package) ──────────────────────────────────
+				const sbomFailures: string[] = [];
+				const sbomPaths = new Map<string, string>();
+
+				for (const rel of detected) {
+					// Resolve the WorkspacePackage for its dependency map; synthesise a
+					// minimal one if discovery fails (e.g. a deleted monorepo member).
+					const wsPkg = yield* discovery.getPackage(rel.name).pipe(
+						Effect.catch(() =>
+							Effect.succeed(
+								WorkspacePackage.make({
+									name: rel.name,
+									version: rel.version,
+									path: rel.path,
+									packageJsonPath: join(rel.path, "package.json"),
+									relativePath: "",
+									workspaceRoot: process.cwd(),
+								}),
+							),
 						),
 					);
-					if (result.success) {
-						yield* Effect.logDebug(result.output);
-						yield* Step.success("ci:build succeeded");
-					} else {
-						yield* Effect.logError(`ci:build failed — ${result.error}`);
-						yield* Step.failure("ci:build failed");
-					}
-					return result;
-				}),
-			);
 
-			if (!buildResult.success) {
-				yield* Step.failure(`aborted — build failed`);
-				return {
-					ok: false,
-					buildError: buildResult.error,
-					sbomFailures: [],
-					packageCount: detected.length,
-					sbomPaths: new Map<string, string>(),
-				} satisfies BuildSbomResult;
-			}
+					// Save the SBOM under the package's own directory as
+					// <unscoped>.sbom.json — the same naming convention runReleases
+					// uploads with, and per-package because the SBOM describes the
+					// package, not a particular registry target.
+					const sbomDestPath = join(wsPkg.path, `${wsPkg.unscopedName}.sbom.json`);
 
-			// ── SBOM generation (per package) ──────────────────────────────────────
-			const sbomFailures: string[] = [];
-			const sbomPaths = new Map<string, string>();
-
-			for (const rel of detected) {
-				// Resolve the WorkspacePackage for its dependency map; synthesise a
-				// minimal one if discovery fails (e.g. a deleted monorepo member).
-				const wsPkg = yield* discovery.getPackage(rel.name).pipe(
-					Effect.catch(() =>
-						Effect.succeed(
-							new WorkspacePackage({
-								name: rel.name,
-								version: rel.version,
-								path: rel.path,
-								packageJsonPath: join(rel.path, "package.json"),
-								relativePath: "",
-								workspaceRoot: process.cwd(),
-							}),
+					yield* Effect.logDebug(`runBuildAndSbom: generating SBOM for ${rel.name}@${rel.version}`);
+					const document = Sbom.generate({
+						root: SbomMetadataSource.componentFor({ name: rel.name, version: rel.version }),
+						components: Object.entries(wsPkg.dependencies).map(([name, specifier]) =>
+							SbomMetadataSource.componentFor({ name, version: specifier }),
 						),
-					),
-				);
+					});
+					yield* Effect.logDebug(`generated CycloneDX BOM:\n${Sbom.toJson(document)}`);
 
-				const dependencies: ResolvedDependency[] = Object.entries(wsPkg.dependencies).map(([name, version]) => ({
-					name,
-					version,
-				}));
-
-				// Save the SBOM under the package's own directory as <unscoped>.sbom.json.
-				// Same naming convention runReleases uploads with (basename is the
-				// release-asset name); per-package because the SBOM describes the
-				// package, not a particular registry target.
-				const unscopedName =
-					rel.name.startsWith("@") && rel.name.includes("/") ? (rel.name.split("/")[1] ?? rel.name) : rel.name;
-				const sbomDestPath = join(wsPkg.path, `${unscopedName}.sbom.json`);
-
-				const ok = yield* Step.withStep(
-					`SBOM · ${rel.name}`,
-					Effect.gen(function* () {
-						yield* Effect.logDebug(`runBuildAndSbom: generating SBOM for ${rel.name}@${rel.version}`);
-						return yield* sbomSvc.generate({ rootName: rel.name, rootVersion: rel.version, dependencies }).pipe(
-							Effect.flatMap((bom) =>
-								Effect.gen(function* () {
-									const bomJson = yield* sbomSvc.serializeJson(bom);
-									yield* Effect.logDebug(`generated CycloneDX BOM:\n${bomJson}`);
-									// Persist to disk so runReleases can attach the SBOM as a
-									// release asset. Save failures are non-fatal — we still
-									// log a warning and continue, just without an asset to
-									// upload. The "generated" success metric tracks the
-									// in-memory BOM build, not the disk write.
-									yield* sbomSvc.save(bom, sbomDestPath).pipe(
-										Effect.tap(() => Effect.sync(() => sbomPaths.set(rel.name, sbomDestPath))),
-										Effect.catch((e: SbomError) =>
-											Effect.logWarning(
-												`SBOM save failed for ${rel.name} at ${sbomDestPath}: ${e.message}; release asset will be skipped`,
-											),
-										),
-									);
-									// Step name is `SBOM · <package>`; the success line
-									// provides only the outcome.
-									yield* Step.success(`generated`);
-									return true as const;
-								}),
-							),
-							Effect.catch((e: SbomError) =>
-								Effect.gen(function* () {
-									yield* Effect.logError(`SBOM generation failed for ${rel.name}: ${e.message}`);
-									return false as const;
-								}),
-							),
+					// Persist to disk so runReleases can attach the SBOM as a release
+					// asset. Write failures are non-fatal — a warning, and no asset to
+					// upload — but they ARE the only thing that can put a package in
+					// `sbomFailures` now.
+					const written = yield* Effect.result(Sbom.write(document, sbomDestPath));
+					if (written._tag === "Success") {
+						sbomPaths.set(rel.name, sbomDestPath);
+						yield* Effect.logInfo(`  📄 sbom · ${rel.name}: ${document.components.length} component(s)`);
+					} else {
+						sbomFailures.push(rel.name);
+						yield* Effect.logWarning(
+							`  📄 sbom · ${rel.name}: write failed at ${sbomDestPath} — ${written.failure.message}; release asset will be skipped`,
 						);
-					}),
-				);
+					}
+				}
 
-				if (!ok) sbomFailures.push(rel.name);
-			}
-
-			yield* Step.success(`${detected.length} package(s) ready`);
-			return {
-				ok: sbomFailures.length === 0,
-				sbomFailures,
-				packageCount: detected.length,
-				sbomPaths,
-			} satisfies BuildSbomResult;
-		}),
-	);
+				yield* Effect.logInfo(`  ✅ ${detected.length} package(s) ready`);
+				return {
+					ok: sbomFailures.length === 0,
+					sbomFailures,
+					packageCount: detected.length,
+					sbomPaths,
+				} satisfies BuildSbomResult;
+			}),
+		);
+	});
 
 // ─── runPublishTargets ─────────────────────────────────────────────────────────
 
@@ -1176,32 +1119,46 @@ export const runBuildAndSbom = (detected: ReadonlyArray<DetectedRelease>, args: 
  */
 export const runPublishTargets = (
 	detected: ReadonlyArray<DetectedRelease>,
-	// Carries `packageManager` (and, in the future, `dryRun`) — `publishDirectoryGroup`
-	// needs the package-manager value to dispatch `npm publish` through the
-	// right executor (`pnpm dlx npm`, `yarn npm`, `bun x npm`, or bare `npm`).
-	args: PublishInputArgs,
+	// `PublishInputArgs` is gone from this signature. Its only contribution was
+	// `packageManager`, threaded down to pick the npm executor — a decision the
+	// kit moved onto `NpmExecutor` (see `NPM_EXECUTOR` above), which is a
+	// constant of this module rather than an input. `normalize-package-manager`
+	// died with it; this was its last consumer.
 	// Per-package on-disk path of the saved SBOM JSON. Populated by
 	// `runBuildAndSbom` and threaded through so `publishDirectoryGroup` can
 	// stamp it onto every successful target's result for the release-asset
-	// upload step in `runReleases`. Undefined or absent entries omit the
-	// field — no SBOM means no SBOM asset.
+	// upload step in `runReleases`. Absent entries omit the field — no SBOM
+	// means no SBOM asset.
 	sbomPaths: ReadonlyMap<string, string> = new Map(),
-) =>
+): Effect.Effect<
+	PublishPackagesResult,
+	Config.ConfigError,
+	PublishServices | ActionState | PublishabilityDetector | WorkspaceDiscovery
+> =>
 	Effect.gen(function* () {
 		const discovery = yield* WorkspaceDiscovery;
 		const detector = yield* PublishabilityDetector;
 		const state = yield* ActionState;
 		const logger = yield* ActionLogger;
+		const outputs = yield* ActionOutputs;
 
 		// ── Resolve registry tokens once ───────────────────────────────────────
+		// Masked here rather than inside `setupAuth`: the kit's `setupAuth` takes
+		// a `Redacted` and states that masking in the CI log is the caller's job.
+		// Once at resolution, not once per target — masking is idempotent, but a
+		// workflow command per call is noise.
 		const npmTokenOpt = yield* Config.string("npm-token").pipe(Config.option);
 		const npmToken: string | null = Option.isSome(npmTokenOpt) && npmTokenOpt.value !== "" ? npmTokenOpt.value : null;
+		if (npmToken !== null) yield* outputs.setSecret(npmToken);
 
 		const ghPkgsTokenOpt = yield* state
 			.getOptional(STATE_KEYS.githubPackagesToken, GithubPackagesTokenState)
 			.pipe(Effect.catch(() => Effect.succeed(Option.none<GithubPackagesTokenState>())));
 		const ghPkgsToken: string | null =
 			Option.isSome(ghPkgsTokenOpt) && ghPkgsTokenOpt.value.token !== "" ? ghPkgsTokenOpt.value.token : null;
+		if (ghPkgsToken !== null) yield* outputs.setSecret(ghPkgsToken);
+
+		const npmrcPath = userNpmrcPath();
 
 		if (detected.length === 0) {
 			return {
@@ -1219,12 +1176,7 @@ export const runPublishTargets = (
 
 		interface PkgEntry {
 			readonly version: string;
-			readonly targets: ReadonlyArray<{
-				registry: string;
-				directory: string;
-				access: "public" | "restricted";
-				provenance: boolean;
-			}>;
+			readonly targets: ReadonlyArray<TargetSpec>;
 		}
 		const targetsByPackage = new Map<string, PkgEntry>();
 
@@ -1232,7 +1184,7 @@ export const runPublishTargets = (
 			const wsPkg = yield* discovery.getPackage(rel.name).pipe(
 				Effect.catch(() =>
 					Effect.succeed(
-						new WorkspacePackage({
+						WorkspacePackage.make({
 							name: rel.name,
 							version: rel.version,
 							path: rel.path,
@@ -1244,22 +1196,15 @@ export const runPublishTargets = (
 				),
 			);
 
-			const publishTargets = yield* detector.detect(wsPkg).pipe(
-				Effect.catch((e: unknown) =>
-					Effect.gen(function* () {
-						yield* Effect.logWarning(`Failed to resolve targets for ${rel.name}: ${String(e)}`);
-						return [] as ReadonlyArray<{
-							registry: string;
-							directory: string;
-							access: "public" | "restricted";
-							provenance: boolean;
-						}>;
-					}),
-				),
-			);
+			// No `Effect.catch` here, deliberately. `PublishabilityDetectorShape.detect`
+			// is `Effect<ReadonlyArray<PublishTarget>>` — **`E` is `never`**, so the
+			// predecessor's "Failed to resolve targets for …" warning arm could not
+			// fire and is deleted rather than carried forward. An undetectable
+			// package yields an empty array, which the loop below already handles.
+			const publishTargets = yield* detector.detect(wsPkg);
 
-			const jsrTargets = publishTargets.filter((t) => isJsrRegistry(t.registry));
-			const npmTargets = publishTargets.filter((t) => !isJsrRegistry(t.registry));
+			const jsrTargets = publishTargets.filter((t) => classifyRegistry(t.registry) === "jsr");
+			const npmTargets = publishTargets.filter((t) => classifyRegistry(t.registry) !== "jsr");
 
 			for (const t of jsrTargets) {
 				yield* Effect.logWarning(
@@ -1270,12 +1215,7 @@ export const runPublishTargets = (
 			// Resolve each target's directory to an absolute path, then drop any
 			// whose built `package.json` is `private` — the build pipeline keeps
 			// `private: true` on dev-only outputs as the "never publish" signal.
-			const resolvedTargets: Array<{
-				registry: string;
-				directory: string;
-				access: "public" | "restricted";
-				provenance: boolean;
-			}> = [];
+			const resolvedTargets: TargetSpec[] = [];
 			let privateSkipped = 0;
 			for (const t of npmTargets) {
 				const directory = isAbsolute(t.directory) ? t.directory : join(wsPkg.path, t.directory);
@@ -1317,7 +1257,13 @@ export const runPublishTargets = (
 			`runPublishTargets: publishing ${sortedNames.length} package(s), ${totalTargets} total target(s)`,
 		);
 
-		const accumulateResult = yield* ErrorAccumulator.forEachAccumulate(sortedNames, (name) =>
+		// `Effect.partition` is the accumulator: it runs every element and returns
+		// `[failures, successes]` — note the order, which is the reverse of the
+		// predecessor's `{ successes, failures }` field order. It never fails, so
+		// one package's failure cannot abort the batch. It also loses item
+		// attribution, which `Effect.mapError` restores by naming the package
+		// inside the failing branch.
+		const [failures, successes] = yield* Effect.partition(sortedNames, (name) =>
 			Effect.gen(function* () {
 				const pkgEntry = targetsByPackage.get(name);
 				if (pkgEntry === undefined) {
@@ -1344,7 +1290,6 @@ export const runPublishTargets = (
 				}
 
 				const targetResults: TargetPublishResult[] = [];
-
 				const sbomPathForPackage = sbomPaths.get(name) ?? null;
 
 				for (const [directory, groupTargets] of groups) {
@@ -1361,7 +1306,7 @@ export const runPublishTargets = (
 							groupTargets,
 							npmToken,
 							ghPkgsToken,
-							normalizePackageManager(args.packageManager),
+							npmrcPath,
 							sbomPathForPackage,
 						),
 					);
@@ -1369,7 +1314,7 @@ export const runPublishTargets = (
 				}
 
 				return { name, version, targets: targetResults } satisfies PackagePublishResult;
-			}),
+			}).pipe(Effect.mapError((error: never) => ({ item: name, error }))),
 		);
 
 		// ── Assemble PublishPackagesResult ─────────────────────────────────────
@@ -1377,7 +1322,7 @@ export const runPublishTargets = (
 		let successfulPackages = 0;
 		let successfulTargets = 0;
 
-		for (const result of accumulateResult.successes) {
+		for (const result of successes) {
 			if (result === null) continue;
 			packages.push(result);
 			// A target counts as successful for the abort check when it
@@ -1392,11 +1337,17 @@ export const runPublishTargets = (
 			successfulTargets += result.targets.filter((t) => t.success).length;
 		}
 
-		for (const { item: name, error: rawError } of accumulateResult.failures) {
-			const err: unknown = rawError;
-			yield* Effect.logError(
-				`runPublishTargets: publishing ${name} failed — ${err instanceof Error ? err.message : String(err)}`,
-			);
+		// UNREACHABLE TODAY, and kept on purpose. `publishDirectoryGroup` catches
+		// every failure into a `status: "failed"` result, so the partitioned `E` is
+		// `never` and this loop cannot run — which was equally true of the
+		// predecessor's `ErrorAccumulator` branch; no test ever exercised it. It
+		// stays as the landing site for the moment any step inside stops catching,
+		// because deleting it would turn that future failure into an abort of the
+		// whole batch instead of one package's failed entry. `String(error)` rather
+		// than an `instanceof` narrowing, because `never` has no prototype to test.
+		for (const { item: name, error } of failures) {
+			const message = String(error);
+			yield* Effect.logError(`runPublishTargets: publishing ${name} failed — ${message}`);
 			const version = targetsByPackage.get(name)?.version ?? "unknown";
 			packages.push({
 				name,
@@ -1413,7 +1364,7 @@ export const runPublishTargets = (
 							tokenEnv: null,
 						},
 						success: false,
-						error: err instanceof Error ? err.message : String(err),
+						error: message,
 					},
 				],
 			});

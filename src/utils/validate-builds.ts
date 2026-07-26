@@ -9,17 +9,16 @@
  * catches breakage anywhere in the repo.
  */
 
-import type {
-	ActionEnvironmentError,
-	ActionOutputError,
-	CheckRunAnnotation,
-	CheckRunError,
-	CommandRunnerError,
-} from "@savvy-web/github-action-effects";
-import { ActionEnvironment, ActionOutputs, CheckRun, CommandRunner } from "@savvy-web/github-action-effects";
+import type { CommandFailedError, CommandOutputError } from "@effected/commands";
+import { Run } from "@effected/commands";
+import type { GitHubError, Repo } from "@effected/github";
+import { Annotation, CheckRun, CheckRunOutput } from "@effected/github";
+import type { ActionEnvironmentError, ActionOutputError } from "@effected/github-actions";
+import { ActionEnvironment, ActionOutputs } from "@effected/github-actions";
 import type { FileSystem } from "effect";
 import { Cause, Config, Effect } from "effect";
-import { capCheckSummary } from "./create-validation-check.js";
+import type { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess } from "effect/unstable/process";
 import { summaryWriter } from "./summary-writer.js";
 import { emitConciseMarker, readTurboDiagnostics, renderTurboCacheSection } from "./turbo-summary.js";
 
@@ -31,6 +30,21 @@ export interface BuildValidationResult {
 	htmlUrl: string;
 }
 
+/**
+ * Map a package manager onto the argv that runs a **package script**.
+ *
+ * @remarks
+ * Deliberately hand-maintained rather than replaced by `LocalExec.prefixes`,
+ * despite the surface similarity. `LocalExec.prefixes` yields the argv for
+ * running a project-local **binary** (`pnpm exec <bin>`) or fetch-and-running
+ * one (`pnpm dlx <bin>`). What is needed here is a **script** from
+ * `package.json` `scripts` — `pnpm run ci:build` — and the kit ships no script
+ * runner. The two tables look alike and are not interchangeable.
+ *
+ * The `bun`/`yarn`/`pnpm` asymmetry below (some paths emit `run`, the `pnpm`
+ * and `yarn` no-build-command paths do not) is inherited behaviour, preserved
+ * verbatim.
+ */
 const buildInvocation = (packageManager: string, buildCommand: string): { cmd: string; args: string[] } => {
 	if (buildCommand !== "") {
 		switch (packageManager) {
@@ -56,31 +70,38 @@ const buildInvocation = (packageManager: string, buildCommand: string): { cmd: s
 	}
 };
 
-const parseAnnotations = (buildError: string): CheckRunAnnotation[] => {
-	const out: CheckRunAnnotation[] = [];
+// `Annotation` is a `Schema.Class` and renames every wire field: `startLine` /
+// `endLine` / `level`, not `start_line` / `end_line` / `annotation_level`. The
+// snake_case mapping happens once, in the kit's `wireOutput`.
+const parseAnnotations = (buildError: string): Annotation[] => {
+	const out: Annotation[] = [];
 	const tsErrorPattern = /([^\s:]+\.tsx?):(\d+):(\d+)\s+-\s+error\s+TS\d+:\s+(.+)/g;
 	let match: RegExpExecArray | null = tsErrorPattern.exec(buildError);
 	while (match !== null) {
-		out.push({
-			path: match[1],
-			start_line: Number.parseInt(match[2], 10),
-			end_line: Number.parseInt(match[2], 10),
-			annotation_level: "failure",
-			message: match[4],
-		});
+		out.push(
+			Annotation.make({
+				path: match[1],
+				startLine: Number.parseInt(match[2], 10),
+				endLine: Number.parseInt(match[2], 10),
+				level: "failure",
+				message: match[4],
+			}),
+		);
 		match = tsErrorPattern.exec(buildError);
 	}
 	const genericErrorPattern = /ERROR in ([^\s:]+):?\s*(.+)?/g;
 	match = genericErrorPattern.exec(buildError);
 	while (match !== null) {
 		if (match[1].includes(".ts")) {
-			out.push({
-				path: match[1],
-				start_line: 1,
-				end_line: 1,
-				annotation_level: "failure",
-				message: match[2] ?? "Build error",
-			});
+			out.push(
+				Annotation.make({
+					path: match[1],
+					startLine: 1,
+					endLine: 1,
+					level: "failure",
+					message: match[2] ?? "Build error",
+				}),
+			);
 		}
 		match = genericErrorPattern.exec(buildError);
 	}
@@ -96,14 +117,18 @@ export const validateBuilds = (
 	packageManager: string,
 ): Effect.Effect<
 	BuildValidationResult,
-	ActionEnvironmentError | ActionOutputError | CheckRunError | CommandRunnerError | Config.ConfigError,
-	ActionEnvironment | ActionOutputs | CheckRun | CommandRunner | FileSystem.FileSystem
+	| ActionEnvironmentError
+	| ActionOutputError
+	| GitHubError
+	| CommandFailedError
+	| CommandOutputError
+	| Config.ConfigError,
+	ActionEnvironment | ActionOutputs | CheckRun | Repo | ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem
 > =>
 	Effect.gen(function* () {
 		const env = yield* ActionEnvironment;
 		const outputs = yield* ActionOutputs;
 		const checks = yield* CheckRun;
-		const runner = yield* CommandRunner;
 
 		const buildCommand = yield* Config.string("build-command").pipe(Config.withDefault(""));
 		const dryRun = yield* Config.boolean("dry-run").pipe(Config.withDefault(false));
@@ -117,7 +142,12 @@ export const validateBuilds = (
 		let buildExitCode = 0;
 
 		if (!dryRun) {
-			const result = yield* Effect.result(runner.execCapture(buildCmd, buildArgs));
+			// `Run.collect` treats a NON-ZERO EXIT AS A RESULT, not a failure — the
+			// same split the predecessor's `execCapture` had, so the exit-code
+			// branch below is reached identically. The error channel fires only
+			// when the process could not be run at all (`kind: "spawn"`) or its
+			// output could not be captured.
+			const result = yield* Effect.result(Run.collect(ChildProcess.make(buildCmd, buildArgs)));
 			if (result._tag === "Success") {
 				buildExitCode = result.success.exitCode;
 				buildError = result.success.stderr;
@@ -125,7 +155,7 @@ export const validateBuilds = (
 				if (result.success.stderr !== "") process.stderr.write(result.success.stderr);
 			} else {
 				buildExitCode = 1;
-				buildError = result.failure.reason;
+				buildError = result.failure.message;
 				yield* Effect.logError(`Build command failed: ${buildError}`);
 			}
 		} else {
@@ -205,15 +235,20 @@ export const validateBuilds = (
 		const checkDetails = summaryWriter.build(checkSections);
 
 		const checkRun = yield* checks.create(checkTitle, sha);
-		yield* checks.complete(checkRun.id, success ? "success" : "failure", {
-			title: checkSummary,
-			summary: capCheckSummary(checkDetails),
-			annotations: annotations.slice(0, 50),
-		});
-		yield* Effect.logInfo(`Created check run: ${checkRun.htmlUrl}`);
+		// No `capCheckSummary` and no `annotations.slice(0, 50)`: `CheckRun.complete`
+		// routes the output through `wireOutput`, which calls
+		// `CheckRunOutput.truncated()` unconditionally — capping `summary` on BYTES
+		// and slicing annotations to `CheckRunOutput.MAX_ANNOTATIONS` (50).
+		yield* checks.complete(
+			checkRun.id,
+			success ? "success" : "failure",
+			CheckRunOutput.make({ title: checkSummary, summary: checkDetails, annotations }),
+		);
+		// `CheckRunRef` exposes `url`, not `htmlUrl`.
+		yield* Effect.logInfo(`Created check run: ${checkRun.url}`);
 
 		for (const ann of annotations.slice(0, 10)) {
-			yield* Effect.logError(`${ann.path}:${ann.start_line}: ${ann.message}`);
+			yield* Effect.logError(`${ann.path}:${ann.startLine}: ${ann.message}`);
 		}
 
 		const jobResultsTable = summaryWriter.keyValueTable([
@@ -240,5 +275,5 @@ export const validateBuilds = (
 		}
 		yield* outputs.summary(summaryWriter.build(jobSections));
 
-		return { success, errors: buildError, checkId: checkRun.id, htmlUrl: checkRun.htmlUrl };
+		return { success, errors: buildError, checkId: checkRun.id, htmlUrl: checkRun.url };
 	});

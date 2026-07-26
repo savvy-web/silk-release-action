@@ -11,7 +11,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
-import { extractReleaseNotes } from "../src/utils/extract-release-notes.js";
+import { extractReleaseNotes, extractVersionReleaseNotes } from "../src/utils/extract-release-notes.js";
 
 let pkgPath: string;
 
@@ -69,6 +69,77 @@ describe("extractReleaseNotes - found", () => {
 		expect(result.content).toContain("### Other");
 		expect(result.content).toContain("Tetsing flow");
 		expect(result.content).not.toContain("old");
+	});
+});
+
+describe("extractReleaseNotes - fenced code blocks", () => {
+	it("does not treat a `## ` line inside a fenced code block as a section boundary", () => {
+		// REGRESSION. The hand-rolled `/^## /` line scan this replaced saw the
+		// `## 5.0.12` inside the fence as the next release heading and truncated
+		// the entry there, dropping everything after it. Sections are delimited
+		// by root-level headings, and a line inside a fence is not one.
+		writeChangelog(
+			[
+				"# Changelog",
+				"",
+				"## 5.0.13",
+				"",
+				"- Documented the changelog format:",
+				"",
+				"```markdown",
+				"## 5.0.12",
+				"```",
+				"",
+				"- A bullet AFTER the fence",
+				"",
+				"## 5.0.12",
+				"",
+				"- genuinely the previous release",
+				"",
+			].join("\n"),
+		);
+		const result = extractReleaseNotes(pkgPath);
+		expect(result.status).toBe("found");
+		if (result.status !== "found") return;
+		expect(result.content).toContain("A bullet AFTER the fence");
+		expect(result.content).not.toContain("genuinely the previous release");
+	});
+});
+
+describe("extractVersionReleaseNotes", () => {
+	const changelogPath = (): string => join(pkgPath, "CHANGELOG.md");
+
+	it("returns the section for the requested version, not the newest one", () => {
+		// The whole reason this is a separate function: Phase 3 falls back to the
+		// repo-root CHANGELOG, whose newest entry may belong to another package.
+		// Taking the first H2 there would attach the wrong notes to a release.
+		writeChangelog("# Changelog\n\n## 2.0.0\n\n- newest\n\n## 1.2.3\n\n- the one we asked for\n");
+		expect(extractVersionReleaseNotes(changelogPath(), "1.2.3")).toBe("- the one we asked for");
+	});
+
+	it("matches the multi-package tagged heading shape", () => {
+		writeChangelog("# Changelog\n\n## @scope/pkg@1.2.3\n\n- scoped body\n");
+		expect(extractVersionReleaseNotes(changelogPath(), "1.2.3")).toBe("- scoped body");
+	});
+
+	it("returns undefined when the version has no section", () => {
+		writeChangelog("# Changelog\n\n## 2.0.0\n\n- newest\n");
+		expect(extractVersionReleaseNotes(changelogPath(), "1.2.3")).toBeUndefined();
+	});
+
+	it("returns undefined when the version's section is empty", () => {
+		writeChangelog("# Changelog\n\n## 1.2.3\n\n## 1.2.2\n\n- old\n");
+		expect(extractVersionReleaseNotes(changelogPath(), "1.2.3")).toBeUndefined();
+	});
+
+	it("returns undefined when the CHANGELOG does not exist", () => {
+		expect(extractVersionReleaseNotes(join(pkgPath, "CHANGELOG.md"), "1.2.3")).toBeUndefined();
+	});
+
+	it("treats the version as a literal, not a regex", () => {
+		// `1.2.3` as a pattern would also match `1x2x3`; the dots are escaped.
+		writeChangelog("# Changelog\n\n## 1x2x3\n\n- not a version\n");
+		expect(extractVersionReleaseNotes(changelogPath(), "1.2.3")).toBeUndefined();
 	});
 });
 

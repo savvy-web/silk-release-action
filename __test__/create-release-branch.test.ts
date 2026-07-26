@@ -2,48 +2,66 @@
  * Fixture tests for the create-release-branch stage.
  *
  * @remarks
- * Exercises the path rewired onto the `PullRequest` library service:
- * `addLabels` called after the release PR is created via the still-raw
- * `client.graphql` `createPullRequest` mutation. `GitHubClientTest`
- * satisfies all raw REST calls (`repos.get`) and the GraphQL mutation
- * (keyed by the full mutation string per the test-layer contract).
+ * Driven entirely through kit seams — `GitBranch`, `GitCommit`,
+ * `GitHubRepository`, `PullRequest`, `GitTag`, `GitHubCommit`, `GitHubIssue`
+ * and `CheckRun` `layerTest` doubles over one mutable fixture, plus a
+ * `ScriptedSpawner` for the git commands. There is no `GitHubClient`: the two
+ * hand-cast REST calls (`git.getCommit`, `repos.get`), the `createRef`
+ * fallback and both GraphQL mutations are gone.
  *
- * The `git status --porcelain` command response drives whether the version
- * bump produced changes. An empty `-z` status response keeps `finalCommitSha`
- * empty so the tree/commit/ref creation path is skipped, which simplifies the
- * fixture setup while still exercising the PR creation and label steps.
+ * Four invariants are pinned here beyond the original coverage, none of them
+ * visible to the typechecker:
+ *
+ * 1. **`upsert` then `commitFiles`, in that order.** `commitFiles` cannot
+ *    create a branch, so without the `upsert` the brand-new release branch is
+ *    never placed — the exact case the predecessor's `updateRef` →
+ *    `createRef`-on-404 fallback existed for.
+ * 2. **The commit is rooted on the TARGET branch head**, read from the ref
+ *    rather than from `git rev-parse HEAD`, where it matched only by
+ *    coincidence.
+ * 3. **The branch is linked to each issue via `GitBranch.createLinked`**,
+ *    carrying the issue node id and the repository node id.
+ * 4. **The no-changes path cleans up locally** (`git checkout` +
+ *    `git branch -D`) and creates no PR — deliberately asymmetric with
+ *    `update-release-branch`, which deletes the *remote* branch.
  */
 
-import { PublishabilityDetector, WorkspaceDiscovery } from "@effected/workspaces";
-import type {
-	ActionOutputsTestState,
-	ActionStateTestState,
-	CheckRunTestState,
-	GitCommitTestState,
-	GitHubClientTestState,
-	PullRequestTestState,
-} from "@savvy-web/github-action-effects/testing";
+import type { SpawnRecord } from "@effected/commands";
+import { ScriptedSpawner, ToolDiscovery } from "@effected/commands";
+import type { CheckRunOutput, FileChange, PullRequestInfo } from "@effected/github";
 import {
-	ActionEnvironmentTest,
-	ActionOutputsTest,
-	ActionStateTest,
-	CheckRunTest,
-	CommandRunnerTest,
-	GitCommitTest,
-	GitHubClientTest,
-	GitHubCommitTest,
-	GitHubIssueTest,
-	GitTagTest,
-	PullRequestTest,
-} from "@savvy-web/github-action-effects/testing";
+	CheckRun,
+	CheckRunRef,
+	CommitSummary,
+	GitBranch,
+	GitCommit,
+	GitHubCommit,
+	GitHubIssue,
+	GitHubRepository,
+	GitTag,
+	LinkedIssue as KitLinkedIssue,
+	PullRequest,
+	Repo,
+	RepoRef,
+} from "@effected/github";
+import { ActionEnvironment, ActionOutputs, ActionState, ActionStateError } from "@effected/github-actions";
+import { PublishabilityDetector, WorkspaceDiscovery } from "@effected/workspaces";
 import { Changesets } from "@savvy-web/silk-effects";
 import { ConfigProvider, Effect, FileSystem, Layer, Logger, Option } from "effect";
 import { describe, expect, it } from "vitest";
 import { ChangesetConfig } from "../src/release/changeset-config.js";
 import type { CreateReleaseBranchResult } from "../src/utils/create-release-branch.js";
-import { CREATE_PULL_REQUEST_MUTATION, createReleaseBranch } from "../src/utils/create-release-branch.js";
+import { createReleaseBranch } from "../src/utils/create-release-branch.js";
 
-/** Minimal WorkspaceDiscovery stub: no packages. */
+const RELEASE_BRANCH = "changeset-release/main";
+const TARGET_BRANCH = "main";
+/** The sha `GitBranch.sha(TARGET_BRANCH)` reports — the expected commit parent. */
+const TARGET_HEAD = "targethead000";
+const REPO_NODE_ID = "R_repo_node";
+const NEW_COMMIT_SHA = "newcommitsha";
+
+// --- ambient stubs -------------------------------------------------------
+
 const workspaceDiscoveryStub = Layer.succeed(WorkspaceDiscovery, {
 	info: () => Effect.die("not implemented"),
 	listPackages: () => Effect.succeed([]),
@@ -54,12 +72,8 @@ const workspaceDiscoveryStub = Layer.succeed(WorkspaceDiscovery, {
 	refresh: () => Effect.void,
 });
 
-/** Minimal PublishabilityDetector stub: no publish targets for any package. */
-const publishabilityDetectorStub = Layer.succeed(PublishabilityDetector, {
-	detect: () => Effect.succeed([]),
-});
+const publishabilityDetectorStub = Layer.succeed(PublishabilityDetector, { detect: () => Effect.succeed([]) });
 
-/** Minimal ChangesetConfig stub: no ignore, no fixed. */
 const changesetConfigStub = Layer.succeed(ChangesetConfig, {
 	mode: () => Effect.succeed("silk" as const),
 	versionPrivate: () => Effect.succeed(false),
@@ -89,128 +103,191 @@ const configInspectorStub = Changesets.makeConfigInspectorTest({
 	legacyVersionFilesUsed: false,
 });
 
-const RELEASE_BRANCH = "changeset-release/main";
-const TARGET_BRANCH = "main";
-const CREATED_PR_NUMBER = 42;
+// --- fixture -------------------------------------------------------------
+
+const commitSummary = (sha: string, message: string): CommitSummary =>
+	CommitSummary.make({
+		sha,
+		message,
+		author: "Test Author",
+		url: `https://github.com/owner/repo/commit/${sha}`,
+	});
 
 interface Fixtures {
-	outputsState: ActionOutputsTestState;
-	stateState: ActionStateTestState;
-	checkRunState: CheckRunTestState;
-	commitState: GitCommitTestState;
-	prState: PullRequestTestState;
-	clientState: GitHubClientTestState;
+	prs: PullRequestInfo[];
+	labels: Map<number, string[]>;
+	/** Every `GitBranch.upsert` call, in order. */
+	upserts: Array<{ name: string; sha: string }>;
+	/** Every `GitCommit.commitFiles` call, in order. */
+	commits: Array<{ branch: string; message: string; changes: ReadonlyArray<FileChange> }>;
+	/** Every `GitBranch.createLinked` call, in order. */
+	linkedBranches: Array<{ issueNodeId: string; repositoryNodeId: string; name: string; sha: string }>;
+	/** What `GitHubCommit.list` returns for the target branch. */
+	branchCommits: CommitSummary[];
+	/** Issues each merge commit's PR closes, keyed by PR number. */
+	linkedIssues: Map<number, KitLinkedIssue[]>;
+	completed: Array<{ conclusion: string; output: CheckRunOutput | undefined }>;
+	summaries: string[];
+	nextPrNumber: number;
 }
 
 const makeFixtures = (
-	params: {
-		/** Whether to pre-populate PullRequestTest with the created PR (required for addLabels to succeed). */
-		seedPr?: boolean;
-		prNumber?: number;
-	} = {},
+	params: { linkedIssues?: Array<[number, number[]]>; branchCommits?: CommitSummary[] } = {},
 ): Fixtures => {
-	const prNumber = params.prNumber ?? CREATED_PR_NUMBER;
-
-	const prState = PullRequestTest.empty();
-	if (params.seedPr) {
-		prState.prs.push({
-			number: prNumber,
-			nodeId: `PR_node_${prNumber}`,
-			url: `https://github.com/owner/repo/pull/${prNumber}`,
-			title: "chore: release",
-			body: "",
-			state: "open",
-			head: RELEASE_BRANCH,
-			base: TARGET_BRANCH,
-			draft: false,
-			merged: false,
-			mergedAt: null,
-			labels: [],
-			reviewers: [],
-			teamReviewers: [],
-			autoMerge: undefined,
-		});
-		prState.nextNumber = prNumber + 1;
+	const linkedIssues = new Map<number, KitLinkedIssue[]>();
+	for (const [prNumber, issueNumbers] of params.linkedIssues ?? []) {
+		linkedIssues.set(
+			prNumber,
+			issueNumbers.map((n) =>
+				KitLinkedIssue.make({
+					number: n,
+					title: `Issue ${n}`,
+					state: "OPEN",
+					url: `https://github.com/owner/repo/issues/${n}`,
+					nodeId: `I_${n}`,
+					userLinked: false,
+				}),
+			),
+		);
 	}
-
-	const clientState: GitHubClientTestState = {
-		restResponses: new Map([["repos.get", { data: { node_id: "repo-node-123" } }]]),
-		graphqlResponses: new Map([
-			[
-				CREATE_PULL_REQUEST_MUTATION,
-				{
-					createPullRequest: {
-						pullRequest: {
-							number: prNumber,
-							url: `https://github.com/owner/repo/pull/${prNumber}`,
-							id: `PR_node_${prNumber}`,
-						},
-					},
-				},
-			],
-		]),
-		paginateResponses: new Map([["listCommits", [[]]]]),
-		repo: { owner: "owner", repo: "repo" },
-	};
-
 	return {
-		outputsState: ActionOutputsTest.empty(),
-		stateState: ActionStateTest.empty(),
-		checkRunState: CheckRunTest.empty(),
-		commitState: GitCommitTest.empty(),
-		prState,
-		clientState,
+		prs: [],
+		labels: new Map(),
+		upserts: [],
+		commits: [],
+		linkedBranches: [],
+		branchCommits: params.branchCommits ?? [],
+		linkedIssues,
+		completed: [],
+		summaries: [],
+		nextPrNumber: 42,
 	};
 };
 
-/**
- * Command responses that simulate a version bump with changes.
- *
- * - `git status --porcelain` returns a modified `package.json` line so the
- *   function sees changes and does not exit early.
- * - `git rev-parse HEAD` returns the parent SHA.
- * - `git status --porcelain -z` returns empty so `files.length === 0` and
- *   the tree/commit/ref creation is skipped (simplifying the fixture).
- */
-const versionChangeCommands: Array<[string, string]> = [
-	["git status --porcelain", "M package.json\nM CHANGELOG.md"],
-	["git rev-parse HEAD", "abc123parent"],
-	["git status --porcelain -z", ""],
-];
+// --- git script ----------------------------------------------------------
 
-const runStage = (
+/** `git status --porcelain` stdout that drives the version-change branch. */
+const PORCELAIN_CHANGED = "M package.json\nM CHANGELOG.md";
+
+interface GitOptions {
+	/** `git status --porcelain` stdout. Empty drives the no-change cleanup path. */
+	readonly porcelain?: string;
+	/** `git status --porcelain -z` stdout, which becomes the commit's file list. */
+	readonly porcelainZ?: string;
+}
+
+const gitScript = (options: GitOptions) => (command: string, args: ReadonlyArray<string>) => {
+	if (command !== "git") return ScriptedSpawner.notFound(command);
+	const argv = args.join(" ");
+	if (argv === "status --porcelain") return { exit: 0, stdout: options.porcelain ?? "", stderr: "" };
+	if (argv === "status --porcelain -z") return { exit: 0, stdout: options.porcelainZ ?? "", stderr: "" };
+	// checkout -b, checkout <target>, branch -D
+	return { exit: 0, stdout: "", stderr: "" };
+};
+
+// --- runner --------------------------------------------------------------
+
+const runStage = async (
 	f: Fixtures,
-	commandResponses: Array<[string, string]> = versionChangeCommands,
+	git: GitOptions = { porcelain: PORCELAIN_CHANGED, porcelainZ: "M  package.json\0" },
 	plannerLayer: Layer.Layer<Changesets.ReleasePlanner> = releasePlannerStub,
-): Promise<CreateReleaseBranchResult> => {
+): Promise<{ result: CreateReleaseBranchResult; spawns: ReadonlyArray<SpawnRecord> }> => {
+	const spawner = ScriptedSpawner.make(gitScript(git));
 	const layer = Layer.mergeAll(
-		ActionEnvironmentTest.layer({
+		ActionEnvironment.layerTest({
 			GITHUB_SHA: "abc123",
 			GITHUB_REF: "refs/heads/main",
 			GITHUB_REPOSITORY: "owner/repo",
 			GITHUB_REPOSITORY_OWNER: "owner",
 			GITHUB_WORKSPACE: "/workspace",
 			GITHUB_EVENT_NAME: "push",
-			GITHUB_EVENT_PATH: "/dev/null",
+			GITHUB_EVENT_PATH: "",
 			GITHUB_RUN_ID: "1",
 			GITHUB_RUN_NUMBER: "1",
 			GITHUB_ACTOR: "test",
 			GITHUB_SERVER_URL: "https://github.com",
 			GITHUB_API_URL: "https://api.github.com",
 		}),
-		ActionOutputsTest.layer(f.outputsState),
-		ActionStateTest.layer(f.stateState),
-		CheckRunTest.layer(f.checkRunState),
-		CommandRunnerTest.layer(
-			new Map(commandResponses.map(([key, stdout]) => [key, { exitCode: 0, stdout, stderr: "" }])),
-		),
-		GitCommitTest.layer(f.commitState),
-		GitHubClientTest.layer(f.clientState),
-		GitHubCommitTest.layer(GitHubCommitTest.empty()),
-		GitHubIssueTest.empty().layer,
-		GitTagTest.empty().layer,
-		PullRequestTest.layer(f.prState),
-		FileSystem.layerNoop({ exists: () => Effect.succeed(false) }),
+		ActionOutputs.layerTest({
+			summary: (content) =>
+				Effect.sync(() => {
+					f.summaries.push(content);
+				}),
+		}),
+		// No token persisted, so the sign-off takes its `github-actions[bot]` fallback.
+		ActionState.layerTest({
+			get: ((key: string) =>
+				Effect.fail(new ActionStateError({ reason: "missing", key }))) as ActionState["Service"]["get"],
+		}),
+		// `exists` answers false, so `formatWorkspaceWithBiome` returns before
+		// probing — an unstubbed `isAvailable` would die if it did not.
+		ToolDiscovery.layerTest(),
+		spawner.layer,
+		CheckRun.layerTest({
+			create: (name) =>
+				Effect.succeed(
+					CheckRunRef.make({ id: 1, name, url: "https://github.com/owner/repo/runs/1", status: "in_progress" }),
+				),
+			complete: (_id, conclusion, output) =>
+				Effect.sync(() => {
+					f.completed.push({ conclusion, output });
+				}),
+		}),
+		GitBranch.layerTest({
+			sha: (name) => Effect.succeed(name === TARGET_BRANCH ? TARGET_HEAD : `sha-of-${name}`),
+			upsert: (name, sha) =>
+				Effect.sync(() => {
+					f.upserts.push({ name, sha });
+					return "created" as const;
+				}),
+			createLinked: (input) =>
+				Effect.sync(() => {
+					f.linkedBranches.push({ ...input });
+				}),
+		}),
+		GitCommit.layerTest({
+			commitFiles: ({ branch, message, changes }) =>
+				Effect.sync(() => {
+					f.commits.push({ branch, message, changes });
+					return NEW_COMMIT_SHA;
+				}),
+		}),
+		GitHubRepository.layerTest({ nodeId: Effect.succeed(REPO_NODE_ID) }),
+		// No tags → `getLinkedIssuesFromCommits` takes its list path.
+		GitTag.layerTest({ latestSemver: () => Effect.succeed(Option.none()) }),
+		GitHubCommit.layerTest({ list: () => Effect.succeed(f.branchCommits) }),
+		GitHubIssue.layerTest({
+			linkedIssues: (prNumber) => Effect.succeed(f.linkedIssues.get(prNumber) ?? []),
+		}),
+		PullRequest.layerTest({
+			create: (input) =>
+				Effect.sync(() => {
+					const created = {
+						number: f.nextPrNumber++,
+						nodeId: `PR_node_${f.nextPrNumber}`,
+						url: `https://github.com/owner/repo/pull/${f.nextPrNumber - 1}`,
+						title: input.title,
+						body: input.body ?? "",
+						state: "open",
+						head: input.head,
+						base: input.base,
+						draft: false,
+						merged: false,
+						mergedAt: Option.none(),
+					} as unknown as PullRequestInfo;
+					f.prs.push(created);
+					return created;
+				}),
+			addLabels: (number, labels) =>
+				Effect.sync(() => {
+					f.labels.set(number, [...(f.labels.get(number) ?? []), ...labels]);
+				}),
+		}),
+		Layer.succeed(Repo, RepoRef.make({ owner: "owner", repo: "repo" })),
+		FileSystem.layerNoop({
+			exists: () => Effect.succeed(false),
+			readFileString: () => Effect.succeed("file contents"),
+		}),
 		workspaceDiscoveryStub,
 		publishabilityDetectorStub,
 		changesetConfigStub,
@@ -223,55 +300,115 @@ const runStage = (
 		"pr-title-prefix": "chore: release",
 		"dry-run": "false",
 	});
-	return Effect.runPromise(
+	const result = await Effect.runPromise(
 		createReleaseBranch().pipe(
 			Effect.provide(layer),
 			Effect.provide(Logger.layer([])),
 			Effect.provide(ConfigProvider.layer(config)),
 		),
 	);
+	return { result, spawns: spawner.spawns };
 };
+
+const argvOf = (spawns: ReadonlyArray<SpawnRecord>): string[] => spawns.map((s) => [s.command, ...s.args].join(" "));
 
 describe("createReleaseBranch", () => {
 	it("creates the release branch and PR, and applies automated/release labels", async () => {
-		const f = makeFixtures({ seedPr: true });
-
-		const result = await runStage(f);
-
-		expect(result.created).toBe(true);
-		expect(result.prNumber).toBe(CREATED_PR_NUMBER);
-		expect(typeof result.checkId).toBe("number");
-
-		// The PR record in PullRequestTest should have the two labels applied.
-		const pr = f.prState.prs.find((p) => p.number === CREATED_PR_NUMBER);
-		expect(pr).toBeDefined();
-		expect(pr?.labels).toEqual(["automated", "release"]);
-	});
-
-	it("exits early when the version bump produces no changes", async () => {
 		const f = makeFixtures();
 
-		const result = await runStage(f, [["git status --porcelain", ""]]);
+		const { result } = await runStage(f);
+
+		expect(result.created).toBe(true);
+		expect(result.prNumber).toBe(42);
+		expect(f.prs).toHaveLength(1);
+		expect(f.prs[0].head).toBe(RELEASE_BRANCH);
+		expect(f.prs[0].base).toBe(TARGET_BRANCH);
+		expect(f.labels.get(42)).toEqual(["automated", "release"]);
+		expect(f.completed.at(-1)?.conclusion).toBe("success");
+	});
+
+	it("upserts the release branch to the TARGET head before committing onto it", async () => {
+		// INVARIANTS 1 and 2. `commitFiles` can neither create the branch nor
+		// choose its parent, so an `upsert` at the target head is the only thing
+		// that roots the release commit on `main` — and the only thing that makes
+		// a brand-new release branch exist at all.
+		const f = makeFixtures();
+
+		await runStage(f);
+
+		expect(f.upserts).toEqual([{ name: RELEASE_BRANCH, sha: TARGET_HEAD }]);
+		expect(f.commits).toHaveLength(1);
+		expect(f.commits[0].branch).toBe(RELEASE_BRANCH);
+		expect(f.commits[0].changes.map((c) => c.path)).toEqual(["package.json"]);
+	});
+
+	it("reads the parent from the target ref, not from a `git rev-parse HEAD` subprocess", async () => {
+		const f = makeFixtures();
+
+		const { spawns } = await runStage(f);
+
+		expect(argvOf(spawns)).not.toContain("git rev-parse HEAD");
+		expect(f.upserts[0].sha).toBe(TARGET_HEAD);
+	});
+
+	it("links the new branch to every linked issue, carrying both node ids", async () => {
+		// INVARIANT 3. `createLinked` is the one operation with no REST
+		// equivalent; a plain branch create would neither show on the issue nor
+		// close it when the release PR merges.
+		const f = makeFixtures({
+			branchCommits: [commitSummary("merge1", "feat: thing (#10)")],
+			linkedIssues: [[10, [5, 6]]],
+		});
+
+		await runStage(f);
+
+		expect(f.linkedBranches).toEqual([
+			{ issueNodeId: "I_5", repositoryNodeId: REPO_NODE_ID, name: RELEASE_BRANCH, sha: NEW_COMMIT_SHA },
+			{ issueNodeId: "I_6", repositoryNodeId: REPO_NODE_ID, name: RELEASE_BRANCH, sha: NEW_COMMIT_SHA },
+		]);
+	});
+
+	it("exits early when the version bump produces no changes, cleaning up locally", async () => {
+		// INVARIANT 4. The branch only ever existed locally at this point, so the
+		// cleanup is `git checkout <target>` + `git branch -D <release>`, with no
+		// remote delete — deliberately unlike `update-release-branch`.
+		const f = makeFixtures();
+
+		const { result, spawns } = await runStage(f, { porcelain: "" });
 
 		expect(result.created).toBe(false);
 		expect(result.prNumber).toBeNull();
-		// No PR was created, so PullRequestTest state stays empty.
-		expect(f.prState.prs).toHaveLength(0);
+		expect(result.versionSummary).toBe("No changes");
+		expect(f.prs).toHaveLength(0);
+		expect(f.upserts).toHaveLength(0);
+		expect(f.commits).toHaveLength(0);
+		expect(argvOf(spawns)).toEqual([
+			`git checkout -b ${RELEASE_BRANCH} origin/${TARGET_BRANCH}`,
+			"git status --porcelain",
+			`git checkout ${TARGET_BRANCH}`,
+			`git branch -D ${RELEASE_BRANCH}`,
+		]);
+		expect(f.completed.at(-1)?.conclusion).toBe("neutral");
 	});
 
-	it("fails when addLabels cannot find the PR in the service (non-seeded state)", async () => {
-		// The GraphQL mock returns PR #42, but PullRequestTest has no PR #42.
-		// addLabels is called directly (not wrapped in Effect.either), so the
-		// effect must fail with a PullRequestError.
-		const f = makeFixtures({ seedPr: false });
+	it("skips the commit entirely when the -z status lists no files", async () => {
+		const f = makeFixtures();
 
-		await expect(runStage(f)).rejects.toThrow();
+		const { result } = await runStage(f, { porcelain: PORCELAIN_CHANGED, porcelainZ: "" });
+
+		// Still a "created" run — the PR is opened — but nothing was committed and
+		// therefore nothing was linked.
+		expect(result.created).toBe(true);
+		expect(f.commits).toHaveLength(0);
+		expect(f.linkedBranches).toHaveLength(0);
 	});
 
 	it("fails when native versioning fails", async () => {
-		const f = makeFixtures({ seedPr: true });
+		const f = makeFixtures();
 		// Planner test layer with no apply fixture → apply fails with ReleasePlanError.
 		const failingPlanner = Changesets.makeReleasePlannerTest({});
-		await expect(runStage(f, versionChangeCommands, failingPlanner)).rejects.toThrow(/ReleasePlanError|not provided/);
+		await expect(
+			runStage(f, { porcelain: PORCELAIN_CHANGED, porcelainZ: "M  package.json\0" }, failingPlanner),
+		).rejects.toThrow(/ReleasePlanError|not provided/);
 	});
 });

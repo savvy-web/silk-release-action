@@ -188,7 +188,7 @@ function loadConfigFromEnvVar(): Result.Result<ReleaseConfig | undefined, string
  * Load configuration from the `sbom-config` action input.
  *
  * @remarks
- * Reads via `Config.string` so the ambient `ActionsConfigProvider`
+ * Reads via `Config.string` so the ambient action-input `ConfigProvider`
  * (`main.ts`'s default provider) handles the GitHub Actions env-var
  * convention — `core.getInput("sbom-config")` reads `INPUT_SBOM-CONFIG`,
  * with **hyphens preserved** (only spaces are mapped to underscores). The

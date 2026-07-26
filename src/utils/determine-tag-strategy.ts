@@ -1,8 +1,40 @@
 import type { PublishabilityDetector, WorkspaceDiscovery } from "@effected/workspaces";
+import { ReleaseTag } from "@effected/workspaces";
 import { Effect } from "effect";
 import { ChangesetConfig } from "../release/changeset-config.js";
 import type { PackagePublishResult } from "../release/types.js";
 import { listPublishablePackages } from "./release-summary-helpers.js";
+
+/**
+ * Version-prefix formats for the three tag shapes this action emits.
+ *
+ * @remarks
+ * **These reproduce the published tag names exactly and must not be
+ * "normalized" without a deliberate, announced migration.** The kit's
+ * `ReleaseTag` defaults `versionPrefix` to `""` uniformly (strict SemVer); this
+ * action's historical naming is *not* uniform, and existing tags depend on it:
+ *
+ * | shape | example | prefix |
+ * | --- | --- | --- |
+ * | single release tag | `3.2.5` | `""` |
+ * | per-package, scoped | `@org/pkg@1.0.0` | `""` |
+ * | per-package, unscoped | `pkg@v1.0.0` | `"v"` |
+ *
+ * Evidence for the first row: this repository's own published tags are
+ * `3.1.4 … 3.2.5` — bare — and `release-sync.yml` documents the release tag as
+ * "bare `MAJOR.MINOR.PATCH` — no leading `v`". The `v1`/`v2`/`v3` tags are the
+ * separate major *alias* tags that workflow maintains, not release tags.
+ *
+ * So passing `"v"` uniformly would rename two of the three shapes. The
+ * asymmetry is inherited, not chosen; normalizing it is available as its own
+ * decision, and would be a breaking change to every consumer that resolves a
+ * release by tag.
+ */
+const SINGLE_TAG_FORMAT = { versionPrefix: "" } as const;
+
+/** Scoped packages take no `v`; unscoped ones do. See {@link SINGLE_TAG_FORMAT}. */
+const perPackageTagFormat = (packageName: string): { readonly versionPrefix: string } =>
+	packageName.startsWith("@") ? { versionPrefix: "" } : { versionPrefix: "v" };
 
 /**
  * Tag strategy result
@@ -98,7 +130,7 @@ export function determineTagStrategy(
 
 		if (isFixedVersioning) {
 			const version = successfulPackages[0].version;
-			const tag = version;
+			const tag = ReleaseTag.single(version, SINGLE_TAG_FORMAT).value;
 			const packageNames =
 				successfulPackages.length === 1 ? successfulPackages[0].name : successfulPackages.map((p) => p.name).join(", ");
 
@@ -123,7 +155,7 @@ export function determineTagStrategy(
 			strategy: "single",
 			tags: [
 				{
-					name: highestVersion,
+					name: ReleaseTag.single(highestVersion, SINGLE_TAG_FORMAT).value,
 					packageName: successfulPackages.map((p) => p.name).join(", "),
 					version: highestVersion,
 				},
@@ -132,18 +164,12 @@ export function determineTagStrategy(
 		};
 	}
 
-	// Monorepo with independent/linked versioning - create tag per package
-	const tags = successfulPackages.map((pkg) => {
-		// Use npm-style tags for scoped packages: @scope/pkg@1.0.0
-		// Use v-prefix for non-scoped: pkg@v1.0.0
-		const tag = pkg.name.startsWith("@") ? `${pkg.name}@${pkg.version}` : `${pkg.name}@v${pkg.version}`;
-
-		return {
-			name: tag,
-			packageName: pkg.name,
-			version: pkg.version,
-		};
-	});
+	// Monorepo with independent/linked versioning — one tag per package.
+	const tags = successfulPackages.map((pkg) => ({
+		name: ReleaseTag.scoped(pkg.name, pkg.version, perPackageTagFormat(pkg.name)).value,
+		packageName: pkg.name,
+		version: pkg.version,
+	}));
 
 	// Check if all released packages happen to have same version
 	const versions = new Set(successfulPackages.map((pkg) => pkg.version));

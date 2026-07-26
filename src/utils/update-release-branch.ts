@@ -14,34 +14,29 @@
  * Rather than fail trying to open a PR with no commits, this stage closes
  * any open release PR and deletes the release branch.
  */
-
-import type { PublishabilityDetector } from "@effected/workspaces";
-import { WorkspaceDiscovery } from "@effected/workspaces";
-import type {
-	ActionEnvironmentError,
-	ActionOutputError,
-	ActionState,
-	CheckRunError,
-	CommandRunnerError,
-	GitBranchError,
-	GitCommitError,
-	GitHubClientError,
-	GitHubIssueError,
-	PullRequestError,
-} from "@savvy-web/github-action-effects";
+// `ActionState` is the KIT tag: this module never yields it directly, but
+// `resolveSignoff` requires it, and `R` propagates upward.
+import type { CommandFailedError, CommandOutputError, ToolDiscovery } from "@effected/commands";
+import { Run } from "@effected/commands";
+import type { FileChange, GitHubError, PullRequestInfo, Repo } from "@effected/github";
 import {
-	ActionEnvironment,
-	ActionOutputs,
 	CheckRun,
-	CommandRunner,
+	CheckRunOutput,
+	FileContent,
+	FileDeletion,
 	GitBranch,
 	GitCommit,
-	GitHubClient,
 	GitHubIssue,
 	PullRequest,
-} from "@savvy-web/github-action-effects";
+} from "@effected/github";
+import type { ActionEnvironmentError, ActionOutputError, ActionState } from "@effected/github-actions";
+import { ActionEnvironment, ActionOutputs } from "@effected/github-actions";
+import type { PublishabilityDetector } from "@effected/workspaces";
+import { WorkspaceDiscovery } from "@effected/workspaces";
 import type { Changesets } from "@savvy-web/silk-effects";
-import { Config, Effect, FileSystem } from "effect";
+import { Config, Effect, FileSystem, Option } from "effect";
+import type { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess } from "effect/unstable/process";
 import type { ChangesetConfig } from "../release/changeset-config.js";
 import { resolveSignoff } from "./commit-signoff.js";
 import { isSinglePackage } from "./detect-repo-type.js";
@@ -115,10 +110,6 @@ const buildLinkedIssuesSection = (linkedIssues: ReadonlyArray<LinkedIssue>): str
 	return summaryWriter.build([{ heading: "Linked Issues", content: summaryWriter.list(items) }]);
 };
 
-interface RefResponse {
-	object: { sha: string };
-}
-
 /**
  * Run the `updateReleaseBranch` stage.
  *
@@ -128,16 +119,12 @@ export const updateReleaseBranch = (): Effect.Effect<
 	UpdateReleaseBranchResult,
 	| ActionEnvironmentError
 	| ActionOutputError
-	| CheckRunError
 	| Changesets.ConfigurationError
 	| Changesets.ReleasePlanError
-	| CommandRunnerError
+	| CommandFailedError
+	| CommandOutputError
 	| Config.ConfigError
-	| GitBranchError
-	| GitCommitError
-	| GitHubClientError
-	| GitHubIssueError
-	| PullRequestError,
+	| GitHubError,
 	| ActionEnvironment
 	| ActionOutputs
 	| ActionState
@@ -145,23 +132,22 @@ export const updateReleaseBranch = (): Effect.Effect<
 	| Changesets.ConfigInspector
 	| Changesets.ReleasePlanner
 	| CheckRun
-	| CommandRunner
+	| ChildProcessSpawner.ChildProcessSpawner
+	| ToolDiscovery
 	| FileSystem.FileSystem
 	| GitBranch
 	| GitCommit
-	| GitHubClient
 	| GitHubIssue
 	| PublishabilityDetector
 	| PullRequest
+	| Repo
 	| WorkspaceDiscovery
 > =>
 	Effect.gen(function* () {
 		const env = yield* ActionEnvironment;
 		const outputs = yield* ActionOutputs;
 		const checks = yield* CheckRun;
-		const runner = yield* CommandRunner;
 		const gitCommit = yield* GitCommit;
-		const client = yield* GitHubClient;
 		const branches = yield* GitBranch;
 		const pr = yield* PullRequest;
 		const issues = yield* GitHubIssue;
@@ -193,7 +179,12 @@ export const updateReleaseBranch = (): Effect.Effect<
 				pr.list({ state: "closed", head: `${owner}:${releaseBranch}`, base: targetBranch }),
 			);
 			if (closedPrs._tag === "Success") {
-				const unmerged = closedPrs.success.find((p) => (p.mergedAt ?? null) === null);
+				// LANDMINE: `mergedAt` is an `Option<DateTime>` on the kit's shape, NOT
+				// `string | null`. The old `(p.mergedAt ?? null) === null` compiles
+				// UNCHANGED against an Option and is ALWAYS FALSE — `Option.none()` is an
+				// object, so `??` never fires — which would mean `unmerged` is never
+				// found and a closed-but-unmerged release PR is never reopened.
+				const unmerged = closedPrs.success.find((p) => Option.isNone(p.mergedAt));
 				if (unmerged) {
 					prNumber = unmerged.number;
 					prWasClosed = true;
@@ -216,8 +207,8 @@ export const updateReleaseBranch = (): Effect.Effect<
 		// ---------- Recreate the release branch from main locally ----------
 		yield* Effect.logInfo(`Recreating release branch '${releaseBranch}' from '${targetBranch}'`);
 		if (!dryRun) {
-			yield* Effect.result(runner.exec("git", ["branch", "-D", releaseBranch]));
-			yield* runner.exec("git", ["checkout", "-b", releaseBranch]);
+			yield* Effect.result(Run.text(ChildProcess.make("git", ["branch", "-D", releaseBranch])));
+			yield* Run.text(ChildProcess.make("git", ["checkout", "-b", releaseBranch]));
 		} else {
 			yield* Effect.logInfo(`[DRY RUN] Would recreate branch: ${releaseBranch} from ${targetBranch}`);
 		}
@@ -240,8 +231,20 @@ export const updateReleaseBranch = (): Effect.Effect<
 		let hasChanges = false;
 		let changedFiles = "";
 		if (!dryRun) {
-			const status = yield* runner.execCapture("git", ["status", "--porcelain"]);
-			changedFiles = status.stdout;
+			// `Run.text`, NOT `Run.collect`. `collect` demotes a non-zero exit to a
+			// value with empty stdout, which reads here as "no version changes" —
+			// and this module's no-change path CLOSES THE RELEASE PR AND DELETES
+			// THE REMOTE RELEASE BRANCH, then returns `success: true`. A transient
+			// git failure would therefore destroy a live release and report it as
+			// a clean run. `text` makes the exit a typed failure.
+			//
+			// The trim `text` applies is safe for this (non-`-z`) form: all three
+			// consumers of `changedFiles` are whitespace-insensitive per line —
+			// `.trim().length`, the per-line `.includes(...)` filter, and
+			// `getReleasingPackages`, which strips the porcelain status column with
+			// `^\s*\S+\s+`. The `-z` read further down is a different matter and
+			// must stay `Run.collect`; see the comment there.
+			changedFiles = yield* Run.text(ChildProcess.make("git", ["status", "--porcelain"]));
 			hasChanges = changedFiles.trim().length > 0;
 		} else {
 			hasChanges = true;
@@ -304,7 +307,7 @@ export const updateReleaseBranch = (): Effect.Effect<
 				yield* Effect.logInfo(`Release PR title: ${prTitle}`);
 			}
 
-			if (!dryRun) yield* runner.exec("git", ["add", "."]);
+			if (!dryRun) yield* Run.text(ChildProcess.make("git", ["add", "."]));
 
 			// Commit subject matches the PR title; body lists the releasing packages
 			// with full (scoped) names, falling back to a description when none.
@@ -382,8 +385,8 @@ export const updateReleaseBranch = (): Effect.Effect<
 
 		// ---------- Create new PR if none exists ----------
 		if (!branchDeleted && prNumber === null && !dryRun) {
-			const prBody = buildPrBody({ versionSummary, linkedIssues, owner, repo, runId });
-			const create = (): Effect.Effect<{ number: number; url: string }, PullRequestError, PullRequest> =>
+			const prBody = buildPrBody({ versionSummary, linkedIssues, owner, repo, runId: String(runId) });
+			const create = (): Effect.Effect<PullRequestInfo, GitHubError, Repo> =>
 				pr.create({ title: prTitle, body: prBody, head: releaseBranch, base: targetBranch });
 
 			const result = yield* create().pipe(
@@ -467,10 +470,13 @@ export const updateReleaseBranch = (): Effect.Effect<
 				? "Release branch recreated from main with version changes"
 				: "Release branch synced with main";
 		const { id: checkId } = yield* checks.create(checkTitle, sha);
-		yield* checks.complete(checkId, branchDeleted ? "neutral" : "success", {
-			title: checkConclusionTitle,
-			summary: checkDetails,
-		});
+		// `CheckRunOutput` is a `Schema.Class`; an object literal no longer
+		// satisfies it. The kit caps the summary itself in `wireOutput`.
+		yield* checks.complete(
+			checkId,
+			branchDeleted ? "neutral" : "success",
+			CheckRunOutput.make({ title: checkConclusionTitle, summary: checkDetails }),
+		);
 
 		const jobStatusTable = summaryWriter.keyValueTable([
 			{ key: "Branch", value: `\`${releaseBranch}\`` },
@@ -528,8 +534,8 @@ export const updateReleaseBranch = (): Effect.Effect<
 			targetBranch: string;
 		}): Effect.Effect<
 			LinkedIssue[],
-			CommandRunnerError,
-			CommandRunner | FileSystem.FileSystem | GitHubClient | GitHubIssue
+			CommandFailedError | CommandOutputError,
+			ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | GitHubIssue | Repo
 		> {
 			return Effect.gen(function* () {
 				const dirEntries = yield* fs.readDirectory(".changeset").pipe(Effect.catch(() => Effect.succeed([])));
@@ -538,9 +544,15 @@ export const updateReleaseBranch = (): Effect.Effect<
 				if (changesetFiles.length === 0) return [];
 
 				yield* Effect.logInfo(`Fetching origin/${args.targetBranch} to get full history...`);
-				yield* Effect.result(runner.exec("git", ["fetch", "origin", args.targetBranch, "--unshallow"]));
+				yield* Effect.result(Run.text(ChildProcess.make("git", ["fetch", "origin", args.targetBranch, "--unshallow"])));
 				yield* Effect.result(
-					runner.exec("git", ["fetch", "origin", `${args.targetBranch}:refs/remotes/origin/${args.targetBranch}`]),
+					Run.text(
+						ChildProcess.make("git", [
+							"fetch",
+							"origin",
+							`${args.targetBranch}:refs/remotes/origin/${args.targetBranch}`,
+						]),
+					),
 				);
 
 				const remoteBranch = `origin/${args.targetBranch}`;
@@ -549,8 +561,13 @@ export const updateReleaseBranch = (): Effect.Effect<
 				const issueMap = new Map<number, string[]>();
 				for (const file of changesetFiles) {
 					const filePath = `.changeset/${file}`;
-					const logResult = yield* runner
-						.execCapture("git", [
+					// `Run.collect`, not `Run.text`: `git log` for a path with no matching
+					// commit can exit non-zero, and the original `Effect.catch` already
+					// swallowed that into empty output. Collecting keeps a non-zero exit a
+					// VALUE, so the empty-output branch below handles it directly; the
+					// `catch` stays for a genuine spawn failure.
+					const logResult = yield* Run.collect(
+						ChildProcess.make("git", [
 							"log",
 							remoteBranch,
 							"--diff-filter=A",
@@ -559,8 +576,8 @@ export const updateReleaseBranch = (): Effect.Effect<
 							"--format=%H%n%B%n---END---",
 							"--",
 							filePath,
-						])
-						.pipe(Effect.catch(() => Effect.succeed({ stdout: "", stderr: "", exitCode: 0 })));
+						]),
+					).pipe(Effect.catch(() => Effect.succeed({ stdout: "", stderr: "", exitCode: 0 })));
 					const output = logResult.stdout;
 					if (output.trim() === "") {
 						yield* Effect.logInfo(`Changeset ${file}: no commit found in ${remoteBranch} history`);
@@ -592,7 +609,7 @@ export const updateReleaseBranch = (): Effect.Effect<
 					const prNum = extractPRNumber(commit.message);
 					if (prNum !== null) {
 						yield* Effect.logInfo(`  PR reference: #${prNum}`);
-						const prIssuesResult = yield* Effect.result(issues.getLinkedIssues(prNum));
+						const prIssuesResult = yield* Effect.result(issues.linkedIssues(prNum));
 						if (prIssuesResult._tag === "Success") {
 							const prIssues = prIssuesResult.success.map((n) => n.number);
 							if (prIssues.length > 0) {
@@ -623,9 +640,9 @@ export const updateReleaseBranch = (): Effect.Effect<
 							number: issueNumber,
 							title: i.title,
 							state: i.state,
-							url: i.htmlUrl ?? "",
+							url: i.url,
 							commits: commitShas,
-							nodeId: i.nodeId ?? "",
+							nodeId: i.nodeId,
 						});
 						yield* Effect.logInfo(`✓ Issue #${issueNumber}: ${i.title} (${i.state})`);
 					} else {
@@ -646,31 +663,21 @@ export const updateReleaseBranch = (): Effect.Effect<
 			commitMessage: string;
 		}): Effect.Effect<
 			void,
-			CommandRunnerError | GitCommitError | GitHubClientError,
-			CommandRunner | FileSystem.FileSystem | GitCommit | GitHubClient
+			CommandFailedError | CommandOutputError | GitHubError,
+			ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | GitBranch | GitCommit | Repo
 		> {
 			return Effect.gen(function* () {
-				const targetRef = yield* client.rest<RefResponse>("git.getRef", (octokit) =>
-					(
-						octokit as {
-							rest: {
-								git: {
-									getRef: (params: { owner: string; repo: string; ref: string }) => Promise<{ data: RefResponse }>;
-								};
-							};
-						}
-					).rest.git.getRef({ owner, repo, ref: `heads/${args.targetBranch}` }),
-				);
-				const parentSha = targetRef.object.sha;
+				// INVARIANT: the commit is rooted on the TARGET branch head, not on
+				// the release branch's own head. That is what keeps the release branch
+				// a single clean commit on top of `main` rather than an accumulating
+				// stack. `GitBranch.sha` replaces a hand-cast `client.rest("git.getRef")`.
+				const parentSha = yield* branches.sha(args.targetBranch);
 
 				// `-z` uses NUL separators so the positional [0..2]=status, [3..]=path
 				// parsing survives whitespace and trailing CRLF; trimming the line
 				// itself would shift the column for unstaged changes (" M file" → "M file").
-				const status = yield* runner.execCapture("git", ["status", "--porcelain", "-z"]);
-				const files: Array<
-					| { readonly path: string; readonly mode: "100644" | "100755"; readonly content: string }
-					| { readonly path: string; readonly mode: "100644"; readonly sha: null }
-				> = [];
+				const status = yield* Run.collect(ChildProcess.make("git", ["status", "--porcelain", "-z"]));
+				const changes: FileChange[] = [];
 				for (const entry of status.stdout.split("\0")) {
 					if (entry.length === 0) continue;
 					const statusCode = entry.substring(0, 2).trim();
@@ -678,39 +685,45 @@ export const updateReleaseBranch = (): Effect.Effect<
 					if (filePath.includes(" -> ")) filePath = filePath.split(" -> ")[1];
 					if (filePath === "") continue;
 					if (statusCode === "D" || statusCode === "DD" || statusCode === "AD") {
-						files.push({ path: filePath, mode: "100644", sha: null });
+						// A deletion is its own variant now, rather than a content entry
+						// with `sha: null`.
+						changes.push(FileDeletion.make({ path: filePath }));
 					} else {
 						const content = yield* fs.readFileString(filePath).pipe(Effect.catch(() => Effect.succeed("")));
 						const statResult = yield* Effect.result(fs.stat(filePath));
 						const isExecutable = statResult._tag === "Success" && (Number(statResult.success.mode ?? 0n) & 0o111) !== 0;
-						files.push({ path: filePath, mode: isExecutable ? "100755" : "100644", content });
+						changes.push(FileContent.make({ path: filePath, mode: isExecutable ? "100755" : "100644", content }));
 					}
 				}
 
-				if (files.length === 0) {
+				if (changes.length === 0) {
 					yield* Effect.logWarning("No changes to commit via API");
 					return;
 				}
 
-				// The Git Data API's `base_tree` wants a tree SHA, not a commit
-				// SHA — fetch the parent commit and read its tree.sha.
-				const parentCommit = yield* client.rest<{ tree: { sha: string } }>("git.getCommit", (octokit) =>
-					(
-						octokit as {
-							rest: {
-								git: {
-									getCommit: (params: { owner: string; repo: string; commit_sha: string }) => Promise<{
-										data: { tree: { sha: string } };
-									}>;
-								};
-							};
-						}
-					).rest.git.getCommit({ owner, repo, commit_sha: parentSha }),
-				);
-				const treeSha = yield* gitCommit.createTree(files, parentCommit.tree.sha);
-				const commitSha = yield* gitCommit.createCommit(args.commitMessage, treeSha, [parentSha]);
-				// GitCommit.updateRef prefixes "heads/" itself — pass the bare branch name.
-				yield* gitCommit.updateRef(args.releaseBranch, commitSha, true);
+				// INVARIANT: `upsert` THEN `commitFiles`, in that order — they are not
+				// interchangeable and neither works alone.
+				//
+				// `upsert(branch, sha)` creates or FORCE-RESETS the release branch to
+				// the target head. `commitFiles` cannot do that: it `GET`s the ref
+				// first and its ref update is deliberately unforced, so it can neither
+				// create the branch nor move one that diverged.
+				//
+				// Conversely `commitFiles` alone would root the commit on the RELEASE
+				// branch's own tree, breaking the parent-sha invariant above. Resetting
+				// first is what makes the branch head equal the target head, so the
+				// commit `commitFiles` builds is correctly rooted and its unforced ref
+				// move is safe — we just placed that ref ourselves.
+				//
+				// This also replaces the hand-cast `client.rest("git.getCommit")` that
+				// existed only to read `tree.sha` for `base_tree`; `commitFiles` does
+				// that internally.
+				yield* branches.upsert(args.releaseBranch, parentSha);
+				const commitSha = yield* gitCommit.commitFiles({
+					branch: args.releaseBranch,
+					message: args.commitMessage,
+					changes,
+				});
 				yield* Effect.logInfo(`✓ Created verified commit: ${commitSha}`);
 			});
 		}

@@ -14,8 +14,8 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ActionsConfigProvider } from "@savvy-web/github-action-effects";
-import { ConfigProvider, Effect } from "effect";
+import { ActionInput } from "@effected/github-actions";
+import { Effect } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { LoadReleaseConfigResult, LoadSBOMConfigResult } from "../src/utils/load-release-config.js";
 import {
@@ -24,20 +24,20 @@ import {
 } from "../src/utils/load-release-config.js";
 
 // GitHub Actions sets `INPUT_SBOM-CONFIG` (hyphen preserved) — the canonical
-// convention `ActionsConfigProvider` follows. The prior tests set
+// convention `ActionInput.layerDefault` follows. The prior tests set
 // `INPUT_SBOM_CONFIG` (underscore), matching the loader's (incorrect) prior
 // env-var read; that bug was a silent "no template supplied" symptom in CI.
 const ENV_VARS = ["INPUT_SBOM-CONFIG", "SILK_RELEASE_SBOM_TEMPLATE"] as const;
 
 /**
- * Synchronously evaluate `loadReleaseConfig` against the `ActionsConfigProvider`,
+ * Synchronously evaluate `loadReleaseConfig` against the `ActionInput.layerDefault`,
  * so tests exercise the same env-var convention the action uses in CI.
  */
 const runLoadReleaseConfig = (rootDir?: string): LoadReleaseConfigResult =>
-	Effect.runSync(loadReleaseConfigEffect(rootDir).pipe(Effect.provide(ConfigProvider.layer(ActionsConfigProvider))));
+	Effect.runSync(loadReleaseConfigEffect(rootDir).pipe(Effect.provide(ActionInput.layerDefault)));
 
 const runLoadSBOMConfig = (rootDir?: string): LoadSBOMConfigResult =>
-	Effect.runSync(loadSBOMConfigEffect(rootDir).pipe(Effect.provide(ConfigProvider.layer(ActionsConfigProvider))));
+	Effect.runSync(loadSBOMConfigEffect(rootDir).pipe(Effect.provide(ActionInput.layerDefault)));
 
 // Thin sync façades so the existing tests below can keep their call shape.
 const loadReleaseConfig = runLoadReleaseConfig;

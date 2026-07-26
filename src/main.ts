@@ -15,44 +15,25 @@
  */
 
 import { NodeServices } from "@effect/platform-node";
-import type { ActionOutputsShape } from "@savvy-web/github-action-effects";
+import { LocalExec, Run, ToolDiscovery } from "@effected/commands";
+import type { Repo } from "@effected/github";
+import { CheckRun, CheckRunOutput, PullRequest } from "@effected/github";
+import type { ActionOutputError, ActionOutputsShape } from "@effected/github-actions";
 import {
 	Action,
 	ActionEnvironment,
+	ActionInput,
 	ActionLogger,
 	ActionOutputs,
-	ActionOutputsLive,
 	ActionState,
-	ActionStateLive,
-	AttestLive,
-	ChangesetAnalyzer,
-	ChangesetAnalyzerLive,
-	CheckRun,
-	CheckRunLive,
-	CommandRunner,
-	CommandRunnerLive,
-	GitBranchLive,
-	GitCommitLive,
-	GitHubArtifactMetadataLive,
-	GitHubClient,
-	GitHubCommitLive,
-	GitHubContentLive,
-	GitHubGraphQLLive,
-	GitHubIssueLive,
-	GitHubReleaseLive,
 	GitHubToken,
-	GitTagLive,
-	NpmRegistryLive,
-	OidcTokenIssuerLive,
-	PackagePublishLive,
-	PullRequestCommentLive,
-	PullRequestLive,
-	SbomLive,
-	SigstoreSignerLive,
-	Step,
-} from "@savvy-web/github-action-effects";
-import { Config, Effect, FileSystem, Layer, Option, Redacted } from "effect";
-import { FetchHttpClient } from "effect/unstable/http";
+	Secret,
+} from "@effected/github-actions";
+import type { SbomMetadata } from "@effected/sbom";
+import { Changesets } from "@savvy-web/silk-effects";
+import { Config, Effect, FileSystem, Layer, Option } from "effect";
+import { ChildProcess } from "effect/unstable/process";
+import { makeAppLayer } from "./layers/app.js";
 import { ReleaseLive } from "./release/layers.js";
 import type { DetectedRelease } from "./release/publish.js";
 import { detectReleases, runBuildAndSbom, runPublishTargets } from "./release/publish.js";
@@ -74,12 +55,11 @@ import { toBranchManagementOutput, toPublishingOutput, toValidationOutput } from
 import type { ValidationOutput } from "./schema/release-output.js";
 import { ReleaseOutput } from "./schema/release-output.js";
 import { GithubPackagesTokenState, STATE_KEYS } from "./state.js";
-import type { ResolvedSBOMMetadata } from "./types/sbom-config.js";
 import { checkReleaseBranch } from "./utils/check-release-branch.js";
 import { cleanupValidationChecks } from "./utils/cleanup-validation-checks.js";
 import { closeLinkedIssues } from "./utils/close-linked-issues.js";
 import { createReleaseBranch } from "./utils/create-release-branch.js";
-import { capCheckSummary, createValidationCheck } from "./utils/create-validation-check.js";
+import { createValidationCheck } from "./utils/create-validation-check.js";
 import { deriveCheckConclusion } from "./utils/derive-check-conclusion.js";
 import type { WorkflowPhase } from "./utils/detect-workflow-phase.js";
 import { detectWorkflowPhase } from "./utils/detect-workflow-phase.js";
@@ -138,6 +118,48 @@ const detectPackageManager = Effect.gen(function* () {
 });
 
 /**
+ * Run an effect inside a collapsible log group, resolving `ActionLogger` itself.
+ *
+ * @remarks
+ * The drop-in shape of the predecessor's `Step.groupStep`, minus the step
+ * envelope. `Step.groupStep` wrapped its body in **both** a group and a step,
+ * and the step existed to make a success line land inside the group; the kit's
+ * `group` needs no such pairing, so the phase bodies emit their own summary
+ * lines and there is nothing left for a step to add.
+ */
+const grouped = <A, E, R>(name: string, effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R | ActionLogger> =>
+	Effect.flatMap(ActionLogger, (logger) => logger.group(name, effect));
+
+/**
+ * Give changesets the history it needs: full depth, and a **local** ref for the
+ * target branch.
+ *
+ * @remarks
+ * The checkout step in the wrapping workflow may have only shallow history of
+ * the release branch plus an `origin/<target>` remote ref, while changesets
+ * computes its diff against a local one.
+ *
+ * `Run.collect` for the probe, not `Run.text`: a non-zero exit is a **result**
+ * here, not a failure — an old git without `--is-shallow-repository` answers
+ * non-zero, and that means "not shallow", not "stop". Both fetches go through
+ * `Effect.result` because neither is worth failing the phase over: a
+ * `--unshallow` on an already-complete clone exits non-zero by design.
+ *
+ * Phases 2 and 3 both needed this and each carried its own copy; one drifting
+ * from the other would silently change what changesets compares against.
+ */
+const ensureFullHistory = (targetBranch: string) =>
+	Effect.gen(function* () {
+		const probe = yield* Effect.result(Run.collect(ChildProcess.make("git", ["rev-parse", "--is-shallow-repository"])));
+		const isShallow = probe._tag === "Success" && probe.success.stdout.trim() === "true";
+		if (isShallow) {
+			yield* Effect.logDebug("Repository is shallow, fetching full history");
+			yield* Effect.result(Run.collect(ChildProcess.make("git", ["fetch", "--unshallow", "origin"])));
+		}
+		yield* Effect.result(Run.collect(ChildProcess.make("git", ["fetch", "origin", `${targetBranch}:${targetBranch}`])));
+	});
+
+/**
  * Return a copy of a {@link ValidationOutput} with per-package `releaseNotes`
  * omitted. Release-notes CHANGELOG content is rendered in the dedicated Release
  * Notes Preview check; the machine-readable structured output (the `result`
@@ -174,7 +196,7 @@ const emitReleaseOutput = (
 	outputs: ActionOutputsShape,
 	output: ReleaseOutput,
 	scalars: { readonly packageCount: number; readonly releasePrNumber: number | null },
-): Effect.Effect<void> =>
+): Effect.Effect<void, ActionOutputError> =>
 	Effect.gen(function* () {
 		yield* outputs
 			.setJson("result", output, ReleaseOutput)
@@ -192,8 +214,9 @@ const emitReleaseOutput = (
 
 const runBranchManagement = Effect.gen(function* () {
 	const packageManager = yield* detectPackageManager;
+	const planner = yield* Changesets.ReleasePlanner;
 
-	yield* Step.groupStep(
+	yield* grouped(
 		"Phase 1: Release Branch Management",
 		Effect.gen(function* () {
 			const releaseBranch = yield* Config.string("release-branch").pipe(Config.withDefault("changeset-release/main"));
@@ -202,28 +225,29 @@ const runBranchManagement = Effect.gen(function* () {
 			yield* Effect.logInfo(`Detected package manager: ${packageManager}`);
 			const branchCheck = yield* checkReleaseBranch(releaseBranch, targetBranch, dryRun);
 
-			// Read changeset bump types before the version command consumes them.
-			// parseAll returns one entry per .changeset/*.md file; aggregate to
-			// one entry per package, taking the highest bump across all changesets.
-			const analyzer = yield* ChangesetAnalyzer;
-			const parsedChangesets = yield* analyzer.parseAll().pipe(
-				Effect.catch(() =>
-					Effect.succeed(
-						[] as Array<{
-							id: string;
-							packages: Array<{ name: string; bump: "major" | "minor" | "patch" }>;
-							summary: string;
-						}>,
-					),
-				),
-			);
+			// Read changeset bump types before the version step consumes them.
+			//
+			// `preview` rather than the predecessor's `ChangesetAnalyzer.parseAll`:
+			// it is one of `ReleasePlannerShape`'s two READ-ONLY members (only
+			// `apply` mutates), and it already parses every `.changeset/*.md` into
+			// `{ id, summary, releases: [{ name, type }] }`. The aggregation below
+			// is unchanged — one entry per package, highest bump across changesets.
+			//
+			// Deliberately NOT `preview.releases`, which carries the bump changesets
+			// would actually apply (including dependency-driven bumps). That is
+			// arguably better information, but it is different information, and the
+			// `changesets` output field has always reported what the changeset files
+			// declared.
+			const preview = yield* planner
+				.preview(process.cwd())
+				.pipe(Effect.catch(() => Effect.succeed({ changesets: [] as ReadonlyArray<Changesets.PendingChangeset> })));
 			const bumpRank = { patch: 0, minor: 1, major: 2 } as const;
 			const packageBumps = new Map<string, "major" | "minor" | "patch">();
-			for (const cs of parsedChangesets) {
-				for (const pkg of cs.packages) {
-					const current = packageBumps.get(pkg.name);
-					if (current === undefined || bumpRank[pkg.bump] > bumpRank[current]) {
-						packageBumps.set(pkg.name, pkg.bump);
+			for (const cs of preview.changesets) {
+				for (const release of cs.releases) {
+					const current = packageBumps.get(release.name);
+					if (current === undefined || bumpRank[release.type] > bumpRank[current]) {
+						packageBumps.set(release.name, release.type);
 					}
 				}
 			}
@@ -270,6 +294,17 @@ const runBranchManagement = Effect.gen(function* () {
 			});
 			const outputs = yield* ActionOutputs;
 			yield* emitReleaseOutput(outputs, output, { packageCount: changesets.length, releasePrNumber: prNumber });
+
+			// Phase 1's own summary line. Phases 2 and 3 already ended with one;
+			// Phase 1 relied on the `Step.groupStep` envelope to emit it, and
+			// `logger.group` has no such envelope — so without this the phase now
+			// closes its group silently.
+			const verb = branchCheck.exists ? (updated ? "updated" : "unchanged") : created ? "created" : "not created";
+			yield* Effect.logInfo(
+				`Release branch management: ✅ ${releaseBranch} ${verb}` +
+					`, ${changesets.length} package(s) with changesets` +
+					(prNumber === null ? "" : `, PR #${prNumber}`),
+			);
 		}),
 	);
 });
@@ -283,7 +318,7 @@ const runValidation = Effect.gen(function* () {
 	const logger = yield* ActionLogger;
 	const outputs = yield* ActionOutputs;
 	const env = yield* ActionEnvironment;
-	const client = yield* GitHubClient;
+	const pullRequests = yield* PullRequest;
 
 	const releaseBranch = yield* Config.string("release-branch").pipe(Config.withDefault("changeset-release/main"));
 	const targetBranch = yield* Config.string("target-branch").pipe(Config.withDefault("main"));
@@ -294,10 +329,9 @@ const runValidation = Effect.gen(function* () {
 	// preserves the existing advisory-warning semantics.
 	const strictWarnings = yield* Config.boolean("strict-warnings").pipe(Config.withDefault(false));
 	const packageManager = yield* detectPackageManager;
-	const { repository, sha } = yield* env.github;
-	const [owner, repo] = repository.split("/");
+	const { repositoryOwner: owner, sha } = yield* env.github;
 
-	yield* Step.groupStep(
+	yield* grouped(
 		"Phase 2: Validation",
 		Effect.gen(function* () {
 			yield* Effect.logDebug(`Detected package manager: ${packageManager}`);
@@ -309,15 +343,7 @@ const runValidation = Effect.gen(function* () {
 			// ref; fetch+set up a local ref before any changeset-aware step
 			// runs.
 			yield* Effect.logDebug("Fetching git history for changeset comparison");
-			const runner = yield* CommandRunner;
-			const shallow = yield* runner
-				.execCapture("git", ["rev-parse", "--is-shallow-repository"])
-				.pipe(Effect.catch(() => Effect.succeed({ stdout: "false\n", stderr: "", exitCode: 0 })));
-			if (shallow.stdout.trim() === "true") {
-				yield* Effect.logDebug("Repository is shallow, fetching full history");
-				yield* Effect.result(runner.exec("git", ["fetch", "--unshallow", "origin"]));
-			}
-			yield* Effect.result(runner.exec("git", ["fetch", "origin", `${targetBranch}:${targetBranch}`]));
+			yield* ensureFullHistory(targetBranch);
 			yield* Effect.logDebug(`Fetched ${targetBranch} as a local ref`);
 
 			// Step 1 — link issues from commits (migrated).
@@ -373,7 +399,7 @@ const runValidation = Effect.gen(function* () {
 			// `${pkg.name}:${build.directory}`. Debug-only; fed into the SBOM Preview
 			// check-run summary so config-or-mapping bugs are immediately visible.
 			// `null` indicates `runValidationEffect` was not reached (build failure).
-			let resolvedSbomConfig: ReadonlyMap<string, ResolvedSBOMMetadata> | null = null;
+			let resolvedSbomConfig: ReadonlyMap<string, SbomMetadata> | null = null;
 			// The source the `sbom-config` was loaded from this run (`input` /
 			// `local` / `variable` / `none`). Surfaced on the SBOM Preview
 			// check-run summary; `null` until `runValidationEffect` reports it.
@@ -575,13 +601,16 @@ const runValidation = Effect.gen(function* () {
 
 			// Create the three per-step check runs after the canonical object is
 			// known — each summary is rendered from `summaryDraftOutput.validation`.
+			// Converted to the kit's `CheckRun`, which `MainLive` already provides:
+			// this was the last consumer of the hand-rolled `capCheckSummary`, and
+			// the kit caps unconditionally in `wireOutput`.
 			const checksSvc = yield* CheckRun;
 
 			const createPerStepCheck = (
 				title: string,
 				conclusion: "success" | "failure" | "neutral",
 				summary: string,
-			): Effect.Effect<string> =>
+			): Effect.Effect<string, never, Repo> =>
 				Effect.gen(function* () {
 					const created = yield* checksSvc.create(title, sha).pipe(
 						Effect.catch((e) =>
@@ -594,10 +623,16 @@ const runValidation = Effect.gen(function* () {
 					if (created === null) {
 						return "";
 					}
+					// `CheckRunOutput` is a `Schema.Class`; an object literal no longer
+					// satisfies it. No `capCheckSummary` — `complete` pipes the output
+					// through `wireOutput`, which truncates on every request.
 					yield* checksSvc
-						.complete(created.id, conclusion, { title, summary: capCheckSummary(summary) })
+						.complete(created.id, conclusion, CheckRunOutput.make({ title, summary }))
 						.pipe(Effect.catch((e) => Effect.logWarning(`Failed to complete check run "${title}": ${e.message}`)));
-					return created.htmlUrl;
+					// `CheckRunRef` exposes `url`, not `htmlUrl`. The kit builds it as
+					// `raw.html_url ?? ""`, so the empty-string sentinel `urlFor` below
+					// keys on is preserved.
+					return created.url;
 				});
 
 			const publishSummary = buildPublishValidationSummary(summaryDraftOutput.validation);
@@ -691,30 +726,11 @@ const runValidation = Effect.gen(function* () {
 			};
 
 			// Step 7 — sticky comment on the release PR (migrated).
+			// `PullRequest.list` replaces a raw octokit callback that hand-wrote the
+			// whole `rest.pulls.list` type — the only such callback left in `src`.
+			// The route's params and response are typed by the service.
 			const prsResult = yield* Effect.result(
-				client.rest<ReadonlyArray<{ number: number }>>("pulls.list.validation", (octokit) =>
-					(
-						octokit as {
-							rest: {
-								pulls: {
-									list: (params: {
-										owner: string;
-										repo: string;
-										state: "open";
-										head: string;
-										base: string;
-									}) => Promise<{ data: ReadonlyArray<{ number: number }> }>;
-								};
-							};
-						}
-					).rest.pulls.list({
-						owner,
-						repo,
-						state: "open",
-						head: `${owner}:${releaseBranch}`,
-						base: targetBranch,
-					}),
-				),
+				pullRequests.list({ state: "open", head: `${owner}:${releaseBranch}`, base: targetBranch }),
 			);
 			if (prsResult._tag === "Success" && prsResult.success.length > 0) {
 				const pr = prsResult.success[0];
@@ -774,12 +790,11 @@ const runValidation = Effect.gen(function* () {
  * from `src/release/releases.ts`.
  */
 const runPublishing = (mergedReleasePRNumber: number | undefined) =>
-	Step.groupStep(
+	grouped(
 		"Phase 3: Publishing",
 		Effect.gen(function* () {
 			const logger = yield* ActionLogger;
 			const outputs = yield* ActionOutputs;
-			const runner = yield* CommandRunner;
 
 			const targetBranch = yield* Config.string("target-branch").pipe(Config.withDefault("main"));
 			const dryRun = yield* Config.boolean("dry-run").pipe(Config.withDefault(false));
@@ -798,13 +813,7 @@ const runPublishing = (mergedReleasePRNumber: number | undefined) =>
 
 			// ── Prelude (detail) ───────────────────────────────────────────────────
 			yield* Effect.logDebug(`Detected package manager: ${packageManager}`);
-			const shallow = yield* runner
-				.execCapture("git", ["rev-parse", "--is-shallow-repository"])
-				.pipe(Effect.catch(() => Effect.succeed({ stdout: "false\n", stderr: "", exitCode: 0 })));
-			if (shallow.stdout.trim() === "true") {
-				yield* Effect.result(runner.exec("git", ["fetch", "--unshallow", "origin"]));
-			}
-			yield* Effect.result(runner.exec("git", ["fetch", "origin", `${targetBranch}:${targetBranch}`]));
+			yield* ensureFullHistory(targetBranch);
 
 			const args = { packageManager, targetBranch, dryRun, mergedReleasePRNumber };
 
@@ -845,7 +854,7 @@ const runPublishing = (mergedReleasePRNumber: number | undefined) =>
 			// a `Step.withStep` envelope, so the step's `Step.success` line lands
 			// inside the group instead of leaving it empty (which produced the
 			// gap-only `Tag strategy` block in the runner UI before).
-			const tagStrategy = yield* Step.groupStep(
+			const tagStrategy = yield* grouped(
 				"Tag strategy",
 				Effect.gen(function* () {
 					// `DetectedRelease` carries no `targets`, and `determineTagStrategy`
@@ -861,7 +870,7 @@ const runPublishing = (mergedReleasePRNumber: number | undefined) =>
 					);
 					yield* Effect.logDebug(`tag strategy: ${strategy.strategy}, ${strategy.tags.length} tag(s)`);
 					const strategyLabel = strategy.strategy === "multiple" ? "per-package tags" : "single shared tag";
-					yield* Step.success(`${strategy.tags.length} tag(s), ${strategyLabel}`);
+					yield* Effect.logInfo(`  \u2705 ${strategy.tags.length} tag(s), ${strategyLabel}`);
 					return strategy;
 				}),
 			);
@@ -892,7 +901,7 @@ const runPublishing = (mergedReleasePRNumber: number | undefined) =>
 			}
 
 			// ── Step 4: Publish to registries ──────────────────────────────────────
-			const publishResult = yield* runPublishTargets(detected, args, buildSbom.sbomPaths);
+			const publishResult = yield* runPublishTargets(detected, buildSbom.sbomPaths);
 			if (!publishResult.success) {
 				yield* Effect.logError(
 					`❌ Published ${publishResult.successfulTargets}/${publishResult.totalTargets} target(s) — aborting before releases`,
@@ -946,10 +955,10 @@ const runPublishing = (mergedReleasePRNumber: number | undefined) =>
 			// ── Emit outputs + final summary ───────────────────────────────────────
 			const tagShas: Record<string, string> = {};
 			for (const tag of tagStrategy.tags) {
-				const rev = yield* runner
-					.execCapture("git", ["rev-parse", tag.name])
-					.pipe(Effect.catch(() => Effect.succeed({ stdout: "", stderr: "", exitCode: 1 })));
-				tagShas[tag.name] = rev.stdout.trim();
+				// `Run.collect`, so a tag the local clone has not fetched reports an
+				// empty sha instead of failing the phase after everything published.
+				const rev = yield* Effect.result(Run.collect(ChildProcess.make("git", ["rev-parse", tag.name])));
+				tagShas[tag.name] = rev._tag === "Success" && rev.success.exitCode === 0 ? rev.success.stdout.trim() : "";
 			}
 			yield* emitPublishing(publishResult, tagStrategy.tags, releasesResult.releases, tagShas);
 
@@ -1016,9 +1025,16 @@ export const main = Effect.gen(function* () {
 	// (tokens.ts) can read it via `process.env.STATE_token`.
 	// `process.env.GITHUB_TOKEN` is intentionally never set.
 	const installationToken = yield* GitHubToken.read();
-	// `InstallationToken.token` decodes to `Redacted<string>` in 2.0; unwrap it
-	// for the `STATE_token` env bridge the imperative publish helpers read.
-	process.env.STATE_token = Redacted.value(installationToken.token);
+	// `Secret.forSigning`, not a bare `Redacted.value`. The kit keeps
+	// declassification to one module and this is its "in-process use that needs
+	// the raw bytes" member — which also **masks** the value in the runner log
+	// on the way out, something the bare unwrap did not do. Called once here
+	// rather than per read, as its own remarks instruct.
+	//
+	// The name is a poor fit (there is no `Secret.forProcessEnv`) but the
+	// mechanism is exactly right, and `utils/tokens.ts` still reads
+	// `process.env.STATE_token` for `native-version.ts`.
+	process.env.STATE_token = yield* Secret.forSigning(installationToken.token);
 
 	// Bridge the optional workflow-issued `github-token` (saved by pre.ts as
 	// `githubPackagesToken`) into the `STATE_githubToken` env var so
@@ -1075,66 +1091,50 @@ export const main = Effect.gen(function* () {
 // ---------------------------------------------------------------------------
 
 /**
- * The composite domain layer for the main action. `Action.run` injects
- * `ActionLogger`, `ActionOutputs`, `ActionEnvironment`, `ActionState`, and
- * `ActionsConfigProvider`; everything else is wired here.
+ * The composite domain layer for the main action.
  *
- * The main action's `GitHubClient` is built from the App installation token
- * that `pre.ts` persisted to `ActionState`, via the library-native
- * `GitHubToken.client()` layer — no `process.env.GITHUB_TOKEN` involved.
- * `GitHubToken.client()` needs `ActionState`; `Action.run`'s `layer` option
- * requires a self-contained layer, so `ActionStateLive` (backed by
- * `NodeServices`) is provided here. `Layer.orDie` turns a missing or
- * unreadable token into a fatal defect rather than a partial boot.
+ * @remarks
+ * `ActionRuntime` — injected by `Action.run` — provides `ActionEnvironment`,
+ * `ActionLogger`, `ActionOutputs`, `ActionState`, `NodeServices` and an
+ * `HttpClient`. Because `ActionRunOptions.layer` is
+ * `Layer<R, never, ActionServices>`, this layer may **require** any of them
+ * rather than rebuild them, which is what collapsed the transitional
+ * `kitRuntime` bridge: the predecessor's `Action.run` demanded a self-contained
+ * `Layer<R, never, never>`, so every runtime service the GitHub client needed
+ * had to be constructed a second time here.
+ *
+ * What remains is two things `ActionRuntime` does not know about:
+ * {@link makeAppLayer} (the GitHub/npm/sbom graph) and the release-domain
+ * layers below.
+ *
+ * `dry-run` is read here and passed to `makeAppLayer` as a value — the layer
+ * stays free of config reads so a test can drive both branches without a
+ * `ConfigProvider`. `ActionInput.boolean` rather than `Config.boolean`: a
+ * malformed `dry-run` fails instead of silently defaulting to a REAL run, and
+ * `Layer.orDie` surfaces that at the boundary.
  */
-const actionStateLayer = ActionStateLive.pipe(Layer.provide(NodeServices.layer));
-const githubClient = GitHubToken.client().pipe(Layer.provide(actionStateLayer), Layer.orDie);
-const githubGraphQL = GitHubGraphQLLive.pipe(Layer.provide(githubClient));
-const githubApiBase = Layer.merge(githubClient, githubGraphQL);
-
 const releaseLive = ReleaseLive.pipe(Layer.provide(NodeServices.layer), Layer.orDie);
-const npmRegistryLive = NpmRegistryLive.pipe(Layer.provide(CommandRunnerLive));
-// 2.0: `PackagePublishLive.setupAuth` masks the registry token via
-// `ActionOutputs.setSecret`, so the layer now requires `ActionOutputs`.
-// `Action.run`'s `layer` option must be self-contained, so provide a
-// `NodeServices`-backed `ActionOutputsLive` here rather than leaking the
-// requirement up to `MainLive`.
-const actionOutputsLive = ActionOutputsLive.pipe(Layer.provide(NodeServices.layer));
-const packagePublishLive = PackagePublishLive.pipe(
-	Layer.provide(Layer.mergeAll(CommandRunnerLive, npmRegistryLive, actionOutputsLive)),
-);
 
-const oidcTokenIssuerLive = OidcTokenIssuerLive.pipe(Layer.provide(FetchHttpClient.layer));
-const sigstoreSignerLive = SigstoreSignerLive.pipe(Layer.provide(oidcTokenIssuerLive));
-const attestLive = AttestLive.pipe(
-	Layer.provide(Layer.mergeAll(sigstoreSignerLive, oidcTokenIssuerLive, githubClient, SbomLive)),
-);
+/**
+ * `formatWorkspaceWithBiome` probes for the standalone Biome binary through
+ * `ToolDiscovery`. `LocalExec.layerNone` is the documented wiring for a GitHub
+ * Action — every tool resolves globally on PATH, with no project-local
+ * launcher. Deliberately NOT the `pnpm` launcher `makeAppLayer` gives
+ * `PackagePublish`: that one exists so `NpmExecutor.dlx` can fetch a pinned
+ * npm, which is a different question from "is biome installed".
+ */
+const toolDiscovery = ToolDiscovery.layer.pipe(Layer.provide(Layer.merge(NodeServices.layer, LocalExec.layerNone)));
 
-export const MainLive = Layer.mergeAll(
-	githubClient,
-	githubGraphQL,
-	CheckRunLive.pipe(Layer.provide(githubClient)),
-	PullRequestLive.pipe(Layer.provide(githubApiBase)),
-	PullRequestCommentLive.pipe(Layer.provide(githubClient)),
-	GitHubIssueLive.pipe(Layer.provide(githubApiBase)),
-	GitHubReleaseLive.pipe(Layer.provide(githubClient)),
-	GitHubArtifactMetadataLive.pipe(Layer.provide(githubClient)),
-	GitTagLive.pipe(Layer.provide(githubClient)),
-	GitBranchLive.pipe(Layer.provide(githubClient)),
-	GitCommitLive.pipe(Layer.provide(githubClient)),
-	GitHubCommitLive.pipe(Layer.provide(githubClient)),
-	GitHubContentLive.pipe(Layer.provide(githubClient)),
-	CommandRunnerLive,
-	NodeServices.layer,
-	ChangesetAnalyzerLive.pipe(Layer.provide(NodeServices.layer)),
-	releaseLive,
-	npmRegistryLive,
-	packagePublishLive,
-	SbomLive,
-	oidcTokenIssuerLive,
-	sigstoreSignerLive,
-	attestLive,
-);
+/**
+ * The main action's domain layer.
+ *
+ * @public
+ */
+export const MainLive = Layer.unwrap(
+	Effect.map(ActionInput.boolean("dry-run").pipe(Config.withDefault(false)), (dryRun) =>
+		Layer.mergeAll(makeAppLayer(dryRun), releaseLive, toolDiscovery),
+	),
+).pipe(Layer.orDie);
 
 /* v8 ignore next 3 -- entry-point guard, only runs in GitHub Actions */
 if (process.env.GITHUB_ACTIONS) {

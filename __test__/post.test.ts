@@ -1,98 +1,155 @@
 /**
- * Fixture tests for the post-action Effect program.
+ * Tests for the post-action program.
  *
  * @remarks
- * Drives `post` against the in-memory `@savvy-web/github-action-effects` test
- * layers and asserts:
+ * The load-bearing property here is that **a post-action failure must never
+ * fail the workflow**. Two of the cases below exercise that directly: a
+ * revocation that fails, and a defect escaping the program. Both must resolve
+ * rather than reject.
  *
- *   - The GitHub App installation token provisioned by `pre` is revoked via
- *     `GitHubToken.dispose` (unless `skip-token-revoke` is set).
- *   - Revocation is skipped when the `skip-token-revoke` input is `true`.
- *   - `post` completes cleanly when no token was ever provisioned.
+ * Written against the kit's `layerTest` seams rather than the predecessor's
+ * `*Test` doubles; plain Vitest by design (see the rebuild plan's testing
+ * posture — `@effect/vitest` would install a `TestClock` at the epoch).
  *
- * The provisioned-token scenarios run `GitHubToken.provision` first against a
- * shared `ActionState` to populate the token envelope `dispose` reads back.
+ * Note that unstubbed kit members die loudly, so each fixture supplies exactly
+ * what `post` touches. A red test naming a member is a finding, not a flake.
  */
 
-import { GitHubToken } from "@savvy-web/github-action-effects";
-import type {
-	ActionOutputs,
-	ActionState,
-	ActionStateTestState,
-	GitHubApp,
-	GitHubAppTestState,
-} from "@savvy-web/github-action-effects/testing";
-import { ActionOutputsTest, ActionStateTest, GitHubAppTest } from "@savvy-web/github-action-effects/testing";
-import { ConfigProvider, Effect, Layer, Redacted } from "effect";
+import type { GitHubAppShape } from "@effected/github";
+import { GitHubApp, InstallationToken } from "@effected/github";
+import { ActionInput, ActionState } from "@effected/github-actions";
+import { DateTime, Effect, Layer, Option, Redacted } from "effect";
 import { describe, expect, it } from "vitest";
 import { post } from "../src/post.js";
 
-interface Fixtures {
-	stateState: ActionStateTestState;
-	appState: GitHubAppTestState;
-	layer: Layer.Layer<ActionState | GitHubApp | ActionOutputs>;
+interface Recorder {
+	readonly revoked: Array<string>;
 }
 
-const makeFixtures = (): Fixtures => {
-	const stateState = ActionStateTest.empty();
-	const appState = GitHubAppTest.empty();
-	// 2.0: GitHubToken.provision masks the minted token via ActionOutputs.setSecret,
-	// so the shared fixture layer must satisfy ActionOutputs as well.
-	const layer = Layer.mergeAll(
-		ActionStateTest.layer(stateState),
-		GitHubAppTest.layer(appState),
-		ActionOutputsTest.layer(ActionOutputsTest.empty()),
-	);
-	return { stateState, appState, layer };
-};
+const TOKEN = "ghs_test_token_123";
 
-/** Provision a token into the shared `ActionState`, simulating the pre phase. */
-const provisionToken = (fixtures: Fixtures): Promise<void> =>
-	GitHubToken.provision({ clientId: "test-client-id", privateKey: "test-private-key" }).pipe(
-		Effect.provide(fixtures.layer),
-		Effect.asVoid,
-		Effect.runPromise,
+/**
+ * The token envelope as `ActionState.getOptional` hands it back.
+ *
+ * @remarks
+ * A real `InstallationToken`, **not a plain object**: `GitHubToken.dispose`
+ * calls `found.value.isExpired(...)`, which is a method on the class. A plain
+ * object with the right fields typechecks through the double's cast and then
+ * throws at runtime — and because `post` catches defects by design, the throw
+ * is swallowed into a warning and revocation silently never happens. That is
+ * exactly the failure this fixture must not fake.
+ */
+const savedTokenEnvelope = InstallationToken.make({
+	token: Redacted.make(TOKEN),
+	expiresAt: DateTime.makeUnsafe("2030-01-01T01:00:00Z"),
+	installationId: 4242,
+	permissions: {},
+});
+
+interface StateOptions {
+	readonly startedAt?: number | undefined;
+}
+
+const makeLayer = (
+	recorder: Recorder,
+	inputs: Record<string, string>,
+	options: StateOptions,
+	appOverrides: Partial<GitHubAppShape>,
+): Layer.Layer<ActionState | GitHubApp> =>
+	Layer.mergeAll(
+		ActionState.layerTest({
+			getOptional: ((key: string) =>
+				Effect.succeed(
+					key === "startTime"
+						? options.startedAt === undefined
+							? Option.none()
+							: Option.some({ startedAt: options.startedAt })
+						: Option.some(savedTokenEnvelope),
+				)) as ActionState["Service"]["getOptional"],
+		}),
+		GitHubApp.layerTest({
+			revoke: (token) => Effect.sync(() => void recorder.revoked.push(Redacted.value(token))),
+			...appOverrides,
+		}),
+		ActionInput.layer(inputs),
 	);
 
-/** Run `post` with a `ConfigProvider` controlling the `skip-token-revoke` input. */
-const runPost = (fixtures: Fixtures, skipTokenRevoke = false): Promise<void> => {
-	const config = ConfigProvider.fromUnknown({ "skip-token-revoke": String(skipTokenRevoke) });
-	return post.pipe(Effect.provide(fixtures.layer), Effect.provide(ConfigProvider.layer(config)), Effect.runPromise);
-};
+const runPost = (
+	recorder: Recorder,
+	inputs: Record<string, string> = {},
+	options: StateOptions = {},
+	appOverrides: Partial<GitHubAppShape> = {},
+): Promise<void> => post.pipe(Effect.provide(makeLayer(recorder, inputs, options, appOverrides)), Effect.runPromise);
 
 describe("post", () => {
-	it("revokes the installation token provisioned by pre", async () => {
-		const fixtures = makeFixtures();
-		await provisionToken(fixtures);
-		await runPost(fixtures);
+	it("should revoke the installation token when no skip is requested", async () => {
+		const recorder: Recorder = { revoked: [] };
 
-		// 2.0: revokeToken takes Redacted<string>, so the test layer records
-		// Redacted values — unwrap before asserting the token string.
-		expect(fixtures.appState.revokeCalls.map(Redacted.value)).toContain("ghs_test_token_123");
+		await runPost(recorder);
+
+		expect(recorder.revoked).toEqual([TOKEN]);
 	});
 
-	it("skips revocation when skip-token-revoke is true", async () => {
-		const fixtures = makeFixtures();
-		await provisionToken(fixtures);
-		await runPost(fixtures, true);
+	it("should skip revocation when skip-token-revoke is true", async () => {
+		const recorder: Recorder = { revoked: [] };
 
-		expect(fixtures.appState.revokeCalls).toHaveLength(0);
+		await runPost(recorder, { "INPUT_SKIP-TOKEN-REVOKE": "true" });
+
+		expect(recorder.revoked).toEqual([]);
 	});
 
-	it("completes cleanly when no token was provisioned", async () => {
-		const fixtures = makeFixtures();
-		await runPost(fixtures);
+	it("should still revoke when skip-token-revoke is explicitly false", async () => {
+		const recorder: Recorder = { revoked: [] };
 
-		expect(fixtures.appState.revokeCalls).toHaveLength(0);
+		// The discriminating half of the pair above: a bare
+		// `Config.boolean("skip-token-revoke")` would miss the runner's INPUT_
+		// mangling and take its default either way, so both cases would revoke and
+		// the "true" test alone could not tell a correct read from a broken one.
+		await runPost(recorder, { "INPUT_SKIP-TOKEN-REVOKE": "false" });
+
+		expect(recorder.revoked).toEqual([TOKEN]);
 	});
 
-	it("reports duration when pre recorded a start time", async () => {
-		const fixtures = makeFixtures();
-		fixtures.stateState.entries.set("startTime", JSON.stringify({ startedAt: Date.now() - 1000 }));
-		await provisionToken(fixtures);
+	it("should not fail the workflow when revocation fails", async () => {
+		const recorder: Recorder = { revoked: [] };
 
-		// The duration log path runs without throwing; revocation still happens.
-		await runPost(fixtures);
-		expect(fixtures.appState.revokeCalls.map(Redacted.value)).toContain("ghs_test_token_123");
+		await expect(
+			runPost(recorder, {}, {}, { revoke: () => Effect.die(new Error("network down")) }),
+		).resolves.toBeUndefined();
+	});
+
+	it("should not fail the workflow when a defect escapes", async () => {
+		const recorder: Recorder = { revoked: [] };
+
+		await expect(
+			runPost(
+				recorder,
+				{},
+				{},
+				{
+					revoke: () =>
+						Effect.sync(() => {
+							throw new Error("boom");
+						}),
+				},
+			),
+		).resolves.toBeUndefined();
+	});
+
+	it("should report the duration when pre recorded a start time", async () => {
+		const recorder: Recorder = { revoked: [] };
+
+		await runPost(recorder, {}, { startedAt: Date.now() - 2_000 });
+
+		expect(recorder.revoked).toEqual([TOKEN]);
+	});
+
+	it("should tolerate a missing start time", async () => {
+		const recorder: Recorder = { revoked: [] };
+
+		// `pre` may have failed before recording it; that must not stop revocation.
+		await runPost(recorder, {}, { startedAt: undefined });
+
+		expect(recorder.revoked).toEqual([TOKEN]);
 	});
 });

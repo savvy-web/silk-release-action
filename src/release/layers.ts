@@ -17,13 +17,22 @@ import { ChangesetConfigLive } from "./changeset-config.js";
 import { PublishabilityDetectorAdaptiveLive } from "./publishability.js";
 
 /**
- * The git-free workspace graph (`WorkspaceDiscovery`, `PublishabilityDetector`,
- * and the rest of `WorkspacesServices`), root-bound at build time to
- * `process.cwd()`. `Workspaces.layer` is a parameterized factory that mints a
- * fresh reference per call and layers memoize by reference, so it is bound to a
+ * The workspace graph (`WorkspaceDiscovery`, `PublishabilityDetector`, and the
+ * rest of `WorkspacesServices`), root-bound at build time to `process.cwd()`.
+ *
+ * @remarks
+ * `layerWithGit` rather than `layer`: it adds `Git`, `WorkspaceSnapshots` and
+ * `ChangeDetector` for the same `FileSystem | Path | ChildProcessSpawner` the
+ * git-free form already required. `Git` is what Phase-2 reads the target
+ * branch's `.changeset` directory with instead of shelling out, and
+ * `WorkspaceSnapshots` is how it will read versions off that branch without a
+ * checkout.
+ *
+ * `Workspaces.layerWithGit` is a parameterized factory that mints a fresh
+ * reference per call and layers memoize by reference, so it is bound to a
  * single `const` and reused across every composition site below.
  */
-const WorkspacesLive = Workspaces.layer();
+const WorkspacesLive = Workspaces.layerWithGit();
 
 /**
  * Native-versioning layer: silk-effects ReleasePlanner + ConfigInspector,

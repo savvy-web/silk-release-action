@@ -5,38 +5,35 @@
  *
  * @remarks
  * The commit is created through {@link GitCommit} so it is signed by the
- * GitHub App identity. Branch-linking and PR creation go through GraphQL
+ * GitHub App identity. Branch-linking goes through
+ * `GitBranch.createLinked` — the one operation with no REST equivalent —
  * because that preserves the issue↔branch link the imperative version
  * established. PR creation is retried once on failure (network blip).
  */
 
+// `ActionState` is the KIT tag: this module never yields it directly, but
+// `resolveSignoff` requires it, and `R` propagates upward.
+import type { CommandFailedError, CommandOutputError, ToolDiscovery } from "@effected/commands";
+import { Run } from "@effected/commands";
+import type { FileChange, GitHubCommit, GitHubError, GitHubIssue, GitTag, Repo } from "@effected/github";
+import {
+	CheckRun,
+	CheckRunOutput,
+	FileContent,
+	FileDeletion,
+	GitBranch,
+	GitCommit,
+	GitHubRepository,
+	PullRequest,
+} from "@effected/github";
+import type { ActionEnvironmentError, ActionOutputError, ActionState } from "@effected/github-actions";
+import { ActionEnvironment, ActionOutputs } from "@effected/github-actions";
 import type { PublishabilityDetector } from "@effected/workspaces";
 import { WorkspaceDiscovery } from "@effected/workspaces";
-import type {
-	ActionEnvironmentError,
-	ActionOutputError,
-	ActionState,
-	CheckRunError,
-	CommandRunnerError,
-	GitCommitError,
-	GitHubClientError,
-	GitHubCommit,
-	GitHubIssue,
-	GitHubIssueError,
-	GitTag,
-	PullRequestError,
-} from "@savvy-web/github-action-effects";
-import {
-	ActionEnvironment,
-	ActionOutputs,
-	CheckRun,
-	CommandRunner,
-	GitCommit,
-	GitHubClient,
-	PullRequest,
-} from "@savvy-web/github-action-effects";
 import type { Changesets } from "@savvy-web/silk-effects";
 import { Config, Effect, FileSystem } from "effect";
+import type { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess } from "effect/unstable/process";
 import type { ChangesetConfig } from "../release/changeset-config.js";
 import { resolveSignoff } from "./commit-signoff.js";
 import { isSinglePackage } from "./detect-repo-type.js";
@@ -60,43 +57,6 @@ export interface CreateReleaseBranchResult {
 	versionSummary: string;
 }
 
-/** GraphQL response shape for the createLinkedBranch mutation. */
-interface CreateLinkedBranchResponse {
-	createLinkedBranch?: { linkedBranch: { id: string } };
-}
-
-/** GraphQL response shape for the createPullRequest mutation. */
-interface CreatePullRequestResponse {
-	createPullRequest: { pullRequest: { number: number; url: string; id: string } };
-}
-
-/** REST response shape for repos.get (we only need node_id). */
-interface RepoNodeResponse {
-	node_id: string;
-}
-
-const CREATE_LINKED_BRANCH_MUTATION = `
-	mutation ($issueId: ID!, $name: String!, $oid: GitObjectID!, $repositoryId: ID!) {
-		createLinkedBranch(input: { issueId: $issueId, name: $name, oid: $oid, repositoryId: $repositoryId }) {
-			linkedBranch { id }
-		}
-	}
-`;
-
-export const CREATE_PULL_REQUEST_MUTATION = `
-	mutation ($repositoryId: ID!, $baseRefName: String!, $headRefName: String!, $title: String!, $body: String!) {
-		createPullRequest(input: {
-			repositoryId: $repositoryId
-			baseRefName: $baseRefName
-			headRefName: $headRefName
-			title: $title
-			body: $body
-		}) {
-			pullRequest { number url id }
-		}
-	}
-`;
-
 /**
  * Run the `createReleaseBranch` stage.
  *
@@ -106,15 +66,12 @@ export const createReleaseBranch = (): Effect.Effect<
 	CreateReleaseBranchResult,
 	| ActionEnvironmentError
 	| ActionOutputError
-	| CheckRunError
 	| Changesets.ConfigurationError
 	| Changesets.ReleasePlanError
-	| CommandRunnerError
+	| CommandFailedError
+	| CommandOutputError
 	| Config.ConfigError
-	| GitCommitError
-	| GitHubClientError
-	| GitHubIssueError
-	| PullRequestError,
+	| GitHubError,
 	| ActionEnvironment
 	| ActionOutputs
 	| ActionState
@@ -122,24 +79,27 @@ export const createReleaseBranch = (): Effect.Effect<
 	| Changesets.ConfigInspector
 	| Changesets.ReleasePlanner
 	| CheckRun
-	| CommandRunner
+	| ChildProcessSpawner.ChildProcessSpawner
+	| ToolDiscovery
 	| FileSystem.FileSystem
+	| GitBranch
 	| GitCommit
-	| GitHubClient
 	| GitHubCommit
 	| GitHubIssue
+	| GitHubRepository
 	| GitTag
 	| PublishabilityDetector
 	| PullRequest
+	| Repo
 	| WorkspaceDiscovery
 > =>
 	Effect.gen(function* () {
 		const env = yield* ActionEnvironment;
 		const outputs = yield* ActionOutputs;
 		const checks = yield* CheckRun;
-		const runner = yield* CommandRunner;
+		const branches = yield* GitBranch;
 		const gitCommit = yield* GitCommit;
-		const client = yield* GitHubClient;
+		const repository_ = yield* GitHubRepository;
 		const pr = yield* PullRequest;
 		const fs = yield* FileSystem.FileSystem;
 		const signoff = yield* resolveSignoff();
@@ -150,11 +110,10 @@ export const createReleaseBranch = (): Effect.Effect<
 		const dryRun = yield* Config.boolean("dry-run").pipe(Config.withDefault(false));
 
 		const { sha, repository } = yield* env.github;
-		const [owner, repo] = repository.split("/");
 
 		yield* Effect.logInfo(`Creating branch '${releaseBranch}' from '${targetBranch}' HEAD`);
 		if (!dryRun) {
-			yield* runner.exec("git", ["checkout", "-b", releaseBranch, `origin/${targetBranch}`]);
+			yield* Run.text(ChildProcess.make("git", ["checkout", "-b", releaseBranch, `origin/${targetBranch}`]));
 		} else {
 			yield* Effect.logInfo(`[DRY RUN] Would create branch: ${releaseBranch} from origin/${targetBranch}`);
 		}
@@ -175,8 +134,12 @@ export const createReleaseBranch = (): Effect.Effect<
 		let changedFiles = "";
 		let hasChanges = false;
 		if (!dryRun) {
-			const status = yield* runner.execCapture("git", ["status", "--porcelain"]);
-			changedFiles = status.stdout;
+			// `Run.text`, not `Run.collect`: the predecessor's `execCapture` made a
+			// non-zero exit a typed failure, and a silently-empty status here would
+			// take the "nothing to release" branch below. The trim `Run.text` applies
+			// is safe for this (non-`-z`) form — every consumer of `changedFiles` is
+			// whitespace-insensitive per line.
+			changedFiles = yield* Run.text(ChildProcess.make("git", ["status", "--porcelain"]));
 			hasChanges = changedFiles.trim().length > 0;
 		} else {
 			hasChanges = true;
@@ -186,16 +149,22 @@ export const createReleaseBranch = (): Effect.Effect<
 		if (!hasChanges) {
 			yield* Effect.logInfo("No changes generated by changeset version. Cleaning up and exiting.");
 			if (!dryRun) {
-				yield* runner.exec("git", ["checkout", targetBranch]);
-				yield* runner.exec("git", ["branch", "-D", releaseBranch]);
+				// Asymmetric with `update-release-branch`, deliberately: this stage
+				// created the branch locally and never pushed it, so cleanup is local.
+				yield* Run.text(ChildProcess.make("git", ["checkout", targetBranch]));
+				yield* Run.text(ChildProcess.make("git", ["branch", "-D", releaseBranch]));
 			}
 
 			const checkTitle = dryRun ? "🧪 Create Release Branch (Dry Run)" : "Create Release Branch";
 			const { id: noChangesId } = yield* checks.create(checkTitle, sha);
-			yield* checks.complete(noChangesId, "neutral", {
-				title: "No version changes generated",
-				summary: "Changeset version command did not produce any changes. No release branch created.",
-			});
+			yield* checks.complete(
+				noChangesId,
+				"neutral",
+				CheckRunOutput.make({
+					title: "No version changes generated",
+					summary: "Changeset version command did not produce any changes. No release branch created.",
+				}),
+			);
 
 			const noChangesSummary = summaryWriter.build([
 				{ heading: checkTitle, content: "No version changes generated" },
@@ -254,13 +223,6 @@ export const createReleaseBranch = (): Effect.Effect<
 			yield* Effect.logInfo(`Release PR title: ${prTitle}`);
 		}
 
-		let parentSha = "";
-		if (!dryRun) {
-			const head = yield* runner.execCapture("git", ["rev-parse", "HEAD"]);
-			parentSha = head.stdout.trim();
-			yield* Effect.logInfo(`Current HEAD: ${parentSha}`);
-		}
-
 		// Commit subject matches the PR title; body lists the releasing packages
 		// with full (scoped) names, falling back to a description when none.
 		const releaseList = formatReleasePackageList(releasingPackages);
@@ -269,14 +231,21 @@ export const createReleaseBranch = (): Effect.Effect<
 		let finalCommitSha = "";
 		if (!dryRun) {
 			yield* Effect.logInfo("Creating verified commit via GitHub API...");
+
+			// INVARIANT: the commit is rooted on the TARGET branch head. The
+			// predecessor read `git rev-parse HEAD` and got the same sha only
+			// because the local branch was cut from `origin/<target>` a few lines
+			// up; reading the ref makes the invariant explicit and drops a
+			// subprocess.
+			const parentSha = yield* branches.sha(targetBranch);
+			yield* Effect.logInfo(`Target head: ${parentSha}`);
+
 			// `-z` uses NUL separators so the positional [0..2]=status, [3..]=path
-			// parsing survives whitespace and trailing CRLF; trimming the line
-			// itself would shift the column for unstaged changes (" M file" → "M file").
-			const status = yield* runner.execCapture("git", ["status", "--porcelain", "-z"]);
-			const files: Array<
-				| { readonly path: string; readonly mode: "100644" | "100755"; readonly content: string }
-				| { readonly path: string; readonly mode: "100644"; readonly sha: null }
-			> = [];
+			// parsing survives whitespace and trailing CRLF. `Run.collect`, not
+			// `Run.text`: `text` trims, which would eat the leading status column of
+			// the FIRST entry (" M path" → "M path") and shift every `substring`.
+			const status = yield* Run.collect(ChildProcess.make("git", ["status", "--porcelain", "-z"]));
+			const changes: FileChange[] = [];
 			for (const entry of status.stdout.split("\0")) {
 				if (entry.length === 0) continue;
 				const statusCode = entry.substring(0, 2).trim();
@@ -284,59 +253,30 @@ export const createReleaseBranch = (): Effect.Effect<
 				if (filePath.includes(" -> ")) filePath = filePath.split(" -> ")[1];
 				if (filePath === "") continue;
 				if (statusCode === "D" || statusCode === "DD" || statusCode === "AD") {
-					files.push({ path: filePath, mode: "100644", sha: null });
+					changes.push(FileDeletion.make({ path: filePath }));
 				} else {
 					const content = yield* fs.readFileString(filePath).pipe(Effect.catch(() => Effect.succeed("")));
 					const statResult = yield* Effect.result(fs.stat(filePath));
 					const isExecutable = statResult._tag === "Success" && (Number(statResult.success.mode ?? 0n) & 0o111) !== 0;
-					files.push({ path: filePath, mode: isExecutable ? "100755" : "100644", content });
+					changes.push(FileContent.make({ path: filePath, mode: isExecutable ? "100755" : "100644", content }));
 				}
 			}
 
-			if (files.length === 0) {
+			if (changes.length === 0) {
 				yield* Effect.logWarning("No changes to commit via API");
 			} else {
-				// The Git Data API's `base_tree` wants a tree SHA, not a commit
-				// SHA — fetch the parent commit and read its tree.sha.
-				const parentCommit = yield* client.rest<{ tree: { sha: string } }>("git.getCommit", (octokit) =>
-					(
-						octokit as {
-							rest: {
-								git: {
-									getCommit: (params: { owner: string; repo: string; commit_sha: string }) => Promise<{
-										data: { tree: { sha: string } };
-									}>;
-								};
-							};
-						}
-					).rest.git.getCommit({ owner, repo, commit_sha: parentSha }),
-				);
-				const treeSha = yield* gitCommit.createTree(files, parentCommit.tree.sha);
-				finalCommitSha = yield* gitCommit.createCommit(commitMessage, treeSha, [parentSha]);
-				// updateRef fails 404/422 for a brand-new branch — fall back to createRef.
-				// GitCommit.updateRef prefixes "heads/" itself — pass the bare branch name.
-				const updateResult = yield* Effect.result(gitCommit.updateRef(releaseBranch, finalCommitSha, true));
-				if (updateResult._tag === "Failure") {
-					yield* Effect.logInfo(`Ref heads/${releaseBranch} does not exist yet; creating it`);
-					yield* client.rest<undefined>("git.createRef", (octokit) =>
-						(
-							octokit as {
-								rest: {
-									git: {
-										createRef: (params: { owner: string; repo: string; ref: string; sha: string }) => Promise<{
-											data: undefined;
-										}>;
-									};
-								};
-							}
-						).rest.git.createRef({
-							owner,
-							repo,
-							ref: `refs/heads/${releaseBranch}`,
-							sha: finalCommitSha,
-						}),
-					);
-				}
+				// INVARIANT: `upsert` THEN `commitFiles`. `upsert(branch, sha)` creates
+				// the branch at the target head or force-resets it there; that is what
+				// replaces the predecessor's `updateRef`-then-`createRef`-on-404 dance,
+				// which existed for exactly this brand-new-branch case. `commitFiles`
+				// then roots its tree on the branch (== target head, because we just
+				// placed it) and its deliberately unforced ref move is safe.
+				yield* branches.upsert(releaseBranch, parentSha);
+				finalCommitSha = yield* gitCommit.commitFiles({
+					branch: releaseBranch,
+					message: commitMessage,
+					changes,
+				});
 				yield* Effect.logInfo(`✓ Created verified commit: ${finalCommitSha}`);
 			}
 		} else {
@@ -346,18 +286,7 @@ export const createReleaseBranch = (): Effect.Effect<
 		let repoNodeId = "";
 		if (!dryRun) {
 			yield* Effect.logInfo("Fetching repository node ID...");
-			const repoInfo = yield* client.rest<RepoNodeResponse>("repos.get", (octokit) =>
-				(
-					octokit as {
-						rest: {
-							repos: {
-								get: (params: { owner: string; repo: string }) => Promise<{ data: RepoNodeResponse }>;
-							};
-						};
-					}
-				).rest.repos.get({ owner, repo }),
-			);
-			repoNodeId = repoInfo.node_id;
+			repoNodeId = yield* repository_.nodeId;
 			yield* Effect.logInfo(`Repository node ID: ${repoNodeId}`);
 		}
 
@@ -374,11 +303,11 @@ export const createReleaseBranch = (): Effect.Effect<
 				yield* Effect.logInfo(`Linking branch '${releaseBranch}' at commit ${finalCommitSha} to issues...`);
 				for (const issue of linkedIssues) {
 					const linkResult = yield* Effect.result(
-						client.graphql<CreateLinkedBranchResponse>(CREATE_LINKED_BRANCH_MUTATION, {
-							issueId: issue.node_id,
+						branches.createLinked({
+							issueNodeId: issue.node_id,
+							repositoryNodeId: repoNodeId,
 							name: releaseBranch,
-							oid: finalCommitSha,
-							repositoryId: repoNodeId,
+							sha: finalCommitSha,
 						}),
 					);
 					if (linkResult._tag === "Success") {
@@ -402,31 +331,23 @@ export const createReleaseBranch = (): Effect.Effect<
 		const prBody = "";
 
 		if (!dryRun) {
-			yield* Effect.logInfo("Creating PR via GraphQL API...");
-			yield* Effect.logInfo(`  Repository: ${repoNodeId}`);
+			yield* Effect.logInfo("Creating PR...");
+			yield* Effect.logInfo(`  Repository: ${repository}`);
 			yield* Effect.logInfo(`  Base: ${targetBranch}`);
 			yield* Effect.logInfo(`  Head: ${releaseBranch}`);
 			yield* Effect.logInfo(`  Title: ${prTitle}`);
 
-			const createPr = client.graphql<CreatePullRequestResponse>(CREATE_PULL_REQUEST_MUTATION, {
-				repositoryId: repoNodeId,
-				baseRefName: targetBranch,
-				headRefName: releaseBranch,
-				title: prTitle,
-				body: prBody,
-			});
-
-			const prResult = yield* createPr.pipe(
+			const created = yield* pr.create({ title: prTitle, head: releaseBranch, base: targetBranch, body: prBody }).pipe(
 				Effect.tapError((error) => Effect.logWarning(`PR creation failed, retrying: ${error.reason}`)),
 				Effect.retry({ times: 1, schedule: undefined }),
 			);
 
-			prNumber = prResult.createPullRequest.pullRequest.number;
-			prUrl = prResult.createPullRequest.pullRequest.url;
-			yield* Effect.logInfo(`✓ PR created: #${prNumber} (${prResult.createPullRequest.pullRequest.id})`);
+			prNumber = created.number;
+			prUrl = created.url;
+			yield* Effect.logInfo(`✓ PR created: #${prNumber} (${created.nodeId})`);
 
 			yield* Effect.logInfo(`Adding labels to PR #${prNumber}...`);
-			yield* pr.addLabels(prNumber as number, ["automated", "release"]);
+			yield* pr.addLabels(prNumber, ["automated", "release"]);
 			yield* Effect.logInfo(`✓ Created PR #${prNumber}: ${prUrl}`);
 		} else {
 			yield* Effect.logInfo(`[DRY RUN] Would create PR with title: ${prTitle}`);
@@ -453,10 +374,14 @@ export const createReleaseBranch = (): Effect.Effect<
 
 		const checkTitle = dryRun ? "🧪 Create Release Branch (Dry Run)" : "Create Release Branch";
 		const { id: finalCheckId } = yield* checks.create(checkTitle, sha);
-		yield* checks.complete(finalCheckId, "success", {
-			title: prNumber ? `Created release PR #${prNumber}` : "Release branch created (dry run)",
-			summary: checkDetails,
-		});
+		yield* checks.complete(
+			finalCheckId,
+			"success",
+			CheckRunOutput.make({
+				title: prNumber ? `Created release PR #${prNumber}` : "Release branch created (dry run)",
+				summary: checkDetails,
+			}),
+		);
 
 		const jobStatusTable = summaryWriter.keyValueTable([
 			{ key: "Branch", value: `\`${releaseBranch}\`` },

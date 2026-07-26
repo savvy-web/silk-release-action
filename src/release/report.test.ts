@@ -1,6 +1,6 @@
+import { Contact, SbomMetadata, Supplier } from "@effected/sbom";
 import { describe, expect, it } from "vitest";
 import type { ValidationOutput } from "../schema/release-output.js";
-import type { ResolvedSBOMMetadata } from "../types/sbom-config.js";
 import {
 	buildChecksTable,
 	buildFindingsTable,
@@ -357,6 +357,33 @@ describe("buildChecksTable", () => {
 describe("buildFindingsTable", () => {
 	it("returns an empty string when there are no findings", () => {
 		expect(buildFindingsTable([])).toBe("");
+	});
+
+	it("escapes a pipe in cell content so the table does not lose a column", () => {
+		// THE DEFECT THIS REPLACES. The predecessor built every table with
+		// `join(" | ")` and escaped nothing, so one `|` anywhere in a cell
+		// silently shifted every column after it — and `message` carries raw
+		// npm stderr, where a pipe is entirely ordinary.
+		const findings: ReadonlyArray<ValidationFinding> = [
+			{
+				severity: "error",
+				check: "Publish Validation",
+				scope: { package: "@org/a", directory: null },
+				message: "dry-run failed: peer range >=1 || <2 unsatisfied",
+			},
+		];
+
+		const table = buildFindingsTable(findings);
+		const bodyRow = table.split("\n").find((line) => line.includes("dry-run failed"));
+
+		expect(bodyRow).toBeDefined();
+		// The pipes inside the message are escaped...
+		expect(bodyRow).toContain(String.raw`\|\|`);
+		// ...so the row still has exactly the delimiter count its header does.
+		// (Line 0 is the section heading, not the table — take the first row.)
+		const header = table.split("\n").find((line) => line.startsWith("|"));
+		const unescapedPipes = (line: string): number => (line.match(/(?<!\\)\|/g) ?? []).length;
+		expect(unescapedPipes(bodyRow ?? "")).toBe(unescapedPipes(header ?? ""));
 	});
 
 	it("orders errors before warnings regardless of discovery order", () => {
@@ -807,15 +834,18 @@ describe("buildReleaseNotesPreviewSummary", () => {
 });
 
 describe("buildSbomPreviewSummary", () => {
-	const sampleResolved: ResolvedSBOMMetadata = {
-		supplier: {
+	// The kit's `SbomMetadata` — the value actually threaded onto the emitted
+	// BOM — rather than the consumer-shaped `ResolvedSBOMMetadata` that used to
+	// be reconstructed alongside it.
+	const sampleResolved: SbomMetadata = SbomMetadata.make({
+		supplier: Supplier.make({
 			name: "Savvy Web Systems",
 			url: ["https://savvyweb.systems"],
-			contact: [{ email: "security@savvyweb.systems" }],
-		},
-		component: { publisher: "Savvy Web Systems", copyright: "Copyright 2026 Savvy Web Systems" },
-		author: "Spencer Beggs",
-	};
+			contact: [Contact.make({ email: "security@savvyweb.systems" })],
+		}),
+		authors: [Contact.make({ name: "Spencer Beggs" })],
+		timestamp: "2026-01-01T00:00:00.000Z",
+	});
 
 	it("renders per-build component count and NTIA status from the validation payload", () => {
 		const md = buildSbomPreviewSummary(
@@ -860,10 +890,7 @@ describe("buildSbomPreviewSummary", () => {
 	});
 
 	it("surfaces the empty-resolved-config hint when resolvedSbomConfig is an empty map", () => {
-		const md = buildSbomPreviewSummary(
-			validationOf({ publish: publishOf([pkg()]) }),
-			new Map<string, ResolvedSBOMMetadata>(),
-		);
+		const md = buildSbomPreviewSummary(validationOf({ publish: publishOf([pkg()]) }), new Map<string, SbomMetadata>());
 		expect(md).toContain(
 			"_No `sbom-config` resolved — supply via the `sbom-config` action input or `vars.SILK_RELEASE_SBOM_TEMPLATE`._",
 		);
@@ -952,11 +979,10 @@ describe("buildSbomPreviewSummary", () => {
 	it("suppresses the empty-config hint when source is non-'none', even with a sparse map", () => {
 		// `source: "input"` means a template was supplied; the hint would
 		// mislead the reader into thinking no template arrived.
-		const md = buildSbomPreviewSummary(
-			validationOf({ publish: publishOf([pkg()]) }),
-			new Map<string, ResolvedSBOMMetadata>(),
-			{ source: "input", location: "sbom-config" },
-		);
+		const md = buildSbomPreviewSummary(validationOf({ publish: publishOf([pkg()]) }), new Map<string, SbomMetadata>(), {
+			source: "input",
+			location: "sbom-config",
+		});
 		expect(md).not.toContain(
 			"_No `sbom-config` resolved — supply via the `sbom-config` action input or `vars.SILK_RELEASE_SBOM_TEMPLATE`._",
 		);

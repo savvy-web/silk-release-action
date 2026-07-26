@@ -13,9 +13,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
-import type { PullRequestInfo, PullRequestTestState } from "@savvy-web/github-action-effects/testing";
-import { ActionEnvironmentTest, GitHubClientTest, PullRequestTest } from "@savvy-web/github-action-effects/testing";
-import { Effect, FileSystem, Layer, Logger } from "effect";
+import { GitHubError, PullRequest, PullRequestInfo, Repo, RepoRef } from "@effected/github";
+import { ActionEnvironment } from "@effected/github-actions";
+import { DateTime, Effect, FileSystem, Layer, Logger, Option } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PhaseDetectionOptions, PhaseDetectionResult } from "../src/utils/detect-workflow-phase.js";
 import { detectWorkflowPhase } from "../src/utils/detect-workflow-phase.js";
@@ -25,7 +25,7 @@ const TARGET_BRANCH = "main";
 const MERGE_COMMIT_SHA = "deadbeef123456";
 
 interface Fixtures {
-	prState: PullRequestTestState;
+	prs: ReadonlyArray<PullRequestInfo>;
 }
 
 const makeFixtures = (
@@ -39,34 +39,25 @@ const makeFixtures = (
 			mergeCommitSha?: string | null;
 		}>;
 	} = {},
-): Fixtures => {
-	const prState = PullRequestTest.empty();
-	let nextNumber = 1;
-	for (const pr of params.prs ?? []) {
-		prState.prs.push({
+): Fixtures => ({
+	prs: (params.prs ?? []).map((pr) =>
+		PullRequestInfo.make({
 			number: pr.number,
 			nodeId: `node-${pr.number}`,
 			url: `https://github.com/owner/repo/pull/${pr.number}`,
 			title: `PR #${pr.number}`,
-			body: "",
 			state: pr.state,
+			// `head`/`base`, NOT `headRef`/`baseRef`.
 			head: pr.head,
 			base: pr.base,
 			draft: false,
 			merged: (pr.mergedAt ?? null) !== null,
-			mergedAt: pr.mergedAt ?? null,
-			mergeCommitSha: pr.mergeCommitSha ?? null,
-			labels: [],
-			reviewers: [],
-			teamReviewers: [],
-			autoMerge: undefined,
-		});
-		nextNumber = Math.max(nextNumber, pr.number + 1);
-	}
-	prState.nextNumber = nextNumber;
-
-	return { prState };
-};
+			// `mergedAt` is a REQUIRED Option on the kit's shape.
+			mergedAt: pr.mergedAt == null ? Option.none() : Option.some(DateTime.makeUnsafe(pr.mergedAt)),
+			...(pr.mergeCommitSha == null ? {} : { mergeCommitSha: pr.mergeCommitSha }),
+		}),
+	),
+});
 
 /**
  * Run `detectWorkflowPhase` against the given fixtures.
@@ -82,7 +73,7 @@ const makeFixtures = (
  */
 const runDetect = (f: Fixtures): Promise<PhaseDetectionResult> => {
 	const layer = Layer.mergeAll(
-		ActionEnvironmentTest.layer({
+		ActionEnvironment.layerTest({
 			GITHUB_SHA: MERGE_COMMIT_SHA,
 			GITHUB_REF: `refs/heads/${TARGET_BRANCH}`,
 			GITHUB_REPOSITORY: "owner/repo",
@@ -96,8 +87,14 @@ const runDetect = (f: Fixtures): Promise<PhaseDetectionResult> => {
 			GITHUB_SERVER_URL: "https://github.com",
 			GITHUB_API_URL: "https://api.github.com",
 		}),
-		GitHubClientTest.empty(),
-		PullRequestTest.layer(f.prState),
+		PullRequest.layerTest({
+			// Strategy 1 always 404s, driving execution to Strategy 2 (`pr.list`) —
+			// the same routing the predecessor's empty client produced.
+			listAssociatedWithCommit: () =>
+				Effect.fail(GitHubError.notFound("PullRequest.listAssociatedWithCommit", "commit")),
+			list: () => Effect.succeed(f.prs),
+		}),
+		Layer.succeed(Repo, RepoRef.make({ owner: "owner", repo: "repo" })),
 		FileSystem.layerNoop({ readFileString: () => Effect.succeed("{}") }),
 	);
 
@@ -237,13 +234,10 @@ const runDetectFull = (params: FullParams): Promise<PhaseDetectionResult> => {
 		writeFileSync(eventPath, JSON.stringify(params.eventPayload));
 	}
 
-	const prState = PullRequestTest.empty();
-	if (params.associated !== undefined) {
-		prState.associatedByCommit.set(sha, params.associated);
-	}
+	const associated = params.associated;
 
 	const layer = Layer.mergeAll(
-		ActionEnvironmentTest.layer({
+		ActionEnvironment.layerTest({
 			GITHUB_SHA: sha,
 			GITHUB_REF: params.ref ?? `refs/heads/${TARGET_BRANCH}`,
 			GITHUB_REPOSITORY: "owner/repo",
@@ -257,8 +251,14 @@ const runDetectFull = (params: FullParams): Promise<PhaseDetectionResult> => {
 			GITHUB_SERVER_URL: "https://github.com",
 			GITHUB_API_URL: "https://api.github.com",
 		}),
-		GitHubClientTest.empty(),
-		PullRequestTest.layer(prState),
+		PullRequest.layerTest({
+			listAssociatedWithCommit: () =>
+				associated === undefined
+					? Effect.fail(GitHubError.notFound("PullRequest.listAssociatedWithCommit", "commit"))
+					: Effect.succeed(associated),
+			list: () => Effect.succeed([]),
+		}),
+		Layer.succeed(Repo, RepoRef.make({ owner: "owner", repo: "repo" })),
 		NodeFileSystem.layer,
 	);
 
@@ -271,20 +271,21 @@ const runDetectFull = (params: FullParams): Promise<PhaseDetectionResult> => {
 	).finally(() => rmSync(tmp, { recursive: true, force: true }));
 };
 
-const makeAssociatedPR = (over: Partial<PullRequestInfo> = {}): PullRequestInfo => ({
-	number: 7,
-	url: "https://github.com/owner/repo/pull/7",
-	nodeId: "node-7",
-	title: "chore: release",
-	state: "closed",
-	head: RELEASE_BRANCH,
-	base: TARGET_BRANCH,
-	draft: false,
-	merged: true,
-	mergedAt: "2026-01-15T12:00:00Z",
-	mergeCommitSha: MERGE_COMMIT_SHA,
-	...over,
-});
+const makeAssociatedPR = (over: Partial<PullRequestInfo> = {}): PullRequestInfo =>
+	PullRequestInfo.make({
+		number: 7,
+		url: "https://github.com/owner/repo/pull/7",
+		nodeId: "node-7",
+		title: "chore: release",
+		state: "closed",
+		head: RELEASE_BRANCH,
+		base: TARGET_BRANCH,
+		draft: false,
+		merged: true,
+		mergedAt: Option.some(DateTime.makeUnsafe("2026-01-15T12:00:00Z")),
+		mergeCommitSha: MERGE_COMMIT_SHA,
+		...over,
+	});
 
 describe("detectWorkflowPhase — Strategy 1 (commit association)", () => {
 	it("detects publishing via an associated merged release PR without retrying", async () => {
@@ -299,7 +300,7 @@ describe("detectWorkflowPhase — Strategy 1 (commit association)", () => {
 	it("ignores an associated PR that is not merged and falls through to Strategy 2", async () => {
 		vi.useFakeTimers();
 		const resultPromise = runDetectFull({
-			associated: [makeAssociatedPR({ number: 4, merged: false, mergedAt: null })],
+			associated: [makeAssociatedPR({ number: 4, merged: false, mergedAt: Option.none() })],
 		});
 		await vi.advanceTimersByTimeAsync(60000);
 		const result = await resultPromise;

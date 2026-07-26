@@ -10,18 +10,24 @@
  * the well-known `github-actions[bot]` identity.
  */
 
-import type { ActionState } from "@savvy-web/github-action-effects";
-import { GitHubToken } from "@savvy-web/github-action-effects";
+import { BotIdentity } from "@effected/github";
+import type { ActionState } from "@effected/github-actions";
+import { GitHubToken } from "@effected/github-actions";
 import { Effect } from "effect";
-
-/** Well-known `github-actions[bot]` identity, used when the App identity is unavailable. */
-const FALLBACK_IDENTITY = {
-	name: "github-actions[bot]",
-	email: "41898282+github-actions[bot]@users.noreply.github.com",
-} as const;
 
 /**
  * Resolve the DCO `Signed-off-by` trailer line for an action-created commit.
+ *
+ * @remarks
+ * The hand-rolled `FALLBACK_IDENTITY` constant that lived here is gone: the kit
+ * ships the same well-known identity as `BotIdentity.githubActions`, with
+ * byte-identical `name` and `email`.
+ *
+ * Note the two fallbacks are at different depths and both are load-bearing.
+ * `InstallationToken.botIdentity()` *already* returns `BotIdentity.githubActions`
+ * when the persisted token carries no `appSlug`; the `Effect.catch` here covers
+ * the outer case where the state read itself fails, i.e. no token was persisted
+ * at all.
  *
  * @returns A `Signed-off-by: Name <email>` line built from the GitHub App bot
  *   identity, or the `github-actions[bot]` fallback when the persisted token
@@ -29,6 +35,6 @@ const FALLBACK_IDENTITY = {
  */
 export const resolveSignoff = (): Effect.Effect<string, never, ActionState> =>
 	GitHubToken.botIdentity().pipe(
-		Effect.catch(() => Effect.succeed(FALLBACK_IDENTITY)),
+		Effect.catch(() => Effect.succeed(BotIdentity.githubActions)),
 		Effect.map((identity) => `Signed-off-by: ${identity.name} <${identity.email}>`),
 	);

@@ -28,7 +28,7 @@ export class StartTimeState extends Schema.Class<StartTimeState>("StartTimeState
 
 /**
  * The GitHub App installation token itself is no longer modelled here —
- * `GitHubToken.provision` (from `@savvy-web/github-action-effects`) persists
+ * `GitHubToken.provision` (from `@effected/github-actions`) persists
  * the `InstallationToken` envelope (token, expiry, installation id, and the
  * resolved App identity) to `ActionState` under its own internal key.
  * `main.ts` reads it back via `GitHubToken.read()` and `post.ts` revokes it

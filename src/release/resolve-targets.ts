@@ -10,8 +10,8 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { classifyRegistry } from "@effected/npm";
 import type { PublishTarget, PublishabilityDetector, WorkspacePackage } from "@effected/workspaces";
-import { isGitHubPackagesRegistry, isNpmRegistry } from "@savvy-web/github-action-effects";
 import type { PublishTargetBindingError } from "@savvy-web/silk-effects";
 import { SilkPublishability } from "@savvy-web/silk-effects";
 import type { Effect, FileSystem } from "effect";
@@ -91,20 +91,32 @@ export const resolvePublishableTargets = (
  * @returns The token for the registry, or `null` when none applies.
  */
 export function pickToken(registry: string, npmToken: string | null, ghPkgsToken: string | null): string | null {
-	if (isNpmRegistry(registry)) {
-		return npmToken;
+	// One classification, switched exhaustively — rather than two independent
+	// booleans asked in sequence, which can disagree. `classifyRegistry` is the
+	// construct whose docstring names this call site.
+	switch (classifyRegistry(registry)) {
+		case "npm":
+			return npmToken;
+		case "github-packages":
+			return ghPkgsToken;
+		// JSR is not an npm-protocol registry and publishes over OIDC, so it has
+		// no token of its own. It shares the custom-registry env-var derivation
+		// here only because the predecessor's two booleans both answered false
+		// for it and it fell through — preserved deliberately rather than
+		// changed inside a migration. Giving JSR its own `return null` is a
+		// product decision and belongs in its own change.
+		case "jsr":
+		case "custom": {
+			// Derive an env var name from the URL,
+			// e.g. https://registry.example.com/ → REGISTRY_EXAMPLE_COM_TOKEN
+			const envName = registry
+				.replace(/^https?:\/\//, "")
+				.replace(/[^a-zA-Z0-9]/g, "_")
+				.toUpperCase()
+				.replace(/_+/g, "_")
+				.replace(/^_|_$/g, "")
+				.concat("_TOKEN");
+			return process.env[envName] ?? null;
+		}
 	}
-	if (isGitHubPackagesRegistry(registry)) {
-		return ghPkgsToken;
-	}
-	// Custom registry: derive env var name from URL
-	// e.g. https://registry.example.com/ → REGISTRY_EXAMPLE_COM_TOKEN
-	const envName = registry
-		.replace(/^https?:\/\//, "")
-		.replace(/[^a-zA-Z0-9]/g, "_")
-		.toUpperCase()
-		.replace(/_+/g, "_")
-		.replace(/^_|_$/g, "")
-		.concat("_TOKEN");
-	return process.env[envName] ?? null;
 }

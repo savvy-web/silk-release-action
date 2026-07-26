@@ -5,20 +5,24 @@
  * registry, git, or SBOM tooling is exercised.
  */
 
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { NodeServices } from "@effect/platform-node";
-import { PublishTarget, PublishabilityDetector, WorkspaceDiscovery, WorkspacePackage } from "@effected/workspaces";
-import { ActionsConfigProvider } from "@savvy-web/github-action-effects";
-import type { CommandResponse } from "@savvy-web/github-action-effects/testing";
+import { Git } from "@effected/git";
+import { ActionInput, ActionLogger, ActionState, ActionStateError } from "@effected/github-actions";
+import { PackagePublish } from "@effected/npm";
 import {
-	ActionLoggerTest,
-	ActionStateTest,
-	AttestTest,
-	CommandRunnerTest,
-	NpmRegistryTest,
-	PackagePublishTest,
-	SbomTest,
-} from "@savvy-web/github-action-effects/testing";
-import { ConfigProvider, Effect, Layer, Option } from "effect";
+	CatalogSet,
+	PackageStateSnapshot,
+	PublishTarget,
+	PublishabilityDetector,
+	WorkspaceDiscovery,
+	WorkspacePackage,
+	WorkspaceSnapshots,
+	WorkspaceStateSnapshot,
+} from "@effected/workspaces";
+import { Effect, Layer, Option } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { matchesIgnorePattern } from "../utils/detect-repo-type.js";
@@ -98,27 +102,77 @@ const makePublishabilityLayer = (targetsByName: Map<string, PublishTarget[]>): L
 	});
 
 /**
- * Build a CommandRunner layer pre-configured with git-show responses.
+ * Build a `WorkspaceSnapshots` layer reporting `versions` for the target
+ * branch — the replacement for the `git show <branch>:<pkg>/package.json`
+ * responses this suite used to seed on a `CommandRunner`.
  *
- * The map key format is `"git show <branch>:<relativePath>/package.json"`.
- * Pass `undefined` to use an empty runner (all commands succeed with `""`).
+ * A package absent from `baseVersions` is brand-new on the target branch.
+ * `at` is stubbed and `worktree` deliberately is not: an unstubbed member of
+ * this double DIES, which is what proves validation reads the ref and never
+ * the live tree.
  */
-const makeCommandRunnerLayer = (
-	responses?: ReadonlyMap<string, CommandResponse>,
-): Layer.Layer<import("@savvy-web/github-action-effects/testing").CommandRunner> => {
-	if (responses === undefined) return CommandRunnerTest.empty() as never;
-	return CommandRunnerTest.layer(responses) as never;
+const makeSnapshotsLayer = (baseVersions?: Readonly<Record<string, string>>): Layer.Layer<WorkspaceSnapshots> => {
+	const snapshot = WorkspaceStateSnapshot.make({
+		packages: Object.entries(baseVersions ?? {}).map(([name, version]) =>
+			PackageStateSnapshot.make({ name, version, relativePath: name }),
+		),
+		catalogs: CatalogSet.empty(),
+		importerVersions: {},
+	});
+	return WorkspaceSnapshots.layerTest({ at: () => Effect.succeed(snapshot) });
+};
+
+/**
+ * A recording `PackagePublish` double.
+ *
+ * @remarks
+ * `setupAuth` is deliberately left UNSTUBBED, so it dies if called. Validation
+ * runs `npm pack --dry-run`, which never contacts a registry — the predecessor
+ * called `setupAuth` before it anyway, writing a token into an npmrc for a
+ * command that could not use one. Leaving it lethal is what proves that call
+ * is gone and does not come back.
+ */
+const makePublishDouble = (
+	options: { ok?: boolean } = {},
+): { state: { dryRunCalls: Array<{ packageDir: string }> }; layer: Layer.Layer<PackagePublish> } => {
+	const state = { dryRunCalls: [] as Array<{ packageDir: string }> };
+	const ok = options.ok !== false;
+	const layer = PackagePublish.layerTest({
+		dryRun: (packageDir) =>
+			Effect.sync(() => {
+				state.dryRunCalls.push({ packageDir });
+				return ok
+					? { ok: true, packedSize: 1234, unpackedSize: 5678, fileCount: 7, output: "" }
+					: {
+							ok: false,
+							output: "npm ERR! dry-run failed",
+							packedSize: undefined,
+							unpackedSize: undefined,
+							fileCount: undefined,
+						};
+			}),
+	});
+	return { state, layer };
 };
 
 // ─── Shared "always-on" base layers ──────────────────────────────────────────
 
-const loggerState = ActionLoggerTest.empty();
-const loggerLayer = ActionLoggerTest.layer(loggerState);
-const npmRegistryLayer = NpmRegistryTest.empty();
-const sbomLayer = SbomTest.empty();
-const attestLayer = AttestTest.empty();
-// Empty ActionState (no tokens persisted) — tests exercise the "no token" path.
-const actionStateLayer = ActionStateTest.layer(ActionStateTest.empty());
+// `countChangesetsPerPackage` reads the target branch's `.changeset` directory
+// through `Git`. None of these tests exercise changeset counts, so `lsTree`
+// answers an empty tree. Stubbed deliberately rather than left unstubbed: an
+// unstubbed `Git.layerTest` member raises a DEFECT, and the counter's
+// `Effect.catch` only absorbs typed failures — so leaving it out would fail
+// every test here with a defect rather than exercising the empty-count path.
+const gitLayer = Git.layerTest({ lsTree: () => Effect.succeed([]) });
+
+// The kit's silent logger: a recorded exception to the die-on-unstubbed rule,
+// because a logger that dies when a suite logs makes every double unusable.
+const loggerLayer = ActionLogger.layerSilent;
+// No tokens persisted — tests exercise the "no token" path.
+const actionStateLayer = ActionState.layerTest({
+	getOptional: ((key: string) =>
+		Effect.fail(new ActionStateError({ reason: "missing", key }))) as ActionState["Service"]["getOptional"],
+});
 // Default ChangesetConfig stub: no packages ignored (isIgnored always false).
 const changesetConfigDefaultLayer = Layer.succeed(ChangesetConfig, {
 	mode: () => Effect.succeed("silk" as const),
@@ -146,24 +200,17 @@ describe("runValidation", () => {
 			const target = makeNpmTarget("@test/alpha", "/tmp/dist/alpha");
 
 			// git show main:packages/alpha/package.json → version 1.0.0 (old version)
-			const commandResponses = new Map<string, CommandResponse>([
-				[
-					"git show main:packages/alpha/package.json",
-					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/alpha", version: "1.0.0" }), stderr: "" },
-				],
-			]);
+			const baseVersions: Readonly<Record<string, string>> = { "@test/alpha": "1.0.0" };
 
-			const { state: pubState, layer: pubLayer } = PackagePublishTest.empty();
+			const { state: pubState, layer: pubLayer } = makePublishDouble();
 
 			const layers = Layer.mergeAll(
 				NodeServices.layer,
+				gitLayer,
 				loggerLayer,
 				actionStateLayer,
-				makeCommandRunnerLayer(commandResponses),
+				makeSnapshotsLayer(baseVersions),
 				pubLayer,
-				npmRegistryLayer,
-				sbomLayer,
-				attestLayer,
 				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/alpha", [target]]])),
@@ -208,28 +255,17 @@ describe("runValidation", () => {
 			});
 			const target = makeNpmTarget("@savvy-web/github-action-builder", "/tmp/test-workspace/dist/npm");
 
-			const commandResponses = new Map<string, CommandResponse>([
-				[
-					"git show main:package.json",
-					{
-						exitCode: 0,
-						stdout: JSON.stringify({ name: "@savvy-web/github-action-builder", version: "0.7.0" }),
-						stderr: "",
-					},
-				],
-			]);
+			const baseVersions: Readonly<Record<string, string>> = { "@savvy-web/github-action-builder": "0.7.0" };
 
-			const { layer: pubLayer } = PackagePublishTest.empty();
+			const { layer: pubLayer } = makePublishDouble();
 
 			const layers = Layer.mergeAll(
 				NodeServices.layer,
+				gitLayer,
 				loggerLayer,
 				actionStateLayer,
-				makeCommandRunnerLayer(commandResponses),
+				makeSnapshotsLayer(baseVersions),
 				pubLayer,
-				npmRegistryLayer,
-				sbomLayer,
-				attestLayer,
 				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([rootPkg]),
 				makePublishabilityLayer(new Map([["@savvy-web/github-action-builder", [target]]])),
@@ -255,25 +291,18 @@ describe("runValidation", () => {
 			const pkg = makeWsPkg("@test/beta", "2.0.0", "packages/beta");
 			const target = makeNpmTarget("@test/beta", "/tmp/dist/beta");
 
-			const commandResponses = new Map<string, CommandResponse>([
-				[
-					"git show main:packages/beta/package.json",
-					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/beta", version: "1.9.0" }), stderr: "" },
-				],
-			]);
+			const baseVersions: Readonly<Record<string, string>> = { "@test/beta": "1.9.0" };
 
 			// dryRunOk: false → every dry-run attempt returns ok: false
-			const { layer: pubLayer } = PackagePublishTest.layer({ dryRunOk: false });
+			const { layer: pubLayer } = makePublishDouble({ ok: false });
 
 			const layers = Layer.mergeAll(
 				NodeServices.layer,
+				gitLayer,
 				loggerLayer,
 				actionStateLayer,
-				makeCommandRunnerLayer(commandResponses),
+				makeSnapshotsLayer(baseVersions),
 				pubLayer,
-				npmRegistryLayer,
-				sbomLayer,
-				attestLayer,
 				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/beta", [target]]])),
@@ -298,24 +327,17 @@ describe("runValidation", () => {
 			const pkg = makeWsPkg("@test/gamma", "3.0.0", "packages/gamma");
 			const target = makeGhPkgsTarget("@test/gamma", "/tmp/dist/gamma");
 
-			const commandResponses = new Map<string, CommandResponse>([
-				[
-					"git show main:packages/gamma/package.json",
-					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/gamma", version: "2.9.0" }), stderr: "" },
-				],
-			]);
+			const baseVersions: Readonly<Record<string, string>> = { "@test/gamma": "2.9.0" };
 
-			const { layer: pubLayer } = PackagePublishTest.layer({ dryRunOk: false });
+			const { layer: pubLayer } = makePublishDouble({ ok: false });
 
 			const layers = Layer.mergeAll(
 				NodeServices.layer,
+				gitLayer,
 				loggerLayer,
 				actionStateLayer,
-				makeCommandRunnerLayer(commandResponses),
+				makeSnapshotsLayer(baseVersions),
 				pubLayer,
-				npmRegistryLayer,
-				sbomLayer,
-				attestLayer,
 				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/gamma", [target]]])),
@@ -339,24 +361,17 @@ describe("runValidation", () => {
 			const pkg = makeWsPkg("@test/unchanged", "1.0.0", "packages/unchanged");
 			const target = makeNpmTarget("@test/unchanged");
 
-			const commandResponses = new Map<string, CommandResponse>([
-				[
-					"git show main:packages/unchanged/package.json",
-					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/unchanged", version: "1.0.0" }), stderr: "" },
-				],
-			]);
+			const baseVersions: Readonly<Record<string, string>> = { "@test/unchanged": "1.0.0" };
 
-			const { state: pubState, layer: pubLayer } = PackagePublishTest.empty();
+			const { state: pubState, layer: pubLayer } = makePublishDouble();
 
 			const layers = Layer.mergeAll(
 				NodeServices.layer,
+				gitLayer,
 				loggerLayer,
 				actionStateLayer,
-				makeCommandRunnerLayer(commandResponses),
+				makeSnapshotsLayer(baseVersions),
 				pubLayer,
-				npmRegistryLayer,
-				sbomLayer,
-				attestLayer,
 				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/unchanged", [target]]])),
@@ -382,21 +397,17 @@ describe("runValidation", () => {
 			const pkg = makeWsPkg("@test/new-pkg", "1.0.0", "packages/new-pkg");
 			const target = makeNpmTarget("@test/new-pkg");
 
-			const commandResponses = new Map<string, CommandResponse>([
-				["git show main:packages/new-pkg/package.json", { exitCode: 128, stdout: "", stderr: "fatal: Path not found" }],
-			]);
+			const baseVersions: Readonly<Record<string, string>> = {};
 
-			const { state: pubState, layer: pubLayer } = PackagePublishTest.empty();
+			const { state: pubState, layer: pubLayer } = makePublishDouble();
 
 			const layers = Layer.mergeAll(
 				NodeServices.layer,
+				gitLayer,
 				loggerLayer,
 				actionStateLayer,
-				makeCommandRunnerLayer(commandResponses),
+				makeSnapshotsLayer(baseVersions),
 				pubLayer,
-				npmRegistryLayer,
-				sbomLayer,
-				attestLayer,
 				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/new-pkg", [target]]])),
@@ -421,24 +432,17 @@ describe("runValidation", () => {
 			// Arrange — version bumped but no publish targets (private internal package)
 			const pkg = makeWsPkg("@test/internal", "0.5.1", "packages/internal", true);
 
-			const commandResponses = new Map<string, CommandResponse>([
-				[
-					"git show main:packages/internal/package.json",
-					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/internal", version: "0.5.0" }), stderr: "" },
-				],
-			]);
+			const baseVersions: Readonly<Record<string, string>> = { "@test/internal": "0.5.0" };
 
-			const { state: pubState, layer: pubLayer } = PackagePublishTest.empty();
+			const { state: pubState, layer: pubLayer } = makePublishDouble();
 
 			const layers = Layer.mergeAll(
 				NodeServices.layer,
+				gitLayer,
 				loggerLayer,
 				actionStateLayer,
-				makeCommandRunnerLayer(commandResponses),
+				makeSnapshotsLayer(baseVersions),
 				pubLayer,
-				npmRegistryLayer,
-				sbomLayer,
-				attestLayer,
 				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map()), // no targets for this package
@@ -466,24 +470,17 @@ describe("runValidation", () => {
 			// Arrange — package present but same version on both branches
 			const pkg = makeWsPkg("@test/stable", "2.0.0", "packages/stable");
 
-			const commandResponses = new Map<string, CommandResponse>([
-				[
-					"git show main:packages/stable/package.json",
-					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/stable", version: "2.0.0" }), stderr: "" },
-				],
-			]);
+			const baseVersions: Readonly<Record<string, string>> = { "@test/stable": "2.0.0" };
 
-			const { layer: pubLayer } = PackagePublishTest.empty();
+			const { layer: pubLayer } = makePublishDouble();
 
 			const layers = Layer.mergeAll(
 				NodeServices.layer,
+				gitLayer,
 				loggerLayer,
 				actionStateLayer,
-				makeCommandRunnerLayer(commandResponses),
+				makeSnapshotsLayer(baseVersions),
 				pubLayer,
-				npmRegistryLayer,
-				sbomLayer,
-				attestLayer,
 				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/stable", [makeNpmTarget("@test/stable")]]])),
@@ -511,24 +508,17 @@ describe("runValidation", () => {
 			// rather than silently emit an empty report.
 			const pkg = makeWsPkg("@test/stable", "2.0.0", "packages/stable");
 
-			const commandResponses = new Map<string, CommandResponse>([
-				[
-					"git show main:packages/stable/package.json",
-					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/stable", version: "2.0.0" }), stderr: "" },
-				],
-			]);
+			const baseVersions: Readonly<Record<string, string>> = { "@test/stable": "2.0.0" };
 
-			const { layer: pubLayer } = PackagePublishTest.empty();
+			const { layer: pubLayer } = makePublishDouble();
 
 			const layers = Layer.mergeAll(
 				NodeServices.layer,
+				gitLayer,
 				loggerLayer,
 				actionStateLayer,
-				makeCommandRunnerLayer(commandResponses),
+				makeSnapshotsLayer(baseVersions),
 				pubLayer,
-				npmRegistryLayer,
-				sbomLayer,
-				attestLayer,
 				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/stable", [makeNpmTarget("@test/stable")]]])),
@@ -554,6 +544,91 @@ describe("runValidation", () => {
 		});
 	});
 
+	describe("built manifest decoding (SBOM components + degradation)", () => {
+		/**
+		 * These two are the only tests in the suite that use a REAL build
+		 * directory. They have to: `readBuiltManifest` reads
+		 * `<buildDir>/package.json` off disk, and the distinction it draws —
+		 * absent vs. present-but-undecodable — is exactly what decides whether
+		 * an SBOM is merely dependency-free or genuinely degraded.
+		 */
+		const withBuildDir = (manifest: string | null): string => {
+			const dir = mkdtempSync(join(tmpdir(), "validation-build-"));
+			if (manifest !== null) writeFileSync(join(dir, "package.json"), manifest, "utf-8");
+			return dir;
+		};
+
+		const runWithBuildDir = (buildDir: string) => {
+			const pkg = makeWsPkg("@test/built", "2.0.0", "packages/built");
+			const target = makeNpmTarget("@test/built", buildDir);
+			const layers = Layer.mergeAll(
+				NodeServices.layer,
+				gitLayer,
+				loggerLayer,
+				actionStateLayer,
+				makeSnapshotsLayer({ "@test/built": "1.0.0" }),
+				makePublishDouble().layer,
+				changesetConfigDefaultLayer,
+				makeWorkspaceDiscoveryLayer([pkg]),
+				makePublishabilityLayer(new Map([["@test/built", [target]]])),
+			);
+			return Effect.runPromise(
+				runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(Effect.provide(layers)),
+			);
+		};
+
+		it("turns the built manifest's dependencies into BOM components", async () => {
+			const dir = withBuildDir(
+				JSON.stringify({
+					name: "@test/built",
+					version: "2.0.0",
+					license: "MIT",
+					dependencies: { "left-pad": "1.0.0", "right-pad": "2.0.0" },
+				}),
+			);
+
+			const report = await runWithBuildDir(dir);
+
+			expect(report.sbomOk).toBe(true);
+			const build = report.validationPackages[0]?.builds[0];
+			expect(build?.sbom?.componentCount).toBe(2);
+			expect(
+				report.findings.filter((f) => f.check === "SBOM Preview" && /could not be decoded/.test(f.message)),
+			).toEqual([]);
+		});
+
+		it("records a warning and degrades sbomOk when the built manifest will not decode", async () => {
+			// THE LIVE ERROR CHANNEL. `Sbom.generate` cannot fail, so this is the
+			// only condition that can still set `sbomOk: false` — and it is
+			// reachable precisely because `Package.decode` is strict where the
+			// predecessor's `JSON.parse(...) as PackageJsonForSBOM` cast was not.
+			// A non-SemVer version is the cheapest way to demonstrate it.
+			const dir = withBuildDir(JSON.stringify({ name: "@test/built", version: "not-a-semver" }));
+
+			const report = await runWithBuildDir(dir);
+
+			expect(report.sbomOk).toBe(false);
+			expect(report.sbomSummary).toBe("0/1 SBOM(s) generated");
+			const degraded = report.findings.filter((f) => /could not be decoded/.test(f.message));
+			expect(degraded).toHaveLength(1);
+			expect(degraded[0]?.severity).toBe("warning");
+			// The BOM is still produced, from the workspace package's coordinates.
+			expect(report.validationPackages[0]?.builds[0]?.sbom).not.toBeNull();
+		});
+
+		it("treats an ABSENT manifest as benign, not as degradation", async () => {
+			// The predecessor returned an empty dependency list here and carried
+			// on; a dependency-free package legitimately has a component-less BOM.
+			// Conflating this with "undecodable" would fire a warning on every
+			// build directory that ships without a manifest.
+			const report = await runWithBuildDir(withBuildDir(null));
+
+			expect(report.sbomOk).toBe(true);
+			expect(report.validationPackages[0]?.builds[0]?.sbom?.componentCount).toBe(0);
+			expect(report.findings.filter((f) => /could not be decoded/.test(f.message))).toEqual([]);
+		});
+	});
+
 	describe("changeset counting (target-branch .changeset directory)", () => {
 		it("runs to completion when the target branch carries changeset files", async () => {
 			// Arrange — a released package plus a seeded `.changeset` directory on
@@ -562,32 +637,17 @@ describe("runValidation", () => {
 			const pkg = makeWsPkg("@test/counted", "2.1.0", "packages/counted");
 			const target = makeNpmTarget("@test/counted", "/tmp/dist/counted");
 
-			const commandResponses = new Map<string, CommandResponse>([
-				[
-					"git show main:packages/counted/package.json",
-					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/counted", version: "2.0.0" }), stderr: "" },
-				],
-				[
-					"git ls-tree --name-only main .changeset/",
-					{ exitCode: 0, stdout: [".changeset/README.md", ".changeset/one.md"].join("\n"), stderr: "" },
-				],
-				[
-					"git show main:.changeset/one.md",
-					{ exitCode: 0, stdout: ["---", '"@test/counted": minor', "---", "", "A change", ""].join("\n"), stderr: "" },
-				],
-			]);
+			const baseVersions: Readonly<Record<string, string>> = { "@test/counted": "2.0.0" };
 
-			const { layer: pubLayer } = PackagePublishTest.empty();
+			const { layer: pubLayer } = makePublishDouble();
 
 			const layers = Layer.mergeAll(
 				NodeServices.layer,
+				gitLayer,
 				loggerLayer,
 				actionStateLayer,
-				makeCommandRunnerLayer(commandResponses),
+				makeSnapshotsLayer(baseVersions),
 				pubLayer,
-				npmRegistryLayer,
-				sbomLayer,
-				attestLayer,
 				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/counted", [target]]])),
@@ -611,24 +671,17 @@ describe("runValidation", () => {
 			const pkg = makeWsPkg("@test/no-changesets", "1.2.0", "packages/no-changesets");
 			const target = makeNpmTarget("@test/no-changesets", "/tmp/dist/no-changesets");
 
-			const commandResponses = new Map<string, CommandResponse>([
-				[
-					"git show main:packages/no-changesets/package.json",
-					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/no-changesets", version: "1.1.0" }), stderr: "" },
-				],
-			]);
+			const baseVersions: Readonly<Record<string, string>> = { "@test/no-changesets": "1.1.0" };
 
-			const { layer: pubLayer } = PackagePublishTest.empty();
+			const { layer: pubLayer } = makePublishDouble();
 
 			const layers = Layer.mergeAll(
 				NodeServices.layer,
+				gitLayer,
 				loggerLayer,
 				actionStateLayer,
-				makeCommandRunnerLayer(commandResponses),
+				makeSnapshotsLayer(baseVersions),
 				pubLayer,
-				npmRegistryLayer,
-				sbomLayer,
-				attestLayer,
 				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/no-changesets", [target]]])),
@@ -657,31 +710,19 @@ describe("runValidation", () => {
 				provenance: true, // provenance enabled → SBOM should be generated
 			});
 
-			const commandResponses = new Map<string, CommandResponse>([
-				[
-					"git show main:packages/provenance-pkg/package.json",
-					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/provenance-pkg", version: "1.0.0" }), stderr: "" },
-				],
-			]);
+			const baseVersions: Readonly<Record<string, string>> = { "@test/provenance-pkg": "1.0.0" };
 
 			// We use the stateful version to inspect calls
-			const sbomTestState = {
-				generateCalls: [] as import("@savvy-web/github-action-effects/testing").SbomInput[],
-				saves: new Map(),
-			};
-			const sbomTestLayer = SbomTest.layer(sbomTestState);
 
-			const { layer: pubLayer } = PackagePublishTest.empty();
+			const { layer: pubLayer } = makePublishDouble();
 
 			const layers = Layer.mergeAll(
 				NodeServices.layer,
+				gitLayer,
 				loggerLayer,
 				actionStateLayer,
-				makeCommandRunnerLayer(commandResponses),
+				makeSnapshotsLayer(baseVersions),
 				pubLayer,
-				npmRegistryLayer,
-				sbomTestLayer,
-				attestLayer,
 				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/provenance-pkg", [provenanceTarget]]])),
@@ -695,10 +736,13 @@ describe("runValidation", () => {
 			// Assert — SBOM was generated successfully
 			expect(report.sbomOk).toBe(true);
 			expect(report.sbomSummary).toContain("SBOM");
-			// generate was called with real dependencies (empty in this case since pkg has none)
-			expect(sbomTestState.generateCalls).toHaveLength(1);
-			expect(sbomTestState.generateCalls[0]?.rootName).toBe("@test/provenance-pkg");
-			expect(sbomTestState.generateCalls[0]?.rootVersion).toBe("1.0.1");
+			// `Sbom` is no longer a service, so the BOM itself is the observable
+			// rather than a recorded `generate` call. One build → one SBOM entry,
+			// and the metadata actually threaded onto it is keyed by build.
+			const sbomBuilds = report.validationPackages.flatMap((p) => p.builds);
+			expect(sbomBuilds).toHaveLength(1);
+			expect(sbomBuilds[0]?.sbom).not.toBeNull();
+			expect(report.resolvedSbomConfig.size).toBe(1);
 		});
 
 		it("generates SBOM for every published target regardless of provenance flag", async () => {
@@ -707,24 +751,17 @@ describe("runValidation", () => {
 			const pkg = makeWsPkg("@test/no-provenance", "1.0.1", "packages/no-provenance");
 			const target = makeNpmTarget("@test/no-provenance"); // provenance: false
 
-			const commandResponses = new Map<string, CommandResponse>([
-				[
-					"git show main:packages/no-provenance/package.json",
-					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/no-provenance", version: "1.0.0" }), stderr: "" },
-				],
-			]);
+			const baseVersions: Readonly<Record<string, string>> = { "@test/no-provenance": "1.0.0" };
 
-			const { layer: pubLayer } = PackagePublishTest.empty();
+			const { layer: pubLayer } = makePublishDouble();
 
 			const layers = Layer.mergeAll(
 				NodeServices.layer,
+				gitLayer,
 				loggerLayer,
 				actionStateLayer,
-				makeCommandRunnerLayer(commandResponses),
+				makeSnapshotsLayer(baseVersions),
 				pubLayer,
-				npmRegistryLayer,
-				sbomLayer,
-				attestLayer,
 				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/no-provenance", [target]]])),
@@ -747,24 +784,17 @@ describe("runValidation", () => {
 			const pkg = makeWsPkg("@test/finding-fail", "2.0.0", "packages/finding-fail");
 			const target = makeNpmTarget("@test/finding-fail", "/tmp/dist/finding-fail");
 
-			const commandResponses = new Map<string, CommandResponse>([
-				[
-					"git show main:packages/finding-fail/package.json",
-					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/finding-fail", version: "1.9.0" }), stderr: "" },
-				],
-			]);
+			const baseVersions: Readonly<Record<string, string>> = { "@test/finding-fail": "1.9.0" };
 
-			const { layer: pubLayer } = PackagePublishTest.layer({ dryRunOk: false });
+			const { layer: pubLayer } = makePublishDouble({ ok: false });
 
 			const layers = Layer.mergeAll(
 				NodeServices.layer,
+				gitLayer,
 				loggerLayer,
 				actionStateLayer,
-				makeCommandRunnerLayer(commandResponses),
+				makeSnapshotsLayer(baseVersions),
 				pubLayer,
-				npmRegistryLayer,
-				sbomLayer,
-				attestLayer,
 				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/finding-fail", [target]]])),
@@ -790,24 +820,17 @@ describe("runValidation", () => {
 			const pkg = makeWsPkg("@test/ntia-incomplete", "1.0.1", "packages/ntia-incomplete");
 			const target = makeNpmTarget("@test/ntia-incomplete", "/tmp/dist/ntia-incomplete");
 
-			const commandResponses = new Map<string, CommandResponse>([
-				[
-					"git show main:packages/ntia-incomplete/package.json",
-					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/ntia-incomplete", version: "1.0.0" }), stderr: "" },
-				],
-			]);
+			const baseVersions: Readonly<Record<string, string>> = { "@test/ntia-incomplete": "1.0.0" };
 
-			const { layer: pubLayer } = PackagePublishTest.empty();
+			const { layer: pubLayer } = makePublishDouble();
 
 			const layers = Layer.mergeAll(
 				NodeServices.layer,
+				gitLayer,
 				loggerLayer,
 				actionStateLayer,
-				makeCommandRunnerLayer(commandResponses),
+				makeSnapshotsLayer(baseVersions),
 				pubLayer,
-				npmRegistryLayer,
-				sbomLayer,
-				attestLayer,
 				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/ntia-incomplete", [target]]])),
@@ -833,49 +856,17 @@ describe("runValidation", () => {
 			const pkg = makeWsPkg("@test/all-pass", "1.0.1", "packages/all-pass");
 			const target = makeNpmTarget("@test/all-pass", "/tmp/dist/all-pass");
 
-			const commandResponses = new Map<string, CommandResponse>([
-				[
-					"git show main:packages/all-pass/package.json",
-					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/all-pass", version: "1.0.0" }), stderr: "" },
-				],
-			]);
+			const baseVersions: Readonly<Record<string, string>> = { "@test/all-pass": "1.0.0" };
 
-			const compliantBomJson = JSON.stringify({
-				bomFormat: "CycloneDX",
-				specVersion: "1.5",
-				version: 1,
-				metadata: {
-					timestamp: "2026-05-19T00:00:00.000Z",
-					supplier: { name: "Savvy Web Systems" },
-					component: {
-						type: "library",
-						name: "@test/all-pass",
-						version: "1.0.1",
-						publisher: "Savvy Web Systems",
-						purl: "pkg:npm/%40test/all-pass@1.0.1",
-					},
-				},
-				components: [{ type: "library", name: "dep-a", version: "1.0.0" }],
-			});
-
-			const sbomTestState = {
-				generateCalls: [] as import("@savvy-web/github-action-effects/testing").SbomInput[],
-				saves: new Map(),
-				jsonResponse: compliantBomJson,
-			};
-			const sbomTestLayer = SbomTest.layer(sbomTestState);
-
-			const { layer: pubLayer } = PackagePublishTest.empty();
+			const { layer: pubLayer } = makePublishDouble();
 
 			const layers = Layer.mergeAll(
 				NodeServices.layer,
+				gitLayer,
 				loggerLayer,
 				actionStateLayer,
-				makeCommandRunnerLayer(commandResponses),
+				makeSnapshotsLayer(baseVersions),
 				pubLayer,
-				npmRegistryLayer,
-				sbomTestLayer,
-				attestLayer,
 				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/all-pass", [target]]])),
@@ -886,10 +877,24 @@ describe("runValidation", () => {
 				runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(Effect.provide(layers)),
 			);
 
-			// Assert — no errors, no warnings.
+			// Assert — the publish side is clean, and the SBOM was generated. The
+			// NTIA side is NOT clean, and that is the honest answer: this fixture
+			// supplies no `sbom-config`, so the BOM carries no supplier (NTIA
+			// element 1) and no author (element 6).
+			//
+			// The old assertion here was `findings: []`, and it passed only
+			// because the predecessor's `SbomTest` double fabricated a compliant
+			// BOM regardless of input — it was pinning the double, not the
+			// behaviour. `NtiaReport.of` computes against the real document. The
+			// genuinely NTIA-complete case is the sbom-config test below, which
+			// supplies a supplier and still asserts no SBOM findings.
 			expect(report.publishOk).toBe(true);
 			expect(report.sbomOk).toBe(true);
-			expect(report.findings).toEqual([]);
+			expect(report.findings.filter((f) => f.check === "Publish Validation")).toEqual([]);
+			const ntiaWarnings = report.findings.filter((f) => f.check === "SBOM Preview");
+			expect(ntiaWarnings).toHaveLength(1);
+			expect(ntiaWarnings[0]?.severity).toBe("warning");
+			expect(ntiaWarnings[0]?.message).toMatch(/missing NTIA fields: supplierName, sbomAuthor/);
 		});
 	});
 
@@ -910,16 +915,7 @@ describe("runValidation", () => {
 			const keptTarget = makeNpmTarget("@keep/main", "/tmp/dist/keep-main");
 
 			// Both packages have version diffs against "main" branch
-			const commandResponses = new Map<string, CommandResponse>([
-				[
-					"git show main:packages/libraries-x/package.json",
-					{ exitCode: 0, stdout: JSON.stringify({ name: "@libraries/x", version: "1.0.0" }), stderr: "" },
-				],
-				[
-					"git show main:packages/keep-main/package.json",
-					{ exitCode: 0, stdout: JSON.stringify({ name: "@keep/main", version: "2.0.0" }), stderr: "" },
-				],
-			]);
+			const baseVersions: Readonly<Record<string, string>> = { "@libraries/x": "1.0.0", "@keep/main": "2.0.0" };
 
 			// ChangesetConfig stub: isIgnored matches @libraries/* glob
 			const ignore = ["@libraries/*"];
@@ -932,17 +928,15 @@ describe("runValidation", () => {
 				refresh: () => Effect.void,
 			});
 
-			const { layer: pubLayer } = PackagePublishTest.empty();
+			const { layer: pubLayer } = makePublishDouble();
 
 			const layers = Layer.mergeAll(
 				NodeServices.layer,
+				gitLayer,
 				loggerLayer,
 				actionStateLayer,
-				makeCommandRunnerLayer(commandResponses),
+				makeSnapshotsLayer(baseVersions),
 				pubLayer,
-				npmRegistryLayer,
-				sbomLayer,
-				attestLayer,
 				changesetConfigIgnoreLayer,
 				makeWorkspaceDiscoveryLayer([ignoredPkg, keptPkg]),
 				makePublishabilityLayer(new Map([["@keep/main", [keptTarget]]])),
@@ -983,30 +977,17 @@ describe("runValidation", () => {
 				provenance: false,
 			});
 
-			const commandResponses = new Map<string, CommandResponse>([
-				[
-					"git show main:packages/shared-dir/package.json",
-					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/shared-dir", version: "1.0.0" }), stderr: "" },
-				],
-			]);
+			const baseVersions: Readonly<Record<string, string>> = { "@test/shared-dir": "1.0.0" };
 
-			const sbomTestState = {
-				generateCalls: [] as import("@savvy-web/github-action-effects/testing").SbomInput[],
-				saves: new Map(),
-			};
-			const sbomTestLayer = SbomTest.layer(sbomTestState);
-
-			const { layer: pubLayer } = PackagePublishTest.empty();
+			const { layer: pubLayer } = makePublishDouble();
 
 			const layers = Layer.mergeAll(
 				NodeServices.layer,
+				gitLayer,
 				loggerLayer,
 				actionStateLayer,
-				makeCommandRunnerLayer(commandResponses),
+				makeSnapshotsLayer(baseVersions),
 				pubLayer,
-				npmRegistryLayer,
-				sbomTestLayer,
-				attestLayer,
 				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/shared-dir", [targetA, targetB]]])),
@@ -1023,8 +1004,9 @@ describe("runValidation", () => {
 			expect(builds).toHaveLength(1);
 			expect(builds[0]?.targets).toHaveLength(2);
 			expect(builds[0]?.sbom).not.toBeNull();
-			// SBOM generated exactly once despite two registry targets.
-			expect(sbomTestState.generateCalls).toHaveLength(1);
+			// One SBOM per build DIRECTORY, not per registry target: two targets
+			// sharing a directory share one BOM.
+			expect(report.resolvedSbomConfig.size).toBe(1);
 			// Both registries still counted as targets.
 			expect(report.totalTargets).toBe(2);
 		});
@@ -1047,30 +1029,17 @@ describe("runValidation", () => {
 				provenance: false,
 			});
 
-			const commandResponses = new Map<string, CommandResponse>([
-				[
-					"git show main:packages/two-dirs/package.json",
-					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/two-dirs", version: "2.0.0" }), stderr: "" },
-				],
-			]);
+			const baseVersions: Readonly<Record<string, string>> = { "@test/two-dirs": "2.0.0" };
 
-			const sbomTestState = {
-				generateCalls: [] as import("@savvy-web/github-action-effects/testing").SbomInput[],
-				saves: new Map(),
-			};
-			const sbomTestLayer = SbomTest.layer(sbomTestState);
-
-			const { layer: pubLayer } = PackagePublishTest.empty();
+			const { layer: pubLayer } = makePublishDouble();
 
 			const layers = Layer.mergeAll(
 				NodeServices.layer,
+				gitLayer,
 				loggerLayer,
 				actionStateLayer,
-				makeCommandRunnerLayer(commandResponses),
+				makeSnapshotsLayer(baseVersions),
 				pubLayer,
-				npmRegistryLayer,
-				sbomTestLayer,
-				attestLayer,
 				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/two-dirs", [npmTarget, ghTarget]]])),
@@ -1085,7 +1054,7 @@ describe("runValidation", () => {
 			const builds = report.validationPackages[0]?.builds ?? [];
 			expect(builds).toHaveLength(2);
 			expect(builds.every((b) => b.targets.length === 1)).toBe(true);
-			expect(sbomTestState.generateCalls).toHaveLength(2);
+			expect(report.resolvedSbomConfig.size).toBe(2);
 			expect(report.sbomSummary).toBe("2 SBOM(s) generated successfully");
 		});
 
@@ -1107,24 +1076,17 @@ describe("runValidation", () => {
 				provenance: false,
 			});
 
-			const commandResponses = new Map<string, CommandResponse>([
-				[
-					"git show main:packages/relative-dir/package.json",
-					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/relative-dir", version: "1.0.0" }), stderr: "" },
-				],
-			]);
+			const baseVersions: Readonly<Record<string, string>> = { "@test/relative-dir": "1.0.0" };
 
-			const { layer: pubLayer } = PackagePublishTest.empty();
+			const { layer: pubLayer } = makePublishDouble();
 
 			const layers = Layer.mergeAll(
 				NodeServices.layer,
+				gitLayer,
 				loggerLayer,
 				actionStateLayer,
-				makeCommandRunnerLayer(commandResponses),
+				makeSnapshotsLayer(baseVersions),
 				pubLayer,
-				npmRegistryLayer,
-				sbomLayer,
-				attestLayer,
 				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/relative-dir", [relativeTarget, absoluteTarget]]])),
@@ -1154,52 +1116,21 @@ describe("runValidation", () => {
 			const pkg = makeWsPkg("@test/metadata", "1.0.1", "packages/metadata");
 			const target = makeNpmTarget("@test/metadata", "/tmp/dist/metadata");
 
-			const commandResponses = new Map<string, CommandResponse>([
-				[
-					"git show main:packages/metadata/package.json",
-					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/metadata", version: "1.0.0" }), stderr: "" },
-				],
-			]);
+			const baseVersions: Readonly<Record<string, string>> = { "@test/metadata": "1.0.0" };
 
 			// The BOM `Sbom.generate` emits when handed `SbomInput.supplier` —
 			// `metadata.supplier` and `metadata.authors` are present, as the real
 			// `SbomLive` now produces. NTIA validates this actual artifact.
-			const bomJsonWithSupplier = JSON.stringify({
-				bomFormat: "CycloneDX",
-				specVersion: "1.5",
-				version: 1,
-				metadata: {
-					timestamp: "2026-05-19T00:00:00.000Z",
-					supplier: { name: "Savvy Web Systems" },
-					authors: [{ name: "Savvy Web Systems" }],
-					component: {
-						type: "library",
-						name: "@test/metadata",
-						version: "1.0.1",
-						purl: "pkg:npm/%40test/metadata@1.0.1",
-					},
-				},
-				components: [{ type: "library", name: "dep-a", version: "1.0.0" }],
-			});
 
-			const sbomTestState = {
-				generateCalls: [] as import("@savvy-web/github-action-effects/testing").SbomInput[],
-				saves: new Map(),
-				jsonResponse: bomJsonWithSupplier,
-			};
-			const sbomTestLayer = SbomTest.layer(sbomTestState);
-
-			const { layer: pubLayer } = PackagePublishTest.empty();
+			const { layer: pubLayer } = makePublishDouble();
 
 			const layers = Layer.mergeAll(
 				NodeServices.layer,
+				gitLayer,
 				loggerLayer,
 				actionStateLayer,
-				makeCommandRunnerLayer(commandResponses),
+				makeSnapshotsLayer(baseVersions),
 				pubLayer,
-				npmRegistryLayer,
-				sbomTestLayer,
-				attestLayer,
 				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/metadata", [target]]])),
@@ -1208,21 +1139,21 @@ describe("runValidation", () => {
 			// The `sbom-config` action input is read via the canonical GitHub
 			// Actions env convention: `core.getInput("sbom-config")` reads
 			// `INPUT_SBOM-CONFIG` (hyphens preserved; only spaces map to
-			// underscores). `ActionsConfigProvider` — wired into `main.ts` and
+			// underscores). `ActionInput.layerDefault` — wired into `main.ts` and
 			// supplied by `runValidation`'s caller — implements the same rule.
 			const ENV_KEY = "INPUT_SBOM-CONFIG";
 			const prev = process.env[ENV_KEY];
 			process.env[ENV_KEY] = JSON.stringify({
 				sbom: { supplier: { name: "Savvy Web Systems", url: "https://savvyweb.systems" } },
 			});
-			// `ActionsConfigProvider` makes `Config.string("sbom-config")` resolve
+			// `ActionInput.layerDefault` makes `Config.string("sbom-config")` resolve
 			// to `INPUT_SBOM-CONFIG` — matching `main.ts`'s runtime — so the test
 			// exercises the real env-var convention, not Effect's default mapping.
 			const runReport = () =>
 				Effect.runPromise(
 					runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(
 						Effect.provide(layers),
-						Effect.provide(ConfigProvider.layer(ActionsConfigProvider)),
+						Effect.provide(ActionInput.layerDefault),
 					),
 				);
 			const report = await runReport().finally(() => {
@@ -1238,10 +1169,14 @@ describe("runValidation", () => {
 			// SBOM-Preview warning. (`authors` stays absent here: the template
 			// supplies only a supplier and the synthetic dist dir has no
 			// package.json author to infer from.)
-			expect(sbomTestState.generateCalls).toHaveLength(1);
-			expect(sbomTestState.generateCalls[0]?.supplier?.name).toBe("Savvy Web Systems");
-			// `resolveSBOMMetadata` normalises `supplier.url` to a string array.
-			expect(sbomTestState.generateCalls[0]?.supplier?.url).toEqual(["https://savvyweb.systems"]);
+			const resolved = [...report.resolvedSbomConfig.values()];
+			expect(resolved).toHaveLength(1);
+			expect(resolved[0]?.supplier?.name).toBe("Savvy Web Systems");
+			// A single `url` in the template is normalised to a string array.
+			expect(resolved[0]?.supplier?.url).toEqual(["https://savvyweb.systems"]);
+			// NTIA element 7 — the predecessor never set a timestamp, so every BOM
+			// it produced reported one missing.
+			expect(resolved[0]?.timestamp).toBeDefined();
 			const build = report.validationPackages[0]?.builds[0];
 			expect(build?.sbom?.ntiaCompliant).toBe(true);
 			expect(build?.sbom?.missingNtiaFields).toEqual([]);
@@ -1256,24 +1191,17 @@ describe("runValidation", () => {
 			const pkg = makeWsPkg("@test/no-deps", "1.0.1", "packages/no-deps");
 			const target = makeNpmTarget("@test/no-deps", "/tmp/dist/no-deps");
 
-			const commandResponses = new Map<string, CommandResponse>([
-				[
-					"git show main:packages/no-deps/package.json",
-					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/no-deps", version: "1.0.0" }), stderr: "" },
-				],
-			]);
+			const baseVersions: Readonly<Record<string, string>> = { "@test/no-deps": "1.0.0" };
 
-			const { layer: pubLayer } = PackagePublishTest.empty();
+			const { layer: pubLayer } = makePublishDouble();
 
 			const layers = Layer.mergeAll(
 				NodeServices.layer,
+				gitLayer,
 				loggerLayer,
 				actionStateLayer,
-				makeCommandRunnerLayer(commandResponses),
+				makeSnapshotsLayer(baseVersions),
 				pubLayer,
-				npmRegistryLayer,
-				sbomLayer,
-				attestLayer,
 				changesetConfigDefaultLayer,
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/no-deps", [target]]])),
@@ -1315,28 +1243,17 @@ describe("runValidation", () => {
 			const alphaTarget = makeNpmTarget("@test/alpha", "/tmp/dist/alpha");
 			const betaTarget = makeNpmTarget("@test/beta", "/tmp/dist/beta");
 
-			const commandResponses = new Map<string, CommandResponse>([
-				[
-					"git show main:packages/alpha/package.json",
-					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/alpha", version: "1.0.0" }), stderr: "" },
-				],
-				[
-					"git show main:packages/beta/package.json",
-					{ exitCode: 0, stdout: JSON.stringify({ name: "@test/beta", version: "1.0.0" }), stderr: "" },
-				],
-			]);
+			const baseVersions: Readonly<Record<string, string>> = { "@test/alpha": "1.0.0", "@test/beta": "1.0.0" };
 
-			const { state: pubState, layer: pubLayer } = PackagePublishTest.empty();
+			const { state: pubState, layer: pubLayer } = makePublishDouble();
 
 			const layers = Layer.mergeAll(
 				NodeServices.layer,
+				gitLayer,
 				loggerLayer,
 				actionStateLayer,
-				makeCommandRunnerLayer(commandResponses),
+				makeSnapshotsLayer(baseVersions),
 				pubLayer,
-				npmRegistryLayer,
-				sbomLayer,
-				attestLayer,
 				changesetConfigDefaultLayer,
 				// Discovery lists alphabetically (alpha before beta).
 				makeWorkspaceDiscoveryLayer([alpha, beta]),

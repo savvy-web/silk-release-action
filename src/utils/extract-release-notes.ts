@@ -2,7 +2,9 @@
  * Extract the topmost release section from a package's `CHANGELOG.md`.
  *
  * @remarks
- * Pure function — file I/O via `node:fs`, no GitHub or Effect dependencies.
+ * Pure function — file I/O via `node:fs`, parsing via `@effected/markdown`'s
+ * synchronous `Result` entry point. No Effect service requirements, so
+ * non-Effect callers can use it directly.
  *
  * Rule: the **first H2** in `CHANGELOG.md` is the newest entry (changeset
  * version always inserts new versions at the top), and the content runs to
@@ -17,6 +19,11 @@
  * release notes, so the body extracted here is exactly what the consumer
  * will see on the release page.
  *
+ * `MarkdownDocument.sections` considers **root-level headings only**, which is
+ * what the hand-rolled `/^## /` line scan this replaces could not do: a `## `
+ * line inside a fenced code block terminated the section early, truncating any
+ * changelog entry that quoted one.
+ *
  * Returns a discriminated result so the caller can render `found` content,
  * an explanatory "no CHANGELOG" or "no version section" status, or a read
  * error without throwing.
@@ -26,6 +33,8 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { MarkdownDocument } from "@effected/markdown";
+import { Result } from "effect";
 
 /**
  * Discriminated outcome of {@link extractReleaseNotes}.
@@ -61,33 +70,23 @@ export function extractReleaseNotes(packagePath: string): ReleaseNotesExtraction
 		return { status: "error", message };
 	}
 
-	const lines = changelogContent.split("\n");
-	let firstH2 = -1;
-	let secondH2 = -1;
-	for (let i = 0; i < lines.length; i++) {
-		// `^## ` (exactly two `#` then a space) — H1 (a single `#`) is the
-		// CHANGELOG title and never a release section; H3+ are sub-sections
-		// inside a release and must not terminate it.
-		if (/^## /.test(lines[i] ?? "")) {
-			if (firstH2 === -1) {
-				firstH2 = i;
-			} else {
-				secondH2 = i;
-				break;
-			}
-		}
+	// Every string is a valid markdown document; the only failure is a
+	// hardening-guard trip (nesting past the container cap).
+	const parsed = MarkdownDocument.parseResult(changelogContent);
+	if (Result.isFailure(parsed)) {
+		return { status: "error", message: parsed.failure.message };
 	}
 
-	if (firstH2 === -1) {
+	// `depth: 2` is equality, not a maximum — the H1 title never opens a
+	// release section and an H3 sub-section never closes one.
+	const section = parsed.success.firstSection({ depth: 2 });
+	if (section === undefined) {
 		return { status: "version-not-found", reason: "CHANGELOG has no H2 section" };
 	}
 
-	const endIndex = secondH2 === -1 ? lines.length : secondH2;
-	const content = lines
-		.slice(firstH2 + 1, endIndex)
-		.join("\n")
-		.trim();
-
+	// `body` is deliberately untrimmed (it is exactly the bytes `bodyRange`
+	// describes); the tidy form is the caller's to ask for.
+	const content = section.body.trim();
 	if (content === "") {
 		return {
 			status: "version-not-found",
@@ -96,4 +95,52 @@ export function extractReleaseNotes(packagePath: string): ReleaseNotesExtraction
 	}
 
 	return { status: "found", content };
+}
+
+/**
+ * Read a CHANGELOG and return the body of the H2 section for one specific
+ * version, or `undefined` when that version has no section there.
+ *
+ * @remarks
+ * A different question from {@link extractReleaseNotes}, which always takes
+ * the **newest** entry. Phase 3 walks a list of candidate changelog paths
+ * (the package's own, then the repo root) looking for the one that documents
+ * the version being released — so "the newest entry" would be the wrong
+ * answer for the root fallback, where the top section may belong to another
+ * package entirely.
+ *
+ * Accepts both changeset heading shapes: `## 1.0.0` and `## @scope/pkg@1.0.0`.
+ *
+ * @param changelogPath - Absolute path to a `CHANGELOG.md`.
+ * @param version - The exact version whose section to return.
+ * @returns The section body, trimmed, or `undefined` when absent.
+ *
+ * @public
+ */
+export function extractVersionReleaseNotes(changelogPath: string, version: string): string | undefined {
+	if (!existsSync(changelogPath)) {
+		return undefined;
+	}
+
+	let content: string;
+	try {
+		content = readFileSync(changelogPath, "utf-8");
+	} catch {
+		return undefined;
+	}
+
+	const parsed = MarkdownDocument.parseResult(content);
+	if (Result.isFailure(parsed)) {
+		return undefined;
+	}
+
+	const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const heading = new RegExp(`^(?:@[^@]+@)?${escaped}$`);
+	const section = parsed.success.sectionByHeading(heading, { depth: 2 });
+	if (section === undefined) {
+		return undefined;
+	}
+
+	const body = section.body.trim();
+	return body === "" ? undefined : body;
 }

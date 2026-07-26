@@ -3,8 +3,10 @@
  * when the workflow fails or is interrupted.
  */
 
-import type { ActionOutputError } from "@savvy-web/github-action-effects";
-import { ActionOutputs, CheckRun } from "@savvy-web/github-action-effects";
+import type { Repo } from "@effected/github";
+import { CheckRun, CheckRunOutput } from "@effected/github";
+import type { ActionOutputError } from "@effected/github-actions";
+import { ActionOutputs } from "@effected/github-actions";
 import { Effect } from "effect";
 import { summaryWriter } from "./summary-writer.js";
 
@@ -23,7 +25,7 @@ export const cleanupValidationChecks = (
 	checkIds: ReadonlyArray<number>,
 	reason: string,
 	dryRun: boolean,
-): Effect.Effect<CleanupResult, ActionOutputError, ActionOutputs | CheckRun> =>
+): Effect.Effect<CleanupResult, ActionOutputError, ActionOutputs | CheckRun | Repo> =>
 	Effect.gen(function* () {
 		const outputs = yield* ActionOutputs;
 		const checks = yield* CheckRun;
@@ -49,18 +51,25 @@ export const cleanupValidationChecks = (
 				continue;
 			}
 
+			// `CheckRunRef` carries `status` but NOT `conclusion` — the skip decision
+			// only ever needed the status, so the log line drops the conclusion
+			// rather than paying a second request to report it.
 			if (current.success.status === "completed") {
-				yield* Effect.logInfo(
-					`⏭️ Skipped check ${checkId} (${current.success.name}) - already ${current.success.conclusion}`,
-				);
+				yield* Effect.logInfo(`⏭️ Skipped check ${checkId} (${current.success.name}) - already completed`);
 				continue;
 			}
 
 			const update = yield* Effect.result(
-				checks.complete(checkId, "cancelled", {
-					title: "Workflow Cancelled",
-					summary: `This check was cancelled due to workflow interruption.\n\n**Reason**: ${reason}`,
-				}),
+				// `CheckRunOutput` is a `Schema.Class`; an object literal no longer
+				// satisfies it. The kit caps the summary itself in `wireOutput`.
+				checks.complete(
+					checkId,
+					"cancelled",
+					CheckRunOutput.make({
+						title: "Workflow Cancelled",
+						summary: `This check was cancelled due to workflow interruption.\n\n**Reason**: ${reason}`,
+					}),
+				),
 			);
 
 			if (update._tag === "Success") {

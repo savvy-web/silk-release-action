@@ -1,13 +1,66 @@
-import {
-	GithubMarkdown,
-	ReportBuilder,
-	getRegistryDisplayName,
-	isGitHubPackagesRegistry,
-	isNpmRegistry,
-} from "@savvy-web/github-action-effects";
+import { Html, Markdown, Root, Table, TableCell, TableRow } from "@effected/markdown";
+import { classifyRegistry } from "@effected/npm";
+import type { SbomMetadata } from "@effected/sbom";
+import { Result } from "effect";
 import type { ValidationOutput } from "../schema/release-output.js";
-import type { ResolvedSBOMMetadata } from "../types/sbom-config.js";
 import type { ConfigSource } from "../utils/load-release-config.js";
+import { registryDisplayName } from "../utils/registry-label.js";
+
+// ─── Markdown builders ────────────────────────────────────────────────────────
+
+/**
+ * The GFM builders this module needs, replacing the predecessor's
+ * `GithubMarkdown` namespace.
+ *
+ * @remarks
+ * A deliberately thin shim, not a tree-native rewrite. Every renderer here
+ * composes markdown as strings and every public signature returns a string, so
+ * rebuilding them as mdast trees would be an ~800-line change for no output
+ * difference.
+ *
+ * The one place a tree earns its keep is {@link md.table}. The predecessor
+ * built tables by `join(" | ")` and **never escaped cell content**, so a single
+ * `|` anywhere in a cell — an npm error message, a semver range like
+ * `>=1 || <2` — silently shifted every column after it. Serializing a real
+ * `Table` node fixes that, and it escapes pipes inside pre-rendered markdown
+ * cells too (verified: `` `a | b` `` emits as `` `a \| b` ``), which is what
+ * makes {@link md.code} and {@link md.link} safe to keep as plain strings.
+ */
+const md = {
+	/**
+	 * A GFM table. Cells are treated as **pre-rendered markdown** and passed
+	 * through verbatim, with pipes escaped by the serializer.
+	 */
+	table: (headers: ReadonlyArray<string>, rows: ReadonlyArray<ReadonlyArray<string>>): string => {
+		const cell = (value: string): TableCell => TableCell.make({ children: [Html.make({ value })] });
+		const row = (values: ReadonlyArray<string>): TableRow => TableRow.make({ children: values.map(cell) });
+		const table = Table.make({ children: [row(headers), ...rows.map(row)] });
+		const out = Markdown.stringifyResult(Root.make({ children: [table] }));
+		// Stringify is total over parser-produced trees; the only failure is a
+		// hardening-guard trip on a tree nesting past the depth cap, which a
+		// two-level table cannot reach. Falling back to the unescaped join keeps
+		// this total rather than introducing an error channel for a case the
+		// shape of the input rules out.
+		return Result.isSuccess(out)
+			? out.success.trimEnd()
+			: [
+					`| ${headers.join(" | ")} |`,
+					`| ${headers.map(() => "---").join(" | ")} |`,
+					...rows.map((r) => `| ${r.join(" | ")} |`),
+				].join("\n");
+	},
+	/** A markdown heading; level defaults to 2. */
+	heading: (text: string, level = 2): string => `${"#".repeat(level)} ${text}`,
+	/** A collapsible `<details>` block. */
+	details: (summary: string, content: string): string =>
+		`<details>\n<summary>${summary}</summary>\n\n${content}\n\n</details>`,
+	/** A markdown link. */
+	link: (text: string, url: string): string => `[${text}](${url})`,
+	/** Inline code. */
+	code: (text: string): string => `\`${text}\``,
+	/** A fenced code block. */
+	codeBlock: (content: string, lang = ""): string => `\`\`\`${lang}\n${content}\n\`\`\``,
+} as const;
 
 /**
  * The `validation` payload of a {@link ValidationOutput} — the single
@@ -67,12 +120,14 @@ export function getPackagePageUrl(
 		return `https://jsr.io/${packageName}@${version}`;
 	}
 
-	if (isNpmRegistry(registry)) {
+	const kind = classifyRegistry(registry);
+
+	if (kind === "npm") {
 		// npm public registry
 		return `https://www.npmjs.com/package/${packageName}/v/${version}`;
 	}
 
-	if (isGitHubPackagesRegistry(registry)) {
+	if (kind === "github-packages") {
 		// GitHub Packages — URL format:
 		// https://github.com/orgs/{owner}/packages/npm/package/{package-name-without-scope}
 		const repoOwner = owner ?? "unknown";
@@ -93,7 +148,7 @@ export function getPackagePageUrl(
 function getRegistryIcon(registry: string): string {
 	// JSR is the only non-npm protocol the release pipeline emits; every other
 	// registry (npm public, GitHub Packages, custom) renders with the npm icon.
-	if (!isNpmRegistry(registry) && !isGitHubPackagesRegistry(registry) && /jsr/i.test(registry)) {
+	if (classifyRegistry(registry) === "jsr") {
 		return "\u{1F995}"; // 🦕
 	}
 	return "\u{1F4E6}"; // 📦
@@ -230,7 +285,7 @@ function getTargetDetailStatus(target: ValidationBuildTarget): string {
  * directory (e.g. `dist/npm`) the build-centric `ValidationOutput` carries.
  */
 function renderBuildHeadline(build: ValidationBuild): string {
-	const directory = GithubMarkdown.code(build.directory);
+	const directory = md.code(build.directory);
 	const packed = build.packedBytes === null ? "—" : humanizeSize(build.packedBytes);
 	const unpacked = build.unpackedBytes === null ? "—" : humanizeSize(build.unpackedBytes);
 	const files = build.fileCount === null ? "—" : String(build.fileCount);
@@ -255,12 +310,12 @@ function renderBuildHeadline(build: ValidationBuild): string {
  */
 function renderBuildTargetsTable(build: ValidationBuild): string {
 	const rows: ReadonlyArray<ReadonlyArray<string>> = build.targets.map((t) => {
-		const registry = getRegistryDisplayName(t.registry);
+		const registry = registryDisplayName(t.registry);
 		const icon = getRegistryIcon(t.registry);
 		const provenance = t.provenance ? "✅" : "\u{1F6AB}"; // 🚫
 		return [getTargetDetailStatus(t), `${icon} ${registry}`, t.access, provenance];
 	});
-	return GithubMarkdown.table([" ", "Registry", "Access", "Provenance"], rows);
+	return md.table([" ", "Registry", "Access", "Provenance"], rows);
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -304,10 +359,7 @@ export function buildPublishSummary(publish: ValidationPublish, options?: Publis
 		];
 	});
 
-	const summaryTable = GithubMarkdown.table(
-		[" ", "Package", "Current → Next", "Bump", "Changesets", "Targets"],
-		tableRows,
-	);
+	const summaryTable = md.table([" ", "Package", "Current → Next", "Bump", "Changesets", "Targets"], tableRows);
 
 	const legend = "**Legend:** ✅ Ready · ⏭️ Skipped · ⚠️ Warning · ❌ Failed · 🔴 major · 🟡 minor · 🟢 patch";
 
@@ -355,17 +407,19 @@ export function buildPublishSummary(publish: ValidationPublish, options?: Publis
 				.map((build) => `${renderBuildHeadline(build)}\n\n${renderBuildTargetsTable(build)}`)
 				.join("\n\n");
 
-			return GithubMarkdown.details(summary, buildSections);
+			return md.details(summary, buildSections);
 		})
 		.join("\n");
 
-	let report = ReportBuilder.create(title).section("Summary", summarySection);
-
+	// The predecessor's `ReportBuilder` was a fluent wrapper over exactly this:
+	// an H2 title followed by H3 sections, joined by blank lines. Its other
+	// members (`stat`, `toSummary`, `toComment`, `toCheckRun`) had no consumer
+	// here — the caller already owns delivery — so only the composition survives.
+	const parts = [md.heading(title, 2), `${md.heading("Summary", 3)}\n\n${summarySection}`];
 	if (detailSections.length > 0) {
-		report = report.section("Details", detailSections);
+		parts.push(`${md.heading("Details", 3)}\n\n${detailSections}`);
 	}
-
-	return report.toMarkdown();
+	return parts.join("\n\n");
 }
 
 /**
@@ -385,10 +439,10 @@ export function buildChecksTable(checks: ReadonlyArray<ValidationCheck>): string
 	const statusIcon = (status: ValidationCheck["status"]): "✅" | "⚠️" | "❌" =>
 		status === "error" ? "❌" : status === "warning" ? "⚠️" : "✅";
 	const tableRows: ReadonlyArray<ReadonlyArray<string>> = checks.map((check) => {
-		const checkCell = check.url !== null ? GithubMarkdown.link(check.name, check.url) : check.name;
+		const checkCell = check.url !== null ? md.link(check.name, check.url) : check.name;
 		return [statusIcon(check.status), checkCell, check.outcome];
 	});
-	return GithubMarkdown.table([" ", "Check", "Outcome"], tableRows);
+	return md.table([" ", "Check", "Outcome"], tableRows);
 }
 
 /**
@@ -433,7 +487,7 @@ export function buildFindingsTable(findings: ReadonlyArray<ValidationFinding>): 
 					: `${f.scope.package} · ${f.scope.directory}`;
 		return [icon, f.check, scopeCell, f.message];
 	});
-	const table = GithubMarkdown.table([" ", "Check", "Package", "Detail"], tableRows);
+	const table = md.table([" ", "Check", "Package", "Detail"], tableRows);
 
 	return `${heading}\n\n${table}`;
 }
@@ -521,7 +575,7 @@ export function buildValidationComment(validation: ValidationPayload, options?: 
 		const releaseNotesUrl = options?.releaseNotesUrl;
 		const releaseNotes =
 			releaseNotesUrl !== undefined && releaseNotesUrl !== ""
-				? `### \u{1F4CB} Release Notes Preview\n\n${GithubMarkdown.link("View detailed release notes →", releaseNotesUrl)}`
+				? `### \u{1F4CB} Release Notes Preview\n\n${md.link("View detailed release notes →", releaseNotesUrl)}`
 				: "### \u{1F4CB} Release Notes Preview\n\n_Release notes will be generated on merge._";
 		parts.push(releaseNotes);
 	}
@@ -671,7 +725,7 @@ export function buildReleaseNotesPreviewSummary(validation: ValidationPayload): 
 		const changesets = pkg.changesetCount === null ? "—" : String(pkg.changesetCount);
 		return [pkg.name, renderVersionTransition(pkg), renderBumpCell(pkg), changesets, notesIcon(pkg.releaseNotes)];
 	});
-	const table = GithubMarkdown.table(["Package", "Current → Next", "Bump", "Changesets", "Notes"], tableRows);
+	const table = md.table(["Package", "Current → Next", "Bump", "Changesets", "Notes"], tableRows);
 
 	const intro = `**${packages.length} package(s) ready for release on merge.**`;
 
@@ -733,7 +787,7 @@ function formatSbomConfigSource(source: ConfigSource): string {
  */
 export function buildSbomPreviewSummary(
 	validation: ValidationPayload,
-	resolvedSbomConfig: ReadonlyMap<string, ResolvedSBOMMetadata> | null,
+	resolvedSbomConfig: ReadonlyMap<string, SbomMetadata> | null,
 	sbomConfigSource: ConfigSource | null = null,
 ): string {
 	// The check-run page already renders the title; the body must not repeat
@@ -787,7 +841,7 @@ export function buildSbomPreviewSummary(
 		}
 
 		for (const buildEntry of pkg.builds) {
-			const buildHeader = `**${GithubMarkdown.code(buildEntry.directory)}**`;
+			const buildHeader = `**${md.code(buildEntry.directory)}**`;
 			sections.push(buildHeader);
 
 			if (buildEntry.sbom === null) {
@@ -806,7 +860,7 @@ export function buildSbomPreviewSummary(
 			const resolved = resolvedSbomConfig !== null ? resolvedSbomConfig.get(key) : undefined;
 			if (resolved !== undefined) {
 				sections.push("_Resolved `sbom-config` metadata used:_");
-				sections.push(GithubMarkdown.codeBlock(JSON.stringify(resolved, null, 2), "json"));
+				sections.push(md.codeBlock(JSON.stringify(resolved, null, 2), "json"));
 			} else if (resolvedSbomConfig !== null) {
 				// Map exists but no entry for this build — keep the per-build
 				// rendering honest.

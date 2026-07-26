@@ -15,8 +15,10 @@
  * - **none** — anything else.
  */
 
-import type { ActionEnvironmentError, PullRequestError } from "@savvy-web/github-action-effects";
-import { ActionEnvironment, PullRequest } from "@savvy-web/github-action-effects";
+import type { GitHubError, Repo } from "@effected/github";
+import { PullRequest } from "@effected/github";
+import type { ActionEnvironmentError } from "@effected/github-actions";
+import { ActionEnvironment } from "@effected/github-actions";
 import { Duration, Effect, FileSystem, Option } from "effect";
 
 /**
@@ -101,8 +103,8 @@ const attemptReleaseCommitDetection = (
 	targetBranch: string,
 ): Effect.Effect<
 	{ isReleaseCommit: boolean; mergedPR?: { number: number } },
-	ActionEnvironmentError | PullRequestError,
-	ActionEnvironment | PullRequest
+	ActionEnvironmentError | GitHubError,
+	ActionEnvironment | PullRequest | Repo
 > =>
 	Effect.gen(function* () {
 		const env = yield* ActionEnvironment;
@@ -115,7 +117,11 @@ const attemptReleaseCommitDetection = (
 
 		if (associated._tag === "Success") {
 			const match = associated.success.find(
-				(p) => (p.mergedAt ?? null) !== null && p.head === releaseBranch && p.base === targetBranch,
+				// `mergedAt` is an `Option<DateTime>` on the kit's shape, NOT `string | null`.
+				// `(opt ?? null) !== null` is ALWAYS true for an Option — `Option.none()` is
+				// an object — which would treat every closed-but-unmerged PR as merged and
+				// fire the publishing phase on it.
+				(p) => Option.isSome(p.mergedAt) && p.head === releaseBranch && p.base === targetBranch,
 			);
 			if (match) {
 				yield* Effect.logInfo(
@@ -134,7 +140,7 @@ const attemptReleaseCommitDetection = (
 		);
 
 		if (closed._tag === "Success") {
-			const match = closed.success.find((p) => (p.mergedAt ?? null) !== null && p.mergeCommitSha === sha);
+			const match = closed.success.find((p) => Option.isSome(p.mergedAt) && p.mergeCommitSha === sha);
 			if (match) {
 				yield* Effect.logInfo(
 					`Detected merged release PR #${match.number} from ${releaseBranch} (via merge_commit_sha match)`,
@@ -160,8 +166,8 @@ const detectReleaseCommit = (
 	targetBranch: string,
 ): Effect.Effect<
 	{ isReleaseCommit: boolean; mergedPR?: { number: number } },
-	ActionEnvironmentError | PullRequestError,
-	ActionEnvironment | PullRequest
+	ActionEnvironmentError | GitHubError,
+	ActionEnvironment | PullRequest | Repo
 > =>
 	Effect.gen(function* () {
 		const maxRetries = 3;
@@ -191,8 +197,8 @@ export const detectWorkflowPhase = (
 	options: PhaseDetectionOptions,
 ): Effect.Effect<
 	PhaseDetectionResult,
-	ActionEnvironmentError | PullRequestError,
-	ActionEnvironment | FileSystem.FileSystem | PullRequest
+	ActionEnvironmentError | GitHubError,
+	ActionEnvironment | FileSystem.FileSystem | PullRequest | Repo
 > =>
 	Effect.gen(function* () {
 		const env = yield* ActionEnvironment;

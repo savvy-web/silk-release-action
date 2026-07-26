@@ -1,167 +1,156 @@
 /**
- * Fixture tests for the check-release-branch stage.
+ * Tests for the release-branch state check.
+ *
+ * @remarks
+ * Written against the kit's `layerTest` seams. The two failure-tolerance cases
+ * matter most: a branch-existence probe and a PR lookup that fail must degrade
+ * to "no branch" / "no PR" rather than aborting Phase 1. This check is
+ * diagnostic — it decides between create and update — so a transient API blip
+ * must not stop a release.
  */
 
-import type {
-	ActionOutputsTestState,
-	CheckRunTestState,
-	GitBranchTestState,
-	PullRequestTestState,
-} from "@savvy-web/github-action-effects/testing";
+import type { CheckRunOutput } from "@effected/github";
 import {
-	ActionEnvironmentTest,
-	ActionOutputsTest,
-	CheckRunTest,
-	GitBranchTest,
-	PullRequestTest,
-} from "@savvy-web/github-action-effects/testing";
-import { Effect, Layer, Logger } from "effect";
+	CheckRun,
+	CheckRunRef,
+	GitBranch,
+	GitHubError,
+	PullRequest,
+	PullRequestInfo,
+	Repo,
+	RepoRef,
+} from "@effected/github";
+import { ActionEnvironment, ActionOutputs } from "@effected/github-actions";
+import { Effect, Layer, Logger, Option } from "effect";
 import { describe, expect, it } from "vitest";
 import type { ReleaseBranchCheckResult } from "../src/utils/check-release-branch.js";
 import { checkReleaseBranch } from "../src/utils/check-release-branch.js";
 
-interface Fixtures {
-	outputsState: ActionOutputsTestState;
-	checkRunState: CheckRunTestState;
-	branchState: GitBranchTestState;
-	prState: PullRequestTestState;
+interface Recorder {
+	readonly created: Array<{ name: string; sha: string }>;
+	readonly completed: Array<{ id: number; conclusion: string; output?: CheckRunOutput | undefined }>;
+	readonly summaries: Array<string>;
 }
 
-const makeFixtures = (
-	params: {
-		branches?: Array<[string, string]>;
-		prs?: Array<{ number: number; url: string; head: string; base: string; state: "open" | "closed" }>;
-	} = {},
-): Fixtures => {
-	const branchState = GitBranchTest.empty();
-	for (const [name, sha] of params.branches ?? []) {
-		branchState.branches.set(name, sha);
-	}
-	const prState = PullRequestTest.empty();
-	let nextNumber = 1;
-	for (const pr of params.prs ?? []) {
-		prState.prs.push({
-			number: pr.number,
-			nodeId: `node-${pr.number}`,
-			url: pr.url,
-			title: `PR #${pr.number}`,
-			body: "",
-			state: pr.state,
-			head: pr.head,
-			base: pr.base,
-			draft: false,
-			merged: false,
-			labels: [],
-			// biome-ignore lint/suspicious/noExplicitAny: minimal PullRequestRecord fixture
-		} as any);
-		nextNumber = Math.max(nextNumber, pr.number + 1);
-	}
-	prState.nextNumber = nextNumber;
+const makeRecorder = (): Recorder => ({ created: [], completed: [], summaries: [] });
 
-	return {
-		outputsState: ActionOutputsTest.empty(),
-		checkRunState: CheckRunTest.empty(),
-		branchState,
-		prState,
-	};
-};
+interface Options {
+	readonly exists?: boolean;
+	readonly prs?: ReadonlyArray<{ number: number; url: string }>;
+	readonly existsFails?: boolean;
+	readonly listFails?: boolean;
+}
 
-const runStage = (
-	releaseBranch: string,
-	targetBranch: string,
-	dryRun: boolean,
-	f: Fixtures,
-): Promise<ReleaseBranchCheckResult> => {
-	const layer = Layer.mergeAll(
-		ActionOutputsTest.layer(f.outputsState),
-		ActionEnvironmentTest.layer({
-			GITHUB_SHA: "abc123",
-			GITHUB_REF: "refs/heads/main",
-			GITHUB_REPOSITORY: "owner/repo",
-			GITHUB_REPOSITORY_OWNER: "owner",
-			GITHUB_WORKSPACE: "/workspace",
-			GITHUB_EVENT_NAME: "push",
-			GITHUB_EVENT_PATH: "/dev/null",
-			GITHUB_RUN_ID: "1",
-			GITHUB_RUN_NUMBER: "1",
-			GITHUB_ACTOR: "test",
-			GITHUB_SERVER_URL: "https://github.com",
-			GITHUB_API_URL: "https://api.github.com",
+const prInfo = (number: number, url: string): PullRequestInfo =>
+	PullRequestInfo.make({
+		number,
+		nodeId: `PR_${number}`,
+		url,
+		title: "chore: release",
+		state: "open",
+		head: "changeset-release/main",
+		base: "main",
+		draft: false,
+		merged: false,
+		mergedAt: Option.none(),
+	});
+
+const makeLayer = (recorder: Recorder, options: Options) =>
+	Layer.mergeAll(
+		ActionEnvironment.layerTest({
+			GITHUB_REPOSITORY: "savvy-web/silk-release-action",
+			GITHUB_REPOSITORY_OWNER: "savvy-web",
+			GITHUB_SHA: "deadbeef",
 		}),
-		CheckRunTest.layer(f.checkRunState),
-		GitBranchTest.layer(f.branchState),
-		PullRequestTest.layer(f.prState),
+		ActionOutputs.layerTest({
+			summary: (content) => Effect.sync(() => void recorder.summaries.push(content)),
+		}),
+		CheckRun.layerTest({
+			create: (name, sha) =>
+				Effect.sync(() => {
+					recorder.created.push({ name, sha });
+					return CheckRunRef.make({ id: 77, name, url: "https://x.test/checks/77", status: "in_progress" });
+				}),
+			complete: (id, conclusion, output) => Effect.sync(() => void recorder.completed.push({ id, conclusion, output })),
+		}),
+		GitBranch.layerTest({
+			exists: () =>
+				options.existsFails === true
+					? Effect.fail(GitHubError.rejected("GitBranch.exists", 500, "boom"))
+					: Effect.succeed(options.exists ?? false),
+		}),
+		PullRequest.layerTest({
+			list: () =>
+				options.listFails === true
+					? Effect.fail(GitHubError.rejected("PullRequest.list", 500, "boom"))
+					: Effect.succeed((options.prs ?? []).map((p) => prInfo(p.number, p.url))),
+		}),
+		Layer.succeed(Repo, RepoRef.make({ owner: "savvy-web", repo: "silk-release-action" })),
 	);
-	return Effect.runPromise(
-		checkReleaseBranch(releaseBranch, targetBranch, dryRun).pipe(
-			Effect.provide(layer),
-			Effect.provide(Logger.layer([])),
-		),
+
+const run = (recorder: Recorder, options: Options, dryRun = false): Promise<ReleaseBranchCheckResult> =>
+	checkReleaseBranch("changeset-release/main", "main", dryRun).pipe(
+		Effect.provide(makeLayer(recorder, options)),
+		Effect.provide(Logger.layer([])),
+		Effect.runPromise,
 	);
-};
 
 describe("checkReleaseBranch", () => {
-	it("reports branch exists + open PR found", async () => {
-		// Note: the PullRequestTest list filter strips an `owner:` prefix from
-		// the query head before comparing. PR records are stored with the bare
-		// branch name.
-		const f = makeFixtures({
-			branches: [["changeset-release/main", "abc123"]],
-			prs: [
-				{
-					number: 42,
-					url: "https://github.com/owner/repo/pull/42",
-					head: "changeset-release/main",
-					base: "main",
-					state: "open",
-				},
-			],
+	it("should report the branch and its open PR", async () => {
+		const result = await run(makeRecorder(), {
+			exists: true,
+			prs: [{ number: 189, url: "https://x.test/pr/189" }],
 		});
-
-		const result = await runStage("changeset-release/main", "main", false, f);
 
 		expect(result.exists).toBe(true);
 		expect(result.hasOpenPr).toBe(true);
-		expect(result.prNumber).toBe(42);
-		expect(typeof result.checkId).toBe("number");
+		expect(result.prNumber).toBe(189);
 	});
 
-	it("reports branch exists without open PR", async () => {
-		const f = makeFixtures({
-			branches: [["changeset-release/main", "abc123"]],
-		});
-
-		const result = await runStage("changeset-release/main", "main", false, f);
+	it("should report a branch with no open PR", async () => {
+		const result = await run(makeRecorder(), { exists: true, prs: [] });
 
 		expect(result.exists).toBe(true);
 		expect(result.hasOpenPr).toBe(false);
 		expect(result.prNumber).toBeNull();
 	});
 
-	it("reports branch does not exist", async () => {
-		const f = makeFixtures();
-
-		const result = await runStage("changeset-release/main", "main", false, f);
+	it("should report an absent branch", async () => {
+		const result = await run(makeRecorder(), { exists: false });
 
 		expect(result.exists).toBe(false);
 		expect(result.hasOpenPr).toBe(false);
+	});
+
+	it("should flag dry-run in the check-run title", async () => {
+		const recorder = makeRecorder();
+		await run(recorder, { exists: false }, true);
+
+		expect(recorder.created[0]?.name).toContain("Dry Run");
+	});
+
+	it("should create and complete a check run against the head sha", async () => {
+		const recorder = makeRecorder();
+		const result = await run(recorder, { exists: true, prs: [] });
+
+		expect(recorder.created[0]?.sha).toBe("deadbeef");
+		expect(recorder.completed[0]?.conclusion).toBe("success");
+		expect(result.checkId).toBe(77);
+	});
+
+	it("should degrade to 'no branch' when the existence probe fails", async () => {
+		// Diagnostic, not a gate: a transient API failure must not abort Phase 1.
+		const result = await run(makeRecorder(), { existsFails: true });
+
+		expect(result.exists).toBe(false);
+		expect(result.hasOpenPr).toBe(false);
+	});
+
+	it("should degrade to 'no PR' when the PR lookup fails", async () => {
+		const result = await run(makeRecorder(), { exists: true, listFails: true });
+
+		expect(result.exists).toBe(true);
+		expect(result.hasOpenPr).toBe(false);
 		expect(result.prNumber).toBeNull();
-	});
-
-	it("flags dry-run in the Check Run title", async () => {
-		const f = makeFixtures();
-
-		await runStage("changeset-release/main", "main", true, f);
-
-		expect(f.checkRunState.runs[0].name).toContain("Dry Run");
-	});
-
-	it("creates a Check Run reporting the result", async () => {
-		const f = makeFixtures({ branches: [["changeset-release/main", "abc123"]] });
-
-		await runStage("changeset-release/main", "main", false, f);
-
-		expect(f.checkRunState.runs).toHaveLength(1);
-		expect(f.checkRunState.runs[0].name).toBe("Check Release Branch");
 	});
 });

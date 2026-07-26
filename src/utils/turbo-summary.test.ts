@@ -3,8 +3,8 @@ import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { NodeServices } from "@effect/platform-node";
-import { Step } from "@savvy-web/github-action-effects";
-import { Effect, References } from "effect";
+import { ActionEnvironment, ActionLogger } from "@effected/github-actions";
+import { Effect, Layer } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	aggregateTurboRuns,
@@ -132,34 +132,53 @@ describe("listTurboRunSummaryPaths", () => {
 	});
 });
 
-// Regression for the integration finding: inside the Phase-2
-// `Step.groupStep`, info-level Effect logs are buffered and discarded on
-// success, so the marker must be emitted via a buffer-bypassing channel
-// (`Step.line`) to appear live. Wrapping in `Step.withStep` reproduces that
-// buffering; `Effect.logInfo` would be swallowed, `Step.line` is not.
-describe("emitConciseMarker (buffer-bypass visibility)", () => {
-	it("emits the marker live even when wrapped in a buffering Step that succeeds", async () => {
-		const summary = {
-			execution: { command: "turbo run build", attempted: 2, cached: 2, failed: 0 },
-			tasks: [{ taskId: "a#build", cache: { status: "HIT", source: "REMOTE", timeSaved: 100 } }],
-		};
-		const chunks: string[] = [];
-		const origWrite = process.stdout.write.bind(process.stdout);
-		// biome-ignore lint/suspicious/noExplicitAny: monkey-patch for test capture
-		(process.stdout.write as any) = (chunk: unknown, ...rest: unknown[]) => {
-			chunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk as Uint8Array).toString("utf-8"));
-			return origWrite(chunk as string, ...(rest as []));
+// The predecessor's step buffer DISCARDED info logs on success, so this marker
+// had to bypass it via `Step.line`. `ActionLogger.withBuffer` flushes on every
+// exit path INCLUDING success — which is the whole reason the bypass could be
+// dropped for a plain `Effect.logInfo`.
+//
+// This drives the REAL `ActionLogger` (not `layerTest`, whose buffer wrapper
+// passes its effect through unchanged and would make the assertion vacuous)
+// around a SUCCEEDING effect. `ActionLogger.logger` renders through core
+// `Console`, so `console.log` is the observation point.
+describe("emitConciseMarker (survives a buffered success)", () => {
+	const summary = {
+		execution: { command: "turbo run build", attempted: 2, cached: 2, failed: 0 },
+		tasks: [{ taskId: "a#build", cache: { status: "HIT", source: "REMOTE", timeSaved: 100 } }],
+	};
+
+	const runBuffered = async (): Promise<string> => {
+		const lines: string[] = [];
+		const origLog = console.log;
+		console.log = (...args: unknown[]) => {
+			lines.push(args.map((a) => (typeof a === "string" ? a : String(a))).join(" "));
 		};
 		try {
 			await Effect.runPromise(
-				Step.withStep("Validate builds", emitConciseMarker("/x/run.json", summary)).pipe(
-					Effect.provideService(References.MinimumLogLevel, "All"),
+				Effect.gen(function* () {
+					const logger = yield* ActionLogger;
+					// Succeeds — the exact case the old buffer threw away.
+					yield* logger.withBuffer("Validate builds", emitConciseMarker("/x/run.json", summary));
+				}).pipe(
+					Effect.provide(ActionLogger.layer.pipe(Layer.provide(ActionEnvironment.layerTest({})))),
+					Effect.provide(ActionLogger.layerLogger),
 				),
 			);
 		} finally {
-			process.stdout.write = origWrite;
+			console.log = origLog;
 		}
-		expect(chunks.join("")).toContain("/x/run.json");
+		return lines.join("\n");
+	};
+
+	it("flushes the marker even though the buffered effect succeeded", async () => {
+		expect(await runBuffered()).toContain("/x/run.json");
+	});
+
+	it("emits all three marker lines with the 🐢 prefix", async () => {
+		const out = await runBuffered();
+		expect(out).toContain("🐢 turbo summary: /x/run.json");
+		expect(out).toContain("🐢 turbo execution: command=turbo run build");
+		expect(out).toContain("🐢 turbo cache: 1 REMOTE · 0 LOCAL · 0 MISS · 100ms saved");
 	});
 });
 

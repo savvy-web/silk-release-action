@@ -3,44 +3,35 @@
  * unified Check Run.
  */
 
-import type { ActionEnvironmentError, ActionOutputError, CheckRunError } from "@savvy-web/github-action-effects";
-import { ActionEnvironment, ActionOutputs, CheckRun } from "@savvy-web/github-action-effects";
+import type { GitHubError, Repo } from "@effected/github";
+import { CheckRun, CheckRunOutput } from "@effected/github";
+import type { ActionEnvironmentError, ActionOutputError } from "@effected/github-actions";
+import { ActionEnvironment, ActionOutputs } from "@effected/github-actions";
 import { Effect } from "effect";
 import type { ValidationResult } from "../types/shared-types.js";
 import { summaryWriter } from "./summary-writer.js";
 
-/**
- * GitHub Checks API hard limit on `output.summary` (and `output.text`), in
- * UTF-8 BYTES (the API rejects with "summary exceeds a maximum bytesize of
- * 65535" — note bytes, not characters; multi-byte chars like ✅/❌/🦋/│ count
- * as several bytes each).
- */
-export const GITHUB_CHECK_SUMMARY_LIMIT = 65535;
-
-/**
- * Cap a check-run summary to GitHub's 65535-BYTE limit (UTF-8). Over-limit
- * input is truncated on a byte budget — without splitting a multi-byte char —
- * with a trailing notice, so the check still posts instead of failing the whole
- * phase with a 422. Truncating by `string.length` (characters) is wrong: a
- * summary full of emoji/box-drawing glyphs can be under the char count yet over
- * the byte limit.
- */
-export const capCheckSummary = (summary: string): string => {
-	if (Buffer.byteLength(summary, "utf8") <= GITHUB_CHECK_SUMMARY_LIMIT) return summary;
-	const notice = "\n\n_…summary truncated (exceeded GitHub's 65535-byte check limit)._";
-	const budget = GITHUB_CHECK_SUMMARY_LIMIT - Buffer.byteLength(notice, "utf8");
-	// Take the first `budget` bytes, then drop a trailing partial multi-byte
-	// sequence (decoded as U+FFFD) so the output is valid UTF-8 within budget.
-	let truncated = Buffer.from(summary, "utf8").subarray(0, budget).toString("utf8");
-	if (truncated.endsWith("�")) truncated = truncated.slice(0, -1);
-	return `${truncated}${notice}`;
-};
+// `capCheckSummary` and `GITHUB_CHECK_SUMMARY_LIMIT` lived here and are gone.
+// GitHub's 65535-BYTE cap on `output.summary`/`output.text` is now enforced by
+// the kit: `CheckRun.complete` and `CheckRun.update` both route their output
+// through `wireOutput`, which calls `CheckRunOutput.truncated()` on EVERY
+// request. Re-adding a consumer-side cap would truncate twice — and the kit's
+// `capBytes` is strictly better anyway, because it *loops* while stripping
+// trailing `U+FFFD` where the hand-rolled version dropped exactly one and could
+// still emit invalid UTF-8 from a split four-byte code point. The limit itself
+// is `CheckRunOutput.LIMIT_BYTES`.
 
 export interface UnifiedValidationResult {
 	success: boolean;
 	validations: ValidationResult[];
 	checkId: number;
-	/** Web URL of the unified validation check run, for the checks-table links. */
+	/**
+	 * Web URL of the unified validation check run, for the checks-table links.
+	 *
+	 * @remarks
+	 * Sourced from `CheckRunRef.url`, which the kit builds as `raw.html_url ?? ""`
+	 * — so the empty-string sentinel `main.ts` branches on is preserved.
+	 */
 	htmlUrl: string;
 }
 
@@ -63,8 +54,8 @@ export const createValidationCheck = (
 	extraBody?: string,
 ): Effect.Effect<
 	UnifiedValidationResult,
-	ActionEnvironmentError | ActionOutputError | CheckRunError,
-	ActionEnvironment | ActionOutputs | CheckRun
+	ActionEnvironmentError | ActionOutputError | GitHubError,
+	ActionEnvironment | ActionOutputs | CheckRun | Repo
 > =>
 	Effect.gen(function* () {
 		const env = yield* ActionEnvironment;
@@ -109,11 +100,17 @@ export const createValidationCheck = (
 		// terse job summary stays focused on the per-step results table.
 		const checkDetails = extraBody !== undefined && extraBody !== "" ? `${baseDetails}\n${extraBody}` : baseDetails;
 
-		const { id: checkId, htmlUrl } = yield* checks.create(checkTitle, sha);
-		yield* checks.complete(checkId, success ? "success" : "failure", {
-			title: checkSummary,
-			summary: capCheckSummary(checkDetails),
-		});
+		// `CheckRunRef` exposes `url`, not `htmlUrl`.
+		const { id: checkId, url: htmlUrl } = yield* checks.create(checkTitle, sha);
+		// `CheckRunOutput` is a `Schema.Class`; an object literal no longer
+		// satisfies it. No `capCheckSummary` here — `CheckRun.complete` pipes the
+		// output through `wireOutput`, which calls `CheckRunOutput.truncated()`
+		// unconditionally. Capping first would truncate twice.
+		yield* checks.complete(
+			checkId,
+			success ? "success" : "failure",
+			CheckRunOutput.make({ title: checkSummary, summary: checkDetails }),
+		);
 
 		const jobSections: Array<{ heading?: string; level?: 2 | 3; content: string }> = [
 			{ heading: checkTitle, content: checkSummary },
