@@ -11,6 +11,7 @@ import type { Section, SectionStamp } from "../src/utils/managed-sections.js";
 import {
 	isAtLeastAsRecent,
 	readSection,
+	refreshBanners,
 	renderBanner,
 	upsertSection,
 	withSection,
@@ -257,5 +258,52 @@ describe("rules 1 and 2 — `running` is written BEFORE the work, and the prior 
 		const failed = renderBanner(stamp({ state: "failed" }), HEAD);
 		expect(cancelled).toContain("Cancelled");
 		expect(cancelled).not.toBe(failed);
+	});
+});
+
+describe("refreshBanners", () => {
+	const at = (state: "complete" | "pending", sha: string, at: string) => ({ state, sha, runId: "1", at });
+	const sec = (key: string, sha: string, when: string) => ({
+		key,
+		title: key,
+		stamp: at("complete", sha, when),
+		body: `${key} body`,
+	});
+
+	it("marks a section stale once the branch moves past its sha", () => {
+		// Written when `old1234` was head…
+		const body = upsertSection("", sec("plan", "old1234", "2026-01-01T00:00:00.000Z"), "old1234");
+		expect(body).toContain("Up to date");
+
+		// …and the branch has since moved. Left alone, the section goes on
+		// claiming it is current — a false statement, not merely an old one.
+		const refreshed = refreshBanners(body, "new5678");
+		expect(refreshed).not.toContain("Up to date");
+	});
+
+	it("refreshes every section, not just the one last written", () => {
+		let body = upsertSection("", sec("a", "old1234", "2026-01-01T00:00:00.000Z"), "old1234");
+		body = upsertSection(body, sec("b", "old1234", "2026-01-01T00:00:00.000Z"), "old1234");
+
+		const refreshed = refreshBanners(body, "new5678");
+
+		// Both banners recomputed — the bug was that only the written one was.
+		expect(refreshed.match(/Up to date/g)).toBeNull();
+		expect(refreshed).toContain("a body");
+		expect(refreshed).toContain("b body");
+	});
+
+	it("leaves each section's stamp and body untouched", () => {
+		const body = upsertSection("", sec("plan", "old1234", "2026-01-01T00:00:00.000Z"), "old1234");
+		const refreshed = refreshBanners(body, "new5678");
+
+		// Only the banner is recomputed; a refresh must not rewrite another
+		// phase's content or advance its stamp.
+		expect(refreshed).toContain('"sha":"old1234"');
+		expect(refreshed).toContain("plan body");
+	});
+
+	it("is a no-op on a body with no sections", () => {
+		expect(refreshBanners("just prose", "new5678")).toBe("just prose");
 	});
 });

@@ -581,19 +581,23 @@ export function buildValidationDetails(validation: ValidationPayload, options?: 
 		);
 	} else {
 		parts.push(buildPublishSummary(validation.publish, { dryRun }));
-
-		// Release-notes preview is only meaningful when something is being
-		// released; suppressed alongside the degraded states above.
-		const releaseNotesUrl = options?.releaseNotesUrl;
-		const releaseNotes =
-			releaseNotesUrl !== undefined && releaseNotesUrl !== ""
-				? `### \u{1F4CB} Release Notes Preview\n\n${md.link("View detailed release notes →", releaseNotesUrl)}`
-				: "### \u{1F4CB} Release Notes Preview\n\n_Release notes will be generated on merge._";
-		parts.push(releaseNotes);
 	}
 
+	// One footer, carrying the link and the timestamp.
+	//
+	// The link was previously headed "📋 Release Notes Preview", which named the
+	// wrong thing: it points at the unified validation check run — the full
+	// summary, structured output included — and the release-notes preview is a
+	// section on that page rather than the page itself. A heading asserting
+	// otherwise sent a reader looking for notes and delivered a summary.
+	//
+	// Folded into the footer rather than given its own heading: it is a pointer
+	// away from this comment, which is what a footer is for.
 	const now = options?.now ?? new Date();
-	parts.push(`---\n\n<sub>Updated at ${now.toISOString()}</sub>`);
+	const summaryUrl = options?.releaseNotesUrl;
+	const link =
+		summaryUrl !== undefined && summaryUrl !== "" ? `${md.link("Full validation summary →", summaryUrl)} · ` : "";
+	parts.push(`---\n\n${link}<sub>Updated at ${now.toISOString()}</sub>`);
 
 	return parts.join("\n\n");
 }

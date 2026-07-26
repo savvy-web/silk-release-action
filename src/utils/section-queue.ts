@@ -15,7 +15,7 @@
 import type { Scope } from "effect";
 import { Duration, Effect, Option, Queue, Ref } from "effect";
 import type { Section } from "./managed-sections.js";
-import { upsertSection } from "./managed-sections.js";
+import { refreshBanners, upsertSection } from "./managed-sections.js";
 
 /** How long to let updates accumulate before writing. */
 export const DEFAULT_WINDOW = Duration.seconds(10);
@@ -116,7 +116,13 @@ export const makeSectionQueue = (options: {
 			Effect.gen(function* () {
 				if (batch.length === 0) return;
 				const existing = yield* options.read;
-				const body = coalesce(batch).reduce((acc, section) => upsertSection(acc, section, options.headSha), existing);
+				// Every banner recomputed, not just the written sections': a banner is
+				// baked into the text at write time, so a section left alone would go
+				// on claiming it is current after the branch moved.
+				const body = refreshBanners(
+					coalesce(batch).reduce((acc, section) => upsertSection(acc, section, options.headSha), existing),
+					options.headSha,
+				);
 				yield* options.publish(body);
 				yield* Effect.logDebug(`section-queue: wrote ${coalesce(batch).length} section(s)`);
 			});

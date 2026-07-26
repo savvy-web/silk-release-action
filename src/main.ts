@@ -72,7 +72,7 @@ import { resolveServerUrl } from "./utils/github-urls.js";
 import { linkIssuesFromCommits } from "./utils/link-issues-from-commits.js";
 import type { ConfigSource } from "./utils/load-release-config.js";
 import type { Section } from "./utils/managed-sections.js";
-import { upsertSection, withSection } from "./utils/managed-sections.js";
+import { refreshBanners, upsertSection, withSection } from "./utils/managed-sections.js";
 import { toReleasePlanReport } from "./utils/release-plan.js";
 import {
 	RELEASE_TABLE_LEGEND,
@@ -428,7 +428,10 @@ export const runBranchManagement = <R = never>(seams: BranchManagementSeams<R> =
 									// verdict here is what settles the comment's ORDER:
 									// `upsertSection` appends a key it has not seen, so without
 									// this, validation's header would land below the table.
-									upsertSection(upsertSection(existing, pendingVerdict, headSha), section, headSha),
+									refreshBanners(
+										upsertSection(upsertSection(existing, pendingVerdict, headSha), section, headSha),
+										headSha,
+									),
 									"release-plan",
 								),
 							),
@@ -1043,7 +1046,10 @@ const runValidation = Effect.gen(function* () {
 				const existing = yield* readStickyComment(pr.number, "release-plan").pipe(
 					Effect.catch(() => Effect.succeed("")),
 				);
-				const merged = sections.reduce((body, section) => upsertSection(body, section, validatedSha), existing);
+				const merged = refreshBanners(
+					sections.reduce((body, section) => upsertSection(body, section, validatedSha), existing),
+					validatedSha,
+				);
 				const planUpdate = yield* Effect.result(updateStickyComment(pr.number, merged, "release-plan"));
 				if (planUpdate._tag === "Failure") {
 					yield* Effect.logWarning(`Could not update the release comment: ${String(planUpdate.failure)}`);

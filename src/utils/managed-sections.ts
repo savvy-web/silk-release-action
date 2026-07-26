@@ -153,6 +153,41 @@ export const renderSection = (section: Section, headSha: string): string =>
 		end(section.key),
 	].join("\n");
 
+/** Every section key present in a body, in the order they appear. */
+const SECTION_KEY_RE = /<!-- silk-release:section:([^:]+):start -->/g;
+
+/**
+ * Recompute every section's staleness banner against the current head.
+ *
+ * @remarks
+ * **A banner is rendered into the text, so it freezes at write time.** A section
+ * nobody rewrites keeps whatever it said when it was last written — which was
+ * computed against the head *as of that run*. On a later commit, a section left
+ * alone goes on claiming `✅ Up to date as of <old sha>` while the branch has
+ * moved, which is a false claim rather than merely a stale one.
+ *
+ * Refreshing them all on any write costs nothing — the write is already a
+ * whole-body rewrite — and it is what makes the stamp's promise good. It does
+ * mean a write touches sections it does not own, but only their banners: each
+ * section's stamp and body are re-rendered from what was already there, so no
+ * other phase's content changes.
+ *
+ * @param body - The comment body.
+ * @param headSha - The commit sections should be measured against.
+ * @returns The body with every banner recomputed.
+ *
+ * @public
+ */
+export const refreshBanners = (body: string, headSha: string): string => {
+	const keys = [...body.matchAll(SECTION_KEY_RE)]
+		.map((match) => match[1])
+		.filter((key): key is string => key !== undefined);
+	return keys.reduce((acc, key) => {
+		const section = readSection(acc, key);
+		return section === undefined ? acc : upsertSection(acc, section, headSha);
+	}, body);
+};
+
 /**
  * Read a section back out of a body.
  *

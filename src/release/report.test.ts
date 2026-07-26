@@ -493,21 +493,29 @@ describe("buildValidationComment", () => {
 		expect(comment).toContain("`dist/github`");
 	});
 
-	it("links the release-notes section when a check-run url is given", () => {
-		// Release-notes preview renders only when the build passed AND there is
-		// at least one released package — supply one so we exercise the normal
-		// (non-degraded) path.
+	it("links the full validation summary from the footer", () => {
 		const comment = buildValidationComment(validationOf({ checks: passingChecks, publish: publishOf([pkg()]) }), {
 			releaseNotesUrl: "https://example.com/runs/9",
 		});
-		expect(comment).toContain("### 📋 Release Notes Preview");
-		expect(comment).toContain("[View detailed release notes →](https://example.com/runs/9)");
+
+		// The link points at the unified check run — the whole summary, structured
+		// output included. It was previously headed "Release Notes Preview", which
+		// named a section OF that page rather than the page, and sent a reader
+		// looking for notes.
+		expect(comment).toContain("[Full validation summary →](https://example.com/runs/9)");
+		expect(comment).not.toContain("Release Notes Preview");
+		// Folded into the footer beside the timestamp rather than given a heading.
+		expect(comment).toMatch(/\[Full validation summary →\][^\n]*· <sub>Updated at/);
 	});
 
-	it("renders a release-notes placeholder when no check-run url is given", () => {
+	it("omits the link entirely when there is no check-run url", () => {
 		const comment = buildValidationComment(validationOf({ checks: passingChecks, publish: publishOf([pkg()]) }));
-		expect(comment).toContain("### 📋 Release Notes Preview");
-		expect(comment).toContain("Release notes will be generated on merge");
+
+		// No placeholder prose: a footer with nothing to link to is just a
+		// timestamp, and a sentence promising notes "on merge" said nothing a
+		// reader could act on.
+		expect(comment).not.toContain("Full validation summary");
+		expect(comment).toContain("<sub>Updated at");
 	});
 
 	it("replaces the publish summary with a build-failed notice when the build did not pass", () => {
