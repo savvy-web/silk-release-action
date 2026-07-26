@@ -228,45 +228,40 @@ const runBranchManagement = Effect.gen(function* () {
 			yield* Effect.logInfo(`Detected package manager: ${packageManager}`);
 			const branchCheck = yield* checkReleaseBranch(releaseBranch, targetBranch, dryRun);
 
-			// Read changeset bump types before the version step consumes them.
+			// Phase 1's job is to answer "what is about to be released" before the
+			// next phase runs, so this reads the RELEASE PLAN — not the changeset
+			// files, and not the applied result.
 			//
-			// `preview` rather than the predecessor's `ChangesetAnalyzer.parseAll`:
-			// it is one of `ReleasePlannerShape`'s two READ-ONLY members (only
-			// `apply` mutates), and it already parses every `.changeset/*.md` into
-			// `{ id, summary, releases: [{ name, type }] }`. The aggregation below
-			// is unchanged — one entry per package, highest bump across changesets.
+			// `preview` must run before the branch flow, because `apply` deletes the
+			// `.changeset/*.md` files it consumes. It is read-only (one of
+			// `ReleasePlannerShape`'s two non-mutating members), so running it first
+			// costs nothing but the history it needs.
 			//
-			// Deliberately NOT `preview.releases`, which carries the bump changesets
-			// would actually apply (including dependency-driven bumps). That is
-			// arguably better information, but it is different information, and the
-			// `changesets` output field has always reported what the changeset files
-			// declared.
-			// NOT `Effect.catch(() => ({ changesets: [] }))`. That swallow reported a
-			// preview FAILURE as "zero changesets", which is indistinguishable in the
-			// log from a genuinely empty release — and on run 30212579721 the phase
-			// summary read `0 package(s) with changesets` immediately after a
-			// successful version bump, with no way to tell which had happened.
-			// The fallback is kept (a reporting read must not abort a release) but
-			// the failure is now named at error level.
-			const previewResult = yield* Effect.result(planner.preview(process.cwd()));
-			if (previewResult._tag === "Failure") {
-				yield* Effect.logError(
-					`Changeset preview FAILED — the changeset list reported below is not authoritative: ${previewResult.failure.message}`,
-				);
-			}
-			const preview: { readonly changesets: ReadonlyArray<Changesets.PendingChangeset> } =
-				previewResult._tag === "Success" ? previewResult.success : { changesets: [] };
-			const bumpRank = { patch: 0, minor: 1, major: 2 } as const;
-			const packageBumps = new Map<string, "major" | "minor" | "patch">();
-			for (const cs of preview.changesets) {
-				for (const release of cs.releases) {
-					const current = packageBumps.get(release.name);
-					if (current === undefined || bumpRank[release.type] > bumpRank[current]) {
-						packageBumps.set(release.name, release.type);
-					}
-				}
-			}
-			const changesets = Array.from(packageBumps.entries()).map(([name, bumpType]) => ({ name, bumpType }));
+			// **That history is why `ensureFullHistory` moved above this.** `preview`
+			// computes a plan against the target branch, and the runner's checkout is
+			// shallow — so on integration run 30214971138 the plan failed and the
+			// count read zero while five packages were being versioned. The update
+			// flow already unshallows for its own work; hoisting the fetch pays the
+			// same cost earlier rather than a second one.
+			//
+			// Reading the plan rather than the frontmatter is what makes a
+			// dependency-driven release visible. If a changeset names A and B depends
+			// on A, both are versioned and both get changelogs, but only A has a
+			// changeset. `changesetIds` is empty for exactly those packages, which is
+			// what `explicit` reports — so the file count and the release set stay
+			// distinguishable instead of one standing in for the other.
+			yield* ensureFullHistory(targetBranch);
+			const preview = yield* planner.preview(process.cwd());
+			const changesets = preview.releases.map((release) => ({
+				name: release.name,
+				bumpType: release.type,
+				// `changesetIds` is empty for a package released only because a
+				// dependency moved — the `—` in a release table's changeset column.
+				changesetCount: release.changesetIds.length,
+				oldVersion: release.oldVersion,
+				newVersion: release.newVersion,
+			}));
+			const changesetFileCount = preview.changesets.length;
 
 			let created = false;
 			let updated = false;
@@ -316,6 +311,7 @@ const runBranchManagement = Effect.gen(function* () {
 								action: branchCheck.exists ? "updated" : "created",
 							},
 				changesets,
+				changesetFileCount,
 				dryRun,
 			});
 			const outputs = yield* ActionOutputs;

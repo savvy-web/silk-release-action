@@ -157,34 +157,51 @@ const BranchManagementPayload = Schema.Struct({
 	changesets: Schema.Struct({
 		count: Schema.Number.annotate({
 			title: "Changeset count",
-			description: "The number of changeset files observed in the `.changeset/` directory.",
+			description:
+				"The number of changeset **files** observed in the `.changeset/` directory. Not the length of `packages`: one file may name several packages, and two files may name the same one, so the two numbers diverge in both directions.",
 		}),
 		packages: Schema.Array(
 			Schema.Struct({
 				name: Schema.String.annotate({
 					title: "Package name",
-					description: "The npm package name the changeset bumps.",
+					description: "The npm package name this release covers.",
 				}),
 				bumpType: Schema.Literals(["major", "minor", "patch"]).annotate({
 					identifier: "ChangesetsBumpType",
 					title: "Changeset bump type",
 					description:
-						"Phase 1's declared bump type, read from changeset frontmatter: `major`, `minor`, or `patch`. The validation phase emits an extended set under `ValidationBumpType` that adds `new` and `unknown`.",
+						"The bump the release plan applies to this package: `major`, `minor`, or `patch`. The validation phase emits an extended set under `ValidationBumpType` that adds `new` and `unknown`.",
+				}),
+				changesetCount: Schema.Number.annotate({
+					title: "Changesets naming this package",
+					description:
+						"How many changeset files name this package. **Zero means the package releases only because a dependency did** — it still gets a version bump and a CHANGELOG entry, but no changeset asked for it, so it is invisible to a count of changeset files. Renders as the `—` in a release table's changeset column.",
+				}),
+				oldVersion: Schema.String.annotate({
+					title: "Current version",
+					description:
+						"The package's version before this release, as recorded in its `package.json` on the target branch.",
+				}),
+				newVersion: Schema.String.annotate({
+					title: "Next version",
+					description:
+						"The version this release will publish, after applying `bumpType`. Known in Phase 1 because it comes from the release plan rather than from the changeset files.",
 				}),
 			}).annotate({
 				identifier: "BranchManagementChangesetPackage",
 				title: "Changeset package",
-				description: "One package affected by the observed changesets, with its derived semver bump.",
+				description: "One package the release plan covers, with its bump and whether a changeset asked for it.",
 			}),
 		).annotate({
 			title: "Changeset packages",
 			description:
-				"The set of packages the observed changesets bump, with the derived semver bump per package. Empty array when no changesets were found; the action emits a no-op in that case.",
+				"Every package this release will version, from the release plan — including packages bumped only because a dependency moved, distinguished by `explicit`. Empty array when there is nothing to release; the action emits a no-op in that case.",
 		}),
 	}).annotate({
 		identifier: "BranchManagementChangesets",
 		title: "Changesets observed",
-		description: "Summary of the changesets observed this run — total count and the per-package bump types.",
+		description:
+			"What this run will release — the number of changeset files, and every package the release plan versions with its bump and whether a changeset named it explicitly.",
 	}),
 }).annotate({
 	identifier: "BranchManagementPayload",
@@ -240,7 +257,22 @@ export const BranchManagementOutput = Schema.Struct({
 				},
 				changesets: {
 					count: 1,
-					packages: [{ name: "@savvy-web/example", bumpType: "minor" }],
+					packages: [
+						{
+							name: "@savvy-web/example",
+							bumpType: "minor",
+							changesetCount: 1,
+							oldVersion: "1.4.0",
+							newVersion: "1.5.0",
+						},
+						{
+							name: "@savvy-web/example-consumer",
+							bumpType: "patch",
+							changesetCount: 0,
+							oldVersion: "2.0.3",
+							newVersion: "2.0.4",
+						},
+					],
 				},
 			},
 		},

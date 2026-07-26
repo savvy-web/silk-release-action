@@ -49,7 +49,30 @@ Retry classification during versioning widens from 5 error codes to 11 — addin
 `ECONNABORTED`, `ECONNREFUSED`, `EHOSTUNREACH`, `ENETUNREACH`, `EPIPE` and `socket hang up` —
 and comparison becomes case-insensitive. Both widen the set of failures that are retried.
 
+## Features
+
+### Phase 1 reports the full release plan, with versions
+
+`branchManagement.changesets.packages` now describes every package the release will version,
+read from the release plan rather than from the changeset files. Each entry gains:
+
+* `oldVersion` and `newVersion` — the version transition, known before the release runs
+* `changesetCount` — how many changeset files name the package
+
+**A package released only because a dependency moved now appears**, with `changesetCount: 0`.
+Such a package is versioned and gets a CHANGELOG entry but has no changeset of its own, so it
+was previously invisible in this output. `count` continues to report the number of changeset
+**files**, which is not the length of `packages` — one file may name several packages, and two
+files may name the same one.
+
 ## Bug Fixes
+
+### Phase 1 reported zero changesets while cutting a release
+
+The branch-management phase asked for a release plan before anything fetched the target branch,
+so on the shallow clone a runner checks out, the plan could not be computed and the changeset
+report silently read zero — in one observed run, immediately after five packages had been
+versioned. The history fetch now happens before the plan is read.
 
 ### Releases could be published from a closed, unmerged pull request
 

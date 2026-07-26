@@ -17,7 +17,10 @@ describe("toBranchManagementOutput", () => {
 			updated: true,
 			hasConflicts: false,
 			releasePr: { number: 42, url: "https://example.com/pr/42", action: "updated" },
-			changesets: [{ name: "@savvy-web/foo", bumpType: "minor" }],
+			changesets: [
+				{ name: "@savvy-web/foo", bumpType: "minor", changesetCount: 1, oldVersion: "1.0.0", newVersion: "1.1.0" },
+			],
+			changesetFileCount: 1,
 			dryRun: false,
 		});
 
@@ -33,7 +36,9 @@ describe("toBranchManagementOutput", () => {
 		expect(output.branchManagement.releaseBranch.name).toBe("changeset-release/main");
 		expect(output.branchManagement.releaseBranch.existed).toBe(true);
 		expect(output.branchManagement.releaseBranch.hasConflicts).toBe(false);
-		expect(output.branchManagement.changesets.packages).toEqual([{ name: "@savvy-web/foo", bumpType: "minor" }]);
+		expect(output.branchManagement.changesets.packages).toEqual([
+			{ name: "@savvy-web/foo", bumpType: "minor", changesetCount: 1, oldVersion: "1.0.0", newVersion: "1.1.0" },
+		]);
 	});
 
 	it("marks a run with no changesets as a no-op", () => {
@@ -45,6 +50,7 @@ describe("toBranchManagementOutput", () => {
 			hasConflicts: false,
 			releasePr: null,
 			changesets: [],
+			changesetFileCount: 0,
 			dryRun: false,
 		});
 
@@ -61,7 +67,10 @@ describe("toBranchManagementOutput", () => {
 			updated: false,
 			hasConflicts: true,
 			releasePr: null,
-			changesets: [{ name: "@savvy-web/foo", bumpType: "patch" }],
+			changesets: [
+				{ name: "@savvy-web/foo", bumpType: "patch", changesetCount: 1, oldVersion: "1.0.0", newVersion: "1.0.1" },
+			],
+			changesetFileCount: 1,
 			dryRun: true,
 		});
 
