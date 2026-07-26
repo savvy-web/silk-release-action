@@ -148,6 +148,52 @@ const lastReleaseBoundary = (
 	});
 
 /**
+ * Issues attached to the open release pull request itself.
+ *
+ * @remarks
+ * The commit walk cannot see these. It reaches an issue either through a
+ * closing keyword in a commit body or through the pull request of a merge
+ * commit *in the range* — and the release PR is neither. So an issue a human
+ * attaches to the release PR in the sidebar was closed on merge (Phase 3 asks
+ * GitHub directly) while never appearing in the PR's own description or in the
+ * check that reports what the release closes.
+ *
+ * Observed on `savvy-web/silk-integration` PR #251: the body declared three
+ * issues, the merge closed four. The fourth was `#253`, attached by hand after
+ * the body had been generated. Under-reporting what a merge will close is the
+ * kind of thing a reviewer only notices afterwards.
+ *
+ * Looked up by listing open PRs rather than through `listAssociatedWithCommit`,
+ * which is what the cross-referencing step uses and which does not reliably
+ * answer for a branch head. The head branch is matched locally for the same
+ * reason as in {@link lastReleaseBoundary}.
+ *
+ * @internal
+ */
+const issuesOnOpenReleasePr = (
+	targetBranch: string,
+	releaseBranch: string,
+): Effect.Effect<
+	Array<{ number: number; title: string; state: string; url: string; node_id: string }>,
+	never,
+	GitHubIssue | PullRequest | Repo
+> =>
+	Effect.gen(function* () {
+		const pulls = yield* PullRequest;
+		const result = yield* Effect.result(pulls.list({ base: targetBranch, state: "open" }));
+		if (result._tag === "Failure") {
+			yield* Effect.logWarning(`Failed to list open pull requests: ${result.failure.reason}`);
+			return [];
+		}
+
+		const releasePr = result.success.find((pr) => pr.head === releaseBranch);
+		if (releasePr === undefined) return [];
+
+		yield* Effect.logInfo(`Checking release PR #${releasePr.number} for directly attached issues`);
+		return yield* getLinkedIssuesFromPR(releasePr.number);
+	});
+
+/**
  * Fetch all commits on a branch, paginated.
  *
  * @internal
@@ -348,6 +394,22 @@ export const getLinkedIssuesFromCommits = (
 
 			linkedIssues.push(resolved);
 			yield* Effect.logInfo(`✓ Issue #${issueNumber}: ${resolved.title} (${resolved.state})`);
+		}
+
+		// Pass 4: whatever is attached to the release PR itself.
+		//
+		// Unreachable from the commit walk, and closed on merge regardless — so
+		// leaving it out means the description and the check under-report what the
+		// release will close. Same open-only rule; `commits` is empty because no
+		// commit references it, which is the honest answer rather than an invented
+		// association.
+		const seen = new Set(linkedIssues.map((issue) => issue.number));
+		for (const issue of yield* issuesOnOpenReleasePr(targetBranch, releaseBranch)) {
+			if (seen.has(issue.number)) continue;
+			if (issue.state.toLowerCase() === "closed") continue;
+			seen.add(issue.number);
+			linkedIssues.push({ ...issue, state: issue.state.toLowerCase(), commits: [] });
+			yield* Effect.logInfo(`✓ Issue #${issue.number}: ${issue.title} (attached to the release PR)`);
 		}
 
 		return { linkedIssues, commits };

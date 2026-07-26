@@ -91,6 +91,23 @@ const releasePr = (
 		...(mergeCommitSha === undefined ? {} : { mergeCommitSha }),
 	}) as unknown as PullRequestInfo;
 
+/** The open release pull request, as `PullRequest.list({ state: "open" })` sees it. */
+const openReleasePr = (number: number): PullRequestInfo =>
+	({
+		number,
+		nodeId: `PR_${number}`,
+		url: `https://github.com/${OWNER}/${REPO}/pull/${number}`,
+		title: `chore: release #${number}`,
+		state: "open",
+		head: RELEASE_BRANCH,
+		headSha: `head-${number}`,
+		base: TARGET_BRANCH,
+		baseSha: `base-${number}`,
+		draft: false,
+		merged: false,
+		mergedAt: Option.none(),
+	}) as unknown as PullRequestInfo;
+
 const issueInfo = (number: number, title: string, state: "open" | "closed" = "open"): IssueInfo =>
 	({
 		number,
@@ -219,7 +236,9 @@ const gitHubServices = (f: Fixtures): Layer.Layer<GitHubCommit | GitHubIssue | P
 					Effect.andThen(
 						f.releasePrs === "fail"
 							? Effect.fail(GitHubError.rejected("PullRequest.list", 500, "boom"))
-							: Effect.succeed(f.releasePrs),
+							: // Filtered by state, as GitHub does: the boundary lookup asks for
+								// closed PRs, the release-PR lookup for open ones.
+								Effect.succeed(f.releasePrs.filter((pr) => options?.state === undefined || pr.state === options.state)),
 					),
 				),
 			listAssociatedWithCommit: (sha) => Effect.succeed(f.associated.get(sha) ?? []),
@@ -229,7 +248,15 @@ const gitHubServices = (f: Fixtures): Layer.Layer<GitHubCommit | GitHubIssue | P
 
 const runCollect = (
 	f: Fixtures,
-): Promise<{ linkedIssues: ReadonlyArray<{ number: number; title: string; state: string; url: string }> }> =>
+): Promise<{
+	linkedIssues: ReadonlyArray<{
+		number: number;
+		title: string;
+		state: string;
+		url: string;
+		commits: ReadonlyArray<string>;
+	}>;
+}> =>
 	Effect.runPromise(
 		getLinkedIssuesFromCommits(TARGET_BRANCH, RELEASE_BRANCH).pipe(
 			Effect.provide(gitHubServices(f)),
@@ -308,10 +335,14 @@ describe("getLinkedIssuesFromCommits", () => {
 
 		await runCollect(f);
 
-		// `head` must be absent. GitHub expects `owner:ref` there while the
-		// projection carries the bare ref, so passing it returns nothing at all
-		// and the boundary silently falls back to walking the whole branch.
-		expect(listCalls).toEqual([{ base: TARGET_BRANCH, state: "closed", head: undefined }]);
+		// `head` must be absent on BOTH calls. GitHub expects `owner:ref` there
+		// while the projection carries the bare ref, so passing it returns nothing
+		// at all — the boundary would silently fall back to walking the whole
+		// branch, and the release PR would never be found.
+		expect(listCalls).toEqual([
+			{ base: TARGET_BRANCH, state: "closed", head: undefined },
+			{ base: TARGET_BRANCH, state: "open", head: undefined },
+		]);
 	});
 
 	it("picks the newest release PR by number, not by any version ordering", async () => {
@@ -445,6 +476,49 @@ describe("getLinkedIssuesFromCommits", () => {
 		// reports what it closed. GraphQL hands back `CLOSED`; pass 2 lowercases it
 		// on the way in, which is what makes the filter see it at all.
 		expect(result.linkedIssues.map((i) => i.number)).toEqual([171]);
+	});
+
+	it("includes an issue attached to the release PR but reachable from no commit", async () => {
+		const f = makeFixtures({
+			releasePrs: [releasePr(245, "sha-245"), openReleasePr(251)],
+			comparisons: new Map([[`sha-245...${TARGET_BRANCH}`, [commit("abc0001", "fix: bug\n\nCloses #7")]]]),
+			issues: new Map([[7, issueInfo(7, "From a commit")]]),
+			// #253 is on the release PR itself — attached by hand after the body was
+			// written. No commit mentions it and no merge commit's PR reports it, so
+			// only the release-PR lookup finds it. Phase 3 closes it either way.
+			linked: new Map([[251, [linkedIssue(253, "Attached by hand")]]]),
+		});
+
+		const result = await runCollect(f);
+
+		expect(result.linkedIssues.map((i) => i.number).sort((a, b) => a - b)).toEqual([7, 253]);
+	});
+
+	it("does not double-count an issue both attached to the release PR and found in a commit", async () => {
+		const f = makeFixtures({
+			releasePrs: [releasePr(245, "sha-245"), openReleasePr(251)],
+			comparisons: new Map([[`sha-245...${TARGET_BRANCH}`, [commit("abc0001", "fix: bug\n\nCloses #7")]]]),
+			issues: new Map([[7, issueInfo(7, "From a commit")]]),
+			linked: new Map([[251, [linkedIssue(7, "Same issue, attached too")]]]),
+		});
+
+		const result = await runCollect(f);
+
+		expect(result.linkedIssues.map((i) => i.number)).toEqual([7]);
+		// The commit association is the richer one and must survive the union.
+		expect(result.linkedIssues[0]?.commits).toEqual(["abc0001"]);
+	});
+
+	it("drops a closed issue attached to the release PR", async () => {
+		const f = makeFixtures({
+			releasePrs: [releasePr(245, "sha-245"), openReleasePr(251)],
+			comparisons: new Map([[`sha-245...${TARGET_BRANCH}`, []]]),
+			linked: new Map([[251, [linkedIssue(253, "Already shipped", "CLOSED")]]]),
+		});
+
+		const result = await runCollect(f);
+
+		expect(result.linkedIssues).toHaveLength(0);
 	});
 
 	it("drops a message-only reference whose issue cannot be fetched", async () => {
