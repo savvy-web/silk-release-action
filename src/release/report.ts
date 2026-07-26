@@ -250,25 +250,6 @@ function getPackageStatusIcon(status: PackageStatus): string {
 }
 
 /**
- * Render the `Targets` summary cell for a package.
- */
-function renderTargetsCell(pkg: ValidationPublishPackage, status: PackageStatus): string {
-	const targets = pkg.builds.flatMap((b) => b.targets);
-	if (targets.length === 0) {
-		return "\u{1F3F7}️ Version only"; // 🏷️
-	}
-	const ready = targets.filter((t) => t.status !== "failed").length;
-	const total = targets.length;
-	if (status === "success") {
-		return `✅ ${ready}/${total} ready`;
-	}
-	if (status === "failed") {
-		return `❌ ${ready}/${total}`;
-	}
-	return `⚠️ ${ready}/${total}`;
-}
-
-/**
  * Get the per-target status cell for a build's registry table.
  */
 function getTargetDetailStatus(target: ValidationBuildTarget): string {
@@ -348,26 +329,6 @@ export function buildPublishSummary(publish: ValidationPublish, options?: Publis
 	const dryRunLabel = dryRun ? " \u{1F9EA} (Dry Run)" : "";
 	const title = `\u{1F680} What will be released${dryRunLabel}`;
 
-	// Summary table rows
-	const tableRows: ReadonlyArray<ReadonlyArray<string>> = publish.packages.map((pkg) => {
-		const pkgStatus = getPackageStatus(pkg);
-		const statusCell = getPackageStatusIcon(pkgStatus);
-		const changesets = pkg.changesetCount === null ? "—" : String(pkg.changesetCount);
-
-		return [
-			statusCell,
-			pkg.name,
-			renderVersionTransition(pkg),
-			renderBumpCell(pkg),
-			changesets,
-			renderTargetsCell(pkg, pkgStatus),
-		];
-	});
-
-	const summaryTable = md.table([" ", "Package", "Current → Next", "Bump", "Changesets", "Targets"], tableRows);
-
-	const legend = "**Legend:** ✅ Ready · ⏭️ Skipped · ⚠️ Warning · ❌ Failed · 🔴 major · 🟡 minor · 🟢 patch";
-
 	// Totals — sum the per-build byte sizes and file counts across all packages.
 	let totalPacked = 0;
 	let totalUnpacked = 0;
@@ -391,8 +352,19 @@ export function buildPublishSummary(publish: ValidationPublish, options?: Publis
 		`\u{1F4C4} ${totalFiles} files · ` +
 		`\u{1F3AF} ${readyTargets}/${totalTargets} targets ready`;
 
-	const intro = "On merge, these packages publish:";
-	const summarySection = `${intro}\n\n${summaryTable}\n\n${legend}\n\n${totals}`;
+	// No summary table here, deliberately.
+	//
+	// The release-plan section of the same comment renders it from the same
+	// payload directly above this. Rendering it twice put two tables on one page
+	// disagreeing about the same packages — observed on silk-integration PR #248,
+	// where this one read `5.0.21 → 5.0.26` against the plan's `5.0.25 → 5.0.26`,
+	// because the two derive `baseVersion` differently.
+	//
+	// The totals stay: they aggregate what a per-row table cannot show, and no
+	// other section carries them. The check-run page is unaffected —
+	// `buildPublishValidationSummary` builds its own totals and per-package
+	// sections rather than borrowing these.
+	const summarySection = totals;
 
 	// Per-package detail sections. Version-only packages (no builds) are
 	// excluded — a `<details>` block around a header-only, zero-row table is

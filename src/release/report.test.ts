@@ -138,52 +138,9 @@ describe("getPackagePageUrl", () => {
 });
 
 describe("buildPublishSummary", () => {
-	it("frames the report as 'What will be released', never 'Published'", () => {
-		const markdown = buildPublishSummary(publishOf([]));
-		expect(markdown).toContain("What will be released");
-		expect(markdown).not.toContain("Publish Results");
-		expect(markdown).not.toContain("Published");
-		expect(markdown).toContain("On merge, these packages publish:");
-	});
-
 	it("includes the dry-run indicator in the header when dryRun is true", () => {
 		const markdown = buildPublishSummary(publishOf([]), { dryRun: true });
 		expect(markdown).toContain("Dry Run");
-	});
-
-	it("renders the current → next version transition for a bumped package", () => {
-		const markdown = buildPublishSummary(publishOf([pkg()]));
-		expect(markdown).toContain("5.0.12 → 5.0.13");
-	});
-
-	it("renders a patch bump emoji and label from the precomputed bumpType", () => {
-		const markdown = buildPublishSummary(publishOf([pkg({ bumpType: "patch" })]));
-		expect(markdown).toContain("\u{1F7E2} patch");
-	});
-
-	it("renders a minor bump emoji and label from the precomputed bumpType", () => {
-		const markdown = buildPublishSummary(publishOf([pkg({ bumpType: "minor" })]));
-		expect(markdown).toContain("\u{1F7E1} minor");
-	});
-
-	it("renders a major bump emoji and label from the precomputed bumpType", () => {
-		const markdown = buildPublishSummary(publishOf([pkg({ bumpType: "major" })]));
-		expect(markdown).toContain("\u{1F534} major");
-	});
-
-	it("renders a brand-new package (null baseVersion) as '— → version' with a 🆕 new bump", () => {
-		const markdown = buildPublishSummary(
-			publishOf([pkg({ name: "@org/brand-new", version: "1.0.0", baseVersion: null, bumpType: "new" })]),
-		);
-		expect(markdown).toContain("— → 1.0.0");
-		expect(markdown).toContain("\u{1F195} new");
-	});
-
-	it("renders the changeset count, and '—' when it is null", () => {
-		const withCountMd = buildPublishSummary(publishOf([pkg({ name: "@org/with-count", changesetCount: 3 })]));
-		const noCountMd = buildPublishSummary(publishOf([pkg({ name: "@org/no-count", changesetCount: null })]));
-		expect(withCountMd).toContain("| 3 |");
-		expect(noCountMd).toContain("| — |");
 	});
 
 	it("renders the build directory, sizes, and SBOM line in the Details block", () => {
@@ -290,22 +247,6 @@ describe("buildPublishSummary", () => {
 		expect(markdown).toContain("0.5 kB packed");
 		expect(markdown).toContain("0 B unpacked");
 		expect(markdown).toContain("0 files");
-	});
-
-	it("renders a version-only package (no builds) with the 'Version only' targets cell", () => {
-		const versionOnly = pkg({ name: "@org/version-only", versionOnly: true, builds: [] });
-		const markdown = buildPublishSummary(publishOf([versionOnly]));
-		expect(markdown).toContain("Version only");
-		expect(markdown).toContain("@org/version-only");
-		// A version-only package has no builds, so it must not produce a
-		// `<details>` block — that would wrap a header-only output.
-		expect(markdown).not.toContain("<details>");
-	});
-
-	it("includes the Legend line", () => {
-		const markdown = buildPublishSummary(publishOf([pkg()]));
-		expect(markdown).toContain("**Legend:**");
-		expect(markdown).toContain("🔴 major");
 	});
 
 	it("renders provenance ✅ for a configured target and 🚫 for an unconfigured one", () => {

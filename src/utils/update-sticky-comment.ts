@@ -47,8 +47,21 @@ export const updateStickyComment = (
 		const comments = yield* PullRequestComment;
 		yield* Effect.logInfo(`Upserting sticky comment on PR #${prNumber} (key=${commentIdentifier})`);
 		const marker = CommentMarker.make({ namespace: MARKER_NAMESPACE, key: commentIdentifier });
+
+		// Strip any marker already in the body before handing it over.
+		//
+		// `upsert` appends the marker so the comment can be found again. A caller
+		// that reads the existing body, edits it, and writes it back — which is
+		// how a section rewrite works — hands back a body that already carries
+		// one, and gets a second appended. Repeat per write and they accumulate:
+		// four copies after a few runs, observed on silk-integration PR #248.
+		//
+		// Stripping here rather than at each call site keeps the invariant with
+		// the code that knows what the marker is.
+		const withoutMarker = commentBody.split(marker.html).join("").trimEnd();
+
 		// `upsert` returns a `CommentRecord`; the predecessor returned a bare id.
-		const record = yield* comments.upsert(prNumber, marker, commentBody);
+		const record = yield* comments.upsert(prNumber, marker, withoutMarker);
 		yield* Effect.logInfo(`Sticky comment id: ${record.id}`);
 		return { commentId: record.id };
 	});
