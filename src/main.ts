@@ -42,7 +42,9 @@ import {
 	buildPublishValidationSummary,
 	buildReleaseNotesPreviewSummary,
 	buildSbomPreviewSummary,
-	buildValidationComment,
+	buildValidationDetails,
+	buildValidationHeader,
+	validationStatusTitle,
 } from "./release/report.js";
 import type {
 	PublishPackagesResult,
@@ -399,11 +401,37 @@ export const runBranchManagement = <R = never>(seams: BranchManagementSeams<R> =
 				//
 				// A failed read degrades to `""` rather than aborting: losing a
 				// neighbour is bad, but refusing to report the release at all is worse.
+				// The verdict, seeded pending. Validation replaces it in place.
+				//
+				// It exists at this point purely to settle the comment's ORDER — a
+				// reader should meet the verdict, then the table, then the detail — and
+				// `upsertSection` appends a key it has not seen, so a verdict first
+				// written by validation would land beneath the table.
+				//
+				// `pending` rather than a tick: Phase 1 has no validation result and
+				// must not appear to claim one.
+				const pendingVerdict: Section = {
+					key: "validation-status",
+					title: "📦 Release Validation ⏳",
+					stamp: { state: "pending", sha: headSha, runId: String(planRunId), at: new Date().toISOString() },
+					body: "_Validation has not run yet._",
+				};
+
 				const publishPlan = (target: number) => (section: Section) =>
 					seams.readComment(target, "release-plan").pipe(
 						Effect.catch(() => Effect.succeed("")),
 						Effect.flatMap((existing) =>
-							Effect.result(seams.publishComment(target, upsertSection(existing, section, headSha), "release-plan")),
+							Effect.result(
+								seams.publishComment(
+									target,
+									// Verdict first, then the section being written. Seeding the
+									// verdict here is what settles the comment's ORDER:
+									// `upsertSection` appends a key it has not seen, so without
+									// this, validation's header would land below the table.
+									upsertSection(upsertSection(existing, pendingVerdict, headSha), section, headSha),
+									"release-plan",
+								),
+							),
 						),
 						Effect.flatMap((posted) =>
 							posted._tag === "Failure"
@@ -953,22 +981,19 @@ const runValidation = Effect.gen(function* () {
 				// the build-grouped "What will be released" forecast, and a
 				// release-notes link. Rendered straight from the canonical
 				// ValidationOutput's `validation` payload — no parallel comment input.
-				const commentBody = buildValidationComment(validationOutput.validation, {
+				// ONE comment, three sections — verdict, release table, detail.
+				//
+				// The verdict and the detail used to be a second comment rendered
+				// wholesale on every run, which meant a reader saw two bot comments
+				// making overlapping statements about the same release, and neither
+				// could be updated without rewriting the other. As sections of the
+				// comment Phase 1 already created, each is stamped and rewritten
+				// independently: the verdict can flip from ✅ to ❌ without touching
+				// the table, and the table completes without disturbing the verdict.
+				const commentOptions = {
 					...(unifiedUrl !== undefined && { releaseNotesUrl: unifiedUrl }),
 					dryRun,
-				});
-				yield* logger.group(
-					"Update PR comment",
-					updateStickyComment(pr.number, commentBody, "release-validation").pipe(
-						Effect.catch((e) =>
-							Effect.gen(function* () {
-								yield* Effect.logWarning(`Failed to update sticky comment: ${String(e)}`);
-								return { commentId: 0 };
-							}),
-						),
-					),
-				);
-				yield* Effect.logInfo(`✅ Sticky comment updated on PR #${pr.number}`);
+				};
 
 				// Complete the release plan Phase 1 posted, rather than leaving it
 				// reading "pending validation" beside a finished validation run.
@@ -981,27 +1006,49 @@ const runValidation = Effect.gen(function* () {
 				const validationEnvironment = yield* ActionEnvironment;
 				const validatedSha = Option.getOrElse(yield* validationEnvironment.getOptional("GITHUB_SHA"), () => "");
 				const validatedRunId = Option.getOrElse(yield* validationEnvironment.getOptional("GITHUB_RUN_ID"), () => "");
-				const validatedPlan: Section = {
-					key: "release-plan",
-					title: "🚀 What will be released",
-					stamp: {
-						state: "complete",
-						sha: validatedSha,
-						runId: validatedRunId,
-						at: new Date().toISOString(),
-					},
-					body: `${releaseTable.render(toValidatedReleaseRows(validationPackages))}\n\n${RELEASE_TABLE_LEGEND}`,
+				const stamp = {
+					state: "complete" as const,
+					sha: validatedSha,
+					runId: validatedRunId,
+					at: new Date().toISOString(),
 				};
-				// Read-modify-write, for the same reason as Phase 1: this rewrites the
-				// plan section of a comment it does not otherwise own.
-				const existingPlan = yield* readStickyComment(pr.number, "release-plan").pipe(
+				const sections: ReadonlyArray<Section> = [
+					{
+						key: "validation-status",
+						title: validationStatusTitle(validationOutput.validation),
+						stamp,
+						body: buildValidationHeader(validationOutput.validation, commentOptions),
+					},
+					{
+						key: "release-plan",
+						title: "🚀 What will be released",
+						stamp,
+						body: `${releaseTable.render(toValidatedReleaseRows(validationPackages))}\n\n${RELEASE_TABLE_LEGEND}`,
+					},
+					{
+						key: "validation-details",
+						title: "Details",
+						stamp,
+						body: buildValidationDetails(validationOutput.validation, commentOptions),
+					},
+				];
+
+				// Read once, fold all three sections in, write once.
+				//
+				// Read-modify-write for the same reason as Phase 1 — the comment is not
+				// ours alone — and a single write rather than three so a reader never
+				// catches the comment mid-update with a stale verdict above a fresh
+				// table. `upsertSection` appends a section it has not seen before, so
+				// the order here is the order they first appear.
+				const existing = yield* readStickyComment(pr.number, "release-plan").pipe(
 					Effect.catch(() => Effect.succeed("")),
 				);
-				const planUpdate = yield* Effect.result(
-					updateStickyComment(pr.number, upsertSection(existingPlan, validatedPlan, validatedSha), "release-plan"),
-				);
+				const merged = sections.reduce((body, section) => upsertSection(body, section, validatedSha), existing);
+				const planUpdate = yield* Effect.result(updateStickyComment(pr.number, merged, "release-plan"));
 				if (planUpdate._tag === "Failure") {
-					yield* Effect.logWarning(`Could not complete the release plan comment: ${planUpdate.failure.reason}`);
+					yield* Effect.logWarning(`Could not update the release comment: ${String(planUpdate.failure)}`);
+				} else {
+					yield* Effect.logInfo(`✅ Release comment updated on PR #${pr.number}`);
 				}
 			} else {
 				yield* Effect.logInfo("Sticky comment update skipped — no open PR found for release branch");

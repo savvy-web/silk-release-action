@@ -346,7 +346,6 @@ export const createReleaseBranch = (): Effect.Effect<
 		// on silk-integration #242 and #232.
 		const prBody = buildManagedPrBody({
 			subject: prTitle,
-			versionSummary,
 			linkedIssues,
 			signoff,
 			serverUrl,

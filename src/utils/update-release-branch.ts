@@ -430,7 +430,6 @@ export const updateReleaseBranch = (): Effect.Effect<
 		if (!branchDeleted && prNumber === null && !dryRun) {
 			const prBody = buildManagedPrBody({
 				subject: prTitle,
-				versionSummary,
 				linkedIssues,
 				signoff,
 				serverUrl,
@@ -471,7 +470,6 @@ export const updateReleaseBranch = (): Effect.Effect<
 				// on `## Linked Issues` and could not tell our text from theirs.
 				const managed = buildManagedPrBody({
 					subject: prTitle,
-					versionSummary,
 					linkedIssues,
 					signoff,
 					serverUrl,

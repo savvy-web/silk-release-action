@@ -534,18 +534,53 @@ export interface ValidationCommentOptions {
  *
  * @public
  */
-export function buildValidationComment(validation: ValidationPayload, options?: ValidationCommentOptions): string {
-	const dryRun = options?.dryRun ?? false;
+export function validationStatusTitle(validation: ValidationPayload): string {
 	const hasError = validation.findings.some((f) => f.severity === "error");
 	const hasWarning = validation.findings.some((f) => f.severity === "warning");
-	const headerIcon = hasError ? "❌" : hasWarning ? "⚠️" : "✅";
+	return `\u{1F4E6} Release Validation ${hasError ? "❌" : hasWarning ? "⚠️" : "✅"}`;
+}
 
+/**
+ * The validation verdict's body — everything under its heading.
+ *
+ * @remarks
+ * The heading itself is {@link validationStatusTitle}, carried as the managed
+ * section's title rather than baked in here: a section renders its own heading,
+ * so a body that repeated it produced the heading twice. The icon has to move
+ * with the title because it *is* the verdict.
+ *
+ * Empty on a normal run — the verdict is the heading, and there is nothing more
+ * to say until something is wrong.
+ *
+ * @param validation - The canonical build-centric validation payload.
+ * @param options - Optional display options.
+ * @returns The verdict body, or `""` when there is nothing to add.
+ *
+ * @public
+ */
+export function buildValidationHeader(_validation: ValidationPayload, options?: ValidationCommentOptions): string {
+	return options?.dryRun === true ? "> \u{1F9EA} **DRY RUN MODE** - No actual publishing will occur" : "";
+}
+
+/**
+ * The validation comment's detail body — everything below the release table.
+ *
+ * @remarks
+ * Split from {@link buildValidationHeader} so the two can occupy separate
+ * managed sections of one comment: the verdict at the top updates on its own,
+ * the detail below it updates on its own, and the release table sits between
+ * them owned by a third. Each is independently stamped, so a phase rewriting
+ * one leaves the others exactly as it found them.
+ *
+ * @param validation - The canonical build-centric validation payload.
+ * @param options - Optional display options.
+ * @returns The detail markdown, without the verdict header.
+ *
+ * @public
+ */
+export function buildValidationDetails(validation: ValidationPayload, options?: ValidationCommentOptions): string {
+	const dryRun = options?.dryRun ?? false;
 	const parts: string[] = [];
-	parts.push(`## \u{1F4E6} Release Validation ${headerIcon}`);
-
-	if (dryRun) {
-		parts.push("> \u{1F9EA} **DRY RUN MODE** - No actual publishing will occur");
-	}
 
 	parts.push(buildChecksTable(validation.checks));
 
@@ -589,6 +624,28 @@ export function buildValidationComment(validation: ValidationPayload, options?: 
 	parts.push(`---\n\n<sub>Updated at ${now.toISOString()}</sub>`);
 
 	return parts.join("\n\n");
+}
+
+/**
+ * The whole validation comment, header and detail together.
+ *
+ * @remarks
+ * Retained as the composition of {@link buildValidationHeader} and
+ * {@link buildValidationDetails} for the check-run and job-summary surfaces,
+ * which render one body and have no sections to update independently. The PR
+ * comment uses the two halves separately.
+ *
+ * @param validation - The canonical build-centric validation payload.
+ * @param options - Optional display options.
+ * @returns The full markdown comment body.
+ *
+ * @public
+ */
+export function buildValidationComment(validation: ValidationPayload, options?: ValidationCommentOptions): string {
+	const header = buildValidationHeader(validation, options);
+	return [`## ${validationStatusTitle(validation)}`, header, buildValidationDetails(validation, options)]
+		.filter((part) => part !== "")
+		.join("\n\n");
 }
 
 /**

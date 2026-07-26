@@ -236,6 +236,26 @@ describe("runBranchManagement — what reaches the pull request", () => {
 		expect(last).toContain("@scope/zulu");
 	});
 
+	it("seeds the verdict ABOVE the plan, so validation fills it in place", async () => {
+		const { published } = await run({});
+		const last = published.at(-1)?.body ?? "";
+
+		// `upsertSection` appends a key it has not seen. Without Phase 1 seeding the
+		// verdict, validation's header would land BELOW the table.
+		const verdict = last.indexOf("silk-release:section:validation-status");
+		const plan = last.indexOf("silk-release:section:release-plan");
+		expect(verdict).toBeGreaterThanOrEqual(0);
+		expect(plan).toBeGreaterThanOrEqual(0);
+		expect(verdict).toBeLessThan(plan);
+	});
+
+	it("marks the seeded verdict as not yet run, rather than claiming a result", async () => {
+		const { published } = await run({});
+
+		// A ✅ here would assert a validation outcome Phase 1 has no knowledge of.
+		expect(published.at(-1)?.body).toContain("Release Validation ⏳");
+	});
+
 	it("stamps the section with the head sha so staleness is detectable", async () => {
 		const { published } = await run({});
 
