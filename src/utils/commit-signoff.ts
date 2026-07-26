@@ -29,6 +29,16 @@ import { Effect } from "effect";
  * the outer case where the state read itself fails, i.e. no token was persisted
  * at all.
  *
+ * The trailer itself is rendered by `BotIdentity.signoff` rather than
+ * interpolated here. `Signed-off-by:` is DCO 1.1, not our convention — fixed
+ * casing, spacing and angle brackets — and a commit created through the Git
+ * Data API bypasses `git commit -s`, so nothing validates it at commit time. A
+ * malformed trailer surfaces as a red DCO check on someone else's pull request,
+ * in another repository, after the release has already reported success.
+ *
+ * What stays here is the **policy**: which identity to sign as, and that a
+ * missing token degrades to the well-known bot rather than failing a release.
+ *
  * @returns A `Signed-off-by: Name <email>` line built from the GitHub App bot
  *   identity, or the `github-actions[bot]` fallback when the persisted token
  *   cannot be read.
@@ -36,5 +46,5 @@ import { Effect } from "effect";
 export const resolveSignoff = (): Effect.Effect<string, never, ActionState> =>
 	GitHubToken.botIdentity().pipe(
 		Effect.catch(() => Effect.succeed(BotIdentity.githubActions)),
-		Effect.map((identity) => `Signed-off-by: ${identity.name} <${identity.email}>`),
+		Effect.map((identity) => identity.signoff),
 	);
