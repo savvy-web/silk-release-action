@@ -311,26 +311,43 @@ export const getLinkedIssuesFromCommits = (
 		}
 		yield* Effect.logInfo(`Found ${issueMap.size} unique issue reference(s)`);
 
-		// Pass 3: backfill details for issues only found via commit-message text.
+		// Pass 3: backfill details for issues only found via commit-message text,
+		// and drop anything already closed.
+		//
+		// A closed issue is not part of this release. It reaches the map honestly —
+		// an earlier release's merge commit is a legitimate merge commit, and its
+		// pull request still reports the issues it closed — but announcing it again
+		// would claim this release closes work that already shipped. Filtering here
+		// rather than at each renderer keeps the check run, the PR description and
+		// the branch links describing the same set.
 		const linkedIssues: LinkedIssue[] = [];
 		for (const [issueNumber, issue] of issueMap) {
-			if (issue.title !== "") {
-				linkedIssues.push(issue);
-				yield* Effect.logInfo(`✓ Issue #${issueNumber}: ${issue.title} (${issue.state})`);
+			const resolved =
+				issue.title !== ""
+					? issue
+					: yield* fetchIssueDetails(issueNumber).pipe(
+							Effect.map((details) =>
+								details === null
+									? null
+									: {
+											number: issueNumber,
+											title: details.title,
+											state: details.state,
+											url: details.url,
+											node_id: details.nodeId,
+											commits: issue.commits,
+										},
+							),
+						);
+			if (resolved === null) continue;
+
+			if (resolved.state.toLowerCase() === "closed") {
+				yield* Effect.logInfo(`- Issue #${issueNumber}: ${resolved.title} (closed — already released, skipping)`);
 				continue;
 			}
-			const details = yield* fetchIssueDetails(issueNumber);
-			if (details !== null) {
-				linkedIssues.push({
-					number: issueNumber,
-					title: details.title,
-					state: details.state,
-					url: details.url,
-					node_id: details.nodeId,
-					commits: issue.commits,
-				});
-				yield* Effect.logInfo(`✓ Issue #${issueNumber}: ${details.title} (${details.state})`);
-			}
+
+			linkedIssues.push(resolved);
+			yield* Effect.logInfo(`✓ Issue #${issueNumber}: ${resolved.title} (${resolved.state})`);
 		}
 
 		return { linkedIssues, commits };

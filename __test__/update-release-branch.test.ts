@@ -28,9 +28,12 @@ import type { CheckRunOutput, FileChange, IssueInfo, PullRequestInfo } from "@ef
 import {
 	CheckRun,
 	CheckRunRef,
+	CommitComparison,
 	CommitRef,
+	CommitSummary,
 	GitBranch,
 	GitCommit,
+	GitHubCommit,
 	GitHubError,
 	GitHubIssue,
 	LinkedIssue as KitLinkedIssue,
@@ -111,6 +114,8 @@ interface SeedPr {
 
 interface Fixtures {
 	prs: PullRequestInfo[];
+	/** Commits `GitHubCommit.list` reports for the target branch. */
+	branchCommits: CommitSummary[];
 	labels: Map<number, string[]>;
 	issues: Map<number, IssueInfo>;
 	linked: Map<number, KitLinkedIssue[]>;
@@ -155,6 +160,7 @@ const makeFixtures = (
 		branches?: Array<[string, string]>;
 		linkedIssues?: Array<[number, Array<{ number: number; title: string }>]>;
 		issueDetails?: Array<{ number: number; title: string; state: "open" | "closed"; url?: string; nodeId?: string }>;
+		branchCommits?: CommitSummary[];
 	} = {},
 ): Fixtures => {
 	const prs = (params.prs ?? []).map(makePr);
@@ -187,6 +193,7 @@ const makeFixtures = (
 	}
 	return {
 		prs,
+		branchCommits: params.branchCommits ?? [],
 		labels: new Map(),
 		issues,
 		linked,
@@ -203,6 +210,10 @@ const makeFixtures = (
 };
 
 // --- git script ----------------------------------------------------------
+
+/** A commit as `GitHubCommit.list` reports it for the target branch. */
+const branchCommit = (sha: string, message: string): CommitSummary =>
+	CommitSummary.make({ sha, message, author: "Test Author", url: `https://x/commit/${sha}`, parents: [] });
 
 /** `git status --porcelain` stdout that drives the version-change branch. */
 const PORCELAIN_CHANGED = "M package.json\nM CHANGELOG.md";
@@ -329,6 +340,15 @@ const runStage = async (
 					f.createdCommits.push({ message, tree, parents });
 					return "newcommitsha";
 				}),
+		}),
+		// The issue walk runs before versioning now. With no merged release PR in
+		// these fixtures it takes the list-the-branch path, and an empty branch
+		// yields no linked issues — which is what these cases asserted all along,
+		// previously by way of an absent `.changeset` directory.
+		GitHubCommit.layerTest({
+			list: () => Effect.succeed(f.branchCommits),
+			compare: () =>
+				Effect.succeed(CommitComparison.make({ status: "ahead", aheadBy: 0, behindBy: 0, commits: [], files: [] })),
 		}),
 		GitHubIssue.layerTest({
 			linkedIssues: (prNumber) => Effect.succeed(f.linked.get(prNumber) ?? []),
@@ -649,23 +669,40 @@ describe("updateReleaseBranch", () => {
 		expect(f.upserts).toHaveLength(0);
 	});
 
-	it("surfaces linked issues harvested from changeset commits", async () => {
+	it("surfaces an issue linked only through a merge commit's pull request", async () => {
+		// The case the changeset-scoped predecessor could not see. The squash-merge
+		// commit carries no closing keyword — the reference lives on PR #123, put
+		// there by its body or by hand in the sidebar — and the commit adds no
+		// changeset. Only the merge-commit half of the walk recovers it.
 		const f = makeFixtures({
 			prs: [{ number: 9, head: RELEASE_BRANCH, base: TARGET_BRANCH, state: "open" }],
+			branchCommits: [branchCommit("sha111", "feat: add thing (#123)")],
 			linkedIssues: [[123, [{ number: 55, title: "Linked bug" }]]],
 			issueDetails: [{ number: 55, title: "Linked bug", state: "open", url: "https://x/55", nodeId: "I_55" }],
 		});
 
-		const { result } = await runStage(
-			f,
-			{
-				porcelain: PORCELAIN_CHANGED,
-				logs: { ".changeset/feat.md": "sha111\nfeat: add thing (#123)\n---END---\n" },
-			},
-			["feat.md"],
-		);
+		const { result } = await runStage(f, { porcelain: PORCELAIN_CHANGED }, ["feat.md"]);
 
 		expect(result.linkedIssues.map((i: LinkedIssue) => i.number)).toContain(55);
+	});
+
+	it("omits an already-closed issue from the release", async () => {
+		const f = makeFixtures({
+			prs: [{ number: 9, head: RELEASE_BRANCH, base: TARGET_BRANCH, state: "open" }],
+			branchCommits: [
+				branchCommit("sha111", "fix: old work\n\nCloses #54"),
+				branchCommit("sha222", "feat: new (#123)"),
+			],
+			linkedIssues: [[123, [{ number: 55, title: "Linked bug" }]]],
+			issueDetails: [
+				{ number: 54, title: "Shipped already", state: "closed" },
+				{ number: 55, title: "Linked bug", state: "open", url: "https://x/55", nodeId: "I_55" },
+			],
+		});
+
+		const { result } = await runStage(f, { porcelain: PORCELAIN_CHANGED }, ["feat.md"]);
+
+		expect(result.linkedIssues.map((i: LinkedIssue) => i.number)).toEqual([55]);
 	});
 
 	it("closes the open release PR and deletes the branch when there are no version changes", async () => {

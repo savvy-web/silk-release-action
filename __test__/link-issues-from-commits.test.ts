@@ -395,7 +395,7 @@ describe("getLinkedIssuesFromCommits", () => {
 		const f = makeFixtures({
 			releasePrs: [releasePr(240, "sha-latest")],
 			comparisons: new Map([[`sha-latest...${TARGET_BRANCH}`, [commit("abc0001", "fix: resolve bug\n\nCloses #7")]]]),
-			issues: new Map([[7, issueInfo(7, "Bug report", "closed")]]),
+			issues: new Map([[7, issueInfo(7, "Bug report")]]),
 		});
 
 		const result = await runCollect(f);
@@ -404,9 +404,47 @@ describe("getLinkedIssuesFromCommits", () => {
 		expect(result.linkedIssues[0]).toMatchObject({
 			number: 7,
 			title: "Bug report",
-			state: "closed",
+			state: "open",
 			url: `https://github.com/${OWNER}/${REPO}/issues/7`,
 		});
+	});
+
+	it("drops an issue that is already closed", async () => {
+		const f = makeFixtures({
+			releasePrs: [releasePr(240, "sha-latest")],
+			comparisons: new Map([
+				[
+					`sha-latest...${TARGET_BRANCH}`,
+					[commit("abc0001", "fix: resolve bug\n\nCloses #7"), commit("abc0002", "fix: other\n\nCloses #8")],
+				],
+			]),
+			issues: new Map([
+				[7, issueInfo(7, "Already shipped", "closed")],
+				[8, issueInfo(8, "Still open")],
+			]),
+		});
+
+		const result = await runCollect(f);
+
+		// A closed issue reaches the map honestly — an earlier release's merge
+		// commit is a real merge commit and its PR really did close it — but this
+		// release does not close it again.
+		expect(result.linkedIssues.map((i) => i.number)).toEqual([8]);
+	});
+
+	it("drops a closed issue reported through a merged PR's linked issues", async () => {
+		const f = makeFixtures({
+			releasePrs: [releasePr(240, "sha-latest")],
+			comparisons: new Map([[`sha-latest...${TARGET_BRANCH}`, [commit("abc0001", "release: previous (#245)")]]]),
+			linked: new Map([[245, [linkedIssue(170, "Shipped last time", "CLOSED"), linkedIssue(171, "Open work")]]]),
+		});
+
+		const result = await runCollect(f);
+
+		// The production shape: a previous release PR inside the range still
+		// reports what it closed. GraphQL hands back `CLOSED`; pass 2 lowercases it
+		// on the way in, which is what makes the filter see it at all.
+		expect(result.linkedIssues.map((i) => i.number)).toEqual([171]);
 	});
 
 	it("drops a message-only reference whose issue cannot be fetched", async () => {
@@ -424,7 +462,7 @@ describe("getLinkedIssuesFromCommits", () => {
 			commitLists: new Map([
 				[TARGET_BRANCH, [commit("c1", "fix: bug\n\nCloses #5"), commit("c2", "feat: thing (#10)")]],
 			]),
-			linked: new Map([[10, [linkedIssue(5, "PR issue 5", "CLOSED"), linkedIssue(8, "PR issue 8")]]]),
+			linked: new Map([[10, [linkedIssue(5, "PR issue 5"), linkedIssue(8, "PR issue 8")]]]),
 			issues: new Map([[5, issueInfo(5, "Issue 5 from the issue API")]]),
 		});
 
@@ -433,7 +471,7 @@ describe("getLinkedIssuesFromCommits", () => {
 		const five = result.linkedIssues.find((i) => i.number === 5);
 		expect(five?.title).toBe("PR issue 5");
 		// `state` is lowercased from the GraphQL enum.
-		expect(five?.state).toBe("closed");
+		expect(five?.state).toBe("open");
 		expect(result.linkedIssues.map((i) => i.number).sort((a, b) => a - b)).toEqual([5, 8]);
 	});
 });

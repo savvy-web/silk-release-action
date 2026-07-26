@@ -18,7 +18,7 @@
 // `resolveSignoff` requires it, and `R` propagates upward.
 import type { CommandFailedError, CommandOutputError, ToolDiscovery } from "@effected/commands";
 import { Run } from "@effected/commands";
-import type { FileChange, GitHubError, PullRequestInfo, Repo } from "@effected/github";
+import type { FileChange, GitHubCommit, GitHubError, GitHubIssue, PullRequestInfo, Repo } from "@effected/github";
 import {
 	CheckRun,
 	CheckRunOutput,
@@ -26,7 +26,6 @@ import {
 	FileDeletion,
 	GitBranch,
 	GitCommit,
-	GitHubIssue,
 	PullRequest,
 } from "@effected/github";
 import type { ActionEnvironmentError, ActionOutputError, ActionState } from "@effected/github-actions";
@@ -43,6 +42,7 @@ import { isSinglePackage } from "./detect-repo-type.js";
 import { isMonorepoForTagging } from "./determine-tag-strategy.js";
 import { formatWorkspaceWithBiome } from "./format-workspace.js";
 import { pullRequestUrl, resolveServerUrl } from "./github-urls.js";
+import { getLinkedIssuesFromCommits } from "./link-issues-from-commits.js";
 import { runNativeVersion } from "./native-version.js";
 import { buildManagedPrBody, extractSummary, upsertManagedRegion } from "./pr-body.js";
 import {
@@ -86,23 +86,6 @@ export interface UpdateReleaseBranchResult {
 	linkedIssues: LinkedIssue[];
 }
 
-const CLOSE_KEYWORD_PATTERN = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)/gi;
-const MERGE_COMMIT_PR_PATTERN = /\(#(\d+)\)$/m;
-
-const extractIssueReferences = (message: string): number[] => {
-	const issues = new Set<number>();
-	for (const match of message.matchAll(CLOSE_KEYWORD_PATTERN)) {
-		const n = Number.parseInt(match[1], 10);
-		if (!Number.isNaN(n)) issues.add(n);
-	}
-	return Array.from(issues);
-};
-
-const extractPRNumber = (message: string): number | null => {
-	const match = message.match(MERGE_COMMIT_PR_PATTERN);
-	return match ? Number.parseInt(match[1], 10) : null;
-};
-
 /**
  * Run the `updateReleaseBranch` stage.
  *
@@ -130,6 +113,7 @@ export const updateReleaseBranch = (): Effect.Effect<
 	| FileSystem.FileSystem
 	| GitBranch
 	| GitCommit
+	| GitHubCommit
 	| GitHubIssue
 	| PublishabilityDetector
 	| PullRequest
@@ -143,7 +127,6 @@ export const updateReleaseBranch = (): Effect.Effect<
 		const gitCommit = yield* GitCommit;
 		const branches = yield* GitBranch;
 		const pr = yield* PullRequest;
-		const issues = yield* GitHubIssue;
 		const fs = yield* FileSystem.FileSystem;
 		const signoff = yield* resolveSignoff();
 
@@ -194,13 +177,38 @@ export const updateReleaseBranch = (): Effect.Effect<
 			}
 		}
 
-		// ---------- Collect linked issues from changesets BEFORE version cmd ----------
-		yield* Effect.logInfo("Collecting linked issues from changeset commits");
+		// ---------- Collect linked issues BEFORE the version command ----------
+		//
+		// The same walk the create path uses, deliberately: every commit between
+		// the last release and the target branch, taking close keywords from the
+		// commit bodies and `closingIssuesReferences` from each merge commit's PR.
+		//
+		// This replaces a scan scoped to *changeset* commits — for each pending
+		// changeset file, the commit that added it. That scope silently lost two
+		// things. A pull request whose issue was attached by hand in the sidebar
+		// contributed nothing unless the same commit also added a changeset, and a
+		// squash merge whose message dropped the closing reference could not be
+		// recovered from its merge point. Both are exactly what the merge-commit
+		// half of this walk is for.
+		//
+		// It also ended the disagreement between the two paths: the Phase-2 check
+		// counted issues this way while the PR body counted them the other, so one
+		// release PR could report four linked issues in its check and two in its
+		// description.
+		yield* Effect.logInfo("Collecting linked issues from commits since the last release");
 		let linkedIssues: LinkedIssue[] = [];
 		if (!dryRun) {
-			linkedIssues = yield* collectLinkedIssuesFromChangesets({ owner, repo, targetBranch });
+			const found = yield* getLinkedIssuesFromCommits(targetBranch, releaseBranch);
+			linkedIssues = found.linkedIssues.map((issue) => ({
+				number: issue.number,
+				title: issue.title,
+				state: issue.state,
+				url: issue.url,
+				commits: issue.commits,
+				nodeId: issue.node_id,
+			}));
 		} else {
-			yield* Effect.logInfo("[DRY RUN] Would collect linked issues from changeset commits");
+			yield* Effect.logInfo("[DRY RUN] Would collect linked issues from commits");
 		}
 
 		// ---------- Recreate the release branch from main locally ----------
@@ -583,136 +591,6 @@ export const updateReleaseBranch = (): Effect.Effect<
 			versionSummary,
 			linkedIssues,
 		};
-
-		/**
-		 * Walk the changeset commits on `origin/<targetBranch>` and harvest
-		 * issue references from commit messages (and merged-PR linked issues
-		 * via `closingIssuesReferences`).
-		 */
-		function collectLinkedIssuesFromChangesets(args: {
-			owner: string;
-			repo: string;
-			targetBranch: string;
-		}): Effect.Effect<
-			LinkedIssue[],
-			CommandFailedError | CommandOutputError,
-			ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | GitHubIssue | Repo
-		> {
-			return Effect.gen(function* () {
-				const dirEntries = yield* fs.readDirectory(".changeset").pipe(Effect.catch(() => Effect.succeed([])));
-				const changesetFiles = dirEntries.filter((f) => f.endsWith(".md") && f !== "README.md");
-				yield* Effect.logInfo(`Found ${changesetFiles.length} changeset file(s): ${changesetFiles.join(", ")}`);
-				if (changesetFiles.length === 0) return [];
-
-				yield* Effect.logInfo(`Fetching origin/${args.targetBranch} to get full history...`);
-				yield* Effect.result(Run.text(ChildProcess.make("git", ["fetch", "origin", args.targetBranch, "--unshallow"])));
-				yield* Effect.result(
-					Run.text(
-						ChildProcess.make("git", [
-							"fetch",
-							"origin",
-							`${args.targetBranch}:refs/remotes/origin/${args.targetBranch}`,
-						]),
-					),
-				);
-
-				const remoteBranch = `origin/${args.targetBranch}`;
-				yield* Effect.logInfo(`Searching ${remoteBranch} for changeset commits...`);
-
-				const issueMap = new Map<number, string[]>();
-				for (const file of changesetFiles) {
-					const filePath = `.changeset/${file}`;
-					// `Run.collect`, not `Run.text`: `git log` for a path with no matching
-					// commit can exit non-zero, and the original `Effect.catch` already
-					// swallowed that into empty output. Collecting keeps a non-zero exit a
-					// VALUE, so the empty-output branch below handles it directly; the
-					// `catch` stays for a genuine spawn failure.
-					const logResult = yield* Run.collect(
-						ChildProcess.make("git", [
-							"log",
-							remoteBranch,
-							"--diff-filter=A",
-							"--follow",
-							"--reverse",
-							"--format=%H%n%B%n---END---",
-							"--",
-							filePath,
-						]),
-					).pipe(Effect.catch(() => Effect.succeed({ stdout: "", stderr: "", exitCode: 0 })));
-					const output = logResult.stdout;
-					if (output.trim() === "") {
-						yield* Effect.logInfo(`Changeset ${file}: no commit found in ${remoteBranch} history`);
-						continue;
-					}
-					const endIdx = output.indexOf("---END---");
-					if (endIdx === -1) continue;
-					const content = output.substring(0, endIdx).trim();
-					const firstNl = content.indexOf("\n");
-					const commit =
-						firstNl === -1
-							? { sha: content, message: "" }
-							: { sha: content.substring(0, firstNl), message: content.substring(firstNl + 1).trim() };
-
-					yield* Effect.logInfo(`Changeset ${file}:`);
-					yield* Effect.logInfo(`  Commit: ${commit.sha.slice(0, 7)}`);
-					yield* Effect.logInfo(`  Message: ${commit.message.split("\n")[0]}`);
-
-					const refs = extractIssueReferences(commit.message);
-					yield* Effect.logInfo(
-						`  Issue refs: ${refs.length > 0 ? refs.map((i) => `#${i}`).join(", ") : "(none found)"}`,
-					);
-					for (const n of refs) {
-						const existing = issueMap.get(n) ?? [];
-						existing.push(commit.sha);
-						issueMap.set(n, existing);
-					}
-
-					const prNum = extractPRNumber(commit.message);
-					if (prNum !== null) {
-						yield* Effect.logInfo(`  PR reference: #${prNum}`);
-						const prIssuesResult = yield* Effect.result(issues.linkedIssues(prNum));
-						if (prIssuesResult._tag === "Success") {
-							const prIssues = prIssuesResult.success.map((n) => n.number);
-							if (prIssues.length > 0) {
-								yield* Effect.logInfo(`  PR #${prNum} has ${prIssues.length} linked issue(s):`);
-								for (const n of prIssues) {
-									yield* Effect.logInfo(`    - Issue #${n}`);
-									const existing = issueMap.get(n) ?? [];
-									existing.push(commit.sha);
-									issueMap.set(n, existing);
-								}
-							} else {
-								yield* Effect.logInfo(`  PR #${prNum} has no linked issues`);
-							}
-						}
-					}
-				}
-
-				yield* Effect.logInfo(
-					`Found ${issueMap.size} unique issue reference(s) from ${changesetFiles.length} changeset commit(s)`,
-				);
-
-				const result: LinkedIssue[] = [];
-				for (const [issueNumber, commitShas] of issueMap) {
-					const issueResult = yield* Effect.result(issues.get(issueNumber));
-					if (issueResult._tag === "Success") {
-						const i = issueResult.success;
-						result.push({
-							number: issueNumber,
-							title: i.title,
-							state: i.state,
-							url: i.url,
-							commits: commitShas,
-							nodeId: i.nodeId,
-						});
-						yield* Effect.logInfo(`✓ Issue #${issueNumber}: ${i.title} (${i.state})`);
-					} else {
-						yield* Effect.logWarning(`Failed to fetch issue #${issueNumber}: ${issueResult.failure.reason}`);
-					}
-				}
-				return result;
-			});
-		}
 
 		/**
 		 * Build a rebased commit on top of `targetBranch` for the staged
