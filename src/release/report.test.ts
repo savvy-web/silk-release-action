@@ -7,6 +7,7 @@ import {
 	buildPublishSummary,
 	buildPublishValidationSummary,
 	buildReleaseNotesPreviewSummary,
+	buildReleaseTotals,
 	buildSbomPreviewSummary,
 	buildValidationComment,
 	getPackagePageUrl,
@@ -138,11 +139,6 @@ describe("getPackagePageUrl", () => {
 });
 
 describe("buildPublishSummary", () => {
-	it("includes the dry-run indicator in the header when dryRun is true", () => {
-		const markdown = buildPublishSummary(publishOf([]), { dryRun: true });
-		expect(markdown).toContain("Dry Run");
-	});
-
 	it("renders the build directory, sizes, and SBOM line in the Details block", () => {
 		const markdown = buildPublishSummary(publishOf([pkg()]));
 		expect(markdown).toContain("<details>");
@@ -228,7 +224,7 @@ describe("buildPublishSummary", () => {
 			],
 		});
 
-		const markdown = buildPublishSummary(publishOf([pkgA, pkgB]));
+		const markdown = buildReleaseTotals(publishOf([pkgA, pkgB]));
 
 		// 716 + 284 = 1000 → 1.0 kB; 2300 + 700 = 3000 → 3.0 kB; 5 + 3 = 8 files.
 		expect(markdown).toContain("**Totals:**");
@@ -243,7 +239,7 @@ describe("buildPublishSummary", () => {
 			name: "@org/partial-sizes",
 			builds: [build({ packedBytes: 500, unpackedBytes: null, fileCount: null })],
 		});
-		const markdown = buildPublishSummary(publishOf([partial]));
+		const markdown = buildReleaseTotals(publishOf([partial]));
 		expect(markdown).toContain("0.5 kB packed");
 		expect(markdown).toContain("0 B unpacked");
 		expect(markdown).toContain("0 files");
@@ -475,10 +471,16 @@ describe("buildValidationComment", () => {
 		expect(comment).toContain("[Build Validation](https://example.com/runs/1)");
 	});
 
-	it("includes the build-centric 'What will be released' publish summary", () => {
+	it("carries the per-package breakdown without repeating the release heading", () => {
 		const comment = buildValidationComment(validationOf({ checks: passingChecks, publish: publishOf([pkg()]) }));
-		expect(comment).toContain("What will be released");
+
+		// The breakdown is here…
 		expect(comment).toContain("`dist/npm`");
+		// …but the heading and the table belong to the release-plan section, which
+		// sits above this in the same comment. Repeating them produced two
+		// disagreeing tables under nested identical headings.
+		expect(comment).not.toContain("What will be released");
+		expect(comment).not.toContain("**Totals:**");
 	});
 
 	it("renders the build-grouped Details block for a multi-build package", () => {

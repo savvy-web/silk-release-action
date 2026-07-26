@@ -73,8 +73,59 @@ export interface Section {
 	readonly body: string;
 }
 
-const start = (key: string): string => `<!-- silk-release:section:${key}:start -->`;
-const end = (key: string): string => `<!-- silk-release:section:${key}:end -->`;
+/**
+ * The delimiters for a named region.
+ *
+ * @remarks
+ * **Every marker is a pair.** A lone opening marker can only be located by
+ * scanning forward to whatever happens to follow it, which makes the region's
+ * extent a function of its neighbours rather than of itself — so moving
+ * anything nearby silently redefines it. That is exactly how the banner came
+ * to be swallowed into the body and then duplicated on every write.
+ *
+ * The token is free-form; `:start` and `:end` are the whole contract. Pairs
+ * therefore nest, and a region can contain sub-regions without either needing
+ * to know about the other:
+ *
+ * ```text
+ * <!-- silk-release:section:details:start -->
+ *   <!-- silk-release:banner:start --> … <!-- silk-release:banner:end -->
+ * <!-- silk-release:section:details:end -->
+ * ```
+ *
+ * @public
+ */
+export const regionStart = (token: string): string => `<!-- ${token}:start -->`;
+/** The closing delimiter for a named region. See {@link regionStart}. */
+export const regionEnd = (token: string): string => `<!-- ${token}:end -->`;
+
+/**
+ * The content between a region's delimiters, or `undefined` when absent.
+ *
+ * @remarks
+ * Finds the FIRST opening and the matching close after it, so a nested region
+ * of a different token is returned as part of the content rather than
+ * truncating it.
+ *
+ * @public
+ */
+export const readRegion = (body: string, token: string): string | undefined => {
+	const from = body.indexOf(regionStart(token));
+	const to = body.indexOf(regionEnd(token), from === -1 ? 0 : from);
+	if (from === -1 || to === -1 || to < from) return undefined;
+	return body.slice(from + regionStart(token).length, to);
+};
+
+/** Everything outside a region, with the region and its delimiters removed. */
+export const stripRegion = (body: string, token: string): string => {
+	const from = body.indexOf(regionStart(token));
+	const to = body.indexOf(regionEnd(token), from === -1 ? 0 : from);
+	if (from === -1 || to === -1 || to < from) return body;
+	return `${body.slice(0, from)}${body.slice(to + regionEnd(token).length)}`;
+};
+
+const start = (key: string): string => regionStart(`silk-release:section:${key}`);
+const end = (key: string): string => regionEnd(`silk-release:section:${key}`);
 const STAMP_RE = /<!-- silk-release:stamp (\{.*?\}) -->/;
 
 /**
@@ -87,7 +138,7 @@ const STAMP_RE = /<!-- silk-release:stamp (\{.*?\}) -->/;
  * it was inferred from a fixed line offset, and moving the banner below the
  * body silently broke that, duplicating it on every write.
  */
-const BANNER_MARKER = "<!-- silk-release:banner -->";
+const BANNER_TOKEN = "silk-release:banner";
 
 /**
  * The stamp, encoded so it can be read back off a rendered body.
@@ -168,8 +219,9 @@ export const renderSection = (section: Section, headSha: string, commitUrl?: (sh
 		"",
 		// Provenance last, as a footnote. Above the content it pushed the thing a
 		// reader came for below the fold on every section.
-		BANNER_MARKER,
+		regionStart(BANNER_TOKEN),
 		renderBanner(section.stamp, headSha, commitUrl),
+		regionEnd(BANNER_TOKEN),
 		end(section.key),
 	].join("\n");
 
@@ -225,8 +277,9 @@ export const readSection = (body: string, key: string): Section | undefined => {
 	// The retained result is what sits between the heading and the banner.
 	// Both edges are found explicitly: the banner marker rather than a line
 	// offset, so the layout can change without silently redefining "body".
-	const beforeBanner = inner.includes(BANNER_MARKER) ? inner.slice(0, inner.indexOf(BANNER_MARKER)) : inner;
-	const lines = beforeBanner.split("\n");
+	// The banner is a region of its own, so it is removed rather than cut around
+	// — its extent is its own business, not a function of where it happens to sit.
+	const lines = stripRegion(inner, BANNER_TOKEN).split("\n");
 	const headingIdx = lines.findIndex((l) => l.startsWith("### "));
 	const title = headingIdx === -1 ? key : (lines[headingIdx]?.slice(4) ?? key);
 	const bodyStart = headingIdx === -1 ? 0 : headingIdx + 1;

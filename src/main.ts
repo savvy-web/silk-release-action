@@ -42,6 +42,7 @@ import {
 	buildPendingChecksTable,
 	buildPublishValidationSummary,
 	buildReleaseNotesPreviewSummary,
+	buildReleaseTotals,
 	buildSbomPreviewSummary,
 	buildValidationDetails,
 	buildValidationHeader,
@@ -1039,7 +1040,13 @@ const runValidation = Effect.gen(function* () {
 						key: "release-plan",
 						title: "🚀 What will be released",
 						stamp,
-						body: `${releaseTable.render(toValidatedReleaseRows(validationPackages))}\n\n${RELEASE_TABLE_LEGEND}`,
+						// Totals sit with the table they total, not two headings below it
+						// in the detail section.
+						body: [
+							releaseTable.render(toValidatedReleaseRows(validationPackages)),
+							RELEASE_TABLE_LEGEND,
+							buildReleaseTotals(validationOutput.validation.publish),
+						].join("\n\n"),
 					},
 					// Detail only once there is any: before the build completes it would
 					// be an empty shell under a heading promising substance.

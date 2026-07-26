@@ -324,48 +324,46 @@ function renderBuildTargetsTable(build: ValidationBuild): string {
  *
  * @public
  */
-export function buildPublishSummary(publish: ValidationPublish, options?: PublishSummaryOptions): string {
-	const dryRun = options?.dryRun ?? false;
-	const dryRunLabel = dryRun ? " \u{1F9EA} (Dry Run)" : "";
-	const title = `\u{1F680} What will be released${dryRunLabel}`;
-
-	// Totals — sum the per-build byte sizes and file counts across all packages.
-	let totalPacked = 0;
-	let totalUnpacked = 0;
-	let totalFiles = 0;
-	let totalTargets = 0;
-	let readyTargets = 0;
+/**
+ * The aggregate line that belongs under the release table.
+ *
+ * @remarks
+ * Separated from {@link buildPublishSummary} so it can sit with the table it
+ * totals. It was previously buried inside the detail section, two headings
+ * below the table whose rows it sums — a reader had to scroll past the
+ * per-package breakdown to find the total of what was above it.
+ *
+ * @param publish - The build-centric publish payload.
+ * @returns One line of totals.
+ *
+ * @public
+ */
+export function buildReleaseTotals(publish: ValidationPublish): string {
+	let packed = 0;
+	let unpacked = 0;
+	let files = 0;
+	let targets = 0;
+	let ready = 0;
 	for (const pkg of publish.packages) {
 		for (const build of pkg.builds) {
-			if (build.packedBytes !== null) totalPacked += build.packedBytes;
-			if (build.unpackedBytes !== null) totalUnpacked += build.unpackedBytes;
-			if (build.fileCount !== null) totalFiles += build.fileCount;
+			if (build.packedBytes !== null) packed += build.packedBytes;
+			if (build.unpackedBytes !== null) unpacked += build.unpackedBytes;
+			if (build.fileCount !== null) files += build.fileCount;
 			for (const t of build.targets) {
-				totalTargets++;
-				if (t.status !== "failed") readyTargets++;
+				targets++;
+				if (t.status !== "failed") ready++;
 			}
 		}
 	}
-	const totals =
-		`**Totals:** \u{1F4E6} ${humanizeSize(totalPacked)} packed · ` +
-		`\u{1F4C2} ${humanizeSize(totalUnpacked)} unpacked · ` +
-		`\u{1F4C4} ${totalFiles} files · ` +
-		`\u{1F3AF} ${readyTargets}/${totalTargets} targets ready`;
+	return (
+		`**Totals:** \u{1F4E6} ${humanizeSize(packed)} packed · ` +
+		`\u{1F4C2} ${humanizeSize(unpacked)} unpacked · ` +
+		`\u{1F4C4} ${files} files · ` +
+		`\u{1F3AF} ${ready}/${targets} targets ready`
+	);
+}
 
-	// No summary table here, deliberately.
-	//
-	// The release-plan section of the same comment renders it from the same
-	// payload directly above this. Rendering it twice put two tables on one page
-	// disagreeing about the same packages — observed on silk-integration PR #248,
-	// where this one read `5.0.21 → 5.0.26` against the plan's `5.0.25 → 5.0.26`,
-	// because the two derive `baseVersion` differently.
-	//
-	// The totals stay: they aggregate what a per-row table cannot show, and no
-	// other section carries them. The check-run page is unaffected —
-	// `buildPublishValidationSummary` builds its own totals and per-package
-	// sections rather than borrowing these.
-	const summarySection = totals;
-
+export function buildPublishSummary(publish: ValidationPublish): string {
 	// Per-package detail sections. Version-only packages (no builds) are
 	// excluded — a `<details>` block around a header-only, zero-row table is
 	// malformed output. They still appear in the summary table above with the
@@ -392,9 +390,13 @@ export function buildPublishSummary(publish: ValidationPublish, options?: Publis
 	// an H2 title followed by H3 sections, joined by blank lines. Its other
 	// members (`stat`, `toSummary`, `toComment`, `toCheckRun`) had no consumer
 	// here — the caller already owns delivery — so only the composition survives.
-	const parts = [md.heading(title, 2), `${md.heading("Summary", 3)}\n\n${summarySection}`];
+	// No title and no Summary wrapper: this renders INSIDE a section that already
+	// carries a heading, so an H2 here produced "Details ▸ What will be released
+	// ▸ Summary" for one list of packages. The totals moved to the release table
+	// they total.
+	const parts: string[] = [];
 	if (detailSections.length > 0) {
-		parts.push(`${md.heading("Details", 3)}\n\n${detailSections}`);
+		parts.push(detailSections);
 	}
 	return parts.join("\n\n");
 }
@@ -621,7 +623,7 @@ export function buildValidationDetails(validation: ValidationPayload, options?: 
 				"_No packages have version differences against the target branch — nothing will be published or released on merge._",
 		);
 	} else {
-		parts.push(buildPublishSummary(validation.publish, { dryRun }));
+		parts.push(buildPublishSummary(validation.publish));
 	}
 
 	// One footer, carrying the link and the timestamp.
