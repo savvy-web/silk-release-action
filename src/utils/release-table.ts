@@ -75,6 +75,10 @@ export const RELEASE_TABLE_LEGEND =
  * answer — validation has not run — so it renders as pending rather than as a
  * guess or a blank. A blank would be indistinguishable from "no targets".
  *
+ * The word alone, with no icon: the status column already carries the hourglass
+ * for the row, and repeating it here both duplicated the signal and widened the
+ * column enough to unsettle the table's layout.
+ *
  * @param packages - The release plan, as Phase 1 reports it.
  * @returns Rows ready for {@link releaseTable}.
  *
@@ -95,7 +99,7 @@ export const toPendingReleaseRows = (
 		versions: `${pkg.oldVersion} → ${pkg.newVersion}`,
 		bump: pkg.bumpType,
 		changesetCount: pkg.changesetCount,
-		targets: "⏳ pending validation",
+		targets: "pending",
 	}));
 
 /** One validated package, as much of it as the table renders. */

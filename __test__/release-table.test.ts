@@ -92,7 +92,10 @@ describe("releaseTable", () => {
 		// claim a validation result Phase 1 has not got.
 		expect(rows).toHaveLength(3);
 		for (const row of rows) {
-			expect(row).toContain("⏳ pending validation");
+			expect(row).toContain("| pending |");
+			// The hourglass belongs to the status column; repeating it here
+			// duplicated the signal and widened the row.
+			expect(row).not.toContain("⏳ pending");
 			expect(row).not.toContain("✅");
 		}
 	});
