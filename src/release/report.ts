@@ -412,6 +412,44 @@ export function buildPublishSummary(publish: ValidationPublish, options?: Publis
  *
  * @public
  */
+/**
+ * The validation checks, in the order they are reported.
+ *
+ * @remarks
+ * Shared so the pending table Phase 1 renders and the real table Phase 2
+ * renders describe the same five rows in the same order. A reader watching the
+ * comment sees rows resolve in place rather than the table changing shape.
+ *
+ * @public
+ */
+export const VALIDATION_CHECK_NAMES: ReadonlyArray<string> = [
+	"Link Issues from Commits",
+	"Build Validation",
+	"Publish Validation",
+	"Release Notes Preview",
+	"SBOM Preview",
+];
+
+/**
+ * The checks table before anything has run — every row pending.
+ *
+ * @remarks
+ * Rendered by Phase 1 so the verdict section carries a table from the moment
+ * the pull request exists. The previous "_Validation has not run yet._" said
+ * less than an all-pending table does, and changed shape when validation
+ * replaced it.
+ *
+ * @returns The table, with no links since no check run exists yet.
+ *
+ * @public
+ */
+export function buildPendingChecksTable(): string {
+	return md.table(
+		[" ", "Check", "Outcome"],
+		VALIDATION_CHECK_NAMES.map((name) => ["⏳", name, "pending"]),
+	);
+}
+
 export function buildChecksTable(checks: ReadonlyArray<ValidationCheck>): string {
 	const statusIcon = (status: ValidationCheck["status"]): "✅" | "⚠️" | "❌" =>
 		status === "error" ? "❌" : status === "warning" ? "⚠️" : "✅";
@@ -506,10 +544,12 @@ export interface ValidationCommentOptions {
  *
  * @public
  */
-export function validationStatusTitle(validation: ValidationPayload): string {
+export function validationStatusTitle(validation: ValidationPayload | null): string {
+	// `null` is "validation has not run", which Phase 1 reports.
+	if (validation === null) return "⏳ Release Validation";
 	const hasError = validation.findings.some((f) => f.severity === "error");
 	const hasWarning = validation.findings.some((f) => f.severity === "warning");
-	return `\u{1F4E6} Release Validation ${hasError ? "❌" : hasWarning ? "⚠️" : "✅"}`;
+	return `${hasError ? "❌" : hasWarning ? "⚠️" : "✅"} Release Validation`;
 }
 
 /**
@@ -530,8 +570,9 @@ export function validationStatusTitle(validation: ValidationPayload): string {
  *
  * @public
  */
-export function buildValidationHeader(_validation: ValidationPayload, options?: ValidationCommentOptions): string {
-	return options?.dryRun === true ? "> \u{1F9EA} **DRY RUN MODE** - No actual publishing will occur" : "";
+export function buildValidationHeader(validation: ValidationPayload, options?: ValidationCommentOptions): string {
+	const dryRun = options?.dryRun === true ? "> \u{1F9EA} **DRY RUN MODE** - No actual publishing will occur\n\n" : "";
+	return `${dryRun}${buildChecksTable(validation.checks)}`;
 }
 
 /**
@@ -554,8 +595,8 @@ export function buildValidationDetails(validation: ValidationPayload, options?: 
 	const dryRun = options?.dryRun ?? false;
 	const parts: string[] = [];
 
-	parts.push(buildChecksTable(validation.checks));
-
+	// No checks table here: the verdict section above carries it, so a reader
+	// meets the state of every check before any of the detail behind them.
 	const findingsTable = buildFindingsTable(validation.findings);
 	if (findingsTable !== "") {
 		parts.push(findingsTable);

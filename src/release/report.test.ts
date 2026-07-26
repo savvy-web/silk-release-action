@@ -419,7 +419,7 @@ describe("buildFindingsTable", () => {
 describe("buildValidationComment", () => {
 	it("renders a ✅ header icon when there are no findings", () => {
 		const comment = buildValidationComment(validationOf({ checks: passingChecks }));
-		expect(comment).toContain("## 📦 Release Validation ✅");
+		expect(comment).toContain("## ✅ Release Validation");
 	});
 
 	it("renders a ⚠️ header icon when the worst finding is a warning", () => {
@@ -432,7 +432,7 @@ describe("buildValidationComment", () => {
 			},
 		];
 		const comment = buildValidationComment(validationOf({ checks: passingChecks, findings }));
-		expect(comment).toContain("## 📦 Release Validation ⚠️");
+		expect(comment).toContain("## ⚠️ Release Validation");
 	});
 
 	it("renders a ❌ header icon when any finding is an error", () => {
@@ -446,7 +446,7 @@ describe("buildValidationComment", () => {
 			{ severity: "error", check: "Build Validation", scope: null, message: "tsc exited 2" },
 		];
 		const comment = buildValidationComment(validationOf({ checks: passingChecks, findings }));
-		expect(comment).toContain("## 📦 Release Validation ❌");
+		expect(comment).toContain("## ❌ Release Validation");
 	});
 
 	it("omits the findings section entirely when there are no findings", () => {

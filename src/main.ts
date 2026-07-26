@@ -39,6 +39,7 @@ import type { DetectedRelease } from "./release/publish.js";
 import { detectReleases, runBuildAndSbom, runPublishTargets } from "./release/publish.js";
 import { runReleases } from "./release/releases.js";
 import {
+	buildPendingChecksTable,
 	buildPublishValidationSummary,
 	buildReleaseNotesPreviewSummary,
 	buildSbomPreviewSummary,
@@ -68,7 +69,7 @@ import { detectWorkflowPhase } from "./utils/detect-workflow-phase.js";
 import type { TagInfo } from "./utils/determine-tag-strategy.js";
 import { determineTagStrategy, isMonorepoForTagging } from "./utils/determine-tag-strategy.js";
 import { readEventPullRequestNumber } from "./utils/event-payload.js";
-import { resolveServerUrl } from "./utils/github-urls.js";
+import { resolveCommitLinker, resolveServerUrl } from "./utils/github-urls.js";
 import { linkIssuesFromCommits } from "./utils/link-issues-from-commits.js";
 import type { ConfigSource } from "./utils/load-release-config.js";
 import type { Section } from "./utils/managed-sections.js";
@@ -412,10 +413,16 @@ export const runBranchManagement = <R = never>(seams: BranchManagementSeams<R> =
 				// must not appear to claim one.
 				const pendingVerdict: Section = {
 					key: "validation-status",
-					title: "📦 Release Validation ⏳",
+					title: validationStatusTitle(null),
 					stamp: { state: "pending", sha: headSha, runId: String(planRunId), at: new Date().toISOString() },
-					body: "_Validation has not run yet._",
+					// A real table with every row pending, not a sentence. It says more,
+					// and validation resolves rows in place rather than replacing the
+					// shape of what is there.
+					body: buildPendingChecksTable(),
 				};
+
+				// Links the stamped sha in every banner.
+				const commitLink = yield* resolveCommitLinker();
 
 				const publishPlan = (target: number) => (section: Section) =>
 					seams.readComment(target, "release-plan").pipe(
@@ -429,8 +436,14 @@ export const runBranchManagement = <R = never>(seams: BranchManagementSeams<R> =
 									// `upsertSection` appends a key it has not seen, so without
 									// this, validation's header would land below the table.
 									refreshBanners(
-										upsertSection(upsertSection(existing, pendingVerdict, headSha), section, headSha),
+										upsertSection(
+											upsertSection(existing, pendingVerdict, headSha, commitLink),
+											section,
+											headSha,
+											commitLink,
+										),
 										headSha,
+										commitLink,
 									),
 									"release-plan",
 								),
@@ -1028,13 +1041,20 @@ const runValidation = Effect.gen(function* () {
 						stamp,
 						body: `${releaseTable.render(toValidatedReleaseRows(validationPackages))}\n\n${RELEASE_TABLE_LEGEND}`,
 					},
-					{
-						key: "validation-details",
-						title: "Details",
-						stamp,
-						body: buildValidationDetails(validationOutput.validation, commentOptions),
-					},
+					// Detail only once there is any: before the build completes it would
+					// be an empty shell under a heading promising substance.
+					...(validationOutput.validation.buildValidation.passed
+						? [
+								{
+									key: "validation-details",
+									title: "Details",
+									stamp,
+									body: buildValidationDetails(validationOutput.validation, commentOptions),
+								} satisfies Section,
+							]
+						: []),
 				];
+				const validatedCommitLink = yield* resolveCommitLinker();
 
 				// Read once, fold all three sections in, write once.
 				//
@@ -1047,8 +1067,9 @@ const runValidation = Effect.gen(function* () {
 					Effect.catch(() => Effect.succeed("")),
 				);
 				const merged = refreshBanners(
-					sections.reduce((body, section) => upsertSection(body, section, validatedSha), existing),
+					sections.reduce((body, section) => upsertSection(body, section, validatedSha, validatedCommitLink), existing),
 					validatedSha,
+					validatedCommitLink,
 				);
 				const planUpdate = yield* Effect.result(updateStickyComment(pr.number, merged, "release-plan"));
 				if (planUpdate._tag === "Failure") {

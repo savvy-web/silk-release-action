@@ -101,3 +101,24 @@ export const orgPackagePageUrl = (serverUrl: string, owner: string, packageName:
  */
 export const packageArtifactUrl = (serverUrl: string, owner: string, unscopedName: string): string =>
 	`${serverUrl}/${owner}/pkgs/npm/${unscopedName}`;
+
+/**
+ * A commit-URL builder for the repository this run is executing against.
+ *
+ * @remarks
+ * Bundles the two reads a linked sha needs — the instance and the `owner/repo`
+ * slug — so a caller wanting to link a commit does not repeat them. Returns a
+ * plain function rather than an Effect so it can be handed to pure renderers.
+ *
+ * @returns A function from sha to its commit URL.
+ *
+ * @public
+ */
+export const resolveCommitLinker = (): Effect.Effect<(sha: string) => string, never, ActionEnvironment> =>
+	Effect.gen(function* () {
+		const environment = yield* ActionEnvironment;
+		const serverUrl = yield* resolveServerUrl();
+		const slug = Option.getOrElse(yield* environment.getOptional("GITHUB_REPOSITORY"), () => "");
+		const [owner = "", repo = ""] = slug.split("/");
+		return (sha: string) => commitUrl(serverUrl, owner, repo, sha);
+	});

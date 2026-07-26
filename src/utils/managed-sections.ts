@@ -78,6 +78,18 @@ const end = (key: string): string => `<!-- silk-release:section:${key}:end -->`;
 const STAMP_RE = /<!-- silk-release:stamp (\{.*?\}) -->/;
 
 /**
+ * Delimits the banner so a read can tell it from the body.
+ *
+ * @remarks
+ * The banner is regenerated on every render, so it must never be mistaken for
+ * retained content — a read that swallowed it would re-emit it, and the next
+ * render would append another. Position alone is not enough to tell them apart:
+ * it was inferred from a fixed line offset, and moving the banner below the
+ * body silently broke that, duplicating it on every write.
+ */
+const BANNER_MARKER = "<!-- silk-release:banner -->";
+
+/**
  * The stamp, encoded so it can be read back off a rendered body.
  *
  * @remarks
@@ -113,26 +125,31 @@ const shortSha = (sha: string): string => (sha.length > 7 ? sha.slice(0, 7) : sh
  *
  * @public
  */
-export const renderBanner = (stamp: SectionStamp, headSha: string): string => {
+export const renderBanner = (stamp: SectionStamp, headSha: string, commitUrl?: (sha: string) => string): string => {
 	const stale = headSha !== "" && stamp.sha !== "" && stamp.sha !== headSha;
+	// A linked sha where a URL builder is available, bare where it is not — the
+	// banner must render the same either way, so the link is decoration rather
+	// than structure.
+	const ref = (sha: string): string =>
+		commitUrl === undefined ? `\`${shortSha(sha)}\`` : `[\`${shortSha(sha)}\`](${commitUrl(sha)})`;
 
 	switch (stamp.state) {
 		case "running":
-			return `⏳ **Re-running.** Showing the previous result for \`${shortSha(stamp.sha)}\` — it may be out of date.`;
+			return `<sub>⏳ Re-running — showing the previous result for ${ref(stamp.sha)}, which may be out of date.</sub>`;
 		case "failed":
 			return stale
-				? `❌ **Failed** for \`${shortSha(stamp.sha)}\` — and the branch has moved to \`${shortSha(headSha)}\` since.`
-				: `❌ **Failed** for \`${shortSha(stamp.sha)}\`.`;
+				? `<sub>❌ Failed for ${ref(stamp.sha)} — the branch has moved to ${ref(headSha)} since.</sub>`
+				: `<sub>❌ Failed for ${ref(stamp.sha)}.</sub>`;
 		case "skipped":
-			return `⏭️ **Skipped** — not applicable for \`${shortSha(stamp.sha)}\`.`;
+			return `<sub>⏭️ Skipped — not applicable for ${ref(stamp.sha)}.</sub>`;
 		case "cancelled":
-			return `🛑 **Cancelled** before it finished. Showing the previous result for \`${shortSha(stamp.sha)}\`.`;
+			return `<sub>🛑 Cancelled before it finished — showing the previous result for ${ref(stamp.sha)}.</sub>`;
 		case "pending":
-			return "🕓 **Not yet run.**";
+			return "<sub>🕓 Not yet run.</sub>";
 		default:
 			return stale
-				? `⚠️ **Out of date.** Computed for \`${shortSha(stamp.sha)}\`; the branch is now \`${shortSha(headSha)}\`.`
-				: `✅ Up to date as of \`${shortSha(stamp.sha)}\`.`;
+				? `<sub>⚠️ Out of date — computed for ${ref(stamp.sha)}, the branch is now ${ref(headSha)}.</sub>`
+				: `<sub>Up to date as of ${ref(stamp.sha)}</sub>`;
 	}
 };
 
@@ -141,15 +158,18 @@ export const renderBanner = (stamp: SectionStamp, headSha: string): string => {
  *
  * @public
  */
-export const renderSection = (section: Section, headSha: string): string =>
+export const renderSection = (section: Section, headSha: string, commitUrl?: (sha: string) => string): string =>
 	[
 		start(section.key),
 		encodeStamp(section.stamp),
 		`### ${section.title}`,
 		"",
-		renderBanner(section.stamp, headSha),
-		"",
 		section.body,
+		"",
+		// Provenance last, as a footnote. Above the content it pushed the thing a
+		// reader came for below the fold on every section.
+		BANNER_MARKER,
+		renderBanner(section.stamp, headSha, commitUrl),
 		end(section.key),
 	].join("\n");
 
@@ -178,13 +198,13 @@ const SECTION_KEY_RE = /<!-- silk-release:section:([^:]+):start -->/g;
  *
  * @public
  */
-export const refreshBanners = (body: string, headSha: string): string => {
+export const refreshBanners = (body: string, headSha: string, commitUrl?: (sha: string) => string): string => {
 	const keys = [...body.matchAll(SECTION_KEY_RE)]
 		.map((match) => match[1])
 		.filter((key): key is string => key !== undefined);
 	return keys.reduce((acc, key) => {
 		const section = readSection(acc, key);
-		return section === undefined ? acc : upsertSection(acc, section, headSha);
+		return section === undefined ? acc : upsertSection(acc, section, headSha, commitUrl);
 	}, body);
 };
 
@@ -202,11 +222,14 @@ export const readSection = (body: string, key: string): Section | undefined => {
 	const stamp = decodeStamp(inner);
 	if (stamp === undefined) return undefined;
 
-	// Everything after the banner's blank line is the retained result.
-	const lines = inner.split("\n");
+	// The retained result is what sits between the heading and the banner.
+	// Both edges are found explicitly: the banner marker rather than a line
+	// offset, so the layout can change without silently redefining "body".
+	const beforeBanner = inner.includes(BANNER_MARKER) ? inner.slice(0, inner.indexOf(BANNER_MARKER)) : inner;
+	const lines = beforeBanner.split("\n");
 	const headingIdx = lines.findIndex((l) => l.startsWith("### "));
 	const title = headingIdx === -1 ? key : (lines[headingIdx]?.slice(4) ?? key);
-	const bodyStart = headingIdx === -1 ? 0 : headingIdx + 4;
+	const bodyStart = headingIdx === -1 ? 0 : headingIdx + 1;
 	return { key, title, stamp, body: lines.slice(bodyStart).join("\n").trim() };
 };
 
@@ -239,13 +262,18 @@ export const isAtLeastAsRecent = (incoming: SectionStamp, existing: SectionStamp
  *
  * @public
  */
-export const upsertSection = (body: string, section: Section, headSha: string): string => {
+export const upsertSection = (
+	body: string,
+	section: Section,
+	headSha: string,
+	commitUrl?: (sha: string) => string,
+): string => {
 	const existing = readSection(body, section.key);
 	if (existing !== undefined && !isAtLeastAsRecent(section.stamp, existing.stamp)) {
 		return body;
 	}
 
-	const rendered = renderSection(section, headSha);
+	const rendered = renderSection(section, headSha, commitUrl);
 	const from = body.indexOf(start(section.key));
 	const to = body.indexOf(end(section.key));
 	if (from !== -1 && to !== -1 && to > from) {

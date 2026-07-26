@@ -253,7 +253,13 @@ describe("runBranchManagement — what reaches the pull request", () => {
 		const { published } = await run({});
 
 		// A ✅ here would assert a validation outcome Phase 1 has no knowledge of.
-		expect(published.at(-1)?.body).toContain("Release Validation ⏳");
+		const seeded = published.at(-1)?.body ?? "";
+		// The state icon leads the heading, so a reader scanning headings sees the
+		// verdict without reading to the end of the line.
+		expect(seeded).toContain("### ⏳ Release Validation");
+		// And it carries a real table from the start, every row pending, rather
+		// than a sentence that changes shape when validation replaces it.
+		expect(seeded).toContain("| ⏳ | Build Validation | pending |");
 	});
 
 	it("stamps the section with the head sha so staleness is detectable", async () => {
