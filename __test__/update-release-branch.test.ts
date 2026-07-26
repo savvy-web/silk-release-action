@@ -11,9 +11,10 @@
  * Three invariants are pinned here beyond the original coverage, because none
  * of them is visible to the typechecker:
  *
- * 1. **`upsert` then `commitFiles`, in that order.** `commitFiles` cannot
- *    create or force-move a branch, so without the `upsert` the release branch
- *    is never reset onto the target head.
+ * 1. **Build the commit, THEN move the ref once.** The release branch must
+ *    never be pointed at the target head: an open release PR whose head equals
+ *    its base is closed by GitHub. `commitFiles` cannot be used at all — it
+ *    roots on the branch's own tree and cannot force-move a ref.
  * 2. **The commit is rooted on the TARGET branch head**, not the release
  *    branch's own head — what keeps the release branch one clean commit on main.
  * 3. **`mergedAt` is an `Option`.** The predecessor's `(p.mergedAt ?? null) ===
@@ -27,6 +28,7 @@ import type { CheckRunOutput, FileChange, IssueInfo, PullRequestInfo } from "@ef
 import {
 	CheckRun,
 	CheckRunRef,
+	CommitRef,
 	GitBranch,
 	GitCommit,
 	GitHubError,
@@ -42,6 +44,7 @@ import { Changesets } from "@savvy-web/silk-effects";
 import { DateTime, Effect, FileSystem, Layer, Logger, Option } from "effect";
 import { describe, expect, it } from "vitest";
 import { ChangesetConfig } from "../src/release/changeset-config.js";
+import { MANAGED_END, MANAGED_START } from "../src/utils/pr-body.js";
 import type { LinkedIssue, UpdateReleaseBranchResult } from "../src/utils/update-release-branch.js";
 import { updateReleaseBranch } from "../src/utils/update-release-branch.js";
 
@@ -114,12 +117,20 @@ interface Fixtures {
 	branches: Map<string, string>;
 	/** Every `GitBranch.upsert` call, in order. */
 	upserts: Array<{ name: string; sha: string }>;
-	/** Every `GitCommit.commitFiles` call, in order. */
+	/** Every commit written, in order. */
 	commits: Array<{ branch: string; message: string; changes: ReadonlyArray<FileChange> }>;
+	/** Every `GitCommit.createTree` call, in order. */
+	trees: Array<{ baseTree: string | undefined; changes: ReadonlyArray<FileChange> }>;
+	/** Every `GitCommit.createCommit` call, in order. */
+	createdCommits: Array<{ message: string; tree: string; parents: ReadonlyArray<string> }>;
 	deleted: string[];
 	completed: Array<{ conclusion: string; output: CheckRunOutput | undefined }>;
 	summaries: string[];
 	nextPrNumber: number;
+	/** When set, closes that PR the moment the branch ref moves. */
+	closeOnRefMove?: number;
+	/** With `closeOnRefMove`, marks it MERGED rather than merely closed. */
+	mergeOnRefMove?: boolean;
 }
 
 const makePr = (seed: SeedPr): PullRequestInfo =>
@@ -181,6 +192,8 @@ const makeFixtures = (
 		linked,
 		branches: new Map(params.branches ?? [[RELEASE_BRANCH, "deadbeef"]]),
 		upserts: [],
+		trees: [],
+		createdCommits: [],
 		commits: [],
 		deleted: [],
 		completed: [],
@@ -226,6 +239,8 @@ const runStage = async (
 	git: GitOptions = { porcelain: PORCELAIN_CHANGED },
 	changesetFiles: ReadonlyArray<string> = [],
 	plannerLayer: Layer.Layer<Changesets.ReleasePlanner> = releasePlannerStub,
+	/** Overrides on top of the seeded `GITHUB_*` block — e.g. a GHES host. */
+	envOverrides: Readonly<Record<string, string>> = {},
 ): Promise<{ result: UpdateReleaseBranchResult; spawns: ReadonlyArray<SpawnRecord> }> => {
 	const spawner = ScriptedSpawner.make(gitScript(git));
 	const layer = Layer.mergeAll(
@@ -242,6 +257,7 @@ const runStage = async (
 			GITHUB_ACTOR: "test",
 			GITHUB_SERVER_URL: "https://github.com",
 			GITHUB_API_URL: "https://api.github.com",
+			...envOverrides,
 		}),
 		ActionOutputs.layerTest({
 			summary: (content) =>
@@ -275,6 +291,20 @@ const runStage = async (
 				Effect.sync(() => {
 					f.upserts.push({ name, sha });
 					f.branches.set(name, sha);
+					// Models the real mechanism: GitHub closed #243 as a side effect of
+					// the ref moving, mid-run, after the opening snapshot was taken.
+					if (f.closeOnRefMove !== undefined) {
+						const idx = f.prs.findIndex((p) => p.number === f.closeOnRefMove);
+						if (idx !== -1) {
+							f.prs[idx] = {
+								...(f.prs[idx] as unknown as Record<string, unknown>),
+								state: "closed",
+								...(f.mergeOnRefMove === true
+									? { merged: true, mergedAt: Option.some(DateTime.makeUnsafe("2026-01-01T00:00:00Z")) }
+									: {}),
+							} as PullRequestInfo;
+						}
+					}
 					return "reset" as const;
 				}),
 			delete: (name) =>
@@ -284,9 +314,19 @@ const runStage = async (
 				}),
 		}),
 		GitCommit.layerTest({
-			commitFiles: ({ branch, message, changes }) =>
+			// `commitFiles` is deliberately UNSTUBBED: it roots on the branch's own
+			// tree and cannot force-move a ref, so reaching it here would be the bug
+			// this suite exists to prevent. Unstubbed members die loudly.
+			get: (sha) => Effect.succeed(CommitRef.make({ sha, treeSha: `tree-of-${sha}`, parents: [] })),
+			createTree: ({ changes, baseTree }) =>
 				Effect.sync(() => {
-					f.commits.push({ branch, message, changes });
+					f.trees.push({ baseTree, changes });
+					return "newtreesha";
+				}),
+			createCommit: ({ message, tree, parents }) =>
+				Effect.sync(() => {
+					f.commits.push({ branch: RELEASE_BRANCH, message, changes: f.trees[f.trees.length - 1]?.changes ?? [] });
+					f.createdCommits.push({ message, tree, parents });
 					return "newcommitsha";
 				}),
 		}),
@@ -401,12 +441,110 @@ describe("updateReleaseBranch", () => {
 		expect(f.prs[0].title).toBe("chore: release");
 	});
 
+	it("builds the PR link from GITHUB_SERVER_URL — not a hardcoded github.com (GHES)", async () => {
+		// The summary table hardcoded `https://github.com`, so every link in it was
+		// wrong on GitHub Enterprise Server. The seeded default is *also*
+		// `https://github.com`, so a hardcoded host passes against it — this test
+		// seeds a GHES host precisely so the two answers differ.
+		const f = makeFixtures({
+			prs: [{ number: 42, head: RELEASE_BRANCH, base: TARGET_BRANCH, state: "open" }],
+		});
+
+		await runStage(f, withCommit, [], releasePlannerStub, {
+			GITHUB_SERVER_URL: "https://ghes.acme.internal",
+		});
+
+		// The linked PR row lives in the CHECK RUN output, not the job summary —
+		// the job summary's PR cell is a bare `#42` with no link. Asserting on
+		// `f.summaries` would pass or fail for the wrong reason.
+		const checkOutput = f.completed.map((c) => c.output?.summary ?? "").join("\n");
+		expect(checkOutput).toContain("https://ghes.acme.internal/owner/repo/pull/42");
+		expect(checkOutput).not.toContain("https://github.com/owner/repo/pull/42");
+	});
+
+	it("REUSES an open PR — refreshes its managed body region even with no linked issues", async () => {
+		// Spencer's directive: an open release PR is a resource to update in place,
+		// never to close and recreate — its number, comments and review history are
+		// attached to it.
+		//
+		// The body refresh used to be gated on `linkedIssues.length > 0`, so a
+		// release with no linked issues kept a body from an earlier run, still
+		// describing versions that had since moved. The managed region carries the
+		// version summary and the squash block too, not just closing references.
+		const f = makeFixtures({
+			prs: [
+				{
+					number: 42,
+					head: RELEASE_BRANCH,
+					base: TARGET_BRANCH,
+					state: "open",
+					title: "stale title",
+				},
+			],
+		});
+
+		const { result } = await runStage(f);
+
+		// Same PR, not a replacement.
+		expect(result.prNumber).toBe(42);
+		expect(f.prs).toHaveLength(1);
+		expect(f.prs[0].state).toBe("open");
+
+		// …and its body now carries our managed region.
+		expect(f.prs[0].body ?? "").toContain(MANAGED_START);
+		expect(f.prs[0].body ?? "").toContain(MANAGED_END);
+	});
+
+	it("REOPENS a PR closed MID-RUN — the guard reads state fresh, not the opening snapshot", async () => {
+		// The stale-snapshot defect. `prWasClosed` is captured before the branch is
+		// touched, so it can only answer "was it closed when we started". GitHub
+		// closed #243 as a side effect of the ref moving — AFTER that snapshot —
+		// and the reopen guard was therefore blind to it.
+		//
+		// The zero-diff window that caused it is gone, but the guard must survive
+		// anything else that closes a release PR mid-run.
+		const f = makeFixtures({
+			prs: [{ number: 42, head: RELEASE_BRANCH, base: TARGET_BRANCH, state: "open", title: "stale title" }],
+		});
+		f.closeOnRefMove = 42;
+
+		const { result } = await runStage(f, withCommit);
+
+		expect(result.prNumber).toBe(42);
+		expect(f.prs).toHaveLength(1);
+		expect(f.prs[0].state).toBe("open");
+		// …and it is REUSED, not just revived: the title is refreshed too. The old
+		// guard skipped the title update whenever the PR had been closed.
+		expect(f.prs[0].title).toBe("chore: release");
+	});
+
+	it("does NOT reopen a PR that was MERGED mid-run", async () => {
+		// The merged check has to be reached to mean anything. Seeding a merged PR
+		// at startup does not reach it — the closed-PR selection already skips
+		// merged ones, so `prNumber` is never set and the guard never runs. The
+		// case that DOES reach it is someone merging the release PR while the run
+		// is in flight, which is also the case where reopening is catastrophic.
+		const f = makeFixtures({
+			prs: [{ number: 42, head: RELEASE_BRANCH, base: TARGET_BRANCH, state: "open", title: "stale title" }],
+		});
+		f.closeOnRefMove = 42;
+		f.mergeOnRefMove = true;
+
+		await runStage(f, withCommit);
+
+		const pr42 = f.prs.find((p) => p.number === 42);
+		expect(pr42?.state).toBe("closed");
+		expect(pr42?.merged).toBe(true);
+	});
+
 	it("reopens a closed, unmerged PR instead of creating a new one", async () => {
 		// THE LANDMINE. `mergedAt` is `Option.none()` here. The predecessor's
 		// `(p.mergedAt ?? null) === null` is ALWAYS FALSE against an Option, so the
 		// unmerged PR would never be found and a brand-new PR would be opened.
 		const f = makeFixtures({
-			prs: [{ number: 7, head: RELEASE_BRANCH, base: TARGET_BRANCH, state: "closed", merged: false }],
+			prs: [
+				{ number: 7, head: RELEASE_BRANCH, base: TARGET_BRANCH, state: "closed", merged: false, title: "stale title" },
+			],
 		});
 
 		const { result } = await runStage(f);
@@ -414,6 +552,10 @@ describe("updateReleaseBranch", () => {
 		expect(result.prNumber).toBe(7);
 		expect(f.prs).toHaveLength(1);
 		expect(f.prs[0].state).toBe("open");
+		// REUSE, not merely revive: a reopened PR gets the current title too. The
+		// title update used to be gated on `!prWasClosed`, so a reopened release PR
+		// kept a title naming an earlier version.
+		expect(f.prs[0].title).toBe("chore: release");
 	});
 
 	it("ignores a closed PR that was actually merged", async () => {
@@ -430,19 +572,52 @@ describe("updateReleaseBranch", () => {
 		expect(f.prs).toHaveLength(2);
 	});
 
-	it("upserts the release branch onto the target head BEFORE committing", async () => {
-		// INVARIANT 1 + 2. `commitFiles` can neither create nor force-move a
-		// branch, so the `upsert` is what resets the release branch onto the
-		// target head — and it must happen first, or the commit is rooted wrong.
+	it("recreates the release branch from an EXPLICIT origin/<target> start point", async () => {
+		// `git checkout -b <branch>` with no start point branches from ambient HEAD,
+		// which this module never establishes. Branching from the wrong point
+		// discards the release branch's prior commits, so the push that follows is a
+		// non-descendant ref update — recorded by GitHub as `head_ref_force_pushed`,
+		// which is the event seen on run 30212579721 despite no `--force` anywhere
+		// in this module.
+		const f = makeFixtures();
+
+		const { spawns } = await runStage(f, withCommit);
+
+		const checkout = spawns.find((sp) => sp.command === "git" && sp.args[0] === "checkout");
+		expect(checkout).toBeDefined();
+		expect(checkout?.args).toEqual(["checkout", "-b", RELEASE_BRANCH, `origin/${TARGET_BRANCH}`]);
+	});
+
+	it("NEVER points the release branch at the target head — the zero-diff window", async () => {
+		// THE REGRESSION THIS SUITE EXISTS FOR. The previous sequence was
+		// `upsert(branch, TARGET_HEAD)` then `commitFiles`, which left the release
+		// branch EQUAL to the target head between the two calls. An open release
+		// PR then has head === base, and **GitHub closes a PR whose head becomes
+		// identical to its base**. Run 30212579721 lost PR #243 in a ~3.2s window
+		// exactly there.
+		//
+		// The ref must move once, straight to the finished commit.
 		const f = makeFixtures();
 
 		await runStage(f, withCommit);
 
-		expect(f.upserts).toEqual([{ name: RELEASE_BRANCH, sha: TARGET_HEAD }]);
-		expect(f.commits).toHaveLength(1);
-		expect(f.commits[0].branch).toBe(RELEASE_BRANCH);
-		// The branch was pointing at the TARGET head when the commit was written.
-		expect(f.branches.get(RELEASE_BRANCH)).toBe(TARGET_HEAD);
+		expect(f.upserts).toEqual([{ name: RELEASE_BRANCH, sha: "newcommitsha" }]);
+		expect(f.upserts.map((u) => u.sha)).not.toContain(TARGET_HEAD);
+		expect(f.branches.get(RELEASE_BRANCH)).not.toBe(TARGET_HEAD);
+	});
+
+	it("roots the commit on the TARGET head's tree, with the target head as sole parent", async () => {
+		// INVARIANT 2, unchanged by the atomic rewrite: the release branch stays a
+		// single clean commit on the target, so the tree is built on the TARGET's
+		// tree and the parent is the TARGET head — not the release branch's own.
+		const f = makeFixtures();
+
+		await runStage(f, withCommit);
+
+		expect(f.trees).toHaveLength(1);
+		expect(f.trees[0].baseTree).toBe(`tree-of-${TARGET_HEAD}`);
+		expect(f.createdCommits).toHaveLength(1);
+		expect(f.createdCommits[0].parents).toEqual([TARGET_HEAD]);
 	});
 
 	it("carries the staged changes into the commit", async () => {

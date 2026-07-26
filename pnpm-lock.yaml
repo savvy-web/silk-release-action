@@ -89,7 +89,7 @@ importers:
         version: file:../../spencerbeggs/effected/packages/github/dist/prod/npm/pkg(effect@4.0.0-beta.101)
       '@effected/github-actions':
         specifier: file:/Users/spencer/workspaces/spencerbeggs/effected/packages/github-actions/dist/prod/npm/pkg
-        version: file:../../spencerbeggs/effected/packages/github-actions/dist/prod/npm/pkg(@effect/platform-node@4.0.0-beta.101(effect@4.0.0-beta.101)(ioredis@5.11.1(supports-color@7.2.0)))(effect@4.0.0-beta.101)(supports-color@7.2.0)
+        version: file:../../spencerbeggs/effected/packages/github-actions/dist/prod/npm/pkg(@effect/platform-node@4.0.0-beta.101(effect@4.0.0-beta.101)(ioredis@5.11.1(supports-color@7.2.0)))(@effected/jsonc@file:../../spencerbeggs/effected/packages/jsonc/dist/prod/npm/pkg(effect@4.0.0-beta.101))(@effected/toml@file:../../spencerbeggs/effected/packages/toml/dist/prod/npm/pkg(effect@4.0.0-beta.101))(@effected/yaml@file:../../spencerbeggs/effected/packages/yaml/dist/prod/npm/pkg(effect@4.0.0-beta.101))(effect@4.0.0-beta.101)(supports-color@7.2.0)
       '@effected/jsonc':
         specifier: file:/Users/spencer/workspaces/spencerbeggs/effected/packages/jsonc/dist/prod/npm/pkg
         version: file:../../spencerbeggs/effected/packages/jsonc/dist/prod/npm/pkg(effect@4.0.0-beta.101)
@@ -3875,14 +3875,21 @@ snapshots:
     dependencies:
       effect: 4.0.0-beta.101
 
-  '@effected/github-actions@file:../../spencerbeggs/effected/packages/github-actions/dist/prod/npm/pkg(@effect/platform-node@4.0.0-beta.101(effect@4.0.0-beta.101)(ioredis@5.11.1(supports-color@7.2.0)))(effect@4.0.0-beta.101)(supports-color@7.2.0)':
+  '@effected/github-actions@file:../../spencerbeggs/effected/packages/github-actions/dist/prod/npm/pkg(@effect/platform-node@4.0.0-beta.101(effect@4.0.0-beta.101)(ioredis@5.11.1(supports-color@7.2.0)))(@effected/jsonc@file:../../spencerbeggs/effected/packages/jsonc/dist/prod/npm/pkg(effect@4.0.0-beta.101))(@effected/toml@file:../../spencerbeggs/effected/packages/toml/dist/prod/npm/pkg(effect@4.0.0-beta.101))(@effected/yaml@file:../../spencerbeggs/effected/packages/yaml/dist/prod/npm/pkg(effect@4.0.0-beta.101))(effect@4.0.0-beta.101)(supports-color@7.2.0)':
     dependencies:
       '@azure/storage-blob': 12.33.0(supports-color@7.2.0)
       '@effect/platform-node': 4.0.0-beta.101(effect@4.0.0-beta.101)(ioredis@5.11.1(supports-color@7.2.0))
       '@effected/github': file:../../spencerbeggs/effected/packages/github/dist/prod/npm/pkg(effect@4.0.0-beta.101)
       '@effected/glob': file:../../spencerbeggs/effected/packages/glob/dist/prod/npm/pkg(effect@4.0.0-beta.101)
+      '@effected/markdown': file:../../spencerbeggs/effected/packages/markdown/dist/prod/npm/pkg(@effected/jsonc@file:../../spencerbeggs/effected/packages/jsonc/dist/prod/npm/pkg(effect@4.0.0-beta.101))(@effected/toml@file:../../spencerbeggs/effected/packages/toml/dist/prod/npm/pkg(effect@4.0.0-beta.101))(@effected/yaml@file:../../spencerbeggs/effected/packages/yaml/dist/prod/npm/pkg(effect@4.0.0-beta.101))(effect@4.0.0-beta.101)
+      '@effected/sbom': file:../../spencerbeggs/effected/packages/sbom/dist/prod/npm/pkg(effect@4.0.0-beta.101)(supports-color@7.2.0)
+      '@effected/templates': 0.1.0(effect@4.0.0-beta.101)
       effect: 4.0.0-beta.101
     transitivePeerDependencies:
+      - '@effected/jsonc'
+      - '@effected/toml'
+      - '@effected/yaml'
+      - kerberos
       - supports-color
 
   '@effected/github@file:../../spencerbeggs/effected/packages/github/dist/prod/npm/pkg(effect@4.0.0-beta.101)':

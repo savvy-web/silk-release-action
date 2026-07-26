@@ -133,16 +133,22 @@ describe("validateBuilds", () => {
 		expect(f.completed[0].conclusion).toBe("success");
 	});
 
-	it("spawns the package-script argv the package-manager table produces", async () => {
-		// This is what `LocalExec.prefixes` does NOT give: `pnpm ci:build` is a
-		// package SCRIPT, not `pnpm exec <binary>`.
+	it("spawns the package-script argv from LocalExec's scriptPrefix", async () => {
+		// `LocalExec.prefixes(launcher).scriptPrefix` now supplies this. The comment
+		// here used to say the kit did NOT give it — true when written, and the
+		// reason the four-way table existed; `scriptPrefix` shipped in round 1.
+		//
+		// BEHAVIOURAL CHANGE, deliberate: the old table emitted `pnpm ci:build`
+		// (bare) for pnpm and yarn but `npm run ci:build` for npm and bun. pnpm and
+		// yarn accept the shorthand, so the two are equivalent — but the table was
+		// carrying the inconsistency for no reason. Now all four go through `run`.
 		const f = makeFixtures();
 
 		const { spawner } = await runStage(f, { script: () => ({ exit: 0 }) });
 
 		expect(spawner.spawns).toHaveLength(1);
 		expect(spawner.spawns[0].command).toBe("pnpm");
-		expect(spawner.spawns[0].args).toEqual(["ci:build"]);
+		expect(spawner.spawns[0].args).toEqual(["run", "ci:build"]);
 	});
 
 	it("records a failure check run with annotations when the build emits TS errors", async () => {

@@ -155,6 +155,10 @@ export const updateReleaseBranch = (): Effect.Effect<
 
 		const { sha, repository, runId } = yield* env.github;
 		const [owner, repo] = repository.split("/");
+		// GHES. `getOptional` rather than `env.github.serverUrl`: absence has a
+		// correct default rather than being a failure, and only GHES sets it.
+		// Matches `attest-helpers.ts` and the PR-URL fix in `main.ts`.
+		const serverUrl = Option.getOrElse(yield* env.getOptional("GITHUB_SERVER_URL"), () => "https://github.com");
 
 		// ---------- Find existing PR (open, or closed-not-merged) ----------
 		let prNumber: number | null = null;
@@ -201,8 +205,26 @@ export const updateReleaseBranch = (): Effect.Effect<
 		// ---------- Recreate the release branch from main locally ----------
 		yield* Effect.logInfo(`Recreating release branch '${releaseBranch}' from '${targetBranch}'`);
 		if (!dryRun) {
+			// The start point is EXPLICIT. `checkout -b <branch>` with no start point
+			// branches from ambient HEAD, which this module never establishes — the
+			// log line above claimed "from '<target>'" while the command said no such
+			// thing. `create-release-branch.ts` always passed one; this did not.
+			//
+			// Why it matters beyond tidiness: branching from the wrong point discards
+			// the release branch's prior commits, so the push that follows is a
+			// NON-DESCENDANT ref update. GitHub records that as
+			// `head_ref_force_pushed` — which is exactly the event on the PR timeline
+			// for run 30212579721, and there is no `--force` anywhere in this module.
 			yield* Effect.result(Run.text(ChildProcess.make("git", ["branch", "-D", releaseBranch])));
-			yield* Run.text(ChildProcess.make("git", ["checkout", "-b", releaseBranch]));
+			yield* Run.text(ChildProcess.make("git", ["checkout", "-b", releaseBranch, `origin/${targetBranch}`]));
+
+			// Make the branch point observable. A silent recreate is how a
+			// non-descendant update reached GitHub without anything in the log
+			// saying what we had branched from.
+			const branchedFrom = yield* Effect.result(Run.text(ChildProcess.make("git", ["rev-parse", "HEAD"])));
+			if (branchedFrom._tag === "Success") {
+				yield* Effect.logInfo(`  '${releaseBranch}' now at ${branchedFrom.success.trim()} (origin/${targetBranch})`);
+			}
 		} else {
 			yield* Effect.logInfo(`[DRY RUN] Would recreate branch: ${releaseBranch} from ${targetBranch}`);
 		}
@@ -353,8 +375,31 @@ export const updateReleaseBranch = (): Effect.Effect<
 			prNumber = null;
 		}
 
-		// ---------- Reopen PR if it was closed ----------
-		if (!branchDeleted && prWasClosed && prNumber !== null && !dryRun) {
+		// ---------- Reopen the PR if it is closed NOW ----------
+		// A FRESH read, not the `prWasClosed` snapshot taken before the branch was
+		// touched. That snapshot can only answer "was it closed when we started",
+		// so anything that closes the PR mid-run leaves the guard useless — which
+		// is exactly what happened when GitHub auto-closed #243 inside the
+		// zero-diff window. That window is gone, but a stale-state guard is a
+		// latent defect and the next mid-run closer would find it just as useless.
+		//
+		// `merged` is checked because a MERGED pull request must never be
+		// reopened — reopening one is a different and worse mutation than leaving
+		// it closed.
+		//
+		// Accepted trade, stated: a human who deliberately closes the release PR
+		// while a run is in flight will see it reopened. The API cannot
+		// distinguish that from a side-effect close, and a closed PR with a live
+		// release branch is the invalid state we are here to repair.
+		const currentPr =
+			!branchDeleted && prNumber !== null && !dryRun ? yield* Effect.result(pr.get(prNumber)) : undefined;
+		const isClosedNow = currentPr !== undefined && currentPr._tag === "Success" && currentPr.success.state === "closed";
+		const isMerged = currentPr !== undefined && currentPr._tag === "Success" && currentPr.success.merged;
+
+		if (!branchDeleted && prNumber !== null && !dryRun && isClosedNow && !isMerged) {
+			if (!prWasClosed) {
+				yield* Effect.logWarning(`PR #${prNumber} was open when this run started and is closed now — reopening`);
+			}
 			const reopen = yield* Effect.result(pr.update(prNumber, { state: "open" }));
 			if (reopen._tag === "Success") {
 				yield* Effect.logInfo(`✓ Reopened PR #${prNumber}`);
@@ -367,8 +412,11 @@ export const updateReleaseBranch = (): Effect.Effect<
 			yield* Effect.logInfo(`[DRY RUN] Would reopen PR #${prNumber}`);
 		}
 
-		// ---------- Update PR title for existing open PRs ----------
-		if (!branchDeleted && prNumber !== null && !prWasClosed && !dryRun) {
+		// ---------- Update the PR title ----------
+		// NOT gated on `!prWasClosed`. A PR we just reopened is being reused, so it
+		// needs the current title as much as one that stayed open — under the old
+		// guard a reopened release PR kept a title naming an earlier version.
+		if (!branchDeleted && prNumber !== null && !dryRun) {
 			const update = yield* Effect.result(pr.update(prNumber, { title: prTitle }));
 			if (update._tag === "Success") {
 				yield* Effect.logInfo(`✓ Updated PR #${prNumber} title to: ${prTitle}`);
@@ -402,8 +450,17 @@ export const updateReleaseBranch = (): Effect.Effect<
 			yield* Effect.logInfo("[DRY RUN] Would create new release PR (no existing PR found)");
 		}
 
-		// ---------- Update PR body with linked issues ----------
-		if (prNumber !== null && linkedIssues.length > 0 && !dryRun) {
+		// ---------- Refresh the managed region of the PR body ----------
+		// NOT gated on `linkedIssues.length > 0`. The managed region carries the
+		// version summary and the proposed-squash-commit block as well as the
+		// closing references, so a release with no linked issues still needs it
+		// refreshed — under the old guard such a PR kept a body from an earlier
+		// run, describing versions that had since moved.
+		//
+		// This is the reuse-in-place path: an open release PR is updated (title
+		// above, body here) and keeps its number, its comments and its review
+		// history. It is never closed and recreated.
+		if (prNumber !== null && !dryRun) {
 			const getPr = yield* Effect.result(pr.get(prNumber));
 
 			if (getPr._tag === "Success") {
@@ -423,7 +480,7 @@ export const updateReleaseBranch = (): Effect.Effect<
 
 				const update = yield* Effect.result(pr.update(prNumber, { body: newBody }));
 				if (update._tag === "Success") {
-					yield* Effect.logInfo(`✓ Updated PR #${prNumber} with ${linkedIssues.length} linked issue(s)`);
+					yield* Effect.logInfo(`✓ Refreshed PR #${prNumber} body (${linkedIssues.length} linked issue(s))`);
 				} else {
 					yield* Effect.logWarning(`Could not update PR body: ${update.failure.reason}`);
 				}
@@ -442,7 +499,7 @@ export const updateReleaseBranch = (): Effect.Effect<
 			{ key: "Linked Issues", value: linkedIssues.length > 0 ? `${linkedIssues.length} issue(s)` : "_None_" },
 			{
 				key: "PR",
-				value: prNumber ? `[#${prNumber}](https://github.com/${owner}/${repo}/pull/${prNumber})` : "_N/A_",
+				value: prNumber ? `[#${prNumber}](${serverUrl}/${owner}/${repo}/pull/${prNumber})` : "_N/A_",
 			},
 		]);
 
@@ -705,29 +762,35 @@ export const updateReleaseBranch = (): Effect.Effect<
 					return;
 				}
 
-				// INVARIANT: `upsert` THEN `commitFiles`, in that order — they are not
-				// interchangeable and neither works alone.
+				// INVARIANT: build the commit FIRST, move the ref ONCE, last.
 				//
-				// `upsert(branch, sha)` creates or FORCE-RESETS the release branch to
-				// the target head. `commitFiles` cannot do that: it `GET`s the ref
-				// first and its ref update is deliberately unforced, so it can neither
-				// create the branch nor move one that diverged.
+				// The previous sequence was `upsert(branch, targetHead)` then
+				// `commitFiles`. It was correct about rooting but it opened a
+				// ZERO-DIFF WINDOW: between the two calls the release branch ref
+				// *equals* the target head, so the open release PR's head equals its
+				// base — and **GitHub closes a pull request whose head becomes
+				// identical to its base**. On run 30212579721 that window was ~3.2s
+				// and PR #243 was closed inside it, attributed to whoever force-pushed
+				// (us). Our own `pr.update(state: "closed")` never ran; the summary
+				// line proved that, which is why the cause took so long to find.
 				//
-				// Conversely `commitFiles` alone would root the commit on the RELEASE
-				// branch's own tree, breaking the parent-sha invariant above. Resetting
-				// first is what makes the branch head equal the target head, so the
-				// commit `commitFiles` builds is correctly rooted and its unforced ref
-				// move is safe — we just placed that ref ourselves.
+				// `commitFiles` cannot be used at all here: it `GET`s the branch and
+				// roots the tree on the BRANCH's commit, and its ref update is
+				// deliberately unforced. Both are wrong for a rebase-onto-target.
 				//
-				// This also replaces the hand-cast `client.rest("git.getCommit")` that
-				// existed only to read `tree.sha` for `base_tree`; `commitFiles` does
-				// that internally.
-				yield* branches.upsert(args.releaseBranch, parentSha);
-				const commitSha = yield* gitCommit.commitFiles({
-					branch: args.releaseBranch,
+				// So the three underlying members do it explicitly, and the ref moves
+				// exactly once — from wherever it was, straight to the finished
+				// commit. The branch is never equal to the target head, so the window
+				// does not exist. `parentSha` is still the TARGET head, so the
+				// explicit-parent invariant is unchanged.
+				const base = yield* gitCommit.get(parentSha);
+				const treeSha = yield* gitCommit.createTree({ changes, baseTree: base.treeSha });
+				const commitSha = yield* gitCommit.createCommit({
 					message: args.commitMessage,
-					changes,
+					tree: treeSha,
+					parents: [parentSha],
 				});
+				yield* branches.upsert(args.releaseBranch, commitSha);
 				yield* Effect.logInfo(`✓ Created verified commit: ${commitSha}`);
 			});
 		}

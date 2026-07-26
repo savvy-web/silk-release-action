@@ -19,7 +19,8 @@ import type { GitHubError, Repo } from "@effected/github";
 import { PullRequest } from "@effected/github";
 import type { ActionEnvironmentError } from "@effected/github-actions";
 import { ActionEnvironment } from "@effected/github-actions";
-import { Duration, Effect, FileSystem, Option } from "effect";
+import { Duration, Effect, Option } from "effect";
+import { readEventPayload } from "./event-payload.js";
 
 /**
  * The five phases this action knows how to dispatch.
@@ -56,37 +57,8 @@ export interface PhaseDetectionOptions {
 	explicitPhase?: WorkflowPhase;
 }
 
-/** Subset of the event payload we care about. */
-interface EventPayload {
-	pull_request?: {
-		merged?: boolean;
-		number: number;
-		head?: { ref: string };
-		base?: { ref: string };
-	};
-	head_commit?: { message?: string };
-}
-
-/**
- * Read and parse the GitHub event payload referenced by `GITHUB_EVENT_PATH`.
- *
- * @internal
- */
-const readEventPayload = Effect.gen(function* () {
-	const env = yield* ActionEnvironment;
-	const fs = yield* FileSystem.FileSystem;
-
-	const pathOpt = yield* env.getOptional("GITHUB_EVENT_PATH");
-	if (Option.isNone(pathOpt) || pathOpt.value === "") return {} as EventPayload;
-
-	const result = yield* Effect.result(fs.readFileString(pathOpt.value));
-	if (result._tag === "Failure") return {} as EventPayload;
-	try {
-		return JSON.parse(result.success) as EventPayload;
-	} catch {
-		return {} as EventPayload;
-	}
-});
+// The event payload shape and its reader now live in `event-payload.ts`, decoded
+// through a schema once instead of parsed and cast here and in `main.ts`.
 
 /**
  * One attempt at detecting a release commit. Tries two strategies:
@@ -195,17 +167,13 @@ const detectReleaseCommit = (
  */
 export const detectWorkflowPhase = (
 	options: PhaseDetectionOptions,
-): Effect.Effect<
-	PhaseDetectionResult,
-	ActionEnvironmentError | GitHubError,
-	ActionEnvironment | FileSystem.FileSystem | PullRequest | Repo
-> =>
+): Effect.Effect<PhaseDetectionResult, ActionEnvironmentError | GitHubError, ActionEnvironment | PullRequest | Repo> =>
 	Effect.gen(function* () {
 		const env = yield* ActionEnvironment;
 		const { releaseBranch, targetBranch, explicitPhase } = options;
 
 		const { ref, eventName } = yield* env.github;
-		const payload = yield* readEventPayload;
+		const payload = yield* readEventPayload();
 
 		const commitMessage = payload.head_commit?.message ?? "";
 		const isReleaseBranch = ref === `refs/heads/${releaseBranch}`;

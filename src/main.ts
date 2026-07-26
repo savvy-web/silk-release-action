@@ -65,6 +65,7 @@ import type { WorkflowPhase } from "./utils/detect-workflow-phase.js";
 import { detectWorkflowPhase } from "./utils/detect-workflow-phase.js";
 import type { TagInfo } from "./utils/determine-tag-strategy.js";
 import { determineTagStrategy, isMonorepoForTagging } from "./utils/determine-tag-strategy.js";
+import { readEventPullRequestNumber } from "./utils/event-payload.js";
 import { linkIssuesFromCommits } from "./utils/link-issues-from-commits.js";
 import type { ConfigSource } from "./utils/load-release-config.js";
 import { sortReleasesTopologically } from "./utils/sort-releases-topologically.js";
@@ -240,9 +241,21 @@ const runBranchManagement = Effect.gen(function* () {
 			// arguably better information, but it is different information, and the
 			// `changesets` output field has always reported what the changeset files
 			// declared.
-			const preview = yield* planner
-				.preview(process.cwd())
-				.pipe(Effect.catch(() => Effect.succeed({ changesets: [] as ReadonlyArray<Changesets.PendingChangeset> })));
+			// NOT `Effect.catch(() => ({ changesets: [] }))`. That swallow reported a
+			// preview FAILURE as "zero changesets", which is indistinguishable in the
+			// log from a genuinely empty release — and on run 30212579721 the phase
+			// summary read `0 package(s) with changesets` immediately after a
+			// successful version bump, with no way to tell which had happened.
+			// The fallback is kept (a reporting read must not abort a release) but
+			// the failure is now named at error level.
+			const previewResult = yield* Effect.result(planner.preview(process.cwd()));
+			if (previewResult._tag === "Failure") {
+				yield* Effect.logError(
+					`Changeset preview FAILED — the changeset list reported below is not authoritative: ${previewResult.failure.message}`,
+				);
+			}
+			const preview: { readonly changesets: ReadonlyArray<Changesets.PendingChangeset> } =
+				previewResult._tag === "Success" ? previewResult.success : { changesets: [] };
 			const bumpRank = { patch: 0, minor: 1, major: 2 } as const;
 			const packageBumps = new Map<string, "major" | "minor" | "patch">();
 			for (const cs of preview.changesets) {
@@ -275,6 +288,19 @@ const runBranchManagement = Effect.gen(function* () {
 				prNumber = createResult.prNumber ?? prNumber;
 			}
 
+			// The PR URL is built from the environment rather than a hardcoded host:
+			// `GITHUB_SERVER_URL` is the enterprise instance on GHES and is absent on
+			// github.com, where the default is correct. `getOptional` rather than the
+			// `github` projection for the same reason it is used in `attest-helpers`:
+			// the projection fails typed when a `GITHUB_*` is missing, and a missing
+			// server URL has a correct default rather than a failure.
+			const environment = yield* ActionEnvironment;
+			const serverUrl = Option.getOrElse(
+				yield* environment.getOptional("GITHUB_SERVER_URL"),
+				() => "https://github.com",
+			);
+			const repositorySlug = Option.getOrElse(yield* environment.getOptional("GITHUB_REPOSITORY"), () => "");
+
 			const output = toBranchManagementOutput({
 				releaseBranchName: releaseBranch,
 				existed: branchCheck.exists,
@@ -286,9 +312,7 @@ const runBranchManagement = Effect.gen(function* () {
 						? null
 						: {
 								number: prNumber,
-								// runBranchManagement does not yield ActionEnvironment, so the
-								// repository slug is read straight from the env var here.
-								url: `https://github.com/${process.env.GITHUB_REPOSITORY ?? ""}/pull/${prNumber}`,
+								url: `${serverUrl}/${repositorySlug}/pull/${prNumber}`,
 								action: branchCheck.exists ? "updated" : "created",
 							},
 				changesets,
@@ -970,34 +994,6 @@ const runPublishing = (mergedReleasePRNumber: number | undefined) =>
 		}),
 	);
 
-/**
- * Read the merged-PR number from the GitHub event payload.
- *
- * @remarks
- * Phase 3a only runs on a `pull_request` event where the release PR was
- * merged. `phaseResult.payload.pull_request.number` was previously read
- * from `@actions/github`'s `context.payload`. With github-action-effects
- * we read the event file ourselves via `ActionEnvironment` + `FileSystem`.
- */
-const readEventPullRequestNumber = Effect.gen(function* () {
-	const env = yield* ActionEnvironment;
-	const fs = yield* FileSystem.FileSystem;
-
-	const pathOpt = yield* env.getOptional("GITHUB_EVENT_PATH");
-	if (Option.isNone(pathOpt) || pathOpt.value === "") return Option.none<number>();
-
-	const result = yield* Effect.result(fs.readFileString(pathOpt.value));
-	if (result._tag === "Failure") return Option.none<number>();
-
-	try {
-		const parsed = JSON.parse(result.success) as { pull_request?: { number?: number } };
-		const num = parsed.pull_request?.number;
-		return typeof num === "number" ? Option.some(num) : Option.none<number>();
-	} catch {
-		return Option.none<number>();
-	}
-});
-
 const runCloseIssues = Effect.gen(function* () {
 	const logger = yield* ActionLogger;
 	const dryRun = yield* ActionInput.boolean("dry-run").pipe(Config.withDefault(false));
@@ -1005,7 +1001,7 @@ const runCloseIssues = Effect.gen(function* () {
 	yield* logger.group(
 		"Phase 3a: Close Linked Issues",
 		Effect.gen(function* () {
-			const prNumber = yield* readEventPullRequestNumber;
+			const prNumber = yield* readEventPullRequestNumber();
 			if (Option.isNone(prNumber)) {
 				yield* Effect.logWarning("No pull_request number in event payload; skipping close-issues phase");
 				return;

@@ -28,6 +28,14 @@ The release-branch ref move was a single forced update. It is now a forced reset
 an unforced commit, so another writer landing between the two produces a **visible conflict**
 rather than being silently overwritten.
 
+### Build validation always invokes the build script through `run`
+
+Phase 2 previously invoked the build script as `pnpm ci:build` for pnpm and yarn but
+`npm run ci:build` for npm and bun — an inconsistency inherited from the shell pipeline this
+replaced. All four package managers now go through `run`. The two forms are equivalent for
+pnpm and yarn, so no workflow changes, but a build script named the same as a package-manager
+subcommand no longer resolves differently between managers.
+
 ### `biome` present but failing is no longer treated as absent
 
 The formatting step probed for `biome` by running `biome --version` and reading *any* failure
@@ -93,6 +101,42 @@ is now escaped.
 
 Issues discovered by message reference only were recorded with `""` for both `url` and node id.
 The empty node id was also passed to the branch-linking mutation.
+
+### The release pull request was closed mid-run and never recreated
+
+Updating the release branch reset it to the target head and only then committed the version
+changes. For the seconds between those two writes the pull request's head was identical to its
+base, and GitHub closes a pull request whose diff becomes empty. The branch ended up correct
+and the run reported success, but the release pull request was gone — taking its review
+history, subscribers and sticky comment with it. The commit is now built first and the branch
+reference moves once, straight to the finished commit, so the empty-diff state never exists.
+
+### The release pull request body went stale when a release had no linked issues
+
+The managed region of the body was only refreshed when at least one linked issue was found. A
+release without linked issues kept whatever the region held from an earlier run, so it could
+describe versions that had since moved. The region now refreshes whenever there is a pull
+request.
+
+### A closed release pull request was revived but not brought up to date
+
+Reopening used a snapshot of pull-request state taken at the start of the run, and the title
+refresh was skipped for any pull request that had been closed. A revived pull request kept a
+title naming an earlier version. State is now read fresh, a merged pull request is never
+reopened, and the title refreshes regardless.
+
+### A failed changeset preview was reported as zero changesets
+
+The phase summary counted changesets through a fallback that turned any preview failure into an
+empty result, so "nothing to release" and "the preview broke" were indistinguishable in the
+log. A preview failure is now named at error level.
+
+### Pull request and summary links pointed at github.com on GitHub Enterprise
+
+Two link builders hard-coded the `github.com` host, so the release pull request URL in the
+action's output and the pull-request row in the validation check pointed at the public site
+from an Enterprise instance. Both now read `GITHUB_SERVER_URL`, defaulting to
+`https://github.com` where it is unset.
 
 ## Performance
 

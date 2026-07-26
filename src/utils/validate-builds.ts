@@ -9,8 +9,8 @@
  * catches breakage anywhere in the repo.
  */
 
-import type { CommandFailedError, CommandOutputError } from "@effected/commands";
-import { Run } from "@effected/commands";
+import type { CommandFailedError, CommandOutputError, Launcher } from "@effected/commands";
+import { LocalExec, Run } from "@effected/commands";
 import type { GitHubError, Repo } from "@effected/github";
 import { Annotation, CheckRun, CheckRunOutput } from "@effected/github";
 import type { ActionEnvironmentError, ActionOutputError } from "@effected/github-actions";
@@ -31,43 +31,26 @@ export interface BuildValidationResult {
 }
 
 /**
- * Map a package manager onto the argv that runs a **package script**.
+ * The argv that runs a `package.json` script under a package manager.
  *
  * @remarks
- * Deliberately hand-maintained rather than replaced by `LocalExec.prefixes`,
- * despite the surface similarity. `LocalExec.prefixes` yields the argv for
- * running a project-local **binary** (`pnpm exec <bin>`) or fetch-and-running
- * one (`pnpm dlx <bin>`). What is needed here is a **script** from
- * `package.json` `scripts` — `pnpm run ci:build` — and the kit ships no script
- * runner. The two tables look alike and are not interchangeable.
+ * `LocalExec.prefixes(launcher).scriptPrefix` is the single home of this
+ * knowledge now — the hand-rolled four-way table this replaces had drifted into
+ * a real inconsistency: pnpm and yarn emitted the script name bare
+ * (`pnpm ci:build`) while npm and bun emitted `run` (`npm run ci:build`).
+ * Equivalent for pnpm and yarn, which accept the shorthand, but the table was
+ * carrying the difference for no reason and had to be read twice to see it.
  *
- * The `bun`/`yarn`/`pnpm` asymmetry below (some paths emit `run`, the `pnpm`
- * and `yarn` no-build-command paths do not) is inherited behaviour, preserved
- * verbatim.
+ * An unrecognised name falls back to `npm`, which is what the table did and
+ * what `main.ts`'s detector already narrows to.
  */
+const asLauncher = (packageManager: string): Launcher =>
+	packageManager === "pnpm" || packageManager === "yarn" || packageManager === "bun" ? packageManager : "npm";
+
 const buildInvocation = (packageManager: string, buildCommand: string): { cmd: string; args: string[] } => {
-	if (buildCommand !== "") {
-		switch (packageManager) {
-			case "pnpm":
-				return { cmd: "pnpm", args: ["run", buildCommand] };
-			case "yarn":
-				return { cmd: "yarn", args: ["run", buildCommand] };
-			case "bun":
-				return { cmd: "bun", args: ["run", buildCommand] };
-			default:
-				return { cmd: "npm", args: ["run", buildCommand] };
-		}
-	}
-	switch (packageManager) {
-		case "pnpm":
-			return { cmd: "pnpm", args: ["ci:build"] };
-		case "yarn":
-			return { cmd: "yarn", args: ["ci:build"] };
-		case "bun":
-			return { cmd: "bun", args: ["run", "ci:build"] };
-		default:
-			return { cmd: "npm", args: ["run", "ci:build"] };
-	}
+	const launcher = asLauncher(packageManager);
+	const [cmd = launcher, ...prefixArgs] = LocalExec.prefixes(launcher).scriptPrefix;
+	return { cmd, args: [...prefixArgs, buildCommand !== "" ? buildCommand : "ci:build"] };
 };
 
 // `Annotation` is a `Schema.Class` and renames every wire field: `startLine` /
