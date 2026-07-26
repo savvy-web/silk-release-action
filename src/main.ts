@@ -70,7 +70,12 @@ import { linkIssuesFromCommits } from "./utils/link-issues-from-commits.js";
 import type { ConfigSource } from "./utils/load-release-config.js";
 import type { Section } from "./utils/managed-sections.js";
 import { upsertSection, withSection } from "./utils/managed-sections.js";
-import { RELEASE_TABLE_LEGEND, releaseTable, toPendingReleaseRows } from "./utils/release-table.js";
+import {
+	RELEASE_TABLE_LEGEND,
+	releaseTable,
+	toPendingReleaseRows,
+	toValidatedReleaseRows,
+} from "./utils/release-table.js";
 import { sortReleasesTopologically } from "./utils/sort-releases-topologically.js";
 import { updateReleaseBranch } from "./utils/update-release-branch.js";
 import { updateStickyComment } from "./utils/update-sticky-comment.js";
@@ -848,6 +853,35 @@ const runValidation = Effect.gen(function* () {
 					),
 				);
 				yield* Effect.logInfo(`✅ Sticky comment updated on PR #${pr.number}`);
+
+				// Complete the release plan Phase 1 posted, rather than leaving it
+				// reading "pending validation" beside a finished validation run.
+				//
+				// This writes Phase 1's section, not Phase 2's comment: the plan and
+				// the validation report are different statements about the same
+				// release, and a reader who scrolls to the plan should not find it
+				// contradicting the report below it. The marker keeps the two
+				// independent — updating one leaves the other untouched.
+				const validationEnvironment = yield* ActionEnvironment;
+				const validatedSha = Option.getOrElse(yield* validationEnvironment.getOptional("GITHUB_SHA"), () => "");
+				const validatedRunId = Option.getOrElse(yield* validationEnvironment.getOptional("GITHUB_RUN_ID"), () => "");
+				const validatedPlan: Section = {
+					key: "release-plan",
+					title: "🚀 What will be released",
+					stamp: {
+						state: "complete",
+						sha: validatedSha,
+						runId: validatedRunId,
+						at: new Date().toISOString(),
+					},
+					body: `${releaseTable.render(toValidatedReleaseRows(validationPackages))}\n\n${RELEASE_TABLE_LEGEND}`,
+				};
+				const planUpdate = yield* Effect.result(
+					updateStickyComment(pr.number, upsertSection("", validatedPlan, validatedSha), "release-plan"),
+				);
+				if (planUpdate._tag === "Failure") {
+					yield* Effect.logWarning(`Could not complete the release plan comment: ${planUpdate.failure.reason}`);
+				}
 			} else {
 				yield* Effect.logInfo("Sticky comment update skipped — no open PR found for release branch");
 			}

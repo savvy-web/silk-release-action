@@ -72,6 +72,11 @@ package the release will version with its current and next version, its bump, an
 changeset files named it. Publish readiness is shown as pending until validation runs, rather
 than left blank or assumed — a blank cell is indistinguishable from "no targets".
 
+Validation then completes the same table in place, filling the readiness column with how many
+registry targets are ready per package. A package that publishes nothing reports "no targets"
+rather than "0/0 ready", and a target skipped because an identical version was already published
+counts as neither ready nor failed.
+
 The comment is a marker-delimited section stamped with the commit it describes, so a reader can
 tell whether it still reflects the branch, and a later phase can update its own section without
 disturbing this one. When the pull request already exists, the section is marked in-progress

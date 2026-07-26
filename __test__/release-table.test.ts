@@ -6,7 +6,13 @@
 // dependency-driven release is a real release.
 
 import { describe, expect, it } from "vitest";
-import { RELEASE_TABLE_LEGEND, releaseTable, toPendingReleaseRows } from "../src/utils/release-table.js";
+import type { ReleaseRow } from "../src/utils/release-table.js";
+import {
+	RELEASE_TABLE_LEGEND,
+	releaseTable,
+	toPendingReleaseRows,
+	toValidatedReleaseRows,
+} from "../src/utils/release-table.js";
 
 const PLAN = [
 	{
@@ -102,5 +108,112 @@ describe("releaseTable", () => {
 		for (const icon of ["✅", "⏳", "🔴", "🟡", "🟢"]) {
 			expect(RELEASE_TABLE_LEGEND).toContain(icon);
 		}
+	});
+});
+
+const target = (status: "ready" | "skipped" | "failed") => ({ status });
+
+describe("toValidatedReleaseRows", () => {
+	it("reports a version-only package as having no targets, not zero ready", () => {
+		const [row] = toValidatedReleaseRows([
+			{ name: "@scope/version-only", version: "1.1.0", baseVersion: "1.0.0", changesetCount: 1, builds: [] },
+		]);
+		const rendered = releaseTable.render([row as ReleaseRow]);
+
+		// `0/0 ready` would read as a problem for a package that is simply not
+		// published — versioned and changelogged, but with nothing to upload.
+		expect(rendered).toContain("⏭️ no targets");
+		expect(rendered).not.toContain("0/0");
+	});
+
+	it("counts ready targets across every build of a package", () => {
+		const [row] = toValidatedReleaseRows([
+			{
+				name: "@scope/multi",
+				version: "2.0.0",
+				baseVersion: "1.9.0",
+				changesetCount: 1,
+				builds: [{ targets: [target("ready"), target("ready")] }, { targets: [target("ready")] }],
+			},
+		]);
+
+		expect(releaseTable.render([row as ReleaseRow])).toContain("✅ 3/3 ready");
+	});
+
+	it("reports failure over readiness when any target failed", () => {
+		const [row] = toValidatedReleaseRows([
+			{
+				name: "@scope/broken",
+				version: "1.0.1",
+				baseVersion: "1.0.0",
+				changesetCount: 1,
+				builds: [{ targets: [target("ready"), target("failed")] }],
+			},
+		]);
+		const rendered = releaseTable.render([row as ReleaseRow]);
+
+		// A row that is half-ready is not ready; the failure is the headline.
+		expect(rendered).toContain("❌ 1/2 failed");
+		expect(rendered).not.toContain("✅ 1/2 ready");
+	});
+
+	it("counts a skipped target as neither ready nor failed", () => {
+		const [row] = toValidatedReleaseRows([
+			{
+				name: "@scope/partly-skipped",
+				version: "1.0.1",
+				baseVersion: "1.0.0",
+				changesetCount: 1,
+				builds: [{ targets: [target("ready"), target("skipped")] }],
+			},
+		]);
+
+		// "Already published, identical" is a success for the release even though
+		// nothing was uploaded — so it inflates neither bucket.
+		expect(releaseTable.render([row as ReleaseRow])).toContain("✅ 1/2 ready");
+	});
+
+	it("renders a brand-new package as new → version", () => {
+		const [row] = toValidatedReleaseRows([
+			{
+				name: "@scope/fresh",
+				version: "0.1.0",
+				baseVersion: null,
+				changesetCount: 1,
+				builds: [{ targets: [target("ready")] }],
+			},
+		]);
+		const rendered = releaseTable.render([row as ReleaseRow]);
+
+		expect(rendered).toContain("new → 0.1.0");
+		expect(rendered).not.toContain("null");
+	});
+
+	it("recovers the bump from the version transition", () => {
+		const rows = toValidatedReleaseRows([
+			{ name: "@scope/maj", version: "2.0.0", baseVersion: "1.9.9", changesetCount: 1, builds: [] },
+			{ name: "@scope/min", version: "1.3.0", baseVersion: "1.2.9", changesetCount: 1, builds: [] },
+			{ name: "@scope/pat", version: "1.2.4", baseVersion: "1.2.3", changesetCount: 1, builds: [] },
+		]);
+		const rendered = releaseTable.render(rows);
+
+		// Phase 2 has no changeset files left to read — `apply` consumed them.
+		expect(rendered).toContain("🔴 major");
+		expect(rendered).toContain("🟡 minor");
+		expect(rendered).toContain("🟢 patch");
+	});
+
+	it("still renders an unknown changeset count as an em dash", () => {
+		const [row] = toValidatedReleaseRows([
+			{
+				name: "@scope/unknown",
+				version: "1.0.1",
+				baseVersion: "1.0.0",
+				changesetCount: null,
+				builds: [{ targets: [target("ready")] }],
+			},
+		]);
+
+		expect(releaseTable.render([row as ReleaseRow])).toContain("| — |");
 	});
 });

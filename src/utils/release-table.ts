@@ -97,3 +97,80 @@ export const toPendingReleaseRows = (
 		changesetCount: pkg.changesetCount,
 		targets: "⏳ pending validation",
 	}));
+
+/** One validated package, as much of it as the table renders. */
+interface ValidatedPackage {
+	readonly name: string;
+	readonly version: string;
+	readonly baseVersion: string | null;
+	readonly changesetCount: number | null;
+	readonly builds: ReadonlyArray<{
+		readonly targets: ReadonlyArray<{ readonly status: "ready" | "skipped" | "failed" }>;
+	}>;
+}
+
+/**
+ * Fill in the column Phase 1 had to leave pending.
+ *
+ * @remarks
+ * A package with **no builds** is version-only — it is versioned and
+ * changelogged but publishes nothing — which is `⏭️ no targets`, not a failure
+ * and not a zero-of-zero ready. Reporting `0/0 ready` would read as a problem
+ * where there is none.
+ *
+ * A **skipped** target counts as neither ready nor failed. It is most often
+ * "already published, identical", which is a success for the release even
+ * though nothing was uploaded, so folding it into either bucket would mislead.
+ *
+ * `baseVersion` is `null` for a package that does not yet exist on the target
+ * branch. That renders as `new → <version>` rather than `null → <version>`.
+ *
+ * @param packages - The validated packages, build-centric.
+ * @returns Rows ready for {@link releaseTable}.
+ *
+ * @public
+ */
+export const toValidatedReleaseRows = (packages: ReadonlyArray<ValidatedPackage>): ReadonlyArray<ReleaseRow> =>
+	packages.map((pkg) => {
+		const targets = pkg.builds.flatMap((build) => build.targets);
+		const ready = targets.filter((t) => t.status === "ready").length;
+		const failed = targets.filter((t) => t.status === "failed").length;
+
+		const targetsCell =
+			targets.length === 0
+				? "⏭️ no targets"
+				: failed > 0
+					? `❌ ${failed}/${targets.length} failed`
+					: `✅ ${ready}/${targets.length} ready`;
+
+		return {
+			status: failed > 0 ? "❌" : targets.length === 0 ? "⏭️" : "✅",
+			name: pkg.name,
+			versions: `${pkg.baseVersion ?? "new"} → ${pkg.version}`,
+			// The bump is derived from the versions rather than carried: by Phase 2
+			// the changeset files are gone, so the plan that declared it no longer
+			// exists to be read.
+			bump: deriveBump(pkg.baseVersion, pkg.version),
+			changesetCount: pkg.changesetCount ?? 0,
+			targets: targetsCell,
+		};
+	});
+
+/**
+ * The bump implied by a version transition.
+ *
+ * @remarks
+ * Phase 2 has no changeset files to read — `apply` consumed them — so the bump
+ * is recovered from the two versions. A new package or an unparseable version
+ * reports `patch`: the column describes severity, and overstating it would be
+ * worse than understating it.
+ */
+const deriveBump = (baseVersion: string | null, version: string): "major" | "minor" | "patch" => {
+	if (baseVersion === null) return "patch";
+	const before = baseVersion.split(".").map(Number);
+	const after = version.split(".").map(Number);
+	if (before.length < 3 || after.length < 3 || [...before, ...after].some(Number.isNaN)) return "patch";
+	if ((after[0] ?? 0) > (before[0] ?? 0)) return "major";
+	if (after[0] === before[0] && (after[1] ?? 0) > (before[1] ?? 0)) return "minor";
+	return "patch";
+};
