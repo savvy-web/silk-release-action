@@ -68,6 +68,9 @@ import { determineTagStrategy, isMonorepoForTagging } from "./utils/determine-ta
 import { readEventPullRequestNumber } from "./utils/event-payload.js";
 import { linkIssuesFromCommits } from "./utils/link-issues-from-commits.js";
 import type { ConfigSource } from "./utils/load-release-config.js";
+import type { Section } from "./utils/managed-sections.js";
+import { upsertSection, withSection } from "./utils/managed-sections.js";
+import { RELEASE_TABLE_LEGEND, releaseTable, toPendingReleaseRows } from "./utils/release-table.js";
 import { sortReleasesTopologically } from "./utils/sort-releases-topologically.js";
 import { updateReleaseBranch } from "./utils/update-release-branch.js";
 import { updateStickyComment } from "./utils/update-sticky-comment.js";
@@ -263,24 +266,92 @@ const runBranchManagement = Effect.gen(function* () {
 			}));
 			const changesetFileCount = preview.changesets.length;
 
-			let created = false;
-			let updated = false;
-			let hasConflicts = false;
-			let prNumber: number | null = branchCheck.prNumber;
+			// The release plan, published to the PR as soon as it is known rather than
+			// held back until validation has something to say about it.
+			//
+			// Every column but `targets` comes from the plan, so a reader sees what
+			// will be published — versions included — while the build is still
+			// running. `targets` renders pending: blank is indistinguishable from "no
+			// targets", and a tick would claim a result validation has not produced.
+			const planBody = `${releaseTable.render(toPendingReleaseRows(changesets))}\n\n${RELEASE_TABLE_LEGEND}`;
+			const { sha: headSha, runId: planRunId } = yield* (yield* ActionEnvironment).github;
 
-			if (branchCheck.exists) {
-				yield* Effect.logInfo("Release branch exists — running update flow");
-				const updateResult = yield* updateReleaseBranch();
-				// A deleted branch (nothing to release) is neither an update nor a
-				// live PR — drop the stale PR number so the output reports no PR.
-				updated = updateResult.success && !updateResult.deleted;
-				hasConflicts = updateResult.hadConflicts;
-				prNumber = updateResult.deleted ? null : (updateResult.prNumber ?? prNumber);
-			} else {
-				yield* Effect.logInfo("Release branch does not exist — running create flow");
-				const createResult = yield* createReleaseBranch();
-				created = createResult.created;
-				prNumber = createResult.prNumber ?? prNumber;
+			const publishPlan = (target: number) => (section: Section) =>
+				Effect.result(updateStickyComment(target, upsertSection("", section, headSha), "release-plan")).pipe(
+					Effect.flatMap((posted) =>
+						posted._tag === "Failure"
+							? // A reporting write must never fail a release that otherwise
+								// succeeded, and `withSection` types `publish` as infallible for
+								// that reason: a finalizer that could fail on the way out would
+								// replace the caller's real error with a reporting one.
+								Effect.logWarning(`Could not publish the release plan comment: ${posted.failure.reason}`)
+							: Effect.void,
+					),
+				);
+
+			// The branch flow, normalised so both arms report the same four facts.
+			const runBranchFlow = branchCheck.exists
+				? Effect.gen(function* () {
+						yield* Effect.logInfo("Release branch exists — running update flow");
+						const result = yield* updateReleaseBranch();
+						return {
+							created: false,
+							// A deleted branch (nothing to release) is neither an update nor
+							// a live PR — drop the stale PR number so the output reports none.
+							updated: result.success && !result.deleted,
+							hasConflicts: result.hadConflicts,
+							prNumber: result.deleted ? null : (result.prNumber ?? branchCheck.prNumber),
+						};
+					})
+				: Effect.gen(function* () {
+						yield* Effect.logInfo("Release branch does not exist — running create flow");
+						const result = yield* createReleaseBranch();
+						return {
+							created: result.created,
+							updated: false,
+							hasConflicts: false,
+							prNumber: result.prNumber ?? branchCheck.prNumber,
+						};
+					});
+
+			// Bracket the flow ONLY when a PR already exists to write to.
+			//
+			// The create path has nothing to comment on until it has created the PR,
+			// so there is no `running` state to show and the plan is published once,
+			// after. The update path does have one, so the section goes `running`
+			// before the flow and reaches a terminal state on every exit — including
+			// a defect or an interrupt, which is the case a `tap`/`tapError` pair
+			// misses and which would otherwise leave the section reading `running`
+			// forever.
+			const flow =
+				branchCheck.prNumber !== null && !dryRun
+					? withSection(
+							{
+								key: "release-plan",
+								title: "🚀 What will be released",
+								sha: headSha,
+								runId: String(planRunId),
+								now: () => new Date().toISOString(),
+								// Retained on every non-success exit: the plan stays readable,
+								// marked, rather than being blanked to signal freshness.
+								previousBody: planBody,
+								render: () => planBody,
+								publish: publishPlan(branchCheck.prNumber),
+							},
+							runBranchFlow,
+						)
+					: runBranchFlow;
+
+			const { created, updated, hasConflicts, prNumber } = yield* flow;
+
+			// The create path publishes once, after the fact — see above.
+			if (branchCheck.prNumber === null && prNumber !== null && !dryRun) {
+				yield* publishPlan(prNumber)({
+					key: "release-plan",
+					title: "🚀 What will be released",
+					stamp: { state: "complete", sha: headSha, runId: String(planRunId), at: new Date().toISOString() },
+					body: planBody,
+				});
 			}
 
 			// The PR URL is built from the environment rather than a hardcoded host:

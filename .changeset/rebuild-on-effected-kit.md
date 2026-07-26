@@ -65,6 +65,19 @@ was previously invisible in this output. `count` continues to report the number 
 **files**, which is not the length of `packages` — one file may name several packages, and two
 files may name the same one.
 
+### The release plan is posted to the pull request as soon as it is known
+
+Phase 1 now comments a "what will be released" table on the release pull request, listing every
+package the release will version with its current and next version, its bump, and how many
+changeset files named it. Publish readiness is shown as pending until validation runs, rather
+than left blank or assumed — a blank cell is indistinguishable from "no targets".
+
+The comment is a marker-delimited section stamped with the commit it describes, so a reader can
+tell whether it still reflects the branch, and a later phase can update its own section without
+disturbing this one. When the pull request already exists, the section is marked in-progress
+before the branch work starts and reaches a terminal state on every exit — including a crash or
+a cancellation, which previously would have left a stale result looking current.
+
 ## Bug Fixes
 
 ### Phase 1 reported zero changesets while cutting a release
