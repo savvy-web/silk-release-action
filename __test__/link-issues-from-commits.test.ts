@@ -37,9 +37,9 @@ import {
 	Repo,
 	RepoRef,
 } from "@effected/github";
-import { ActionEnvironment, ActionOutputs } from "@effected/github-actions";
+import { ActionEnvironment, ActionInput, ActionOutputs } from "@effected/github-actions";
 import { SemVer } from "@effected/semver";
-import { ConfigProvider, Effect, Layer, Logger, Option } from "effect";
+import { Effect, Layer, Logger, Option } from "effect";
 import { describe, expect, it } from "vitest";
 import type { LinkIssuesResult } from "../src/utils/link-issues-from-commits.js";
 import { getLinkedIssuesFromCommits, linkIssuesFromCommits } from "../src/utils/link-issues-from-commits.js";
@@ -52,7 +52,15 @@ const HEAD_SHA = "headsha123";
 // --- fixture builders ----------------------------------------------------
 
 const commit = (sha: string, message: string, author = "Test Author"): CommitSummary =>
-	CommitSummary.make({ sha, message, author, url: `https://github.com/${OWNER}/${REPO}/commit/${sha}` });
+	CommitSummary.make({
+		sha,
+		message,
+		author,
+		url: `https://github.com/${OWNER}/${REPO}/commit/${sha}`,
+		// Required field now. Nothing here reads it, so an empty list — a root
+		// commit — is the honest value rather than an invented parent.
+		parents: [],
+	});
 
 const semverTag = (tag: string, sha: string, [major, minor, patch]: [number, number, number]): SemverTag =>
 	KitSemverTag.make({
@@ -224,13 +232,15 @@ const runStage = (f: Fixtures, dryRun = false): Promise<LinkIssuesResult> => {
 				}),
 		}),
 	);
-	const config = ConfigProvider.fromUnknown({ "target-branch": TARGET_BRANCH, "dry-run": String(dryRun) });
+	// Runner-shaped input names. The bare-name provider this replaces only
+	// worked because `Config.string` read the plain key; `target-branch` was
+	// equally mis-keyed and stayed invisible because its default is also "main".
+	const inputs = ActionInput.layer({
+		"INPUT_TARGET-BRANCH": TARGET_BRANCH,
+		"INPUT_DRY-RUN": String(dryRun),
+	});
 	return Effect.runPromise(
-		linkIssuesFromCommits.pipe(
-			Effect.provide(layer),
-			Effect.provide(Logger.layer([])),
-			Effect.provide(ConfigProvider.layer(config)),
-		),
+		linkIssuesFromCommits.pipe(Effect.provide(layer), Effect.provide(Logger.layer([])), Effect.provide(inputs)),
 	);
 };
 

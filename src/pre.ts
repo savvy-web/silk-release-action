@@ -1,22 +1,17 @@
-/**
- * Pre-action entry point.
- *
- * @remarks
- * Runs before the main action, in its own Node process. Three jobs:
- *
- * 1. Record the start time, for `post.ts` duration reporting.
- * 2. Provision a GitHub App installation token. The kit's
- *    `GitHubToken.provision` takes its credentials explicitly rather than
- *    reading the inputs itself, so `app-client-id` / `app-private-key` are read
- *    here. It mints the token, verifies the granted scopes, resolves the App
- *    identity best-effort, masks the token, and persists the whole envelope to
- *    `ActionState` for `main.ts` and `post.ts`.
- * 3. Persist the optional `github-token` input for GitHub Packages auth.
- *
- * State bundles are `Schema.Class`es in `./state.ts`.
- *
- * @module pre
- */
+// Pre-action entry point.
+//
+// Runs before the main action, in its own Node process. Three jobs:
+//
+// 1. Record the start time, for `post.ts` duration reporting.
+// 2. Provision a GitHub App installation token. The kit's
+//    `GitHubToken.provision` takes its credentials explicitly rather than
+//    reading the inputs itself, so `app-client-id` / `app-private-key` are read
+//    here. It mints the token, verifies the granted scopes, resolves the App
+//    identity best-effort, masks the token, and persists the whole envelope to
+//    `ActionState` for `main.ts` and `post.ts`.
+// 3. Persist the optional `github-token` input for GitHub Packages auth.
+//
+// State bundles are `Schema.Class`es in `./state.ts`.
 
 import { GitHubApp } from "@effected/github";
 import {

@@ -1,8 +1,4 @@
-/**
- * Unit tests for tarMetaFolder — the meta bundle archiver.
- *
- * @module release/meta-archive.test
- */
+// Unit tests for tarMetaFolder — the meta bundle archiver.
 
 import type { SpawnRecord } from "@effected/commands";
 import { ScriptedSpawner } from "@effected/commands";

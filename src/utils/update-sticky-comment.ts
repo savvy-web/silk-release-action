@@ -1,9 +1,5 @@
-/**
- * Phase 2 utility: upsert a sticky comment on a PR through the kit's
- * marker-based comment service.
- *
- * @module utils/update-sticky-comment
- */
+// Phase 2 utility: upsert a sticky comment on a PR through the kit's
+// marker-based comment service.
 
 import type { GitHubError, Repo } from "@effected/github";
 import { CommentMarker, PullRequestComment } from "@effected/github";

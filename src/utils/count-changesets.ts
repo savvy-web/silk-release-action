@@ -1,19 +1,14 @@
-/**
- * Count changesets per package by reading the **target branch's** `.changeset`
- * directory.
- *
- * @remarks
- * Phase 1's `changeset version` consumes `.changeset/*.md` on the release
- * branch, so they are gone there by the time Phase 2 runs. The target branch
- * still carries them until the release PR merges, so this helper reads them via
- * `@effected/git`'s `lsTree` / `show` against that branch — no checkout.
- *
- * Counting is best-effort: any git or parse failure for an individual file is
- * skipped, and a total failure (e.g. `lsTree` errors) yields an empty map. The
- * returned effect never fails — callers treat a missing package entry as "—".
- *
- * @module utils/count-changesets
- */
+// Count changesets per package by reading the **target branch's** `.changeset`
+// directory.
+//
+// Phase 1's `changeset version` consumes `.changeset/*.md` on the release
+// branch, so they are gone there by the time Phase 2 runs. The target branch
+// still carries them until the release PR merges, so this helper reads them via
+// `@effected/git`'s `lsTree` / `show` against that branch — no checkout.
+//
+// Counting is best-effort: any git or parse failure for an individual file is
+// skipped, and a total failure (e.g. `lsTree` errors) yields an empty map. The
+// returned effect never fails — callers treat a missing package entry as "—".
 
 import { Git } from "@effected/git";
 import { MarkdownDocument, YamlFrontmatter } from "@effected/markdown";

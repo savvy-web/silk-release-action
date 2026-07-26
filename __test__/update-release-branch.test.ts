@@ -36,10 +36,10 @@ import {
 	Repo,
 	RepoRef,
 } from "@effected/github";
-import { ActionEnvironment, ActionOutputs, ActionState, ActionStateError } from "@effected/github-actions";
+import { ActionEnvironment, ActionInput, ActionOutputs, ActionState, ActionStateError } from "@effected/github-actions";
 import { PublishabilityDetector, WorkspaceDiscovery } from "@effected/workspaces";
 import { Changesets } from "@savvy-web/silk-effects";
-import { ConfigProvider, DateTime, Effect, FileSystem, Layer, Logger, Option } from "effect";
+import { DateTime, Effect, FileSystem, Layer, Logger, Option } from "effect";
 import { describe, expect, it } from "vitest";
 import { ChangesetConfig } from "../src/release/changeset-config.js";
 import type { LinkedIssue, UpdateReleaseBranchResult } from "../src/utils/update-release-branch.js";
@@ -347,18 +347,23 @@ const runStage = async (
 		plannerLayer,
 		configInspectorStub,
 	);
-	const config = ConfigProvider.fromUnknown({
-		"release-branch": RELEASE_BRANCH,
-		"target-branch": TARGET_BRANCH,
-		"pr-title-prefix": "chore: release",
-		"dry-run": "false",
+	// Runner-shaped input names (`INPUT_<MANGLED>`), through `ActionInput.layer`.
+	// The bare-name provider this replaces was keyed by names the runner never
+	// writes, so the reads under test were resolving through a path production
+	// does not take.
+	//
+	// NOTE: every value here equals its production default, so a mis-named input
+	// still resolves to the same string — these four reads are exercised but not
+	// yet *discriminated*. Making them so needs non-default fixture values, which
+	// ripples into the assertions; recorded as follow-up rather than done here.
+	const inputs = ActionInput.layer({
+		"INPUT_RELEASE-BRANCH": RELEASE_BRANCH,
+		"INPUT_TARGET-BRANCH": TARGET_BRANCH,
+		"INPUT_PR-TITLE-PREFIX": "chore: release",
+		"INPUT_DRY-RUN": "false",
 	});
 	const result = await Effect.runPromise(
-		updateReleaseBranch().pipe(
-			Effect.provide(layer),
-			Effect.provide(Logger.layer([])),
-			Effect.provide(ConfigProvider.layer(config)),
-		),
+		updateReleaseBranch().pipe(Effect.provide(layer), Effect.provide(Logger.layer([])), Effect.provide(inputs)),
 	);
 	return { result, spawns: spawner.spawns };
 };

@@ -1,20 +1,15 @@
-/**
- * Application layer composition.
- *
- * @remarks
- * The orchestration graph for the main action. Everything here is a kit
- * service; no domain services exist yet.
- *
- * **What is deliberately absent.** `ActionEnvironment`, `ActionLogger`,
- * `ActionOutputs`, `ActionState`, `NodeServices` and an `HttpClient` all come
- * from `ActionRuntime` via `Action.run`. Because `ActionRunOptions.layer` is
- * `Layer<R, never, ActionServices>`, this layer may *require* any of them
- * rather than rebuild them — which is why there is no `ActionState.layer` or
- * `ActionOutputs.layer` below, and why the platform is never mentioned except
- * where a non-runtime service needs it.
- *
- * @module layers/app
- */
+// Application layer composition.
+//
+// The orchestration graph for the main action. Everything here is a kit
+// service; no domain services exist yet.
+//
+// **What is deliberately absent.** `ActionEnvironment`, `ActionLogger`,
+// `ActionOutputs`, `ActionState`, `NodeServices` and an `HttpClient` all come
+// from `ActionRuntime` via `Action.run`. Because `ActionRunOptions.layer` is
+// `Layer<R, never, ActionServices>`, this layer may *require* any of them
+// rather than rebuild them — which is why there is no `ActionState.layer` or
+// `ActionOutputs.layer` below, and why the platform is never mentioned except
+// where a non-runtime service needs it.
 
 import { NodeServices } from "@effect/platform-node";
 import { LocalExec } from "@effected/commands";

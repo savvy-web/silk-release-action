@@ -1,21 +1,16 @@
-/**
- * Turbo run-summary detection, diagnostics, and summary rendering.
- *
- * @remarks
- * When a release builds via `turbo run ... --summarize`, Turbo writes a run
- * summary JSON under `.turbo/runs/`. This module detects whether a build is a
- * turbo-summarize build ({@link readTurboDiagnostics}), emits concise live
- * marker lines ({@link emitConciseMarker}), and renders a collapsible
- * step-summary section ({@link renderTurboCacheSection}) so the embedded remote
- * cache's behaviour during a release is observable in the Actions log and
- * job/check summaries.
- *
- * The whole flow is strictly **non-fatal**: callers wrap via
- * {@link Effect.catchCause} and demote any failure to a warning, so build
- * validation never depends on turbo parsing.
- *
- * @module utils/turbo-summary
- */
+// Turbo run-summary detection, diagnostics, and summary rendering.
+//
+// When a release builds via `turbo run ... --summarize`, Turbo writes a run
+// summary JSON under `.turbo/runs/`. This module detects whether a build is a
+// turbo-summarize build (`readTurboDiagnostics`), emits concise live
+// marker lines (`emitConciseMarker`), and renders a collapsible
+// step-summary section (`renderTurboCacheSection`) so the embedded remote
+// cache's behaviour during a release is observable in the Actions log and
+// job/check summaries.
+//
+// The whole flow is strictly **non-fatal**: callers wrap via
+// `Effect.catchCause` and demote any failure to a warning, so build
+// validation never depends on turbo parsing.
 
 import { basename, join } from "node:path";
 import { Effect, FileSystem, Option } from "effect";

@@ -219,9 +219,11 @@ const runBranchManagement = Effect.gen(function* () {
 	yield* grouped(
 		"Phase 1: Release Branch Management",
 		Effect.gen(function* () {
-			const releaseBranch = yield* Config.string("release-branch").pipe(Config.withDefault("changeset-release/main"));
-			const targetBranch = yield* Config.string("target-branch").pipe(Config.withDefault("main"));
-			const dryRun = yield* Config.boolean("dry-run").pipe(Config.withDefault(false));
+			const releaseBranch = yield* ActionInput.string("release-branch").pipe(
+				Config.withDefault("changeset-release/main"),
+			);
+			const targetBranch = yield* ActionInput.string("target-branch").pipe(Config.withDefault("main"));
+			const dryRun = yield* ActionInput.boolean("dry-run").pipe(Config.withDefault(false));
 			yield* Effect.logInfo(`Detected package manager: ${packageManager}`);
 			const branchCheck = yield* checkReleaseBranch(releaseBranch, targetBranch, dryRun);
 
@@ -320,14 +322,14 @@ const runValidation = Effect.gen(function* () {
 	const env = yield* ActionEnvironment;
 	const pullRequests = yield* PullRequest;
 
-	const releaseBranch = yield* Config.string("release-branch").pipe(Config.withDefault("changeset-release/main"));
-	const targetBranch = yield* Config.string("target-branch").pipe(Config.withDefault("main"));
-	const dryRun = yield* Config.boolean("dry-run").pipe(Config.withDefault(false));
+	const releaseBranch = yield* ActionInput.string("release-branch").pipe(Config.withDefault("changeset-release/main"));
+	const targetBranch = yield* ActionInput.string("target-branch").pipe(Config.withDefault("main"));
+	const dryRun = yield* ActionInput.boolean("dry-run").pipe(Config.withDefault(false));
 	// `strict-warnings` escalates warning-severity findings to `failure` on
 	// the per-step AND unified check-run conclusions, letting auto-merge gates
 	// (branch protection, Mergify, …) hold on warnings. Default `false`
 	// preserves the existing advisory-warning semantics.
-	const strictWarnings = yield* Config.boolean("strict-warnings").pipe(Config.withDefault(false));
+	const strictWarnings = yield* ActionInput.boolean("strict-warnings").pipe(Config.withDefault(false));
 	const packageManager = yield* detectPackageManager;
 	const { repositoryOwner: owner, sha } = yield* env.github;
 
@@ -796,8 +798,8 @@ const runPublishing = (mergedReleasePRNumber: number | undefined) =>
 			const logger = yield* ActionLogger;
 			const outputs = yield* ActionOutputs;
 
-			const targetBranch = yield* Config.string("target-branch").pipe(Config.withDefault("main"));
-			const dryRun = yield* Config.boolean("dry-run").pipe(Config.withDefault(false));
+			const targetBranch = yield* ActionInput.string("target-branch").pipe(Config.withDefault("main"));
+			const dryRun = yield* ActionInput.boolean("dry-run").pipe(Config.withDefault(false));
 			const packageManager = yield* detectPackageManager;
 
 			const emitPublishing = (
@@ -998,7 +1000,7 @@ const readEventPullRequestNumber = Effect.gen(function* () {
 
 const runCloseIssues = Effect.gen(function* () {
 	const logger = yield* ActionLogger;
-	const dryRun = yield* Config.boolean("dry-run").pipe(Config.withDefault(false));
+	const dryRun = yield* ActionInput.boolean("dry-run").pipe(Config.withDefault(false));
 
 	yield* logger.group(
 		"Phase 3a: Close Linked Issues",
@@ -1054,9 +1056,9 @@ export const main = Effect.gen(function* () {
 	}
 
 	// Routing.
-	const releaseBranch = yield* Config.string("release-branch").pipe(Config.withDefault("changeset-release/main"));
-	const targetBranch = yield* Config.string("target-branch").pipe(Config.withDefault("main"));
-	const explicitInput = yield* Config.string("phase").pipe(Config.withDefault(""));
+	const releaseBranch = yield* ActionInput.string("release-branch").pipe(Config.withDefault("changeset-release/main"));
+	const targetBranch = yield* ActionInput.string("target-branch").pipe(Config.withDefault("main"));
+	const explicitInput = yield* ActionInput.string("phase").pipe(Config.withDefault(""));
 	const explicitPhase = explicitInput !== "" ? (explicitInput as WorkflowPhase) : undefined;
 
 	const phaseResult = yield* detectWorkflowPhase({
@@ -1109,7 +1111,7 @@ export const main = Effect.gen(function* () {
  *
  * `dry-run` is read here and passed to `makeAppLayer` as a value — the layer
  * stays free of config reads so a test can drive both branches without a
- * `ConfigProvider`. `ActionInput.boolean` rather than `Config.boolean`: a
+ * `ConfigProvider`. `ActionInput.boolean` — as everywhere else now: a
  * malformed `dry-run` fails instead of silently defaulting to a REAL run, and
  * `Layer.orDie` surfaces that at the boundary.
  */

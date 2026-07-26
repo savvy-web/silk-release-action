@@ -20,7 +20,7 @@
 import type { GitHubError, Repo } from "@effected/github";
 import { CheckRun, CheckRunOutput, GitHubCommit, GitHubIssue, GitTag, PullRequest } from "@effected/github";
 import type { ActionEnvironmentError, ActionOutputError } from "@effected/github-actions";
-import { ActionEnvironment, ActionOutputs } from "@effected/github-actions";
+import { ActionEnvironment, ActionInput, ActionOutputs } from "@effected/github-actions";
 import { Config, Effect, Option } from "effect";
 import { summaryWriter } from "./summary-writer.js";
 
@@ -371,8 +371,8 @@ export const linkIssuesFromCommits: Effect.Effect<
 	const outputs = yield* ActionOutputs;
 	const checks = yield* CheckRun;
 
-	const targetBranch = yield* Config.string("target-branch").pipe(Config.withDefault("main"));
-	const dryRun = yield* Config.boolean("dry-run").pipe(Config.withDefault(false));
+	const targetBranch = yield* ActionInput.string("target-branch").pipe(Config.withDefault("main"));
+	const dryRun = yield* ActionInput.boolean("dry-run").pipe(Config.withDefault(false));
 
 	const { sha, repository } = yield* env.github;
 	const [owner, repo] = repository.split("/");

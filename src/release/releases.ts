@@ -1,19 +1,15 @@
-/**
- * Phase-3 release orchestrator: git tags, GitHub releases, release-asset
- * attestation, and artifact-metadata storage records.
- *
- * Ports the behaviour preserved in `src/utils/create-github-releases.ts`
- * (`createGitHubReleases`) and the release-asset attestation logic in
- * `src/utils/create-attestation.ts` (`createReleaseAssetAttestation`) plus
- * the storage-record call in `src/utils/attest-runner.ts`
- * (`runCreateStorageRecord`) to a pure Effect program.
- *
- * Per-tag failures are collected into the `errors` array without aborting the
- * rest of the batch. The overall `success` flag is `true` only when `errors`
- * is empty.
- *
- * @module release/releases
- */
+// Phase-3 release orchestrator: git tags, GitHub releases, release-asset
+// attestation, and artifact-metadata storage records.
+//
+// Ports the behaviour preserved in `src/utils/create-github-releases.ts`
+// (`createGitHubReleases`) and the release-asset attestation logic in
+// `src/utils/create-attestation.ts` (`createReleaseAssetAttestation`) plus
+// the storage-record call in `src/utils/attest-runner.ts`
+// (`runCreateStorageRecord`) to a pure Effect program.
+//
+// Per-tag failures are collected into the `errors` array without aborting the
+// rest of the batch. The overall `success` flag is `true` only when `errors`
+// is empty.
 
 import { copyFileSync, existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -258,8 +254,9 @@ const createStorageRecord = (
 		const purlName = `pkg:npm/${packageName}@${version}`;
 		const unscopedName = getUnscopedName(packageName);
 
+		// One argument now: the service resolves the org from `Repo` itself,
+		// matching every other resource method rather than taking it positionally.
 		return yield* artifactMetadata.createStorageRecord(
-			owner,
 			StorageRecordInput.make({
 				name: purlName,
 				digest,

@@ -1,35 +1,30 @@
-/**
- * Extract the topmost release section from a package's `CHANGELOG.md`.
- *
- * @remarks
- * Pure function — file I/O via `node:fs`, parsing via `@effected/markdown`'s
- * synchronous `Result` entry point. No Effect service requirements, so
- * non-Effect callers can use it directly.
- *
- * Rule: the **first H2** in `CHANGELOG.md` is the newest entry (changeset
- * version always inserts new versions at the top), and the content runs to
- * the **next H2** (or end-of-file when this is the package's first release).
- * The H2 heading shape itself can be either:
- *
- * - `## 5.0.13` (fixed-release mode), or
- * - `## @savvy-web/standalone-package@0.9.5` (multi-package tagged mode).
- *
- * Both formats are accepted — the extractor only locates the H2 boundaries.
- * GitHub Releases later inserts the same H2 heading verbatim when posting the
- * release notes, so the body extracted here is exactly what the consumer
- * will see on the release page.
- *
- * `MarkdownDocument.sections` considers **root-level headings only**, which is
- * what the hand-rolled `/^## /` line scan this replaces could not do: a `## `
- * line inside a fenced code block terminated the section early, truncating any
- * changelog entry that quoted one.
- *
- * Returns a discriminated result so the caller can render `found` content,
- * an explanatory "no CHANGELOG" or "no version section" status, or a read
- * error without throwing.
- *
- * @module utils/extract-release-notes
- */
+// Extract the topmost release section from a package's `CHANGELOG.md`.
+//
+// Pure function — file I/O via `node:fs`, parsing via `@effected/markdown`'s
+// synchronous `Result` entry point. No Effect service requirements, so
+// non-Effect callers can use it directly.
+//
+// Rule: the **first H2** in `CHANGELOG.md` is the newest entry (changeset
+// version always inserts new versions at the top), and the content runs to
+// the **next H2** (or end-of-file when this is the package's first release).
+// The H2 heading shape itself can be either:
+//
+// - `## 5.0.13` (fixed-release mode), or
+// - `## @savvy-web/standalone-package@0.9.5` (multi-package tagged mode).
+//
+// Both formats are accepted — the extractor only locates the H2 boundaries.
+// GitHub Releases later inserts the same H2 heading verbatim when posting the
+// release notes, so the body extracted here is exactly what the consumer
+// will see on the release page.
+//
+// `MarkdownDocument.sections` considers **root-level headings only**, which is
+// what the hand-rolled `/^## /` line scan this replaces could not do: a `## `
+// line inside a fenced code block terminated the section early, truncating any
+// changelog entry that quoted one.
+//
+// Returns a discriminated result so the caller can render `found` content,
+// an explanatory "no CHANGELOG" or "no version section" status, or a read
+// error without throwing.
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";

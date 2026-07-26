@@ -14,7 +14,7 @@ import { Run } from "@effected/commands";
 import type { GitHubError, Repo } from "@effected/github";
 import { Annotation, CheckRun, CheckRunOutput } from "@effected/github";
 import type { ActionEnvironmentError, ActionOutputError } from "@effected/github-actions";
-import { ActionEnvironment, ActionOutputs } from "@effected/github-actions";
+import { ActionEnvironment, ActionInput, ActionOutputs } from "@effected/github-actions";
 import type { FileSystem } from "effect";
 import { Cause, Config, Effect } from "effect";
 import type { ChildProcessSpawner } from "effect/unstable/process";
@@ -130,8 +130,8 @@ export const validateBuilds = (
 		const outputs = yield* ActionOutputs;
 		const checks = yield* CheckRun;
 
-		const buildCommand = yield* Config.string("build-command").pipe(Config.withDefault(""));
-		const dryRun = yield* Config.boolean("dry-run").pipe(Config.withDefault(false));
+		const buildCommand = yield* ActionInput.string("build-command").pipe(Config.withDefault(""));
+		const dryRun = yield* ActionInput.boolean("dry-run").pipe(Config.withDefault(false));
 
 		const { sha } = yield* env.github;
 

@@ -22,8 +22,8 @@ import type { ScriptResult } from "@effected/commands";
 import { ScriptedSpawner } from "@effected/commands";
 import type { CheckRunOutput } from "@effected/github";
 import { CheckRun, CheckRunRef, Repo, RepoRef } from "@effected/github";
-import { ActionEnvironment, ActionOutputs } from "@effected/github-actions";
-import { ConfigProvider, Effect, Layer, Logger } from "effect";
+import { ActionEnvironment, ActionInput, ActionOutputs } from "@effected/github-actions";
+import { Effect, Layer, Logger } from "effect";
 import { describe, expect, it } from "vitest";
 import type { BuildValidationResult } from "../src/utils/validate-builds.js";
 import { validateBuilds } from "../src/utils/validate-builds.js";
@@ -95,15 +95,20 @@ const runStage = async (
 	opts: RunOpts = {},
 ): Promise<{ result: BuildValidationResult; spawner: ScriptedSpawner }> => {
 	const spawner = ScriptedSpawner.make(opts.script ?? (() => ({ exit: 0, stdout: "", stderr: "" })));
-	const config = ConfigProvider.fromUnknown({
-		"build-command": "",
-		"dry-run": opts.dryRun === true ? "true" : "false",
+	// Keyed the way the RUNNER writes inputs (`INPUT_<MANGLED>`), through
+	// `ActionInput.layer`. The previous provider used the bare names — which
+	// `Config.string("dry-run")` happened to resolve, and `ActionInput` does not.
+	// That is the whole point: the test was configuring the code by a name
+	// production never uses.
+	const inputs = ActionInput.layer({
+		"INPUT_BUILD-COMMAND": "",
+		"INPUT_DRY-RUN": opts.dryRun === true ? "true" : "false",
 	});
 	const result = await Effect.runPromise(
 		validateBuilds("pnpm").pipe(
 			Effect.provide(Layer.mergeAll(githubLayers(f), spawner.layer, NodeFileSystem.layer)),
 			Effect.provide(Logger.layer([])),
-			Effect.provide(ConfigProvider.layer(config)),
+			Effect.provide(inputs),
 		),
 	);
 	return { result, spawner };

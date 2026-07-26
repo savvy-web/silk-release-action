@@ -1,14 +1,10 @@
-/**
- * Release orchestration layer.
- *
- * Composes workspace discovery / topological sorting from `@effected/workspaces`
- * with the silk `ChangesetConfig` service, the adaptive
- * `PublishabilityDetector` override (silk rules in silk mode, library defaults
- * in vanilla mode, no-op in none mode), and the silk-effects native
- * versioning services (`Changesets.ReleasePlanner` / `Changesets.ConfigInspector`).
- *
- * @module release/layers
- */
+// Release orchestration layer.
+//
+// Composes workspace discovery / topological sorting from `@effected/workspaces`
+// with the silk `ChangesetConfig` service, the adaptive
+// `PublishabilityDetector` override (silk rules in silk mode, library defaults
+// in vanilla mode, no-op in none mode), and the silk-effects native
+// versioning services (`Changesets.ReleasePlanner` / `Changesets.ConfigInspector`).
 
 import { Workspaces } from "@effected/workspaces";
 import { ChangesetConfigReaderLive, Changesets } from "@savvy-web/silk-effects";

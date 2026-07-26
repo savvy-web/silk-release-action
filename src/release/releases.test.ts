@@ -162,10 +162,10 @@ const makeAttestationLayer = () => {
 
 /** Records every storage-record call. */
 const makeArtifactMetadataLayer = () => {
-	const calls: Array<{ org: string; input: Record<string, unknown> }> = [];
+	const calls: Array<Record<string, unknown>> = [];
 	const layer = ArtifactMetadata.layerTest({
-		createStorageRecord: (org, input) => {
-			calls.push({ org, input: input as unknown as Record<string, unknown> });
+		createStorageRecord: (input) => {
+			calls.push(input as unknown as Record<string, unknown>);
 			return Effect.succeed([1]);
 		},
 	});
@@ -998,13 +998,14 @@ describe("runReleases", () => {
 			const call = artifact.calls[0];
 			expect(call).toBeDefined();
 			if (!call) return;
-			expect(call.org).toBe("test-owner");
-			expect(call.input.name).toBe("pkg:npm/@test/pkg-gh@5.0.0");
-			expect(call.input.digest).toBe(`sha256:${DIGEST_HEX}`);
-			expect(call.input.repository).toBe("pkg-gh");
-			expect(call.input.registryUrl).toBe("https://npm.pkg.github.com/");
-			expect(call.input.artifactUrl).toBe("https://github.com/test-owner/pkgs/npm/pkg-gh");
-			expect(call.input).not.toHaveProperty("version");
+			// The org is no longer passed positionally — the service resolves it
+			// from `Repo`, like every other resource method.
+			expect(call.name).toBe("pkg:npm/@test/pkg-gh@5.0.0");
+			expect(call.digest).toBe(`sha256:${DIGEST_HEX}`);
+			expect(call.repository).toBe("pkg-gh");
+			expect(call.registryUrl).toBe("https://npm.pkg.github.com/");
+			expect(call.artifactUrl).toBe("https://github.com/test-owner/pkgs/npm/pkg-gh");
+			expect(call).not.toHaveProperty("version");
 		});
 
 		it("does NOT create a storage record for a non-GitHub-Packages target", async () => {

@@ -1,17 +1,12 @@
-/**
- * Post-action entry point.
- *
- * @remarks
- * Runs after the main action, **even when it failed**. Two jobs: report total
- * duration, and revoke the GitHub App installation token `pre.ts` provisioned.
- *
- * A post-action failure must never fail the workflow — the run is often already
- * failing for a reason the operator needs to see, and a second failure on the
- * way out only obscures it. Hence the belt-and-braces `Effect.catch` on
- * revocation plus `Effect.catchDefect` around the whole program.
- *
- * @module post
- */
+// Post-action entry point.
+//
+// Runs after the main action, **even when it failed**. Two jobs: report total
+// duration, and revoke the GitHub App installation token `pre.ts` provisioned.
+//
+// A post-action failure must never fail the workflow — the run is often already
+// failing for a reason the operator needs to see, and a second failure on the
+// way out only obscures it. Hence the belt-and-braces `Effect.catch` on
+// revocation plus `Effect.catchDefect` around the whole program.
 
 import { GitHubApp } from "@effected/github";
 import { Action, ActionInput, ActionState, GitHubToken } from "@effected/github-actions";

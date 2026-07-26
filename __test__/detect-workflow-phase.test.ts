@@ -49,7 +49,9 @@ const makeFixtures = (
 			state: pr.state,
 			// `head`/`base`, NOT `headRef`/`baseRef`.
 			head: pr.head,
+			headSha: `head-sha-${pr.number}`,
 			base: pr.base,
+			baseSha: `base-sha-${pr.number}`,
 			draft: false,
 			merged: (pr.mergedAt ?? null) !== null,
 			// `mergedAt` is a REQUIRED Option on the kit's shape.
@@ -279,7 +281,9 @@ const makeAssociatedPR = (over: Partial<PullRequestInfo> = {}): PullRequestInfo 
 		title: "chore: release",
 		state: "closed",
 		head: RELEASE_BRANCH,
+		headSha: "head-sha-7",
 		base: TARGET_BRANCH,
+		baseSha: "base-sha-7",
 		draft: false,
 		merged: true,
 		mergedAt: Option.some(DateTime.makeUnsafe("2026-01-15T12:00:00Z")),

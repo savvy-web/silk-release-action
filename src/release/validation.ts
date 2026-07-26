@@ -1,19 +1,15 @@
-/**
- * Phase-2 validation orchestrator.
- *
- * Enumerates workspace packages, diffs versions against the target branch to
- * discover which packages are being released, resolves publish targets, groups
- * them by build directory, runs a real dry-run per build directory via
- * `PackagePublish.dryRun`, generates one SBOM per build directory via `Sbom`
- * (with `sbom-config` metadata applied), and assembles a `ValidationReport`.
- *
- * The report is build-centric: the per-package `validationPackages` carry the
- * builds, sizes, SBOMs, and registry targets. `main.ts` projects them into the
- * canonical `ValidationOutput`, which is both emitted and rendered to the
- * sticky comment — this module does not render markdown.
- *
- * @module release/validation
- */
+// Phase-2 validation orchestrator.
+//
+// Enumerates workspace packages, diffs versions against the target branch to
+// discover which packages are being released, resolves publish targets, groups
+// them by build directory, runs a real dry-run per build directory via
+// `PackagePublish.dryRun`, generates one SBOM per build directory via `Sbom`
+// (with `sbom-config` metadata applied), and assembles a `ValidationReport`.
+//
+// The report is build-centric: the per-package `validationPackages` carry the
+// builds, sizes, SBOMs, and registry targets. `main.ts` projects them into the
+// canonical `ValidationOutput`, which is both emitted and rendered to the
+// sticky comment — this module does not render markdown.
 
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
@@ -431,8 +427,8 @@ export const runValidation = (args: ValidationInputArgs) =>
 
 		// ── Resolve the SBOM metadata template once ──────────────────────────
 		// `loadSBOMConfig` looks up `.github/silk-release.json`, then the
-		// `sbom-config` action input (read via `Config.string("sbom-config")`
-		// under the ambient action-input `ConfigProvider`, which uses the canonical
+		// `sbom-config` action input (read via `ActionInput.string("sbom-config")`
+		// under the ambient `ActionInput` provider, which uses the canonical
 		// GitHub Actions env-var convention `INPUT_SBOM-CONFIG` — hyphens
 		// preserved, only spaces mapped to underscores), then the
 		// `SILK_RELEASE_SBOM_TEMPLATE` variable. Each candidate is decoded

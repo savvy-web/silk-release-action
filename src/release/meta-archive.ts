@@ -1,8 +1,4 @@
-/**
- * Pack a bundler `meta/` folder into a gzip tarball release asset.
- *
- * @module release/meta-archive
- */
+// Pack a bundler `meta/` folder into a gzip tarball release asset.
 import { basename, dirname } from "node:path";
 import type { CommandFailedError, CommandOutputError } from "@effected/commands";
 import { Run } from "@effected/commands";

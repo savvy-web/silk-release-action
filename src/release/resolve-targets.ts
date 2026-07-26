@@ -1,12 +1,8 @@
-/**
- * Shared publish-target resolution.
- *
- * `resolvePublishableTargets` composes the `PublishabilityDetector` with the
- * built-`package.json` private filter — the exact path Phase-2 validation and
- * Phase-3 publish use to decide what is actually publishable.
- *
- * @module release/resolve-targets
- */
+// Shared publish-target resolution.
+//
+// `resolvePublishableTargets` composes the `PublishabilityDetector` with the
+// built-`package.json` private filter — the exact path Phase-2 validation and
+// Phase-3 publish use to decide what is actually publishable.
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";

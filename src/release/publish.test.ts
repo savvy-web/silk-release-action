@@ -17,15 +17,17 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ScriptedSpawner } from "@effected/commands";
-import type { AttestationShape, GitHubFixtures } from "@effected/github";
+import type { AttestationShape } from "@effected/github";
 import {
 	Attestation,
 	AttestationListEntry,
 	AttestationRecord,
 	CommitFile,
-	GitHubClient,
+	CommitSummary,
 	GitHubCommit,
 	GitHubContent,
+	PullRequest,
+	PullRequestInfo,
 	Repo,
 	RepoRef,
 } from "@effected/github";
@@ -121,6 +123,24 @@ const makePublishabilityLayer = (targetsByName: Map<string, PublishTarget[]>): L
 
 const repoLayer = Layer.succeed(Repo, RepoRef.make({ owner: "test-owner", repo: "test-repo" }));
 
+/** A minimal merged release PR. `headSha`/`baseSha` are required fields. */
+const prInfo = (number: number, baseSha: string): PullRequestInfo =>
+	PullRequestInfo.make({
+		number,
+		nodeId: `PR_node_${number}`,
+		url: `https://github.com/test-owner/test-repo/pull/${number}`,
+		title: `Release PR #${number}`,
+		state: "closed",
+		head: "changeset-release/main",
+		headSha: "head-sha-abc",
+		base: "main",
+		baseSha,
+		draft: false,
+		merged: true,
+		mergedAt: Option.none(),
+		mergeCommitSha: "merge-sha",
+	});
+
 /**
  * A `GitHubContent` double answering base-branch file text, keyed by
  * `` `${ref}:${path}` ``.
@@ -137,16 +157,15 @@ const makeContentLayer = (files: ReadonlyMap<string, string>): Layer.Layer<GitHu
  * Build test layers that simulate `detectFromPR` responses.
  *
  * @remarks
- * The two reads `detectFromPR` makes go through `GitHubClient` typed routes,
- * because `PullRequest.listFiles` drops each file's `status` and
- * `PullRequestInfo` carries the base **branch name** rather than the base sha.
- * `GitHubClient.layerFixture` records both against their route keys and pages
- * the file list for real.
+ * Entirely on `PullRequest` now. This helper used to drive
+ * `GitHubClient.layerFixture` against two raw routes, because `listFiles`
+ * dropped each file's `status` and `PullRequestInfo` had no base sha. Both are
+ * first-class fields, so the double is the resource service.
  */
 const makeLayerForPR = (
 	prNumber: number,
 	packages: Array<{ name: string; newVersion: string; oldVersion: string; filename: string }>,
-): { layer: Layer.Layer<GitHubClient | GitHubCommit | GitHubContent | Repo>; tmpCwd: string } => {
+): { layer: Layer.Layer<GitHubCommit | GitHubContent | PullRequest | Repo>; tmpCwd: string } => {
 	const tmpCwd = join(tmpdir(), `silk-publish-test-${prNumber}-${Date.now()}`);
 	mkdirSync(tmpCwd, { recursive: true });
 
@@ -158,22 +177,34 @@ const makeLayerForPR = (
 		mkdirSync(dir, { recursive: true });
 		writeFileSync(join(tmpCwd, pkg.filename), JSON.stringify({ name: pkg.name, version: pkg.newVersion }));
 		contentFiles.set(`${baseSha}:${pkg.filename}`, JSON.stringify({ name: pkg.name, version: pkg.oldVersion }));
-		return { filename: pkg.filename, status: "modified" };
+		return CommitFile.make({ path: pkg.filename, status: "modified", additions: 1, deletions: 1 });
 	});
-
-	const fixtures: GitHubFixtures = {
-		paginate: { "GET /repos/{owner}/{repo}/pulls/{pull_number}/files": files },
-		request: { "GET /repos/{owner}/{repo}/pulls/{pull_number}": { base: { sha: baseSha } } },
-	};
 
 	return {
 		layer: Layer.mergeAll(
-			GitHubClient.layerFixture(fixtures),
+			PullRequest.layerTest({
+				listFiles: () => Effect.succeed(files),
+				get: () => Effect.succeed(prInfo(prNumber, baseSha)),
+			}),
 			makeContentLayer(contentFiles),
-			// `detectReleases` requires `GitHubCommit`; the PR path never reaches
-			// `detectFromCommit`, so a double whose members all die is correct —
-			// if one is ever called, that is the finding.
-			GitHubCommit.layerTest(),
+			// `detectReleases` falls back to `detectFromCommit` when the PR path
+			// detects nothing, so `GitHubCommit.get` IS reached. It answers a ROOT
+			// commit — no parents — which is the honest "nothing to diff against"
+			// and makes the fallback return empty rather than inventing a base.
+			// `changedFiles` is left unstubbed on purpose: reaching it would mean
+			// the early return did not fire, and that should die loudly.
+			GitHubCommit.layerTest({
+				get: (ref) =>
+					Effect.succeed(
+						CommitSummary.make({
+							sha: ref,
+							message: "root",
+							author: "Test Author",
+							url: `https://github.com/test-owner/test-repo/commit/${ref}`,
+							parents: [],
+						}),
+					),
+			}),
 			repoLayer,
 		),
 		tmpCwd,
@@ -192,7 +223,7 @@ const makeLayerForCommit = (
 	sha: string,
 	baseSha: string,
 	pkg: { name: string; newVersion: string; oldVersion: string; filename: string },
-): { layer: Layer.Layer<GitHubClient | GitHubCommit | GitHubContent | Repo>; tmpCwd: string } => {
+): { layer: Layer.Layer<GitHubCommit | GitHubContent | PullRequest | Repo>; tmpCwd: string } => {
 	const tmpCwd = join(tmpdir(), `silk-publish-commit-test-${sha}-${Date.now()}`);
 	const dir = join(tmpCwd, ...pkg.filename.split("/").slice(0, -1));
 	mkdirSync(dir, { recursive: true });
@@ -204,14 +235,28 @@ const makeLayerForCommit = (
 
 	return {
 		layer: Layer.mergeAll(
-			GitHubClient.layerFixture({
-				request: { "GET /repos/{owner}/{repo}/commits/{ref}": { parents: [{ sha: baseSha }] } },
-			}),
 			GitHubCommit.layerTest({
+				// `parents` is a required field on `CommitSummary` now, and its first
+				// entry is the base the diff is taken against. This used to need a raw
+				// `GET /repos/{owner}/{repo}/commits/{ref}` route.
+				get: (ref) =>
+					Effect.succeed(
+						CommitSummary.make({
+							sha: ref,
+							message: "chore: release",
+							author: "Test Author",
+							url: `https://github.com/test-owner/test-repo/commit/${ref}`,
+							parents: [baseSha],
+						}),
+					),
 				changedFiles: () =>
 					Effect.succeed([CommitFile.make({ path: pkg.filename, status: "modified", additions: 1, deletions: 1 })]),
 			}),
 			makeContentLayer(contentFiles),
+			// The commit path passes `mergedReleasePRNumber: undefined`, so
+			// `detectFromPR` is never invoked — a double whose members all die is
+			// the correct stand-in, and a call would be the finding.
+			PullRequest.layerTest(),
 			repoLayer,
 		),
 		tmpCwd,
@@ -339,9 +384,7 @@ const makePackagePublishLayer = (
 		},
 		publishTarball: (tarballPath, publishOptions) => {
 			publishTarballCalls.push({ tarballPath, options: publishOptions });
-			return Effect.succeed({
-				provenanceUrl: options.provenanceUrl === undefined ? Option.none() : Option.some(options.provenanceUrl),
-			});
+			return Effect.succeed(options.provenanceUrl === undefined ? {} : { provenanceUrl: options.provenanceUrl });
 		},
 		dryRun: () => Effect.die(new Error("dryRun is not part of the Phase-3 flow")),
 	};
@@ -411,7 +454,7 @@ describe("userNpmrcPath", () => {
 // ─── detectReleases ───────────────────────────────────────────────────────────
 
 describe("detectReleases", () => {
-	const detectionLayers = (ghLayer: Layer.Layer<GitHubClient | GitHubCommit | GitHubContent | Repo>) =>
+	const detectionLayers = (ghLayer: Layer.Layer<GitHubCommit | GitHubContent | PullRequest | Repo>) =>
 		Layer.mergeAll(ghLayer, loggerLayer, environmentLayer, changesetConfigDefaultLayer);
 
 	describe("detection via the commit diff (detectFromCommit)", () => {

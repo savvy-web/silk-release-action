@@ -27,7 +27,7 @@ import {
 	PullRequest,
 } from "@effected/github";
 import type { ActionEnvironmentError, ActionOutputError, ActionState } from "@effected/github-actions";
-import { ActionEnvironment, ActionOutputs } from "@effected/github-actions";
+import { ActionEnvironment, ActionInput, ActionOutputs } from "@effected/github-actions";
 import type { PublishabilityDetector } from "@effected/workspaces";
 import { WorkspaceDiscovery } from "@effected/workspaces";
 import type { Changesets } from "@savvy-web/silk-effects";
@@ -39,8 +39,10 @@ import { resolveSignoff } from "./commit-signoff.js";
 import { isSinglePackage } from "./detect-repo-type.js";
 import { isMonorepoForTagging } from "./determine-tag-strategy.js";
 import { formatWorkspaceWithBiome } from "./format-workspace.js";
+import type { LinkedIssue } from "./link-issues-from-commits.js";
 import { getLinkedIssuesFromCommits } from "./link-issues-from-commits.js";
 import { runNativeVersion } from "./native-version.js";
+import { buildManagedPrBody } from "./pr-body.js";
 import {
 	formatReleasePackageList,
 	getReleasingPackages,
@@ -104,12 +106,15 @@ export const createReleaseBranch = (): Effect.Effect<
 		const fs = yield* FileSystem.FileSystem;
 		const signoff = yield* resolveSignoff();
 
-		const releaseBranch = yield* Config.string("release-branch").pipe(Config.withDefault("changeset-release/main"));
-		const targetBranch = yield* Config.string("target-branch").pipe(Config.withDefault("main"));
-		const prTitlePrefix = yield* Config.string("pr-title-prefix").pipe(Config.withDefault("chore: release"));
-		const dryRun = yield* Config.boolean("dry-run").pipe(Config.withDefault(false));
+		const releaseBranch = yield* ActionInput.string("release-branch").pipe(
+			Config.withDefault("changeset-release/main"),
+		);
+		const targetBranch = yield* ActionInput.string("target-branch").pipe(Config.withDefault("main"));
+		const prTitlePrefix = yield* ActionInput.string("pr-title-prefix").pipe(Config.withDefault("chore: release"));
+		const dryRun = yield* ActionInput.boolean("dry-run").pipe(Config.withDefault(false));
 
-		const { sha, repository } = yield* env.github;
+		const { sha, repository, runId } = yield* env.github;
+		const [owner = "", repo = ""] = repository.split("/");
 
 		yield* Effect.logInfo(`Creating branch '${releaseBranch}' from '${targetBranch}' HEAD`);
 		if (!dryRun) {
@@ -290,9 +295,15 @@ export const createReleaseBranch = (): Effect.Effect<
 			yield* Effect.logInfo(`Repository node ID: ${repoNodeId}`);
 		}
 
+		// Hoisted out of the branch-linking block below: the PR body needs the same
+		// issues, and scoping them to that block is why the create path had none.
+		let linkedIssues: ReadonlyArray<LinkedIssue> = [];
+
 		if (!dryRun && finalCommitSha) {
 			yield* Effect.logInfo(`Searching for linked issues from commits on branch: ${targetBranch}`);
-			const { linkedIssues, commits } = yield* getLinkedIssuesFromCommits(targetBranch);
+			const found = yield* getLinkedIssuesFromCommits(targetBranch);
+			const commits = found.commits;
+			linkedIssues = found.linkedIssues;
 			yield* Effect.logInfo(`Found ${commits.length} commit(s) to analyze`);
 
 			if (linkedIssues.length > 0) {
@@ -328,7 +339,18 @@ export const createReleaseBranch = (): Effect.Effect<
 
 		let prNumber: number | null = null;
 		let prUrl = "";
-		const prBody = "";
+		// The bug this replaces: `const prBody = ""`. A first release PR was
+		// created with an empty description, so GitHub linked nothing — observed
+		// on silk-integration #242 and #232.
+		const prBody = buildManagedPrBody({
+			subject: prTitle,
+			versionSummary,
+			linkedIssues,
+			signoff,
+			owner,
+			repo,
+			runId: String(runId),
+		});
 
 		if (!dryRun) {
 			yield* Effect.logInfo("Creating PR...");

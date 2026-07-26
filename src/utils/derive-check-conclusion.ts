@@ -1,29 +1,24 @@
-/**
- * Pure helper: derive a Phase-2 per-step check-run conclusion from the
- * findings the check produced, the upstream build state, and the
- * `strict-warnings` mode.
- *
- * @remarks
- * The Phase-2 validation orchestrator emits structured findings keyed by
- * `check` (one of the five row names in the checks-table). The check-run
- * conclusion for each row is derived from those findings:
- *
- * - `failure` — at least one error-severity finding is scoped to this check,
- *   or `buildSuccess` is false and this check is one of the build-dependent
- *   ones (anything except `Build Validation` and `Link Issues from Commits`,
- *   which run independently of the build).
- * - `neutral` — at least one warning-severity finding is scoped to this
- *   check, and `strictWarnings` is `false`. The check ran and produced
- *   advisory output but no errors.
- * - `success` — no findings of either severity are scoped to this check.
- *
- * Under `strictWarnings: true`, the `neutral` arm escalates to `failure` —
- * the contract every other consumer (the JSON `findings[].severity`, the
- * checks-table icon) is unchanged, but the GitHub check-run conclusion
- * flips so branch-protection gates can act on warnings.
- *
- * @module utils/derive-check-conclusion
- */
+// Pure helper: derive a Phase-2 per-step check-run conclusion from the
+// findings the check produced, the upstream build state, and the
+// `strict-warnings` mode.
+//
+// The Phase-2 validation orchestrator emits structured findings keyed by
+// `check` (one of the five row names in the checks-table). The check-run
+// conclusion for each row is derived from those findings:
+//
+// - `failure` — at least one error-severity finding is scoped to this check,
+//   or `buildSuccess` is false and this check is one of the build-dependent
+//   ones (anything except `Build Validation` and `Link Issues from Commits`,
+//   which run independently of the build).
+// - `neutral` — at least one warning-severity finding is scoped to this
+//   check, and `strictWarnings` is `false`. The check ran and produced
+//   advisory output but no errors.
+// - `success` — no findings of either severity are scoped to this check.
+//
+// Under `strictWarnings: true`, the `neutral` arm escalates to `failure` —
+// the contract every other consumer (the JSON `findings[].severity`, the
+// checks-table icon) is unchanged, but the GitHub check-run conclusion
+// flips so branch-protection gates can act on warnings.
 
 import type { ValidationFinding } from "../release/types.js";
 

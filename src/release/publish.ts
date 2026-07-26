@@ -1,22 +1,18 @@
-/**
- * Phase-3 publish orchestrator.
- *
- * Detects released packages from a merged PR or commit diff, resolves publish
- * targets via `PublishabilityDetector`, orders them topologically, builds the
- * workspace, and publishes each package to each configured registry —
- * accumulating errors per package so one failure does not abort the batch.
- *
- * @module release/publish
- */
+// Phase-3 publish orchestrator.
+//
+// Detects released packages from a merged PR or commit diff, resolves publish
+// targets via `PublishabilityDetector`, orders them topologically, builds the
+// workspace, and publishes each package to each configured registry —
+// accumulating errors per package so one failure does not abort the batch.
 
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { Run } from "@effected/commands";
-import type { GitHubError } from "@effected/github";
-import { Attestation, GitHubClient, GitHubCommit, GitHubContent, Repo } from "@effected/github";
+import type { GitHubError, Repo } from "@effected/github";
+import { Attestation, GitHubCommit, GitHubContent, PullRequest } from "@effected/github";
 import type { OidcTokenIssuer } from "@effected/github-actions";
-import { ActionEnvironment, ActionLogger, ActionOutputs, ActionState } from "@effected/github-actions";
+import { ActionEnvironment, ActionInput, ActionLogger, ActionOutputs, ActionState } from "@effected/github-actions";
 import { NpmExecutor, NpmRegistry, PackagePublish, classifyRegistry } from "@effected/npm";
 import type { SigstoreSigner } from "@effected/sbom";
 import { CYCLONEDX_BOM_PREDICATE, Sbom, SbomMetadataSource, SlsaProvenance } from "@effected/sbom";
@@ -194,49 +190,47 @@ const releaseFor = (filename: string, oldVersion: string): DetectedRelease | und
  * Detect released packages from the merged PR's file diff.
  *
  * @remarks
- * Two reads go through `GitHubClient.request`/`paginate` rather than
- * `PullRequest`, because the resource service does not surface the fields this
- * needs: `PullRequest.listFiles` projects every file down to its `filename`
- * alone (dropping `status`), and `PullRequestInfo` carries `base` as a **branch
- * name**, not the base commit sha. The route is still the key — parameters and
- * response are typed from the literal, and there is no cast. Reported upstream
- * as a gap rather than worked around silently.
+ * Entirely on the resource surface. Two raw `GitHubClient` routes used to live
+ * here because `PullRequest.listFiles` projected every file down to its path
+ * (dropping `status`) and `PullRequestInfo` carried `base` as a branch **name**
+ * rather than the base commit sha. Both are now first-class:
+ * `listFiles` answers a full `CommitFile`, and `PullRequestInfo.baseSha` is a
+ * required field.
  */
 const detectFromPR = (
 	prNumber: number,
-): Effect.Effect<ReadonlyArray<DetectedRelease>, never, GitHubClient | GitHubContent | Repo> =>
+): Effect.Effect<ReadonlyArray<DetectedRelease>, never, GitHubContent | PullRequest | Repo> =>
 	Effect.gen(function* () {
-		const client = yield* GitHubClient;
 		const content = yield* GitHubContent;
-		const { owner, repo } = yield* Repo;
+		const pullRequests = yield* PullRequest;
 
-		const files = yield* client
-			.paginate("GET /repos/{owner}/{repo}/pulls/{pull_number}/files", { owner, repo, pull_number: prNumber })
-			.pipe(Effect.catch(() => Effect.succeed([])));
+		const files = yield* pullRequests.listFiles(prNumber).pipe(Effect.catch(() => Effect.succeed([])));
 
 		// Filter to package.json files that were modified
 		const modifiedPkgJsonFiles = files.filter(
-			(f) => f.filename.endsWith("package.json") && (f.status === "modified" || f.status === "changed"),
+			(f) => f.path.endsWith("package.json") && (f.status === "modified" || f.status === "changed"),
 		);
 
 		// Also include the root package.json if modified
-		const rootPkgJson = files.find((f) => f.filename === "package.json" && f.status === "modified");
+		const rootPkgJson = files.find((f) => f.path === "package.json" && f.status === "modified");
 		const allPkgJsonFiles = rootPkgJson
-			? [rootPkgJson, ...modifiedPkgJsonFiles.filter((f) => f.filename !== "package.json")]
+			? [rootPkgJson, ...modifiedPkgJsonFiles.filter((f) => f.path !== "package.json")]
 			: modifiedPkgJsonFiles;
 
 		if (allPkgJsonFiles.length === 0) return [];
 
-		const prData = yield* client
-			.request("GET /repos/{owner}/{repo}/pulls/{pull_number}", { owner, repo, pull_number: prNumber })
-			.pipe(Effect.catch(() => Effect.succeed(undefined)));
-
-		const baseSha = prData?.base.sha ?? "";
+		// `baseSha` — the commit the pull request branches from — read off the
+		// record rather than a route. An unreadable PR degrades to `""`, which
+		// `versionAtRef` treats as "no base version", exactly as before.
+		const baseSha = yield* pullRequests.get(prNumber).pipe(
+			Effect.map((pr) => pr.baseSha),
+			Effect.catch(() => Effect.succeed("")),
+		);
 		const releases: DetectedRelease[] = [];
 
 		for (const file of allPkgJsonFiles) {
-			const oldVersion = yield* versionAtRef(content, file.filename, baseSha);
-			const release = releaseFor(file.filename, oldVersion);
+			const oldVersion = yield* versionAtRef(content, file.path, baseSha);
+			const release = releaseFor(file.path, oldVersion);
 			if (release === undefined) continue;
 			yield* Effect.logDebug(
 				`  ${release.name}: ${oldVersion} → ${release.version} (${inferBumpType(oldVersion, release.version)})`,
@@ -257,30 +251,29 @@ const detectFromPR = (
  * would silently drop packages whose `package.json` sorts past #300. That
  * constraint is recorded in the kit's own `compare` docstring.
  *
- * The parent sha goes through `GitHubClient.request`: `CommitSummary` does not
- * carry `parents`. Same posture as `detectFromPR` — typed route, no cast,
- * reported as a gap.
+ * The first parent comes off `CommitSummary.parents`, a required field. It used
+ * to need a raw route; the kit's own remark on the field is that "which
+ * commit(s) did this come from" never needs one.
  */
 const detectFromCommit = (): Effect.Effect<
 	ReadonlyArray<DetectedRelease>,
 	never,
-	ActionEnvironment | GitHubClient | GitHubCommit | GitHubContent | Repo
+	ActionEnvironment | GitHubCommit | GitHubContent | Repo
 > =>
 	Effect.gen(function* () {
-		const client = yield* GitHubClient;
 		const commits = yield* GitHubCommit;
 		const content = yield* GitHubContent;
 		const environment = yield* ActionEnvironment;
-		const { owner, repo } = yield* Repo;
 
 		const sha = Option.getOrElse(yield* environment.getOptional("GITHUB_SHA"), () => "");
 		if (sha === "") return [];
 
-		const commitData = yield* client
-			.request("GET /repos/{owner}/{repo}/commits/{ref}", { owner, repo, ref: sha })
-			.pipe(Effect.catch(() => Effect.succeed(undefined)));
-
-		const baseSha = commitData?.parents[0]?.sha ?? "";
+		// A root commit has no parents and an unreadable commit degrades to none;
+		// both mean "nothing to diff against", which is the existing early return.
+		const baseSha = yield* commits.get(sha).pipe(
+			Effect.map((commit) => commit.parents[0] ?? ""),
+			Effect.catch(() => Effect.succeed("")),
+		);
 		if (baseSha === "") return [];
 
 		const changedFiles = yield* commits.changedFiles(sha).pipe(Effect.catch(() => Effect.succeed([])));
@@ -741,12 +734,11 @@ const publishDirectoryGroup = (
 					success: true,
 					status: "published",
 					...digestFields,
-					// `provenanceUrl` is an `Option`, NOT `string | undefined`. A
-					// `!== undefined` check here would always be true and would stamp
-					// the Option object into a `string` field.
-					...(Option.isSome(publishOutcome.provenanceUrl)
-						? { npmProvenanceUrl: publishOutcome.provenanceUrl.value }
-						: {}),
+					// A plain optional field. It was briefly an `Option`, where a
+					// `!== undefined` check would have been ALWAYS TRUE and stamped the
+					// Option object into a `string` slot; that shape is gone, so the
+					// straightforward check is the correct one again.
+					...(publishOutcome.provenanceUrl !== undefined ? { npmProvenanceUrl: publishOutcome.provenanceUrl } : {}),
 				});
 				publishedCount += 1;
 				continue;
@@ -906,7 +898,7 @@ export const detectReleases = (
 ): Effect.Effect<
 	ReadonlyArray<DetectedRelease>,
 	never,
-	ActionEnvironment | ActionLogger | ChangesetConfig | GitHubClient | GitHubCommit | GitHubContent | Repo
+	ActionEnvironment | ActionLogger | ChangesetConfig | GitHubCommit | GitHubContent | PullRequest | Repo
 > =>
 	Effect.gen(function* () {
 		const logger = yield* ActionLogger;
@@ -1147,7 +1139,12 @@ export const runPublishTargets = (
 		// a `Redacted` and states that masking in the CI log is the caller's job.
 		// Once at resolution, not once per target — masking is idempotent, but a
 		// workflow command per call is noise.
-		const npmTokenOpt = yield* Config.string("npm-token").pipe(Config.option);
+		// `ActionInput.string` treats an absent input AND an empty one as missing
+		// data — the runner writes `""` for an unsupplied input — so `Config.option`
+		// already yields `none` for both. The `!== ""` guard is therefore belt-and-
+		// braces rather than load-bearing; kept because it costs nothing and states
+		// the intent at the call site.
+		const npmTokenOpt = yield* ActionInput.string("npm-token").pipe(Config.option);
 		const npmToken: string | null = Option.isSome(npmTokenOpt) && npmTokenOpt.value !== "" ? npmTokenOpt.value : null;
 		if (npmToken !== null) yield* outputs.setSecret(npmToken);
 

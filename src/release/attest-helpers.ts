@@ -1,15 +1,10 @@
-/**
- * Shared attestation helpers for the Phase-3 publish and release flows.
- *
- * @remarks
- * The kit splits attestation deliberately: `@effected/sbom` builds and signs a
- * statement, `@effected/github` stores the bundle, and assembling the two into
- * a pipeline is the consumer's job (`AttestationShape`'s own remarks say so).
- * This module is that assembly, in one place, so `publish.ts` and `releases.ts`
- * do not each grow their own copy.
- *
- * @module release/attest-helpers
- */
+// Shared attestation helpers for the Phase-3 publish and release flows.
+//
+// The kit splits attestation deliberately: `@effected/sbom` builds and signs a
+// statement, `@effected/github` stores the bundle, and assembling the two into
+// a pipeline is the consumer's job (`AttestationShape`'s own remarks say so).
+// This module is that assembly, in one place, so `publish.ts` and `releases.ts`
+// do not each grow their own copy.
 
 import type { GitHubError, Repo } from "@effected/github";
 import { Attestation } from "@effected/github";

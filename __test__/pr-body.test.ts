@@ -1,0 +1,148 @@
+/**
+ * Tests for the generated release-PR description.
+ *
+ * The behaviour that matters is narrow and easy to lose: **GitHub links an
+ * issue when the PR body carries a bare `Closes #N` line outside any fenced
+ * block.** Everything else in the body is presentation.
+ *
+ * Verified against the live repository before these were written:
+ * `savvy-web/silk-integration` #242 and #232 were created with an empty body
+ * and reported `closingIssuesReferences: []`; #243 carried a bare `Closes #168`
+ * and reported `[168]`.
+ */
+
+import { describe, expect, it } from "vitest";
+import type { LinkedIssueRef } from "../src/utils/pr-body.js";
+import {
+	MANAGED_END,
+	MANAGED_START,
+	SQUASH_FENCE_LANGUAGE,
+	buildClosingReferences,
+	buildManagedPrBody,
+	upsertManagedRegion,
+} from "../src/utils/pr-body.js";
+
+const SIGNOFF = "Signed-off-by: C. Spencer Beggs <spencer@savvyweb.systems>";
+
+const openIssue = (number: number, title = "Some title"): LinkedIssueRef => ({ number, title, state: "open" });
+const closedIssue = (number: number, title = "Done already"): LinkedIssueRef => ({ number, title, state: "closed" });
+
+const body = (linkedIssues: ReadonlyArray<LinkedIssueRef>, versionSummary = "@scope/pkg 1.0.0 → 2.0.0"): string =>
+	buildManagedPrBody({
+		subject: "release: 2.0.0",
+		versionSummary,
+		linkedIssues,
+		signoff: SIGNOFF,
+		owner: "savvy-web",
+		repo: "silk-integration",
+		runId: "42",
+	});
+
+/**
+ * Strip every fenced code block.
+ *
+ * @remarks
+ * This is the whole point of the suite: a `Closes #N` **inside** a fence is
+ * inert to GitHub's linker. Asserting on the raw body would pass on the
+ * proposed-squash-commit block alone and prove nothing.
+ */
+const outsideFences = (markdown: string): string => markdown.replace(/```[\s\S]*?```/g, "");
+
+describe("buildManagedPrBody — the linking contract", () => {
+	it("emits a bare `Closes #N` line OUTSIDE any fenced block", () => {
+		const plain = outsideFences(body([openIssue(168)]));
+		expect(plain.split("\n").map((l) => l.trim())).toContain("Closes #168");
+	});
+
+	it("emits one bare closing line per open issue", () => {
+		const plain = outsideFences(body([openIssue(1), openIssue(2), openIssue(3)]));
+		const lines = plain.split("\n").map((l) => l.trim());
+		expect(lines).toContain("Closes #1");
+		expect(lines).toContain("Closes #2");
+		expect(lines).toContain("Closes #3");
+	});
+
+	it("does NOT emit a closing reference for an already-closed issue", () => {
+		const plain = outsideFences(body([openIssue(10), closedIssue(11)]));
+		const lines = plain.split("\n").map((l) => l.trim());
+		expect(lines).toContain("Closes #10");
+		expect(lines).not.toContain("Closes #11");
+		// It still appears in the human-readable list, struck through.
+		expect(body([openIssue(10), closedIssue(11)])).toContain("~~#11: Done already~~");
+	});
+
+	it("produces no closing references when nothing is linked", () => {
+		expect(buildClosingReferences([])).toBe("");
+		expect(outsideFences(body([]))).not.toContain("Closes #");
+	});
+});
+
+describe("buildManagedPrBody — the proposed squash-commit block", () => {
+	it("fences the block with the `proposed-squash-commit` language", () => {
+		expect(body([openIssue(168)])).toContain("```proposed-squash-commit");
+		// Pinned as a constant so a well-meaning "fix" to `text` fails here.
+		expect(SQUASH_FENCE_LANGUAGE).toBe("proposed-squash-commit");
+	});
+
+	it("carries the subject, the closing reference and the resolved signoff", () => {
+		const fenced = /```proposed-squash-commit\n([\s\S]*?)```/.exec(body([openIssue(168)]))?.[1] ?? "";
+		expect(fenced).toContain("release: 2.0.0");
+		expect(fenced).toContain("Closes #168");
+		expect(fenced).toContain(SIGNOFF);
+	});
+
+	it("takes the signoff from its argument rather than hard-coding an identity", () => {
+		const other = buildManagedPrBody({
+			subject: "release: 1.0.0",
+			versionSummary: "",
+			linkedIssues: [openIssue(5)],
+			signoff: "Signed-off-by: Someone Else <other@example.com>",
+			owner: "o",
+			repo: "r",
+			runId: "1",
+		});
+		expect(other).toContain("Signed-off-by: Someone Else <other@example.com>");
+		expect(other).not.toContain("savvyweb.systems");
+	});
+});
+
+describe("upsertManagedRegion", () => {
+	it("preserves human content written above the managed region", () => {
+		const human = "Some notes I typed by hand.\n\nAnd a second paragraph.";
+		const first = upsertManagedRegion(human, body([openIssue(168)]));
+		expect(first).toContain("Some notes I typed by hand.");
+		expect(first).toContain("And a second paragraph.");
+		expect(first).toContain(MANAGED_START);
+	});
+
+	it("replaces a previous managed region rather than appending a second one", () => {
+		const first = upsertManagedRegion("", body([openIssue(168)]));
+		const second = upsertManagedRegion(first, body([openIssue(200)]));
+
+		expect(second.split(MANAGED_START)).toHaveLength(2);
+		expect(second.split(MANAGED_END)).toHaveLength(2);
+		const plain = outsideFences(second)
+			.split("\n")
+			.map((l) => l.trim());
+		expect(plain).toContain("Closes #200");
+		expect(plain).not.toContain("Closes #168");
+	});
+
+	it("keeps human content when the region is regenerated", () => {
+		const human = "Reviewer note: hold until Friday.";
+		const first = upsertManagedRegion(human, body([openIssue(168)]));
+		const second = upsertManagedRegion(first, body([openIssue(168), openIssue(169)]));
+		expect(second).toContain("Reviewer note: hold until Friday.");
+		expect(
+			outsideFences(second)
+				.split("\n")
+				.map((l) => l.trim()),
+		).toContain("Closes #169");
+	});
+
+	it("seeds an empty body with just the managed region", () => {
+		const seeded = upsertManagedRegion("", body([openIssue(168)]));
+		expect(seeded.startsWith(MANAGED_START)).toBe(true);
+		expect(seeded.trimEnd().endsWith(MANAGED_END)).toBe(true);
+	});
+});

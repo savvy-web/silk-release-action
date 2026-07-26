@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { ActionInput } from "@effected/github-actions";
 import { Jsonc } from "@effected/jsonc";
 import { Config, Effect, Result, Schema } from "effect";
 import type { SchemaError } from "effect/SchemaError";
@@ -188,9 +189,9 @@ function loadConfigFromEnvVar(): Result.Result<ReleaseConfig | undefined, string
  * Load configuration from the `sbom-config` action input.
  *
  * @remarks
- * Reads via `Config.string` so the ambient action-input `ConfigProvider`
- * (`main.ts`'s default provider) handles the GitHub Actions env-var
- * convention — `core.getInput("sbom-config")` reads `INPUT_SBOM-CONFIG`,
+ * Reads via `ActionInput.string`, which derives the runner's variable name
+ * itself rather than depending on an ambient provider to translate a bare
+ * one — `core.getInput("sbom-config")` reads `INPUT_SBOM-CONFIG`,
  * with **hyphens preserved** (only spaces are mapped to underscores). The
  * prior direct `process.env["INPUT_SBOM_CONFIG"]` read silently missed the
  * input because the actual env-var name is `INPUT_SBOM-CONFIG` — a
@@ -206,7 +207,7 @@ function loadConfigFromEnvVar(): Result.Result<ReleaseConfig | undefined, string
 // pure and `loadReleaseConfig`'s caller does not have to thread `ConfigError`
 // through its error channel.
 const loadConfigFromInput: Effect.Effect<Result.Result<ReleaseConfig | undefined, string>> = Effect.gen(function* () {
-	const inputValue = (yield* Config.string(CONFIG_INPUT_NAME).pipe(Config.withDefault(""))).trim();
+	const inputValue = (yield* ActionInput.string(CONFIG_INPUT_NAME).pipe(Config.withDefault(""))).trim();
 
 	if (!inputValue) {
 		return Result.succeed(undefined);

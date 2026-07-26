@@ -30,7 +30,7 @@ import {
 	PullRequest,
 } from "@effected/github";
 import type { ActionEnvironmentError, ActionOutputError, ActionState } from "@effected/github-actions";
-import { ActionEnvironment, ActionOutputs } from "@effected/github-actions";
+import { ActionEnvironment, ActionInput, ActionOutputs } from "@effected/github-actions";
 import type { PublishabilityDetector } from "@effected/workspaces";
 import { WorkspaceDiscovery } from "@effected/workspaces";
 import type { Changesets } from "@savvy-web/silk-effects";
@@ -43,6 +43,7 @@ import { isSinglePackage } from "./detect-repo-type.js";
 import { isMonorepoForTagging } from "./determine-tag-strategy.js";
 import { formatWorkspaceWithBiome } from "./format-workspace.js";
 import { runNativeVersion } from "./native-version.js";
+import { buildManagedPrBody, upsertManagedRegion } from "./pr-body.js";
 import {
 	formatReleasePackageList,
 	getReleasingPackages,
@@ -101,15 +102,6 @@ const extractPRNumber = (message: string): number | null => {
 	return match ? Number.parseInt(match[1], 10) : null;
 };
 
-const buildLinkedIssuesSection = (linkedIssues: ReadonlyArray<LinkedIssue>): string => {
-	if (linkedIssues.length === 0) return "";
-	const items = linkedIssues.map((issue) => {
-		if (issue.state === "closed") return `~~#${issue.number}: ${issue.title}~~ (already closed)`;
-		return `Closes #${issue.number}: ${issue.title}`;
-	});
-	return summaryWriter.build([{ heading: "Linked Issues", content: summaryWriter.list(items) }]);
-};
-
 /**
  * Run the `updateReleaseBranch` stage.
  *
@@ -154,10 +146,12 @@ export const updateReleaseBranch = (): Effect.Effect<
 		const fs = yield* FileSystem.FileSystem;
 		const signoff = yield* resolveSignoff();
 
-		const releaseBranch = yield* Config.string("release-branch").pipe(Config.withDefault("changeset-release/main"));
-		const targetBranch = yield* Config.string("target-branch").pipe(Config.withDefault("main"));
-		const prTitlePrefix = yield* Config.string("pr-title-prefix").pipe(Config.withDefault("chore: release"));
-		const dryRun = yield* Config.boolean("dry-run").pipe(Config.withDefault(false));
+		const releaseBranch = yield* ActionInput.string("release-branch").pipe(
+			Config.withDefault("changeset-release/main"),
+		);
+		const targetBranch = yield* ActionInput.string("target-branch").pipe(Config.withDefault("main"));
+		const prTitlePrefix = yield* ActionInput.string("pr-title-prefix").pipe(Config.withDefault("chore: release"));
+		const dryRun = yield* ActionInput.boolean("dry-run").pipe(Config.withDefault(false));
 
 		const { sha, repository, runId } = yield* env.github;
 		const [owner, repo] = repository.split("/");
@@ -385,7 +379,15 @@ export const updateReleaseBranch = (): Effect.Effect<
 
 		// ---------- Create new PR if none exists ----------
 		if (!branchDeleted && prNumber === null && !dryRun) {
-			const prBody = buildPrBody({ versionSummary, linkedIssues, owner, repo, runId: String(runId) });
+			const prBody = buildManagedPrBody({
+				subject: prTitle,
+				versionSummary,
+				linkedIssues,
+				signoff,
+				owner,
+				repo,
+				runId: String(runId),
+			});
 			const create = (): Effect.Effect<PullRequestInfo, GitHubError, Repo> =>
 				pr.create({ title: prTitle, body: prBody, head: releaseBranch, base: targetBranch });
 
@@ -405,17 +407,19 @@ export const updateReleaseBranch = (): Effect.Effect<
 			const getPr = yield* Effect.result(pr.get(prNumber));
 
 			if (getPr._tag === "Success") {
-				const linkedSection = buildLinkedIssuesSection(linkedIssues);
-				let currentBody = getPr.success.body ?? "";
-				const existingIdx = currentBody.indexOf("## Linked Issues");
-				if (existingIdx !== -1) {
-					const nextHeadingIdx = currentBody.indexOf("\n## ", existingIdx + 1);
-					currentBody =
-						nextHeadingIdx !== -1
-							? currentBody.substring(0, existingIdx) + currentBody.substring(nextHeadingIdx + 1)
-							: currentBody.substring(0, existingIdx);
-				}
-				const newBody = `${linkedSection}\n${currentBody.trim()}`;
+				// Regenerate only OUR marker-delimited region; anything a human wrote
+				// around it survives verbatim. The heading splice this replaces keyed
+				// on `## Linked Issues` and could not tell our text from theirs.
+				const managed = buildManagedPrBody({
+					subject: prTitle,
+					versionSummary,
+					linkedIssues,
+					signoff,
+					owner,
+					repo,
+					runId: String(runId),
+				});
+				const newBody = upsertManagedRegion(getPr.success.body ?? "", managed);
 
 				const update = yield* Effect.result(pr.update(prNumber, { body: newBody }));
 				if (update._tag === "Success") {
@@ -728,29 +732,3 @@ export const updateReleaseBranch = (): Effect.Effect<
 			});
 		}
 	});
-
-const buildPrBody = (args: {
-	versionSummary: string;
-	linkedIssues: ReadonlyArray<LinkedIssue>;
-	owner: string;
-	repo: string;
-	runId: string;
-}): string => {
-	const sections: Array<{ heading?: string; level?: 2 | 3; content: string }> = [
-		{ heading: "Release PR", content: "This PR was automatically generated by the release workflow." },
-	];
-	if (args.versionSummary) {
-		sections.push({
-			heading: "Version Changes",
-			level: 3,
-			content: summaryWriter.codeBlock(args.versionSummary, "text"),
-		});
-	}
-	if (args.linkedIssues.length > 0) {
-		sections.unshift({ content: buildLinkedIssuesSection(args.linkedIssues) });
-	}
-	sections.push({
-		content: `---\n🤖 Generated with [GitHub Actions](https://github.com/${args.owner}/${args.repo}/actions/runs/${args.runId})`,
-	});
-	return summaryWriter.build(sections);
-};
