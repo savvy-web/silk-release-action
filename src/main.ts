@@ -80,7 +80,7 @@ import {
 } from "./utils/release-table.js";
 import { sortReleasesTopologically } from "./utils/sort-releases-topologically.js";
 import { updateReleaseBranch } from "./utils/update-release-branch.js";
-import { updateStickyComment } from "./utils/update-sticky-comment.js";
+import { readStickyComment, updateStickyComment } from "./utils/update-sticky-comment.js";
 import { validateBuilds } from "./utils/validate-builds.js";
 
 // ---------------------------------------------------------------------------
@@ -275,6 +275,11 @@ export interface BranchManagementSeams<R = never> {
 	 * subprocess to do it.
 	 */
 	readonly ensureHistory: (targetBranch: string) => Effect.Effect<void, SeamError, R>;
+	/** Read a sticky comment's current body, so a rewrite preserves its neighbours. */
+	readonly readComment: (
+		prNumber: number,
+		key: string,
+	) => Effect.Effect<Effect.Success<ReturnType<typeof readStickyComment>>, SeamError, R>;
 	/** Write a rendered section to a PR. Failures are the caller's to swallow. */
 	readonly publishComment: (
 		prNumber: number,
@@ -297,16 +302,19 @@ export type SeamError =
 	| Effect.Error<ReturnType<typeof checkReleaseBranch>>
 	| Effect.Error<ReturnType<typeof updateReleaseBranch>>
 	| Effect.Error<ReturnType<typeof createReleaseBranch>>
-	| Effect.Error<ReturnType<typeof updateStickyComment>>;
+	| Effect.Error<ReturnType<typeof updateStickyComment>>
+	| Effect.Error<ReturnType<typeof readStickyComment>>;
 
 const REAL_SEAMS: BranchManagementSeams<
 	| Effect.Services<ReturnType<typeof checkReleaseBranch>>
 	| Effect.Services<ReturnType<typeof updateReleaseBranch>>
 	| Effect.Services<ReturnType<typeof createReleaseBranch>>
 	| Effect.Services<ReturnType<typeof updateStickyComment>>
+	| Effect.Services<ReturnType<typeof readStickyComment>>
 > = {
 	checkBranch: checkReleaseBranch,
 	ensureHistory: ensureFullHistory,
+	readComment: readStickyComment,
 	updateFlow: updateReleaseBranch,
 	createFlow: createReleaseBranch,
 	publishComment: updateStickyComment,
@@ -380,8 +388,23 @@ export const runBranchManagement = <R = never>(seams: BranchManagementSeams<R> =
 				const planBody = `${releaseTable.render(toPendingReleaseRows(changesets))}\n\n${RELEASE_TABLE_LEGEND}`;
 				const { sha: headSha, runId: planRunId } = yield* (yield* ActionEnvironment).github;
 
+				// Read the comment before rewriting it, so only THIS section changes.
+				//
+				// `upsertSection` rewrites one marker-delimited region and leaves the
+				// rest of the body alone — but only if it is given the rest of the body.
+				// Starting from `""` replaced the whole comment on every write, so any
+				// other section, and anything a human added, was lost on the next run.
+				// The markers exist precisely so two phases can each own a region of one
+				// comment.
+				//
+				// A failed read degrades to `""` rather than aborting: losing a
+				// neighbour is bad, but refusing to report the release at all is worse.
 				const publishPlan = (target: number) => (section: Section) =>
-					Effect.result(seams.publishComment(target, upsertSection("", section, headSha), "release-plan")).pipe(
+					seams.readComment(target, "release-plan").pipe(
+						Effect.catch(() => Effect.succeed("")),
+						Effect.flatMap((existing) =>
+							Effect.result(seams.publishComment(target, upsertSection(existing, section, headSha), "release-plan")),
+						),
 						Effect.flatMap((posted) =>
 							posted._tag === "Failure"
 								? // A reporting write must never fail a release that otherwise
@@ -969,8 +992,13 @@ const runValidation = Effect.gen(function* () {
 					},
 					body: `${releaseTable.render(toValidatedReleaseRows(validationPackages))}\n\n${RELEASE_TABLE_LEGEND}`,
 				};
+				// Read-modify-write, for the same reason as Phase 1: this rewrites the
+				// plan section of a comment it does not otherwise own.
+				const existingPlan = yield* readStickyComment(pr.number, "release-plan").pipe(
+					Effect.catch(() => Effect.succeed("")),
+				);
 				const planUpdate = yield* Effect.result(
-					updateStickyComment(pr.number, upsertSection("", validatedPlan, validatedSha), "release-plan"),
+					updateStickyComment(pr.number, upsertSection(existingPlan, validatedPlan, validatedSha), "release-plan"),
 				);
 				if (planUpdate._tag === "Failure") {
 					yield* Effect.logWarning(`Could not complete the release plan comment: ${planUpdate.failure.reason}`);

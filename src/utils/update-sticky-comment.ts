@@ -3,7 +3,7 @@
 
 import type { GitHubError, Repo } from "@effected/github";
 import { CommentMarker, PullRequestComment } from "@effected/github";
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 
 export interface StickyCommentResult {
 	commentId: number;
@@ -51,4 +51,35 @@ export const updateStickyComment = (
 		const record = yield* comments.upsert(prNumber, marker, commentBody);
 		yield* Effect.logInfo(`Sticky comment id: ${record.id}`);
 		return { commentId: record.id };
+	});
+
+/**
+ * The current body of a sticky comment, or `""` when it does not exist yet.
+ *
+ * @remarks
+ * The read half of read-modify-write. `upsert` replaces a comment's body
+ * wholesale, so a caller rewriting one marker-delimited section **must** start
+ * from what is already there — passing `""` silently discards every other
+ * section and anything a human wrote, which is exactly the bug this exists to
+ * prevent.
+ *
+ * A missing comment is `""` rather than a failure: the first write of a run
+ * legitimately has nothing to preserve, and `upsertSection` appends into an
+ * empty body correctly.
+ *
+ * @param prNumber - The pull request (or issue) number to read from.
+ * @param commentIdentifier - The marker key identifying the comment's role.
+ * @returns The existing body, or `""` when there is no such comment.
+ *
+ * @public
+ */
+export const readStickyComment = (
+	prNumber: number,
+	commentIdentifier: string,
+): Effect.Effect<string, GitHubError, PullRequestComment | Repo> =>
+	Effect.gen(function* () {
+		const comments = yield* PullRequestComment;
+		const marker = CommentMarker.make({ namespace: MARKER_NAMESPACE, key: commentIdentifier });
+		const found = yield* comments.find(prNumber, marker);
+		return Option.match(found, { onNone: () => "", onSome: (record) => record.body });
 	});

@@ -68,9 +68,10 @@ const branchCheck = (over: Partial<ReleaseBranchCheckResult> = {}): ReleaseBranc
  */
 const run = async (
 	seams: Partial<BranchManagementSeams>,
-	options: { readonly dryRun?: boolean } = {},
+	options: { readonly dryRun?: boolean; readonly existingComment?: string } = {},
 ): Promise<{ published: Array<Published>; exit: "ok" | "failed" | "died" }> => {
 	const published: Array<Published> = [];
+	let commentBody = options.existingComment ?? "";
 
 	const full: BranchManagementSeams = {
 		checkBranch: () => Effect.succeed(branchCheck()),
@@ -86,8 +87,12 @@ const run = async (
 				linkedIssues: [],
 			}),
 		createFlow: () => Effect.succeed({ created: true, prNumber: 900, checkId: 1, versionSummary: "" }),
+		readComment: () => Effect.succeed(commentBody),
 		publishComment: (prNumber, body) => {
 			published.push({ prNumber, body });
+			// A real comment retains what was written last; the double must too, or
+			// the preserve-neighbours behaviour is untestable.
+			commentBody = body;
 			return Effect.succeed({ commentId: 1 });
 		},
 		...seams,
@@ -211,6 +216,24 @@ describe("runBranchManagement — what reaches the pull request", () => {
 		// Distinct from `failed`: "we were stopped" and "we broke" are different
 		// facts about a release.
 		expect(last).toContain("cancelled");
+	});
+
+	it("rewrites only its own section, leaving the rest of the comment intact", async () => {
+		// The bug this replaces: every write started from an empty body, so a
+		// comment carrying anything else — another phase's section, a human's
+		// note — lost it on the next run.
+		const { published } = await run(
+			{},
+			{
+				existingComment:
+					"A human wrote this.\n\n<!-- silk-release:section:other:start -->\nsomeone else's section\n<!-- silk-release:section:other:end -->",
+			},
+		);
+		const last = published.at(-1)?.body ?? "";
+
+		expect(last).toContain("A human wrote this.");
+		expect(last).toContain("someone else's section");
+		expect(last).toContain("@scope/zulu");
 	});
 
 	it("stamps the section with the head sha so staleness is detectable", async () => {
