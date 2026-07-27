@@ -37,6 +37,7 @@ import { Config, Effect, FileSystem, Option } from "effect";
 import type { ChildProcessSpawner } from "effect/unstable/process";
 import { ChildProcess } from "effect/unstable/process";
 import type { ChangesetConfig } from "../release/changeset-config.js";
+import { applyAutoMerge } from "./auto-merge.js";
 import { resolveSignoff } from "./commit-signoff.js";
 import { isSinglePackage } from "./detect-repo-type.js";
 import { isMonorepoForTagging } from "./determine-tag-strategy.js";
@@ -46,6 +47,7 @@ import { getLinkedIssuesFromCommits } from "./link-issues-from-commits.js";
 import { runNativeVersion } from "./native-version.js";
 import { buildManagedPrBody, extractSummary, upsertManagedRegion } from "./pr-body.js";
 import {
+	NOTHING_TO_RELEASE_TITLE,
 	formatReleasePackageList,
 	getReleasingPackages,
 	listPublishablePackages,
@@ -134,7 +136,6 @@ export const updateReleaseBranch = (): Effect.Effect<
 			Config.withDefault("changeset-release/main"),
 		);
 		const targetBranch = yield* ActionInput.string("target-branch").pipe(Config.withDefault("main"));
-		const prTitlePrefix = yield* ActionInput.string("pr-title-prefix").pipe(Config.withDefault("chore: release"));
 		const dryRun = yield* ActionInput.boolean("dry-run").pipe(Config.withDefault(false));
 
 		const { sha, repository } = yield* env.github;
@@ -277,7 +278,7 @@ export const updateReleaseBranch = (): Effect.Effect<
 		}
 
 		let versionSummary = "";
-		let prTitle = prTitlePrefix;
+		let prTitle = NOTHING_TO_RELEASE_TITLE;
 		// When `changeset version` yields nothing the release branch has no
 		// commits beyond main: an invalid state. We close any release PR and
 		// delete the branch, then skip the reopen/update/create-PR steps below.
@@ -326,9 +327,8 @@ export const updateReleaseBranch = (): Effect.Effect<
 				perPackageVersioning: yield* isMonorepoForTagging(process.cwd()),
 				releasablePackages: publishablePackages,
 				singlePackageRepoVersion,
-				prTitlePrefix,
 			});
-			if (prTitle !== prTitlePrefix) {
+			if (prTitle !== NOTHING_TO_RELEASE_TITLE) {
 				yield* Effect.logInfo(`Release PR title: ${prTitle}`);
 			}
 
@@ -455,6 +455,21 @@ export const updateReleaseBranch = (): Effect.Effect<
 			yield* Effect.logInfo(`✓ Created new release PR #${prNumber}: ${result.url}`);
 		} else if (prNumber === null && dryRun) {
 			yield* Effect.logInfo("[DRY RUN] Would create new release PR (no existing PR found)");
+		}
+
+		// ---------- Auto-merge, when the workflow opted in ----------
+		//
+		// Applied whether this run created the PR or found an existing one: a
+		// workflow that asks for auto-merge wants it on the release PR, and which
+		// run happened to open it is an accident of timing. `setAutoMerge` is
+		// idempotent, so re-applying on every push costs nothing.
+		if (prNumber !== null && !branchDeleted) {
+			const info = yield* Effect.result(pr.get(prNumber));
+			if (info._tag === "Success") {
+				yield* applyAutoMerge(info.success, dryRun);
+			} else {
+				yield* Effect.logWarning(`Could not read PR #${prNumber} for auto-merge: ${info.failure.reason}`);
+			}
 		}
 
 		// ---------- Refresh the managed region of the PR body ----------

@@ -24,11 +24,16 @@ import { Redacted } from "effect";
 export const appToken = (): Redacted.Redacted<string> => Redacted.make(process.env.STATE_token ?? "");
 
 /**
- * The token for GitHub Packages and attestation operations. Prefers the
- * workflow `github-token` input (it carries `packages:write` and
- * `attestations:write` from the workflow's permissions block) and falls back
- * to the App installation token when the input was not provided.
+ * The token for GitHub Packages and attestation operations.
+ *
+ * @remarks
+ * The App installation token, same as {@link appToken} — returned as a plain
+ * string because the imperative publish chain needs one.
+ *
+ * A `github-token` input used to take precedence, carrying the workflow's own
+ * `secrets.GITHUB_TOKEN` for an App lacking org-level `packages:write`. The App
+ * carries it, so the input shadowed a working credential and is gone.
  *
  * @returns The packages/attestation token, or an empty string if unavailable.
  */
-export const packagesToken = (): string => process.env.STATE_githubToken || process.env.STATE_token || "";
+export const packagesToken = (): string => process.env.STATE_token ?? "";

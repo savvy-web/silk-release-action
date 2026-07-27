@@ -9,9 +9,9 @@
 // revocation plus `Effect.catchDefect` around the whole program.
 
 import { GitHubApp } from "@effected/github";
-import { Action, ActionInput, ActionState, GitHubToken } from "@effected/github-actions";
+import { Action, ActionState, GitHubToken } from "@effected/github-actions";
 import type { Layer } from "effect";
-import { Config, Effect, Option } from "effect";
+import { Effect, Option } from "effect";
 import { STATE_KEYS, StartTimeState } from "./state.js";
 
 /**
@@ -32,14 +32,11 @@ export const post = Effect.gen(function* () {
 		yield* Effect.logInfo(`Release action completed in ${(duration / 1000).toFixed(2)}s`);
 	}
 
-	// `skip-token-revoke` is available in every phase. Read through
-	// `ActionInput`, never a bare `Config` — see the note in `pre.ts`.
-	const skipTokenRevoke = yield* ActionInput.boolean("skip-token-revoke").pipe(Config.withDefault(false));
-	if (skipTokenRevoke) {
-		yield* Effect.logInfo("Token revocation skipped (skip-token-revoke is true)");
-		return;
-	}
-
+	// Revocation is unconditional. There was a `skip-token-revoke` input; it
+	// bought nothing — the token expires in an hour either way — while leaving a
+	// live credential in the runner's environment for whatever came after. An
+	// opt-out of cleaning up a secret is not a feature.
+	//
 	// `dispose` is a no-op when `pre` never provisioned a token, and skips an
 	// already-expired one: GitHub has stopped accepting it, so the request could
 	// only turn a successful run into a failed one.

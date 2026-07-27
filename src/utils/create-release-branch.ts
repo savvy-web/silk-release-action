@@ -35,6 +35,7 @@ import { Config, Effect, FileSystem } from "effect";
 import type { ChildProcessSpawner } from "effect/unstable/process";
 import { ChildProcess } from "effect/unstable/process";
 import type { ChangesetConfig } from "../release/changeset-config.js";
+import { applyAutoMerge } from "./auto-merge.js";
 import { resolveSignoff } from "./commit-signoff.js";
 import { isSinglePackage } from "./detect-repo-type.js";
 import { isMonorepoForTagging } from "./determine-tag-strategy.js";
@@ -44,6 +45,7 @@ import { getLinkedIssuesFromCommits } from "./link-issues-from-commits.js";
 import { runNativeVersion } from "./native-version.js";
 import { buildManagedPrBody } from "./pr-body.js";
 import {
+	NOTHING_TO_RELEASE_TITLE,
 	formatReleasePackageList,
 	getReleasingPackages,
 	listPublishablePackages,
@@ -110,7 +112,6 @@ export const createReleaseBranch = (): Effect.Effect<
 			Config.withDefault("changeset-release/main"),
 		);
 		const targetBranch = yield* ActionInput.string("target-branch").pipe(Config.withDefault("main"));
-		const prTitlePrefix = yield* ActionInput.string("pr-title-prefix").pipe(Config.withDefault("chore: release"));
 		const dryRun = yield* ActionInput.boolean("dry-run").pipe(Config.withDefault(false));
 
 		const { sha, repository } = yield* env.github;
@@ -221,9 +222,8 @@ export const createReleaseBranch = (): Effect.Effect<
 			perPackageVersioning: yield* isMonorepoForTagging(process.cwd()),
 			releasablePackages: publishablePackages,
 			singlePackageRepoVersion,
-			prTitlePrefix,
 		});
-		if (prTitle !== prTitlePrefix) {
+		if (prTitle !== NOTHING_TO_RELEASE_TITLE) {
 			yield* Effect.logInfo(`Release PR title: ${prTitle}`);
 		}
 
@@ -367,6 +367,7 @@ export const createReleaseBranch = (): Effect.Effect<
 
 			yield* Effect.logInfo(`Adding labels to PR #${prNumber}...`);
 			yield* pr.addLabels(prNumber, ["automated", "release"]);
+			yield* applyAutoMerge(created, false);
 			yield* Effect.logInfo(`✓ Created PR #${prNumber}: ${prUrl}`);
 		} else {
 			yield* Effect.logInfo(`[DRY RUN] Would create PR with title: ${prTitle}`);

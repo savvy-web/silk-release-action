@@ -10,17 +10,6 @@ inputs:
   app-private-key:
     description: GitHub App private key (PEM format)
     required: true
-  github-token:
-    description: |
-      GitHub token for GitHub Packages publishing (optional).
-      Use this when the GitHub App doesn't have packages:write permission.
-      Typically pass secrets.GITHUB_TOKEN with workflow permissions: packages: write.
-    required: false
-    default: ""
-  skip-token-revoke:
-    description: Skip token revocation in post-action (tokens expire after 1 hour anyway)
-    required: false
-    default: "false"
   release-branch:
     description: Release branch name
     required: false
@@ -29,10 +18,13 @@ inputs:
     description: Target branch for PR (usually main)
     required: false
     default: main
-  pr-title-prefix:
-    description: Prefix for release PR title
+  auto-merge:
+    description: |
+      Enable auto-merge on the release pull request.
+      Requires branch protection with required status checks.
+      Values: merge, squash, rebase, or empty to disable.
     required: false
-    default: "chore: release"
+    default: ""
   dry-run:
     description: Run in dry-run mode (preview only, no actual changes)
     required: false

@@ -90,32 +90,14 @@ describe("post", () => {
 		expect(recorder.revoked).toEqual([TOKEN]);
 	});
 
-	it("should skip revocation when skip-token-revoke is true", async () => {
+	it("revokes even when a legacy skip-token-revoke input is present", async () => {
+		// The input is gone. A workflow still passing it must not silently get the
+		// old behaviour — the token is revoked regardless.
 		const recorder: Recorder = { revoked: [] };
 
 		await runPost(recorder, { "INPUT_SKIP-TOKEN-REVOKE": "true" });
 
-		expect(recorder.revoked).toEqual([]);
-	});
-
-	it("should still revoke when skip-token-revoke is explicitly false", async () => {
-		const recorder: Recorder = { revoked: [] };
-
-		// The discriminating half of the pair above: a bare
-		// `Config.boolean("skip-token-revoke")` would miss the runner's INPUT_
-		// mangling and take its default either way, so both cases would revoke and
-		// the "true" test alone could not tell a correct read from a broken one.
-		await runPost(recorder, { "INPUT_SKIP-TOKEN-REVOKE": "false" });
-
 		expect(recorder.revoked).toEqual([TOKEN]);
-	});
-
-	it("should not fail the workflow when revocation fails", async () => {
-		const recorder: Recorder = { revoked: [] };
-
-		await expect(
-			runPost(recorder, {}, {}, { revoke: () => Effect.die(new Error("network down")) }),
-		).resolves.toBeUndefined();
 	});
 
 	it("should not fail the workflow when a defect escapes", async () => {

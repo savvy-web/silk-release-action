@@ -413,13 +413,12 @@ const runStage = async (
 	// does not take.
 	//
 	// NOTE: every value here equals its production default, so a mis-named input
-	// still resolves to the same string — these four reads are exercised but not
-	// yet *discriminated*. Making them so needs non-default fixture values, which
+	// still resolves to the same string — these reads are exercised but not yet
+	// *discriminated*. Making them so needs non-default fixture values, which
 	// ripples into the assertions; recorded as follow-up rather than done here.
 	const inputs = ActionInput.layer({
 		"INPUT_RELEASE-BRANCH": RELEASE_BRANCH,
 		"INPUT_TARGET-BRANCH": TARGET_BRANCH,
-		"INPUT_PR-TITLE-PREFIX": "chore: release",
 		"INPUT_DRY-RUN": "false",
 	});
 	const result = await Effect.runPromise(
@@ -458,7 +457,7 @@ describe("updateReleaseBranch", () => {
 
 		expect(result.prNumber).toBe(42);
 		expect(f.prs).toHaveLength(1);
-		expect(f.prs[0].title).toBe("chore: release");
+		expect(f.prs[0].title).toBe("release: pending");
 	});
 
 	it("builds the PR link from GITHUB_SERVER_URL — not a hardcoded github.com (GHES)", async () => {
@@ -535,7 +534,7 @@ describe("updateReleaseBranch", () => {
 		expect(f.prs[0].state).toBe("open");
 		// …and it is REUSED, not just revived: the title is refreshed too. The old
 		// guard skipped the title update whenever the PR had been closed.
-		expect(f.prs[0].title).toBe("chore: release");
+		expect(f.prs[0].title).toBe("release: pending");
 	});
 
 	it("does NOT reopen a PR that was MERGED mid-run", async () => {
@@ -575,7 +574,7 @@ describe("updateReleaseBranch", () => {
 		// REUSE, not merely revive: a reopened PR gets the current title too. The
 		// title update used to be gated on `!prWasClosed`, so a reopened release PR
 		// kept a title naming an earlier version.
-		expect(f.prs[0].title).toBe("chore: release");
+		expect(f.prs[0].title).toBe("release: pending");
 	});
 
 	it("ignores a closed PR that was actually merged", async () => {

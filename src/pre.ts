@@ -24,8 +24,8 @@ import {
 	Secret,
 } from "@effected/github-actions";
 import type { Layer } from "effect";
-import { Config, Effect } from "effect";
-import { GithubPackagesTokenState, STATE_KEYS, StartTimeState } from "./state.js";
+import { Effect } from "effect";
+import { STATE_KEYS, StartTimeState } from "./state.js";
 
 /**
  * Pre-action program.
@@ -42,18 +42,14 @@ export const pre = Effect.gen(function* () {
 	// 1. Start time, for post-phase duration reporting.
 	yield* state.save(STATE_KEYS.startTime, StartTimeState.make({ startedAt: Date.now() }), StartTimeState);
 
-	// 2. The optional GitHub Packages token — the workflow's own
-	//    `secrets.GITHUB_TOKEN`, passed as the `github-token` input. Registry
-	//    auth prefers it over the App token for GitHub Packages because it
-	//    carries org-level `packages:write` from the workflow's permissions.
+	// 2. Provision the installation token.
 	//
-	//    Read through `ActionInput`, never a bare `Config`: the runner publishes
-	//    `INPUT_GITHUB-TOKEN`, so a plain-named lookup finds nothing and silently
-	//    takes the default. An input the workflow omitted arrives as `""`, which
-	//    the kit treats as missing data — hence the explicit `withDefault`.
-	const githubToken = yield* ActionInput.string("github-token").pipe(Config.withDefault(""));
-
-	// 3. Provision the installation token.
+	//    There was a `github-token` input here, carrying the workflow's own
+	//    `secrets.GITHUB_TOKEN` so registry auth could prefer it for GitHub
+	//    Packages. It existed for one case: a GitHub App without org-level
+	//    `packages:write`. The App this action authenticates as carries it, so
+	//    the input only ever shadowed a token that already worked, and every
+	//    consumer had to remember to thread a secret that changed nothing.
 	const appId = yield* ActionInput.string("app-client-id");
 	const privateKey = yield* ActionInput.redacted("app-private-key");
 	// `owner` preserves the predecessor's auto-resolution of the installation
@@ -63,18 +59,7 @@ export const pre = Effect.gen(function* () {
 	yield* Effect.logInfo("Generating GitHub App installation token...");
 	const token = yield* GitHubToken.provision({ appId, privateKey, owner: repositoryOwner });
 
-	// 4. Persist the GitHub Packages token for `main.ts`.
-	if (githubToken !== "") {
-		yield* state.save(
-			STATE_KEYS.githubPackagesToken,
-			GithubPackagesTokenState.make({ token: githubToken }),
-			GithubPackagesTokenState,
-		);
-		yield* outputs.setSecret(githubToken);
-		yield* Effect.logInfo("GitHub token provided for GitHub Packages authentication");
-	}
-
-	// 5. Action outputs, for subsequent workflow steps.
+	// 3. Action outputs, for subsequent workflow steps.
 	//    `InstallationToken.token` is a `Redacted<string>`. `Secret.forRunnerFile`
 	//    is the declassification seam for a runner file: it masks and unwraps in
 	//    one call, so plaintext cannot reach `GITHUB_OUTPUT` — which is plaintext

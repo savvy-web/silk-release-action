@@ -2,9 +2,7 @@
  * Tests for releasing-package detection and the release PR title decision.
  *
  * @remarks
- * `resolveReleasePrTitle` decides whether the changeset release PR keeps the
- * configured prefix (e.g. `chore: release`) or is renamed to a `release: …`
- * title. A single released package — or several sharing one version (a locked
+ * `resolveReleasePrTitle` builds the changeset release PR's `release: …` title. A single released package — or several sharing one version (a locked
  * group) — yields `release: <version>`, mirroring the commit title. An
  * independent multi-package release lists `name@version` per package, falling
  * back to `release: <count> packages` once the title exceeds a length cap.
@@ -58,7 +56,6 @@ describe("resolveReleasePrTitle", () => {
 		const title = resolveReleasePrTitle({
 			releasingPackages: [pkg({ name: "@savvy-web/rslib-builder", version: "0.20.5" })],
 			perPackageVersioning: false,
-			prTitlePrefix: "chore: release",
 		});
 		expect(title).toBe("release: 0.20.5");
 	});
@@ -67,7 +64,6 @@ describe("resolveReleasePrTitle", () => {
 		const title = resolveReleasePrTitle({
 			releasingPackages: [pkg({ name: "@org/a", version: "2.0.0" }), pkg({ name: "@org/b", version: "2.0.0" })],
 			perPackageVersioning: false,
-			prTitlePrefix: "chore: release",
 		});
 		expect(title).toBe("release: 2.0.0");
 	});
@@ -77,7 +73,6 @@ describe("resolveReleasePrTitle", () => {
 			releasingPackages: [pkg({ name: "@org/a", version: "1.2.0" }), pkg({ name: "@org/b", version: "3.4.0" })],
 			perPackageVersioning: true,
 			releasablePackages: [pkg({ name: "@org/a" }), pkg({ name: "@org/b" })],
-			prTitlePrefix: "chore: release",
 			maxLength: 80,
 		});
 		expect(title).toBe("release: a@1.2.0, b@3.4.0");
@@ -91,7 +86,6 @@ describe("resolveReleasePrTitle", () => {
 			],
 			perPackageVersioning: true,
 			releasablePackages: [pkg({ name: "@scope/pkg-1" }), pkg({ name: "unscoped-pkg" }), pkg({ name: "@scope/pkg-2" })],
-			prTitlePrefix: "chore: release",
 			maxLength: 120,
 		});
 		expect(title).toBe("release: @scope/pkg-1@1.2.0, unscoped-pkg@3.4.0");
@@ -106,7 +100,6 @@ describe("resolveReleasePrTitle", () => {
 				pkg({ name: "@savvy-web/dependency-package" }),
 				pkg({ name: "@savvy-web/standalone-package" }),
 			],
-			prTitlePrefix: "chore: release",
 		});
 		expect(title).toBe("release: dependency-package@0.10.0");
 	});
@@ -116,7 +109,6 @@ describe("resolveReleasePrTitle", () => {
 			releasingPackages: [pkg({ name: "@savvy-web/foo", version: "0.10.0" })],
 			perPackageVersioning: true,
 			releasablePackages: [pkg({ name: "@savvy-web/foo" }), pkg({ name: "@other/bar" })],
-			prTitlePrefix: "chore: release",
 		});
 		expect(title).toBe("release: @savvy-web/foo@0.10.0");
 	});
@@ -130,7 +122,6 @@ describe("resolveReleasePrTitle", () => {
 			],
 			perPackageVersioning: true,
 			releasablePackages: [pkg({ name: "@org/a" }), pkg({ name: "@org/b" }), pkg({ name: "@org/c" })],
-			prTitlePrefix: "chore: release",
 			maxLength: 30,
 		});
 		expect(title).toBe("release: 3 packages");
@@ -140,7 +131,6 @@ describe("resolveReleasePrTitle", () => {
 		const title = resolveReleasePrTitle({
 			releasingPackages: [pkg({ name: "very-long-unscoped-package-name", version: "1.0.0" })],
 			perPackageVersioning: true,
-			prTitlePrefix: "chore: release",
 			maxLength: 10,
 		});
 		expect(title).toBe("release: very-long-unscoped-package-name@1.0.0");
@@ -151,18 +141,20 @@ describe("resolveReleasePrTitle", () => {
 			releasingPackages: [],
 			perPackageVersioning: false,
 			singlePackageRepoVersion: "1.0.0",
-			prTitlePrefix: "chore: release",
 		});
 		expect(title).toBe("release: 1.0.0");
 	});
 
-	it("keeps the prefix when nothing is releasing and the repo is not single-package", () => {
+	it("falls back to a pending title when nothing is releasing and the repo is not single-package", () => {
 		const title = resolveReleasePrTitle({
 			releasingPackages: [],
 			perPackageVersioning: false,
-			prTitlePrefix: "chore: release",
 		});
-		expect(title).toBe("chore: release");
+		// A guard rail, not a title anyone should see: Phase 1 closes the PR and
+		// deletes the branch when there is nothing to release. It reads
+		// `release:` rather than the old `chore: release` so every title this
+		// action emits carries the same prefix.
+		expect(title).toBe("release: pending");
 	});
 });
 
