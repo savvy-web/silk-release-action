@@ -27,18 +27,21 @@ describe("token helpers", () => {
 		expect(Redacted.value(appToken())).toBe("");
 	});
 
-	it("packagesToken prefers the workflow github-token", () => {
-		process.env.STATE_token = "app-token-123";
-		process.env.STATE_githubToken = "workflow-token-456";
-		expect(packagesToken()).toBe("workflow-token-456");
-	});
-
-	it("packagesToken falls back to the App token when no workflow token is set", () => {
+	it("packagesToken returns the App token", () => {
 		process.env.STATE_token = "app-token-123";
 		expect(packagesToken()).toBe("app-token-123");
 	});
 
-	it("packagesToken returns an empty string when neither token is set", () => {
+	it("packagesToken ignores a stale STATE_githubToken", () => {
+		// The `github-token` input that wrote this is gone. A leftover value in
+		// the environment must not out-rank the App token, or a stale runner
+		// variable would silently pick the credential.
+		process.env.STATE_token = "app-token-123";
+		process.env.STATE_githubToken = "workflow-token-456";
+		expect(packagesToken()).toBe("app-token-123");
+	});
+
+	it("packagesToken returns an empty string when no token is set", () => {
 		expect(packagesToken()).toBe("");
 	});
 });

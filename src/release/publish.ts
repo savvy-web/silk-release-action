@@ -11,8 +11,8 @@ import { basename, dirname, isAbsolute, join } from "node:path";
 import { Run } from "@effected/commands";
 import type { GitHubError, Repo } from "@effected/github";
 import { Attestation, GitHubCommit, GitHubContent, PullRequest } from "@effected/github";
-import type { OidcTokenIssuer } from "@effected/github-actions";
-import { ActionEnvironment, ActionInput, ActionLogger, ActionOutputs, ActionState } from "@effected/github-actions";
+import type { ActionState, OidcTokenIssuer } from "@effected/github-actions";
+import { ActionEnvironment, ActionInput, ActionLogger, ActionOutputs } from "@effected/github-actions";
 import { NpmExecutor, NpmRegistry, PackagePublish, classifyRegistry } from "@effected/npm";
 import type { SigstoreSigner } from "@effected/sbom";
 import { CYCLONEDX_BOM_PREDICATE, Sbom, SbomMetadataSource, SlsaProvenance } from "@effected/sbom";
@@ -22,10 +22,10 @@ import { Config, Effect, Option, Redacted } from "effect";
 import type { ChildProcessSpawner } from "effect/unstable/process";
 import { ChildProcess } from "effect/unstable/process";
 
-import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
 import { getGroupId } from "../utils/group-id.js";
 import { registryHost, registryShortLabel } from "../utils/registry-label.js";
 import { sortReleasesTopologically } from "../utils/sort-releases-topologically.js";
+import { packagesToken } from "../utils/tokens.js";
 import { attestSubject, buildProvenancePredicate } from "./attest-helpers.js";
 import { ChangesetConfig } from "./changeset-config.js";
 import { humanizeSize } from "./report.js";
@@ -1130,7 +1130,6 @@ export const runPublishTargets = (
 	Effect.gen(function* () {
 		const discovery = yield* WorkspaceDiscovery;
 		const detector = yield* PublishabilityDetector;
-		const state = yield* ActionState;
 		const logger = yield* ActionLogger;
 		const outputs = yield* ActionOutputs;
 
@@ -1148,11 +1147,13 @@ export const runPublishTargets = (
 		const npmToken: string | null = Option.isSome(npmTokenOpt) && npmTokenOpt.value !== "" ? npmTokenOpt.value : null;
 		if (npmToken !== null) yield* outputs.setSecret(npmToken);
 
-		const ghPkgsTokenOpt = yield* state
-			.getOptional(STATE_KEYS.githubPackagesToken, GithubPackagesTokenState)
-			.pipe(Effect.catch(() => Effect.succeed(Option.none<GithubPackagesTokenState>())));
-		const ghPkgsToken: string | null =
-			Option.isSome(ghPkgsTokenOpt) && ghPkgsTokenOpt.value.token !== "" ? ghPkgsTokenOpt.value.token : null;
+		// GitHub Packages authenticates as the App. A `github-token` input used to
+		// take precedence here, carrying the workflow's own `secrets.GITHUB_TOKEN`
+		// for the case of an App without org-level `packages:write`. This App has
+		// it — confirmed on the installation token's own permission set — so the
+		// input only ever shadowed a credential that already worked, at the cost
+		// of every consumer having to thread it.
+		const ghPkgsToken: string | null = packagesToken() || null;
 		if (ghPkgsToken !== null) yield* outputs.setSecret(ghPkgsToken);
 
 		const npmrcPath = userNpmrcPath();

@@ -36,19 +36,9 @@ export class StartTimeState extends Schema.Class<StartTimeState>("StartTimeState
  */
 
 /**
- * Optional secondary token used for publishing to GitHub Packages when the
- * GitHub App doesn't have `packages:write`. Written by `pre.ts` only when
- * the `github-token` input is provided.
- */
-export class GithubPackagesTokenState extends Schema.Class<GithubPackagesTokenState>("GithubPackagesTokenState")({
-	token: Schema.String,
-}) {}
-
-/**
  * String constants for the keys used with `ActionState.save/get`. Centralised
  * here so a typo in one phase doesn't silently miss state from another.
  */
 export const STATE_KEYS = {
 	startTime: "startTime",
-	githubPackagesToken: "githubPackagesToken",
 } as const;
