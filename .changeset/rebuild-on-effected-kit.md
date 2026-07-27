@@ -197,6 +197,13 @@ repository-root changelog. The fallback could not miss, so a package whose versi
 from the root changelog was attached the **newest root entry** — another package's release
 notes, published on its GitHub release.
 
+The fallback was also appended for **every** package, including ones whose own path resolved
+fine and simply had no changelog yet — a first release, or a package changesets wrote no notes
+for. In a monorepo whose root changelog happens to carry a heading for the same version string,
+that package's release notes silently became the root's, which reads more authoritative than
+the generic `Released version <x>` default it displaced. The root changelog is now consulted
+only when the package's own path could not be resolved at all.
+
 ### A transient `git status` failure destroyed a live release
 
 If `git status` failed while updating the release branch, the empty output was read as "no
@@ -271,6 +278,63 @@ in the pull request body, GitHub Packages pages, and **the URL reported for ever
 release** all pointed at the public site. Links are now built against `GITHUB_SERVER_URL`,
 defaulting to `https://github.com` where it is unset — which is the github.com case, since only
 Enterprise sets the variable.
+
+### The versioning retry reset the wrong working tree
+
+Phase 1's native versioning takes a directory, and both its config gate and `planner.apply`
+operate on it. The reset-then-retry path that runs after a transient failure did not: its
+`git checkout -- .` and `git clean -fd` ran in the **ambient process working directory**. Where
+those differed, the retry deleted untracked files somewhere unrelated — `git clean -fd` is
+destructive — and then re-applied onto a release tree that was still half-applied, which is the
+corruption the reset exists to prevent. Both commands now run in the directory they were given.
+
+### An unwritable package directory blocked an otherwise-successful release
+
+Writing a package's SBOM to disk is documented as non-fatal, and the warning it emits says only
+that the release asset will be skipped. The result it returned disagreed: an SBOM write failure
+was folded into the same `ok` flag the publish phase treats as a fail-fast gate. A package
+directory that could not be written therefore **aborted Phase 3 entirely and failed the
+workflow** for a release whose build had succeeded. `ok` now reports only whether the build
+succeeded; a failed SBOM write names the package and costs it its SBOM asset, nothing more.
+
+### Retrying release-PR creation could open a duplicate or fail outright
+
+Creating the release pull request was retried once on failure, but creation is not idempotent.
+If the first attempt reached GitHub and only the response was lost, the retry either opened a
+second release pull request or was rejected with a 422 — turning a transient network blip into
+a hard failure of the whole stage. The retry now re-lists open pull requests on the release head
+first and adopts an existing one, creating again only when there genuinely is none.
+
+### Concurrent comment-section writes could publish over each other
+
+The section queue folds updates into one comment body, and three callers can reach that write:
+the batching fiber when its window elapses, an on-demand flush, and the scope finalizer. The
+write is a read-modify-write over the whole comment with nothing serialising it, so two
+overlapping runs both read the same body and the second overwrote the first's sections — the
+staleness the queue exists to prevent. Writes are now serialised, and the finalizer interrupts
+the batching fiber before its final drain so the last write is the complete one.
+
+### Prerelease versions were reported as patch bumps
+
+Phase 2 recovers each package's bump from its version transition, parsing `major.minor.patch`
+by splitting on `.`. A prerelease or build suffix breaks that: `2.0.0-rc.1` splits to a third
+element of `0-rc`, which is not a number, so the unparseable-version guard fired and a **major**
+transition rendered as `patch`. Every prerelease understated its severity. The numeric core is
+now parsed before the suffix.
+
+### The same release reported two different ready counts
+
+The publish totals line counted every target that had not failed as ready, while the release
+table counted only targets whose status was actually `ready`. A release with any skipped target
+therefore showed two different `n/m targets ready` figures in two adjacent sections of the same
+comment. Both now count the same thing.
+
+### Scoped release tags produced broken links
+
+Per-package tags are scoped — `@scope/pkg@1.0.0` — and were embedded in release URLs
+unencoded. GitHub's own canonical URL for such a release encodes the `@` while keeping the `/`
+a real path separator (`/releases/tag/%40scope/pkg%401.0.0`). Tags are now encoded per path
+segment, matching what GitHub itself publishes; unscoped tags are unaffected.
 
 ## Performance
 
