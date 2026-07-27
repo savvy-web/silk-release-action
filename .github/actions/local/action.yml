@@ -135,7 +135,8 @@ inputs:
 
       Note: For npm, use the npm-token input instead of custom-registries
       Note: JSR uses OIDC trusted publishing (no configuration needed)
-      Note: GitHub Packages authenticates automatically with the GitHub App token
+      Note: GitHub Packages needs the github-token input, NOT custom-registries.
+      A GitHub App token cannot access GitHub Packages at all.
     required: false
     default: ""
 outputs:
@@ -148,7 +149,8 @@ outputs:
   result:
     description: |
       Structured JSON describing what the run did. A phase-discriminated object
-      validated by https://json.schemastore.org/silk-release-action.schema.json.
+      validated by
+      https://raw.githubusercontent.com/savvy-web/silk-release-action/main/silk-release-action.output.schema.json.
       Parse it for the full contract; the scalars below mirror the common facts.
   phase:
     description: "Phase that ran: branch-management, validation, or publishing"

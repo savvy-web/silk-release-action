@@ -60,7 +60,13 @@ describe("url builders", () => {
 		];
 
 		for (const url of built) {
-			expect(url.startsWith(GHES)).toBe(true);
+			// Compare the parsed origin, not a string prefix. `startsWith(GHES)`
+			// also accepts `https://github.example.com.example.net/…`, which is a
+			// different host entirely — so the assertion did not actually pin the
+			// instance it claims to. CodeQL flags the same shape as incomplete URL
+			// sanitization, and it is right about the weakness even though nothing
+			// here makes a security decision.
+			expect(new URL(url).origin).toBe(GHES);
 			expect(url).not.toContain("github.com");
 		}
 	});

@@ -43,6 +43,8 @@ import { formatWorkspaceWithBiome } from "./format-workspace.js";
 import type { LinkedIssue } from "./link-issues-from-commits.js";
 import { getLinkedIssuesFromCommits } from "./link-issues-from-commits.js";
 import { runNativeVersion } from "./native-version.js";
+import type { FileReadError } from "./porcelain-changes.js";
+import { collectPorcelainChanges } from "./porcelain-changes.js";
 import { buildManagedPrBody } from "./pr-body.js";
 import {
 	NOTHING_TO_RELEASE_TITLE,
@@ -75,6 +77,7 @@ export const createReleaseBranch = (): Effect.Effect<
 	| CommandFailedError
 	| CommandOutputError
 	| Config.ConfigError
+	| FileReadError
 	| GitHubError,
 	| ActionEnvironment
 	| ActionOutputs
@@ -249,22 +252,7 @@ export const createReleaseBranch = (): Effect.Effect<
 			// `Run.text`: `text` trims, which would eat the leading status column of
 			// the FIRST entry (" M path" → "M path") and shift every `substring`.
 			const status = yield* Run.collect(ChildProcess.make("git", ["status", "--porcelain", "-z"]));
-			const changes: FileChange[] = [];
-			for (const entry of status.stdout.split("\0")) {
-				if (entry.length === 0) continue;
-				const statusCode = entry.substring(0, 2).trim();
-				let filePath = entry.substring(3);
-				if (filePath.includes(" -> ")) filePath = filePath.split(" -> ")[1];
-				if (filePath === "") continue;
-				if (statusCode === "D" || statusCode === "DD" || statusCode === "AD") {
-					changes.push(FileDeletion.make({ path: filePath }));
-				} else {
-					const content = yield* fs.readFileString(filePath).pipe(Effect.catch(() => Effect.succeed("")));
-					const statResult = yield* Effect.result(fs.stat(filePath));
-					const isExecutable = statResult._tag === "Success" && (Number(statResult.success.mode ?? 0n) & 0o111) !== 0;
-					changes.push(FileContent.make({ path: filePath, mode: isExecutable ? "100755" : "100644", content }));
-				}
-			}
+			const changes = yield* collectPorcelainChanges(status.stdout);
 
 			if (changes.length === 0) {
 				yield* Effect.logWarning("No changes to commit via API");

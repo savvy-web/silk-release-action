@@ -45,6 +45,8 @@ import { formatWorkspaceWithBiome } from "./format-workspace.js";
 import { pullRequestUrl, resolveServerUrl } from "./github-urls.js";
 import { getLinkedIssuesFromCommits } from "./link-issues-from-commits.js";
 import { runNativeVersion } from "./native-version.js";
+import type { FileReadError } from "./porcelain-changes.js";
+import { collectPorcelainChanges } from "./porcelain-changes.js";
 import { buildManagedPrBody, extractSummary, upsertManagedRegion } from "./pr-body.js";
 import {
 	NOTHING_TO_RELEASE_TITLE,
@@ -102,6 +104,7 @@ export const updateReleaseBranch = (): Effect.Effect<
 	| CommandFailedError
 	| CommandOutputError
 	| Config.ConfigError
+	| FileReadError
 	| GitHubError,
 	| ActionEnvironment
 	| ActionOutputs
@@ -617,7 +620,7 @@ export const updateReleaseBranch = (): Effect.Effect<
 			commitMessage: string;
 		}): Effect.Effect<
 			void,
-			CommandFailedError | CommandOutputError | GitHubError,
+			CommandFailedError | CommandOutputError | FileReadError | GitHubError,
 			ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | GitBranch | GitCommit | Repo
 		> {
 			return Effect.gen(function* () {
@@ -631,24 +634,7 @@ export const updateReleaseBranch = (): Effect.Effect<
 				// parsing survives whitespace and trailing CRLF; trimming the line
 				// itself would shift the column for unstaged changes (" M file" → "M file").
 				const status = yield* Run.collect(ChildProcess.make("git", ["status", "--porcelain", "-z"]));
-				const changes: FileChange[] = [];
-				for (const entry of status.stdout.split("\0")) {
-					if (entry.length === 0) continue;
-					const statusCode = entry.substring(0, 2).trim();
-					let filePath = entry.substring(3);
-					if (filePath.includes(" -> ")) filePath = filePath.split(" -> ")[1];
-					if (filePath === "") continue;
-					if (statusCode === "D" || statusCode === "DD" || statusCode === "AD") {
-						// A deletion is its own variant now, rather than a content entry
-						// with `sha: null`.
-						changes.push(FileDeletion.make({ path: filePath }));
-					} else {
-						const content = yield* fs.readFileString(filePath).pipe(Effect.catch(() => Effect.succeed("")));
-						const statResult = yield* Effect.result(fs.stat(filePath));
-						const isExecutable = statResult._tag === "Success" && (Number(statResult.success.mode ?? 0n) & 0o111) !== 0;
-						changes.push(FileContent.make({ path: filePath, mode: isExecutable ? "100755" : "100644", content }));
-					}
-				}
+				const changes = yield* collectPorcelainChanges(status.stdout);
 
 				if (changes.length === 0) {
 					yield* Effect.logWarning("No changes to commit via API");
