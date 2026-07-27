@@ -7,14 +7,10 @@
  * Emits a Check Run for PR feedback.
  */
 
-import type {
-	ActionEnvironmentError,
-	ActionOutputError,
-	CheckRunError,
-	GitBranchError,
-	PullRequestError,
-} from "@savvy-web/github-action-effects";
-import { ActionEnvironment, ActionOutputs, CheckRun, GitBranch, PullRequest } from "@savvy-web/github-action-effects";
+import type { GitHubError, PullRequestInfo, Repo } from "@effected/github";
+import { CheckRun, CheckRunOutput, GitBranch, PullRequest } from "@effected/github";
+import type { ActionEnvironmentError, ActionOutputError } from "@effected/github-actions";
+import { ActionEnvironment, ActionOutputs } from "@effected/github-actions";
 import { Effect } from "effect";
 import { summaryWriter } from "./summary-writer.js";
 
@@ -39,8 +35,8 @@ export const checkReleaseBranch = (
 	dryRun: boolean,
 ): Effect.Effect<
 	ReleaseBranchCheckResult,
-	ActionEnvironmentError | ActionOutputError | CheckRunError | GitBranchError | PullRequestError,
-	ActionEnvironment | ActionOutputs | CheckRun | GitBranch | PullRequest
+	ActionEnvironmentError | ActionOutputError | GitHubError,
+	ActionEnvironment | ActionOutputs | CheckRun | GitBranch | PullRequest | Repo
 > =>
 	Effect.gen(function* () {
 		const env = yield* ActionEnvironment;
@@ -76,7 +72,7 @@ export const checkReleaseBranch = (
 				Effect.catch((e) =>
 					Effect.gen(function* () {
 						yield* Effect.logWarning(`Failed to check for open PRs: ${e.reason}`);
-						return [] as ReadonlyArray<{ number: number; url: string }>;
+						return [] as ReadonlyArray<PullRequestInfo>;
 					}),
 				),
 			);
@@ -116,7 +112,7 @@ export const checkReleaseBranch = (
 		]);
 
 		const { id: checkId } = yield* checks.create(checkTitle, sha);
-		yield* checks.complete(checkId, "success", { title: checkSummary, summary: checkDetails });
+		yield* checks.complete(checkId, "success", CheckRunOutput.make({ title: checkSummary, summary: checkDetails }));
 
 		// 4. Job summary.
 		yield* outputs.summary(

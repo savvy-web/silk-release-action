@@ -1,11 +1,7 @@
-/**
- * Group-keyed asset-naming helpers for the bundler prod layout
- * (`dist/prod/<group>/pkg`). The group id distinguishes byte-variant build
- * groups; `npm: true` + `github: true` collapse into one group, so registries
- * that share bytes share a group token.
- *
- * @module utils/group-id
- */
+// Group-keyed asset-naming helpers for the bundler prod layout
+// (`dist/prod/<group>/pkg`). The group id distinguishes byte-variant build
+// groups; `npm: true` + `github: true` collapse into one group, so registries
+// that share bytes share a group token.
 
 /**
  * Derive the byte-group id from a build directory.

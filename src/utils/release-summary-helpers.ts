@@ -107,33 +107,47 @@ function stripScope(name: string, scope: string | null): string {
  * @param input.perPackageVersioning - True when multiple packages can release on independent versions (see `isMonorepoForTagging`).
  * @param input.releasablePackages - The full set that can release, used to decide scope omission (defaults to `releasingPackages`).
  * @param input.singlePackageRepoVersion - The repo-root version, supplied only when the repo is single-package.
- * @param input.prTitlePrefix - The configured fallback prefix (e.g. `chore: release`).
  * @param input.maxLength - Title length cap before collapsing to a count (default {@link RELEASE_TITLE_MAX_LENGTH}).
  * @returns The resolved PR title.
  */
+/**
+ * The title for a release PR that names nothing.
+ *
+ * @remarks
+ * There was a `pr-title-prefix` input defaulting to `"chore: release"`. It
+ * never reached a real title — every branch that names packages or a version
+ * builds its own `release: …` string — so the input's only observable effect
+ * was the wording of the two fallbacks below, both of which mean "there is
+ * nothing to release". Phase 1 closes the PR and deletes the branch in exactly
+ * that case, so this is a guard rail rather than a title anyone should see.
+ *
+ * `release:` rather than `chore: release` to match the prefix the rest of the
+ * action actually emits, and commitlint accepts.
+ */
+export const NOTHING_TO_RELEASE_TITLE = "release: pending";
+
 export function resolveReleasePrTitle(input: {
 	readonly releasingPackages: ReadonlyArray<{ readonly name: string; readonly version: string }>;
 	readonly perPackageVersioning: boolean;
 	readonly releasablePackages?: ReadonlyArray<{ readonly name: string }>;
 	readonly singlePackageRepoVersion?: string | undefined;
-	readonly prTitlePrefix: string;
 	readonly maxLength?: number;
 }): string {
-	const { releasingPackages, perPackageVersioning, singlePackageRepoVersion, prTitlePrefix } = input;
+	const { releasingPackages, perPackageVersioning, singlePackageRepoVersion } = input;
 	const maxLength = input.maxLength ?? RELEASE_TITLE_MAX_LENGTH;
 
 	// Single-tag repo: one package can release, or all are fixed to one shared
 	// version. Use a single semver, mirroring the commit title.
 	if (!perPackageVersioning) {
 		const version = releasingPackages[0]?.version ?? singlePackageRepoVersion;
-		return version !== undefined && version !== "" ? `release: ${version}` : prTitlePrefix;
+		return version !== undefined && version !== "" ? `release: ${version}` : NOTHING_TO_RELEASE_TITLE;
 	}
 
 	// Independent multi-package repo: name the releasing packages explicitly,
 	// even when only one is releasing this run. Omit the npm scope when every
 	// releasable package shares it, for shorter, readable titles.
 	if (releasingPackages.length === 0) {
-		return prTitlePrefix;
+		return NOTHING_TO_RELEASE_TITLE;
 	}
 	const scope = commonScope((input.releasablePackages ?? releasingPackages).map((pkg) => pkg.name));
 	const listed = `release: ${releasingPackages.map((pkg) => `${stripScope(pkg.name, scope)}@${pkg.version}`).join(", ")}`;

@@ -29,7 +29,26 @@ export interface BranchManagementInput {
 	readonly updated: boolean;
 	readonly hasConflicts: boolean;
 	readonly releasePr: { readonly number: number; readonly url: string; readonly action: "created" | "updated" } | null;
-	readonly changesets: ReadonlyArray<{ readonly name: string; readonly bumpType: "major" | "minor" | "patch" }>;
+	readonly changesets: ReadonlyArray<{
+		readonly name: string;
+		readonly bumpType: "major" | "minor" | "patch";
+		/** Zero when the package releases only because a dependency did. */
+		readonly changesetCount: number;
+		readonly oldVersion: string;
+		readonly newVersion: string;
+	}>;
+	/**
+	 * The number of changeset **files** observed in `.changeset/`.
+	 *
+	 * @remarks
+	 * Carried separately because it is not `changesets.length`, which counts
+	 * *packages*. One file may name several packages, and two files may name the
+	 * same one — so the two numbers diverge in both directions. The schema
+	 * documents `count` as "the number of changeset files observed in the
+	 * `.changeset/` directory"; deriving it from the package list reported that
+	 * field wrongly whenever a release was not one-file-one-package.
+	 */
+	readonly changesetFileCount: number;
 	readonly dryRun: boolean;
 }
 
@@ -64,9 +83,15 @@ export const toBranchManagementOutput = (input: BranchManagementInput): BranchMa
 			},
 			releasePr: input.releasePr,
 			changesets: {
-				count: input.changesets.length,
+				count: input.changesetFileCount,
 				// Explicit projection — only forward the fields the schema declares.
-				packages: input.changesets.map((c) => ({ name: c.name, bumpType: c.bumpType })),
+				packages: input.changesets.map((c) => ({
+					name: c.name,
+					bumpType: c.bumpType,
+					changesetCount: c.changesetCount,
+					oldVersion: c.oldVersion,
+					newVersion: c.newVersion,
+				})),
 			},
 		},
 	};

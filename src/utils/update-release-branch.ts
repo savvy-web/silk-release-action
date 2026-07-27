@@ -14,41 +14,42 @@
  * Rather than fail trying to open a PR with no commits, this stage closes
  * any open release PR and deletes the release branch.
  */
-
-import type { PublishabilityDetector } from "@effected/workspaces";
-import { WorkspaceDiscovery } from "@effected/workspaces";
-import type {
-	ActionEnvironmentError,
-	ActionOutputError,
-	ActionState,
-	CheckRunError,
-	CommandRunnerError,
-	GitBranchError,
-	GitCommitError,
-	GitHubClientError,
-	GitHubIssueError,
-	PullRequestError,
-} from "@savvy-web/github-action-effects";
+// `ActionState` is the KIT tag: this module never yields it directly, but
+// `resolveSignoff` requires it, and `R` propagates upward.
+import type { CommandFailedError, CommandOutputError, ToolDiscovery } from "@effected/commands";
+import { Run } from "@effected/commands";
+import type { FileChange, GitHubCommit, GitHubError, GitHubIssue, PullRequestInfo, Repo } from "@effected/github";
 import {
-	ActionEnvironment,
-	ActionOutputs,
 	CheckRun,
-	CommandRunner,
+	CheckRunOutput,
+	FileContent,
+	FileDeletion,
 	GitBranch,
 	GitCommit,
-	GitHubClient,
-	GitHubIssue,
 	PullRequest,
-} from "@savvy-web/github-action-effects";
+} from "@effected/github";
+import type { ActionEnvironmentError, ActionOutputError, ActionState } from "@effected/github-actions";
+import { ActionEnvironment, ActionInput, ActionOutputs } from "@effected/github-actions";
+import type { PublishabilityDetector } from "@effected/workspaces";
+import { WorkspaceDiscovery } from "@effected/workspaces";
 import type { Changesets } from "@savvy-web/silk-effects";
-import { Config, Effect, FileSystem } from "effect";
+import { Config, Effect, FileSystem, Option } from "effect";
+import type { ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess } from "effect/unstable/process";
 import type { ChangesetConfig } from "../release/changeset-config.js";
+import { applyAutoMerge } from "./auto-merge.js";
 import { resolveSignoff } from "./commit-signoff.js";
 import { isSinglePackage } from "./detect-repo-type.js";
 import { isMonorepoForTagging } from "./determine-tag-strategy.js";
 import { formatWorkspaceWithBiome } from "./format-workspace.js";
+import { pullRequestUrl, resolveServerUrl } from "./github-urls.js";
+import { getLinkedIssuesFromCommits } from "./link-issues-from-commits.js";
 import { runNativeVersion } from "./native-version.js";
+import type { FileReadError } from "./porcelain-changes.js";
+import { collectPorcelainChanges } from "./porcelain-changes.js";
+import { buildManagedPrBody, extractSummary, upsertManagedRegion } from "./pr-body.js";
 import {
+	NOTHING_TO_RELEASE_TITLE,
 	formatReleasePackageList,
 	getReleasingPackages,
 	listPublishablePackages,
@@ -89,36 +90,6 @@ export interface UpdateReleaseBranchResult {
 	linkedIssues: LinkedIssue[];
 }
 
-const CLOSE_KEYWORD_PATTERN = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)/gi;
-const MERGE_COMMIT_PR_PATTERN = /\(#(\d+)\)$/m;
-
-const extractIssueReferences = (message: string): number[] => {
-	const issues = new Set<number>();
-	for (const match of message.matchAll(CLOSE_KEYWORD_PATTERN)) {
-		const n = Number.parseInt(match[1], 10);
-		if (!Number.isNaN(n)) issues.add(n);
-	}
-	return Array.from(issues);
-};
-
-const extractPRNumber = (message: string): number | null => {
-	const match = message.match(MERGE_COMMIT_PR_PATTERN);
-	return match ? Number.parseInt(match[1], 10) : null;
-};
-
-const buildLinkedIssuesSection = (linkedIssues: ReadonlyArray<LinkedIssue>): string => {
-	if (linkedIssues.length === 0) return "";
-	const items = linkedIssues.map((issue) => {
-		if (issue.state === "closed") return `~~#${issue.number}: ${issue.title}~~ (already closed)`;
-		return `Closes #${issue.number}: ${issue.title}`;
-	});
-	return summaryWriter.build([{ heading: "Linked Issues", content: summaryWriter.list(items) }]);
-};
-
-interface RefResponse {
-	object: { sha: string };
-}
-
 /**
  * Run the `updateReleaseBranch` stage.
  *
@@ -128,16 +99,13 @@ export const updateReleaseBranch = (): Effect.Effect<
 	UpdateReleaseBranchResult,
 	| ActionEnvironmentError
 	| ActionOutputError
-	| CheckRunError
 	| Changesets.ConfigurationError
 	| Changesets.ReleasePlanError
-	| CommandRunnerError
+	| CommandFailedError
+	| CommandOutputError
 	| Config.ConfigError
-	| GitBranchError
-	| GitCommitError
-	| GitHubClientError
-	| GitHubIssueError
-	| PullRequestError,
+	| FileReadError
+	| GitHubError,
 	| ActionEnvironment
 	| ActionOutputs
 	| ActionState
@@ -145,36 +113,40 @@ export const updateReleaseBranch = (): Effect.Effect<
 	| Changesets.ConfigInspector
 	| Changesets.ReleasePlanner
 	| CheckRun
-	| CommandRunner
+	| ChildProcessSpawner.ChildProcessSpawner
+	| ToolDiscovery
 	| FileSystem.FileSystem
 	| GitBranch
 	| GitCommit
-	| GitHubClient
+	| GitHubCommit
 	| GitHubIssue
 	| PublishabilityDetector
 	| PullRequest
+	| Repo
 	| WorkspaceDiscovery
 > =>
 	Effect.gen(function* () {
 		const env = yield* ActionEnvironment;
 		const outputs = yield* ActionOutputs;
 		const checks = yield* CheckRun;
-		const runner = yield* CommandRunner;
 		const gitCommit = yield* GitCommit;
-		const client = yield* GitHubClient;
 		const branches = yield* GitBranch;
 		const pr = yield* PullRequest;
-		const issues = yield* GitHubIssue;
 		const fs = yield* FileSystem.FileSystem;
 		const signoff = yield* resolveSignoff();
 
-		const releaseBranch = yield* Config.string("release-branch").pipe(Config.withDefault("changeset-release/main"));
-		const targetBranch = yield* Config.string("target-branch").pipe(Config.withDefault("main"));
-		const prTitlePrefix = yield* Config.string("pr-title-prefix").pipe(Config.withDefault("chore: release"));
-		const dryRun = yield* Config.boolean("dry-run").pipe(Config.withDefault(false));
+		const releaseBranch = yield* ActionInput.string("release-branch").pipe(
+			Config.withDefault("changeset-release/main"),
+		);
+		const targetBranch = yield* ActionInput.string("target-branch").pipe(Config.withDefault("main"));
+		const dryRun = yield* ActionInput.boolean("dry-run").pipe(Config.withDefault(false));
 
-		const { sha, repository, runId } = yield* env.github;
+		const { sha, repository } = yield* env.github;
 		const [owner, repo] = repository.split("/");
+		// GHES. `getOptional` rather than `env.github.serverUrl`: absence has a
+		// correct default rather than being a failure, and only GHES sets it.
+		// Matches `attest-helpers.ts` and the PR-URL fix in `main.ts`.
+		const serverUrl = yield* resolveServerUrl();
 
 		// ---------- Find existing PR (open, or closed-not-merged) ----------
 		let prNumber: number | null = null;
@@ -193,7 +165,12 @@ export const updateReleaseBranch = (): Effect.Effect<
 				pr.list({ state: "closed", head: `${owner}:${releaseBranch}`, base: targetBranch }),
 			);
 			if (closedPrs._tag === "Success") {
-				const unmerged = closedPrs.success.find((p) => (p.mergedAt ?? null) === null);
+				// LANDMINE: `mergedAt` is an `Option<DateTime>` on the kit's shape, NOT
+				// `string | null`. The old `(p.mergedAt ?? null) === null` compiles
+				// UNCHANGED against an Option and is ALWAYS FALSE — `Option.none()` is an
+				// object, so `??` never fires — which would mean `unmerged` is never
+				// found and a closed-but-unmerged release PR is never reopened.
+				const unmerged = closedPrs.success.find((p) => Option.isNone(p.mergedAt));
 				if (unmerged) {
 					prNumber = unmerged.number;
 					prWasClosed = true;
@@ -204,20 +181,63 @@ export const updateReleaseBranch = (): Effect.Effect<
 			}
 		}
 
-		// ---------- Collect linked issues from changesets BEFORE version cmd ----------
-		yield* Effect.logInfo("Collecting linked issues from changeset commits");
+		// ---------- Collect linked issues BEFORE the version command ----------
+		//
+		// The same walk the create path uses, deliberately: every commit between
+		// the last release and the target branch, taking close keywords from the
+		// commit bodies and `closingIssuesReferences` from each merge commit's PR.
+		//
+		// This replaces a scan scoped to *changeset* commits — for each pending
+		// changeset file, the commit that added it. That scope silently lost two
+		// things. A pull request whose issue was attached by hand in the sidebar
+		// contributed nothing unless the same commit also added a changeset, and a
+		// squash merge whose message dropped the closing reference could not be
+		// recovered from its merge point. Both are exactly what the merge-commit
+		// half of this walk is for.
+		//
+		// It also ended the disagreement between the two paths: the Phase-2 check
+		// counted issues this way while the PR body counted them the other, so one
+		// release PR could report four linked issues in its check and two in its
+		// description.
+		yield* Effect.logInfo("Collecting linked issues from commits since the last release");
 		let linkedIssues: LinkedIssue[] = [];
 		if (!dryRun) {
-			linkedIssues = yield* collectLinkedIssuesFromChangesets({ owner, repo, targetBranch });
+			const found = yield* getLinkedIssuesFromCommits(targetBranch, releaseBranch);
+			linkedIssues = found.linkedIssues.map((issue) => ({
+				number: issue.number,
+				title: issue.title,
+				state: issue.state,
+				url: issue.url,
+				commits: issue.commits,
+				nodeId: issue.node_id,
+			}));
 		} else {
-			yield* Effect.logInfo("[DRY RUN] Would collect linked issues from changeset commits");
+			yield* Effect.logInfo("[DRY RUN] Would collect linked issues from commits");
 		}
 
 		// ---------- Recreate the release branch from main locally ----------
 		yield* Effect.logInfo(`Recreating release branch '${releaseBranch}' from '${targetBranch}'`);
 		if (!dryRun) {
-			yield* Effect.result(runner.exec("git", ["branch", "-D", releaseBranch]));
-			yield* runner.exec("git", ["checkout", "-b", releaseBranch]);
+			// The start point is EXPLICIT. `checkout -b <branch>` with no start point
+			// branches from ambient HEAD, which this module never establishes — the
+			// log line above claimed "from '<target>'" while the command said no such
+			// thing. `create-release-branch.ts` always passed one; this did not.
+			//
+			// Why it matters beyond tidiness: branching from the wrong point discards
+			// the release branch's prior commits, so the push that follows is a
+			// NON-DESCENDANT ref update. GitHub records that as
+			// `head_ref_force_pushed` — which is exactly the event on the PR timeline
+			// for run 30212579721, and there is no `--force` anywhere in this module.
+			yield* Effect.result(Run.text(ChildProcess.make("git", ["branch", "-D", releaseBranch])));
+			yield* Run.text(ChildProcess.make("git", ["checkout", "-b", releaseBranch, `origin/${targetBranch}`]));
+
+			// Make the branch point observable. A silent recreate is how a
+			// non-descendant update reached GitHub without anything in the log
+			// saying what we had branched from.
+			const branchedFrom = yield* Effect.result(Run.text(ChildProcess.make("git", ["rev-parse", "HEAD"])));
+			if (branchedFrom._tag === "Success") {
+				yield* Effect.logInfo(`  '${releaseBranch}' now at ${branchedFrom.success.trim()} (origin/${targetBranch})`);
+			}
 		} else {
 			yield* Effect.logInfo(`[DRY RUN] Would recreate branch: ${releaseBranch} from ${targetBranch}`);
 		}
@@ -240,8 +260,20 @@ export const updateReleaseBranch = (): Effect.Effect<
 		let hasChanges = false;
 		let changedFiles = "";
 		if (!dryRun) {
-			const status = yield* runner.execCapture("git", ["status", "--porcelain"]);
-			changedFiles = status.stdout;
+			// `Run.text`, NOT `Run.collect`. `collect` demotes a non-zero exit to a
+			// value with empty stdout, which reads here as "no version changes" —
+			// and this module's no-change path CLOSES THE RELEASE PR AND DELETES
+			// THE REMOTE RELEASE BRANCH, then returns `success: true`. A transient
+			// git failure would therefore destroy a live release and report it as
+			// a clean run. `text` makes the exit a typed failure.
+			//
+			// The trim `text` applies is safe for this (non-`-z`) form: all three
+			// consumers of `changedFiles` are whitespace-insensitive per line —
+			// `.trim().length`, the per-line `.includes(...)` filter, and
+			// `getReleasingPackages`, which strips the porcelain status column with
+			// `^\s*\S+\s+`. The `-z` read further down is a different matter and
+			// must stay `Run.collect`; see the comment there.
+			changedFiles = yield* Run.text(ChildProcess.make("git", ["status", "--porcelain"]));
 			hasChanges = changedFiles.trim().length > 0;
 		} else {
 			hasChanges = true;
@@ -249,7 +281,7 @@ export const updateReleaseBranch = (): Effect.Effect<
 		}
 
 		let versionSummary = "";
-		let prTitle = prTitlePrefix;
+		let prTitle = NOTHING_TO_RELEASE_TITLE;
 		// When `changeset version` yields nothing the release branch has no
 		// commits beyond main: an invalid state. We close any release PR and
 		// delete the branch, then skip the reopen/update/create-PR steps below.
@@ -298,13 +330,12 @@ export const updateReleaseBranch = (): Effect.Effect<
 				perPackageVersioning: yield* isMonorepoForTagging(process.cwd()),
 				releasablePackages: publishablePackages,
 				singlePackageRepoVersion,
-				prTitlePrefix,
 			});
-			if (prTitle !== prTitlePrefix) {
+			if (prTitle !== NOTHING_TO_RELEASE_TITLE) {
 				yield* Effect.logInfo(`Release PR title: ${prTitle}`);
 			}
 
-			if (!dryRun) yield* runner.exec("git", ["add", "."]);
+			if (!dryRun) yield* Run.text(ChildProcess.make("git", ["add", "."]));
 
 			// Commit subject matches the PR title; body lists the releasing packages
 			// with full (scoped) names, falling back to a description when none.
@@ -356,8 +387,31 @@ export const updateReleaseBranch = (): Effect.Effect<
 			prNumber = null;
 		}
 
-		// ---------- Reopen PR if it was closed ----------
-		if (!branchDeleted && prWasClosed && prNumber !== null && !dryRun) {
+		// ---------- Reopen the PR if it is closed NOW ----------
+		// A FRESH read, not the `prWasClosed` snapshot taken before the branch was
+		// touched. That snapshot can only answer "was it closed when we started",
+		// so anything that closes the PR mid-run leaves the guard useless — which
+		// is exactly what happened when GitHub auto-closed #243 inside the
+		// zero-diff window. That window is gone, but a stale-state guard is a
+		// latent defect and the next mid-run closer would find it just as useless.
+		//
+		// `merged` is checked because a MERGED pull request must never be
+		// reopened — reopening one is a different and worse mutation than leaving
+		// it closed.
+		//
+		// Accepted trade, stated: a human who deliberately closes the release PR
+		// while a run is in flight will see it reopened. The API cannot
+		// distinguish that from a side-effect close, and a closed PR with a live
+		// release branch is the invalid state we are here to repair.
+		const currentPr =
+			!branchDeleted && prNumber !== null && !dryRun ? yield* Effect.result(pr.get(prNumber)) : undefined;
+		const isClosedNow = currentPr !== undefined && currentPr._tag === "Success" && currentPr.success.state === "closed";
+		const isMerged = currentPr !== undefined && currentPr._tag === "Success" && currentPr.success.merged;
+
+		if (!branchDeleted && prNumber !== null && !dryRun && isClosedNow && !isMerged) {
+			if (!prWasClosed) {
+				yield* Effect.logWarning(`PR #${prNumber} was open when this run started and is closed now — reopening`);
+			}
 			const reopen = yield* Effect.result(pr.update(prNumber, { state: "open" }));
 			if (reopen._tag === "Success") {
 				yield* Effect.logInfo(`✓ Reopened PR #${prNumber}`);
@@ -370,8 +424,11 @@ export const updateReleaseBranch = (): Effect.Effect<
 			yield* Effect.logInfo(`[DRY RUN] Would reopen PR #${prNumber}`);
 		}
 
-		// ---------- Update PR title for existing open PRs ----------
-		if (!branchDeleted && prNumber !== null && !prWasClosed && !dryRun) {
+		// ---------- Update the PR title ----------
+		// NOT gated on `!prWasClosed`. A PR we just reopened is being reused, so it
+		// needs the current title as much as one that stayed open — under the old
+		// guard a reopened release PR kept a title naming an earlier version.
+		if (!branchDeleted && prNumber !== null && !dryRun) {
 			const update = yield* Effect.result(pr.update(prNumber, { title: prTitle }));
 			if (update._tag === "Success") {
 				yield* Effect.logInfo(`✓ Updated PR #${prNumber} title to: ${prTitle}`);
@@ -382,8 +439,14 @@ export const updateReleaseBranch = (): Effect.Effect<
 
 		// ---------- Create new PR if none exists ----------
 		if (!branchDeleted && prNumber === null && !dryRun) {
-			const prBody = buildPrBody({ versionSummary, linkedIssues, owner, repo, runId });
-			const create = (): Effect.Effect<{ number: number; url: string }, PullRequestError, PullRequest> =>
+			const prBody = buildManagedPrBody({
+				subject: prTitle,
+				linkedIssues,
+				signoff,
+				// A PR being created has no prior body, so nothing to carry through.
+				summary: "",
+			});
+			const create = (): Effect.Effect<PullRequestInfo, GitHubError, Repo> =>
 				pr.create({ title: prTitle, body: prBody, head: releaseBranch, base: targetBranch });
 
 			const result = yield* create().pipe(
@@ -397,26 +460,53 @@ export const updateReleaseBranch = (): Effect.Effect<
 			yield* Effect.logInfo("[DRY RUN] Would create new release PR (no existing PR found)");
 		}
 
-		// ---------- Update PR body with linked issues ----------
-		if (prNumber !== null && linkedIssues.length > 0 && !dryRun) {
+		// ---------- Auto-merge, when the workflow opted in ----------
+		//
+		// Applied whether this run created the PR or found an existing one: a
+		// workflow that asks for auto-merge wants it on the release PR, and which
+		// run happened to open it is an accident of timing. `setAutoMerge` is
+		// idempotent, so re-applying on every push costs nothing.
+		if (prNumber !== null && !branchDeleted) {
+			const info = yield* Effect.result(pr.get(prNumber));
+			if (info._tag === "Success") {
+				yield* applyAutoMerge(info.success, dryRun);
+			} else {
+				yield* Effect.logWarning(`Could not read PR #${prNumber} for auto-merge: ${info.failure.reason}`);
+			}
+		}
+
+		// ---------- Refresh the managed region of the PR body ----------
+		// NOT gated on `linkedIssues.length > 0`. The managed region carries the
+		// version summary and the proposed-squash-commit block as well as the
+		// closing references, so a release with no linked issues still needs it
+		// refreshed — under the old guard such a PR kept a body from an earlier
+		// run, describing versions that had since moved.
+		//
+		// This is the reuse-in-place path: an open release PR is updated (title
+		// above, body here) and keeps its number, its comments and its review
+		// history. It is never closed and recreated.
+		if (prNumber !== null && !dryRun) {
 			const getPr = yield* Effect.result(pr.get(prNumber));
 
 			if (getPr._tag === "Success") {
-				const linkedSection = buildLinkedIssuesSection(linkedIssues);
-				let currentBody = getPr.success.body ?? "";
-				const existingIdx = currentBody.indexOf("## Linked Issues");
-				if (existingIdx !== -1) {
-					const nextHeadingIdx = currentBody.indexOf("\n## ", existingIdx + 1);
-					currentBody =
-						nextHeadingIdx !== -1
-							? currentBody.substring(0, existingIdx) + currentBody.substring(nextHeadingIdx + 1)
-							: currentBody.substring(0, existingIdx);
-				}
-				const newBody = `${linkedSection}\n${currentBody.trim()}`;
+				// Regenerate only OUR marker-delimited region; anything a human wrote
+				// around it survives verbatim. The heading splice this replaces keyed
+				// on `## Linked Issues` and could not tell our text from theirs.
+				const existingBody = getPr.success.body ?? "";
+				const managed = buildManagedPrBody({
+					subject: prTitle,
+					linkedIssues,
+					signoff,
+					// Carried through, not regenerated. The managed region is rebuilt
+					// each run, so re-emitting an empty summary region would delete
+					// whatever the summariser wrote as soon as any commit landed.
+					summary: extractSummary(existingBody),
+				});
+				const newBody = upsertManagedRegion(existingBody, managed);
 
 				const update = yield* Effect.result(pr.update(prNumber, { body: newBody }));
 				if (update._tag === "Success") {
-					yield* Effect.logInfo(`✓ Updated PR #${prNumber} with ${linkedIssues.length} linked issue(s)`);
+					yield* Effect.logInfo(`✓ Refreshed PR #${prNumber} body (${linkedIssues.length} linked issue(s))`);
 				} else {
 					yield* Effect.logWarning(`Could not update PR body: ${update.failure.reason}`);
 				}
@@ -435,7 +525,7 @@ export const updateReleaseBranch = (): Effect.Effect<
 			{ key: "Linked Issues", value: linkedIssues.length > 0 ? `${linkedIssues.length} issue(s)` : "_None_" },
 			{
 				key: "PR",
-				value: prNumber ? `[#${prNumber}](https://github.com/${owner}/${repo}/pull/${prNumber})` : "_N/A_",
+				value: prNumber ? `[#${prNumber}](${pullRequestUrl(serverUrl, owner, repo, prNumber)})` : "_N/A_",
 			},
 		]);
 
@@ -467,10 +557,13 @@ export const updateReleaseBranch = (): Effect.Effect<
 				? "Release branch recreated from main with version changes"
 				: "Release branch synced with main";
 		const { id: checkId } = yield* checks.create(checkTitle, sha);
-		yield* checks.complete(checkId, branchDeleted ? "neutral" : "success", {
-			title: checkConclusionTitle,
-			summary: checkDetails,
-		});
+		// `CheckRunOutput` is a `Schema.Class`; an object literal no longer
+		// satisfies it. The kit caps the summary itself in `wireOutput`.
+		yield* checks.complete(
+			checkId,
+			branchDeleted ? "neutral" : "success",
+			CheckRunOutput.make({ title: checkConclusionTitle, summary: checkDetails }),
+		);
 
 		const jobStatusTable = summaryWriter.keyValueTable([
 			{ key: "Branch", value: `\`${releaseBranch}\`` },
@@ -518,125 +611,6 @@ export const updateReleaseBranch = (): Effect.Effect<
 		};
 
 		/**
-		 * Walk the changeset commits on `origin/<targetBranch>` and harvest
-		 * issue references from commit messages (and merged-PR linked issues
-		 * via `closingIssuesReferences`).
-		 */
-		function collectLinkedIssuesFromChangesets(args: {
-			owner: string;
-			repo: string;
-			targetBranch: string;
-		}): Effect.Effect<
-			LinkedIssue[],
-			CommandRunnerError,
-			CommandRunner | FileSystem.FileSystem | GitHubClient | GitHubIssue
-		> {
-			return Effect.gen(function* () {
-				const dirEntries = yield* fs.readDirectory(".changeset").pipe(Effect.catch(() => Effect.succeed([])));
-				const changesetFiles = dirEntries.filter((f) => f.endsWith(".md") && f !== "README.md");
-				yield* Effect.logInfo(`Found ${changesetFiles.length} changeset file(s): ${changesetFiles.join(", ")}`);
-				if (changesetFiles.length === 0) return [];
-
-				yield* Effect.logInfo(`Fetching origin/${args.targetBranch} to get full history...`);
-				yield* Effect.result(runner.exec("git", ["fetch", "origin", args.targetBranch, "--unshallow"]));
-				yield* Effect.result(
-					runner.exec("git", ["fetch", "origin", `${args.targetBranch}:refs/remotes/origin/${args.targetBranch}`]),
-				);
-
-				const remoteBranch = `origin/${args.targetBranch}`;
-				yield* Effect.logInfo(`Searching ${remoteBranch} for changeset commits...`);
-
-				const issueMap = new Map<number, string[]>();
-				for (const file of changesetFiles) {
-					const filePath = `.changeset/${file}`;
-					const logResult = yield* runner
-						.execCapture("git", [
-							"log",
-							remoteBranch,
-							"--diff-filter=A",
-							"--follow",
-							"--reverse",
-							"--format=%H%n%B%n---END---",
-							"--",
-							filePath,
-						])
-						.pipe(Effect.catch(() => Effect.succeed({ stdout: "", stderr: "", exitCode: 0 })));
-					const output = logResult.stdout;
-					if (output.trim() === "") {
-						yield* Effect.logInfo(`Changeset ${file}: no commit found in ${remoteBranch} history`);
-						continue;
-					}
-					const endIdx = output.indexOf("---END---");
-					if (endIdx === -1) continue;
-					const content = output.substring(0, endIdx).trim();
-					const firstNl = content.indexOf("\n");
-					const commit =
-						firstNl === -1
-							? { sha: content, message: "" }
-							: { sha: content.substring(0, firstNl), message: content.substring(firstNl + 1).trim() };
-
-					yield* Effect.logInfo(`Changeset ${file}:`);
-					yield* Effect.logInfo(`  Commit: ${commit.sha.slice(0, 7)}`);
-					yield* Effect.logInfo(`  Message: ${commit.message.split("\n")[0]}`);
-
-					const refs = extractIssueReferences(commit.message);
-					yield* Effect.logInfo(
-						`  Issue refs: ${refs.length > 0 ? refs.map((i) => `#${i}`).join(", ") : "(none found)"}`,
-					);
-					for (const n of refs) {
-						const existing = issueMap.get(n) ?? [];
-						existing.push(commit.sha);
-						issueMap.set(n, existing);
-					}
-
-					const prNum = extractPRNumber(commit.message);
-					if (prNum !== null) {
-						yield* Effect.logInfo(`  PR reference: #${prNum}`);
-						const prIssuesResult = yield* Effect.result(issues.getLinkedIssues(prNum));
-						if (prIssuesResult._tag === "Success") {
-							const prIssues = prIssuesResult.success.map((n) => n.number);
-							if (prIssues.length > 0) {
-								yield* Effect.logInfo(`  PR #${prNum} has ${prIssues.length} linked issue(s):`);
-								for (const n of prIssues) {
-									yield* Effect.logInfo(`    - Issue #${n}`);
-									const existing = issueMap.get(n) ?? [];
-									existing.push(commit.sha);
-									issueMap.set(n, existing);
-								}
-							} else {
-								yield* Effect.logInfo(`  PR #${prNum} has no linked issues`);
-							}
-						}
-					}
-				}
-
-				yield* Effect.logInfo(
-					`Found ${issueMap.size} unique issue reference(s) from ${changesetFiles.length} changeset commit(s)`,
-				);
-
-				const result: LinkedIssue[] = [];
-				for (const [issueNumber, commitShas] of issueMap) {
-					const issueResult = yield* Effect.result(issues.get(issueNumber));
-					if (issueResult._tag === "Success") {
-						const i = issueResult.success;
-						result.push({
-							number: issueNumber,
-							title: i.title,
-							state: i.state,
-							url: i.htmlUrl ?? "",
-							commits: commitShas,
-							nodeId: i.nodeId ?? "",
-						});
-						yield* Effect.logInfo(`✓ Issue #${issueNumber}: ${i.title} (${i.state})`);
-					} else {
-						yield* Effect.logWarning(`Failed to fetch issue #${issueNumber}: ${issueResult.failure.reason}`);
-					}
-				}
-				return result;
-			});
-		}
-
-		/**
 		 * Build a rebased commit on top of `targetBranch` for the staged
 		 * changes, then update `releaseBranch` to point at it.
 		 */
@@ -646,98 +620,57 @@ export const updateReleaseBranch = (): Effect.Effect<
 			commitMessage: string;
 		}): Effect.Effect<
 			void,
-			CommandRunnerError | GitCommitError | GitHubClientError,
-			CommandRunner | FileSystem.FileSystem | GitCommit | GitHubClient
+			CommandFailedError | CommandOutputError | FileReadError | GitHubError,
+			ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | GitBranch | GitCommit | Repo
 		> {
 			return Effect.gen(function* () {
-				const targetRef = yield* client.rest<RefResponse>("git.getRef", (octokit) =>
-					(
-						octokit as {
-							rest: {
-								git: {
-									getRef: (params: { owner: string; repo: string; ref: string }) => Promise<{ data: RefResponse }>;
-								};
-							};
-						}
-					).rest.git.getRef({ owner, repo, ref: `heads/${args.targetBranch}` }),
-				);
-				const parentSha = targetRef.object.sha;
+				// INVARIANT: the commit is rooted on the TARGET branch head, not on
+				// the release branch's own head. That is what keeps the release branch
+				// a single clean commit on top of `main` rather than an accumulating
+				// stack. `GitBranch.sha` replaces a hand-cast `client.rest("git.getRef")`.
+				const parentSha = yield* branches.sha(args.targetBranch);
 
 				// `-z` uses NUL separators so the positional [0..2]=status, [3..]=path
 				// parsing survives whitespace and trailing CRLF; trimming the line
 				// itself would shift the column for unstaged changes (" M file" → "M file").
-				const status = yield* runner.execCapture("git", ["status", "--porcelain", "-z"]);
-				const files: Array<
-					| { readonly path: string; readonly mode: "100644" | "100755"; readonly content: string }
-					| { readonly path: string; readonly mode: "100644"; readonly sha: null }
-				> = [];
-				for (const entry of status.stdout.split("\0")) {
-					if (entry.length === 0) continue;
-					const statusCode = entry.substring(0, 2).trim();
-					let filePath = entry.substring(3);
-					if (filePath.includes(" -> ")) filePath = filePath.split(" -> ")[1];
-					if (filePath === "") continue;
-					if (statusCode === "D" || statusCode === "DD" || statusCode === "AD") {
-						files.push({ path: filePath, mode: "100644", sha: null });
-					} else {
-						const content = yield* fs.readFileString(filePath).pipe(Effect.catch(() => Effect.succeed("")));
-						const statResult = yield* Effect.result(fs.stat(filePath));
-						const isExecutable = statResult._tag === "Success" && (Number(statResult.success.mode ?? 0n) & 0o111) !== 0;
-						files.push({ path: filePath, mode: isExecutable ? "100755" : "100644", content });
-					}
-				}
+				const status = yield* Run.collect(ChildProcess.make("git", ["status", "--porcelain", "-z"]));
+				const changes = yield* collectPorcelainChanges(status.stdout);
 
-				if (files.length === 0) {
+				if (changes.length === 0) {
 					yield* Effect.logWarning("No changes to commit via API");
 					return;
 				}
 
-				// The Git Data API's `base_tree` wants a tree SHA, not a commit
-				// SHA — fetch the parent commit and read its tree.sha.
-				const parentCommit = yield* client.rest<{ tree: { sha: string } }>("git.getCommit", (octokit) =>
-					(
-						octokit as {
-							rest: {
-								git: {
-									getCommit: (params: { owner: string; repo: string; commit_sha: string }) => Promise<{
-										data: { tree: { sha: string } };
-									}>;
-								};
-							};
-						}
-					).rest.git.getCommit({ owner, repo, commit_sha: parentSha }),
-				);
-				const treeSha = yield* gitCommit.createTree(files, parentCommit.tree.sha);
-				const commitSha = yield* gitCommit.createCommit(args.commitMessage, treeSha, [parentSha]);
-				// GitCommit.updateRef prefixes "heads/" itself — pass the bare branch name.
-				yield* gitCommit.updateRef(args.releaseBranch, commitSha, true);
+				// INVARIANT: build the commit FIRST, move the ref ONCE, last.
+				//
+				// The previous sequence was `upsert(branch, targetHead)` then
+				// `commitFiles`. It was correct about rooting but it opened a
+				// ZERO-DIFF WINDOW: between the two calls the release branch ref
+				// *equals* the target head, so the open release PR's head equals its
+				// base — and **GitHub closes a pull request whose head becomes
+				// identical to its base**. On run 30212579721 that window was ~3.2s
+				// and PR #243 was closed inside it, attributed to whoever force-pushed
+				// (us). Our own `pr.update(state: "closed")` never ran; the summary
+				// line proved that, which is why the cause took so long to find.
+				//
+				// `commitFiles` cannot be used at all here: it `GET`s the branch and
+				// roots the tree on the BRANCH's commit, and its ref update is
+				// deliberately unforced. Both are wrong for a rebase-onto-target.
+				//
+				// So the three underlying members do it explicitly, and the ref moves
+				// exactly once — from wherever it was, straight to the finished
+				// commit. The branch is never equal to the target head, so the window
+				// does not exist. `parentSha` is still the TARGET head, so the
+				// explicit-parent invariant is unchanged.
+				const base = yield* gitCommit.get(parentSha);
+				const treeSha = yield* gitCommit.createTree({ changes, baseTree: base.treeSha });
+				const commitSha = yield* gitCommit.createCommit({
+					message: args.commitMessage,
+					tree: treeSha,
+					parents: [parentSha],
+				});
+				yield* branches.upsert(args.releaseBranch, commitSha);
 				yield* Effect.logInfo(`✓ Created verified commit: ${commitSha}`);
 			});
 		}
 	});
-
-const buildPrBody = (args: {
-	versionSummary: string;
-	linkedIssues: ReadonlyArray<LinkedIssue>;
-	owner: string;
-	repo: string;
-	runId: string;
-}): string => {
-	const sections: Array<{ heading?: string; level?: 2 | 3; content: string }> = [
-		{ heading: "Release PR", content: "This PR was automatically generated by the release workflow." },
-	];
-	if (args.versionSummary) {
-		sections.push({
-			heading: "Version Changes",
-			level: 3,
-			content: summaryWriter.codeBlock(args.versionSummary, "text"),
-		});
-	}
-	if (args.linkedIssues.length > 0) {
-		sections.unshift({ content: buildLinkedIssuesSection(args.linkedIssues) });
-	}
-	sections.push({
-		content: `---\n🤖 Generated with [GitHub Actions](https://github.com/${args.owner}/${args.repo}/actions/runs/${args.runId})`,
-	});
-	return summaryWriter.build(sections);
-};

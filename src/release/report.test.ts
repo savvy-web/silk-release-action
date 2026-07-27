@@ -1,12 +1,13 @@
+import { Contact, SbomMetadata, Supplier } from "@effected/sbom";
 import { describe, expect, it } from "vitest";
 import type { ValidationOutput } from "../schema/release-output.js";
-import type { ResolvedSBOMMetadata } from "../types/sbom-config.js";
 import {
 	buildChecksTable,
 	buildFindingsTable,
 	buildPublishSummary,
 	buildPublishValidationSummary,
 	buildReleaseNotesPreviewSummary,
+	buildReleaseTotals,
 	buildSbomPreviewSummary,
 	buildValidationComment,
 	getPackagePageUrl,
@@ -138,54 +139,6 @@ describe("getPackagePageUrl", () => {
 });
 
 describe("buildPublishSummary", () => {
-	it("frames the report as 'What will be released', never 'Published'", () => {
-		const markdown = buildPublishSummary(publishOf([]));
-		expect(markdown).toContain("What will be released");
-		expect(markdown).not.toContain("Publish Results");
-		expect(markdown).not.toContain("Published");
-		expect(markdown).toContain("On merge, these packages publish:");
-	});
-
-	it("includes the dry-run indicator in the header when dryRun is true", () => {
-		const markdown = buildPublishSummary(publishOf([]), { dryRun: true });
-		expect(markdown).toContain("Dry Run");
-	});
-
-	it("renders the current → next version transition for a bumped package", () => {
-		const markdown = buildPublishSummary(publishOf([pkg()]));
-		expect(markdown).toContain("5.0.12 → 5.0.13");
-	});
-
-	it("renders a patch bump emoji and label from the precomputed bumpType", () => {
-		const markdown = buildPublishSummary(publishOf([pkg({ bumpType: "patch" })]));
-		expect(markdown).toContain("\u{1F7E2} patch");
-	});
-
-	it("renders a minor bump emoji and label from the precomputed bumpType", () => {
-		const markdown = buildPublishSummary(publishOf([pkg({ bumpType: "minor" })]));
-		expect(markdown).toContain("\u{1F7E1} minor");
-	});
-
-	it("renders a major bump emoji and label from the precomputed bumpType", () => {
-		const markdown = buildPublishSummary(publishOf([pkg({ bumpType: "major" })]));
-		expect(markdown).toContain("\u{1F534} major");
-	});
-
-	it("renders a brand-new package (null baseVersion) as '— → version' with a 🆕 new bump", () => {
-		const markdown = buildPublishSummary(
-			publishOf([pkg({ name: "@org/brand-new", version: "1.0.0", baseVersion: null, bumpType: "new" })]),
-		);
-		expect(markdown).toContain("— → 1.0.0");
-		expect(markdown).toContain("\u{1F195} new");
-	});
-
-	it("renders the changeset count, and '—' when it is null", () => {
-		const withCountMd = buildPublishSummary(publishOf([pkg({ name: "@org/with-count", changesetCount: 3 })]));
-		const noCountMd = buildPublishSummary(publishOf([pkg({ name: "@org/no-count", changesetCount: null })]));
-		expect(withCountMd).toContain("| 3 |");
-		expect(noCountMd).toContain("| — |");
-	});
-
 	it("renders the build directory, sizes, and SBOM line in the Details block", () => {
 		const markdown = buildPublishSummary(publishOf([pkg()]));
 		expect(markdown).toContain("<details>");
@@ -271,7 +224,7 @@ describe("buildPublishSummary", () => {
 			],
 		});
 
-		const markdown = buildPublishSummary(publishOf([pkgA, pkgB]));
+		const markdown = buildReleaseTotals(publishOf([pkgA, pkgB]));
 
 		// 716 + 284 = 1000 → 1.0 kB; 2300 + 700 = 3000 → 3.0 kB; 5 + 3 = 8 files.
 		expect(markdown).toContain("**Totals:**");
@@ -281,31 +234,35 @@ describe("buildPublishSummary", () => {
 		expect(markdown).toContain("2/2 targets ready");
 	});
 
+	it("counts only ready targets in the Totals, matching the release table", () => {
+		// `toValidatedReleaseRows` in `src/utils/release-table.ts` counts
+		// `status === "ready"`. This used to count every non-`failed` target, so a
+		// `skipped` one was reported as ready here and not there — the same release
+		// showing two different `n/m ready` figures in two adjacent sections of the
+		// same comment.
+		const mixed = pkg({
+			name: "@org/mixed",
+			builds: [
+				build({
+					targets: [npmTarget(), npmTarget({ status: "skipped" }), npmTarget({ status: "failed" })],
+				}),
+			],
+		});
+
+		const markdown = buildReleaseTotals(publishOf([mixed]));
+
+		expect(markdown).toContain("1/3 targets ready");
+	});
+
 	it("omits an absent size from the Totals sum", () => {
 		const partial = pkg({
 			name: "@org/partial-sizes",
 			builds: [build({ packedBytes: 500, unpackedBytes: null, fileCount: null })],
 		});
-		const markdown = buildPublishSummary(publishOf([partial]));
+		const markdown = buildReleaseTotals(publishOf([partial]));
 		expect(markdown).toContain("0.5 kB packed");
 		expect(markdown).toContain("0 B unpacked");
 		expect(markdown).toContain("0 files");
-	});
-
-	it("renders a version-only package (no builds) with the 'Version only' targets cell", () => {
-		const versionOnly = pkg({ name: "@org/version-only", versionOnly: true, builds: [] });
-		const markdown = buildPublishSummary(publishOf([versionOnly]));
-		expect(markdown).toContain("Version only");
-		expect(markdown).toContain("@org/version-only");
-		// A version-only package has no builds, so it must not produce a
-		// `<details>` block — that would wrap a header-only output.
-		expect(markdown).not.toContain("<details>");
-	});
-
-	it("includes the Legend line", () => {
-		const markdown = buildPublishSummary(publishOf([pkg()]));
-		expect(markdown).toContain("**Legend:**");
-		expect(markdown).toContain("🔴 major");
 	});
 
 	it("renders provenance ✅ for a configured target and 🚫 for an unconfigured one", () => {
@@ -357,6 +314,33 @@ describe("buildChecksTable", () => {
 describe("buildFindingsTable", () => {
 	it("returns an empty string when there are no findings", () => {
 		expect(buildFindingsTable([])).toBe("");
+	});
+
+	it("escapes a pipe in cell content so the table does not lose a column", () => {
+		// THE DEFECT THIS REPLACES. The predecessor built every table with
+		// `join(" | ")` and escaped nothing, so one `|` anywhere in a cell
+		// silently shifted every column after it — and `message` carries raw
+		// npm stderr, where a pipe is entirely ordinary.
+		const findings: ReadonlyArray<ValidationFinding> = [
+			{
+				severity: "error",
+				check: "Publish Validation",
+				scope: { package: "@org/a", directory: null },
+				message: "dry-run failed: peer range >=1 || <2 unsatisfied",
+			},
+		];
+
+		const table = buildFindingsTable(findings);
+		const bodyRow = table.split("\n").find((line) => line.includes("dry-run failed"));
+
+		expect(bodyRow).toBeDefined();
+		// The pipes inside the message are escaped...
+		expect(bodyRow).toContain(String.raw`\|\|`);
+		// ...so the row still has exactly the delimiter count its header does.
+		// (Line 0 is the section heading, not the table — take the first row.)
+		const header = table.split("\n").find((line) => line.startsWith("|"));
+		const unescapedPipes = (line: string): number => (line.match(/(?<!\\)\|/g) ?? []).length;
+		expect(unescapedPipes(bodyRow ?? "")).toBe(unescapedPipes(header ?? ""));
 	});
 
 	it("orders errors before warnings regardless of discovery order", () => {
@@ -451,7 +435,7 @@ describe("buildFindingsTable", () => {
 describe("buildValidationComment", () => {
 	it("renders a ✅ header icon when there are no findings", () => {
 		const comment = buildValidationComment(validationOf({ checks: passingChecks }));
-		expect(comment).toContain("## 📦 Release Validation ✅");
+		expect(comment).toContain("## ✅ Release Validation");
 	});
 
 	it("renders a ⚠️ header icon when the worst finding is a warning", () => {
@@ -464,7 +448,7 @@ describe("buildValidationComment", () => {
 			},
 		];
 		const comment = buildValidationComment(validationOf({ checks: passingChecks, findings }));
-		expect(comment).toContain("## 📦 Release Validation ⚠️");
+		expect(comment).toContain("## ⚠️ Release Validation");
 	});
 
 	it("renders a ❌ header icon when any finding is an error", () => {
@@ -478,7 +462,7 @@ describe("buildValidationComment", () => {
 			{ severity: "error", check: "Build Validation", scope: null, message: "tsc exited 2" },
 		];
 		const comment = buildValidationComment(validationOf({ checks: passingChecks, findings }));
-		expect(comment).toContain("## 📦 Release Validation ❌");
+		expect(comment).toContain("## ❌ Release Validation");
 	});
 
 	it("omits the findings section entirely when there are no findings", () => {
@@ -507,10 +491,16 @@ describe("buildValidationComment", () => {
 		expect(comment).toContain("[Build Validation](https://example.com/runs/1)");
 	});
 
-	it("includes the build-centric 'What will be released' publish summary", () => {
+	it("carries the per-package breakdown without repeating the release heading", () => {
 		const comment = buildValidationComment(validationOf({ checks: passingChecks, publish: publishOf([pkg()]) }));
-		expect(comment).toContain("What will be released");
+
+		// The breakdown is here…
 		expect(comment).toContain("`dist/npm`");
+		// …but the heading and the table belong to the release-plan section, which
+		// sits above this in the same comment. Repeating them produced two
+		// disagreeing tables under nested identical headings.
+		expect(comment).not.toContain("What will be released");
+		expect(comment).not.toContain("**Totals:**");
 	});
 
 	it("renders the build-grouped Details block for a multi-build package", () => {
@@ -525,21 +515,29 @@ describe("buildValidationComment", () => {
 		expect(comment).toContain("`dist/github`");
 	});
 
-	it("links the release-notes section when a check-run url is given", () => {
-		// Release-notes preview renders only when the build passed AND there is
-		// at least one released package — supply one so we exercise the normal
-		// (non-degraded) path.
+	it("links the full validation summary from the footer", () => {
 		const comment = buildValidationComment(validationOf({ checks: passingChecks, publish: publishOf([pkg()]) }), {
 			releaseNotesUrl: "https://example.com/runs/9",
 		});
-		expect(comment).toContain("### 📋 Release Notes Preview");
-		expect(comment).toContain("[View detailed release notes →](https://example.com/runs/9)");
+
+		// The link points at the unified check run — the whole summary, structured
+		// output included. It was previously headed "Release Notes Preview", which
+		// named a section OF that page rather than the page, and sent a reader
+		// looking for notes.
+		expect(comment).toContain("[Full validation summary →](https://example.com/runs/9)");
+		expect(comment).not.toContain("Release Notes Preview");
+		// Folded into the footer beside the timestamp rather than given a heading.
+		expect(comment).toMatch(/\[Full validation summary →\][^\n]*· <sub>Updated at/);
 	});
 
-	it("renders a release-notes placeholder when no check-run url is given", () => {
+	it("omits the link entirely when there is no check-run url", () => {
 		const comment = buildValidationComment(validationOf({ checks: passingChecks, publish: publishOf([pkg()]) }));
-		expect(comment).toContain("### 📋 Release Notes Preview");
-		expect(comment).toContain("Release notes will be generated on merge");
+
+		// No placeholder prose: a footer with nothing to link to is just a
+		// timestamp, and a sentence promising notes "on merge" said nothing a
+		// reader could act on.
+		expect(comment).not.toContain("Full validation summary");
+		expect(comment).toContain("<sub>Updated at");
 	});
 
 	it("replaces the publish summary with a build-failed notice when the build did not pass", () => {
@@ -807,15 +805,18 @@ describe("buildReleaseNotesPreviewSummary", () => {
 });
 
 describe("buildSbomPreviewSummary", () => {
-	const sampleResolved: ResolvedSBOMMetadata = {
-		supplier: {
+	// The kit's `SbomMetadata` — the value actually threaded onto the emitted
+	// BOM — rather than the consumer-shaped `ResolvedSBOMMetadata` that used to
+	// be reconstructed alongside it.
+	const sampleResolved: SbomMetadata = SbomMetadata.make({
+		supplier: Supplier.make({
 			name: "Savvy Web Systems",
 			url: ["https://savvyweb.systems"],
-			contact: [{ email: "security@savvyweb.systems" }],
-		},
-		component: { publisher: "Savvy Web Systems", copyright: "Copyright 2026 Savvy Web Systems" },
-		author: "Spencer Beggs",
-	};
+			contact: [Contact.make({ email: "security@savvyweb.systems" })],
+		}),
+		authors: [Contact.make({ name: "Spencer Beggs" })],
+		timestamp: "2026-01-01T00:00:00.000Z",
+	});
 
 	it("renders per-build component count and NTIA status from the validation payload", () => {
 		const md = buildSbomPreviewSummary(
@@ -860,10 +861,7 @@ describe("buildSbomPreviewSummary", () => {
 	});
 
 	it("surfaces the empty-resolved-config hint when resolvedSbomConfig is an empty map", () => {
-		const md = buildSbomPreviewSummary(
-			validationOf({ publish: publishOf([pkg()]) }),
-			new Map<string, ResolvedSBOMMetadata>(),
-		);
+		const md = buildSbomPreviewSummary(validationOf({ publish: publishOf([pkg()]) }), new Map<string, SbomMetadata>());
 		expect(md).toContain(
 			"_No `sbom-config` resolved — supply via the `sbom-config` action input or `vars.SILK_RELEASE_SBOM_TEMPLATE`._",
 		);
@@ -952,11 +950,10 @@ describe("buildSbomPreviewSummary", () => {
 	it("suppresses the empty-config hint when source is non-'none', even with a sparse map", () => {
 		// `source: "input"` means a template was supplied; the hint would
 		// mislead the reader into thinking no template arrived.
-		const md = buildSbomPreviewSummary(
-			validationOf({ publish: publishOf([pkg()]) }),
-			new Map<string, ResolvedSBOMMetadata>(),
-			{ source: "input", location: "sbom-config" },
-		);
+		const md = buildSbomPreviewSummary(validationOf({ publish: publishOf([pkg()]) }), new Map<string, SbomMetadata>(), {
+			source: "input",
+			location: "sbom-config",
+		});
 		expect(md).not.toContain(
 			"_No `sbom-config` resolved — supply via the `sbom-config` action input or `vars.SILK_RELEASE_SBOM_TEMPLATE`._",
 		);

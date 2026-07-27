@@ -1,160 +1,197 @@
 /**
- * Fixture tests for the close-linked-issues stage.
+ * Tests for the close-linked-issues stage.
  *
  * @remarks
- * Drives `closeLinkedIssues` against the library's GitHubIssueTest /
- * CheckRunTest / ActionEnvironmentTest / ActionOutputsTest layers and
- * asserts on the recorded operations.
+ * Written against the kit's `layerTest` seams. Two properties are load-bearing:
+ * the whole stage is **non-fatal** (its error channel is `never`), so a failed
+ * close is recorded and reported rather than aborting the phase; and dry-run
+ * must reach neither `comment` nor `close`.
  */
 
-import type {
-	ActionOutputsTestState,
-	CheckRunTestState,
-	GitHubIssueTestState,
-} from "@savvy-web/github-action-effects/testing";
+import type { CheckRunOutput } from "@effected/github";
 import {
-	ActionEnvironmentTest,
-	ActionLoggerTest,
-	ActionOutputsTest,
-	CheckRunTest,
-	GitHubIssueTest,
-} from "@savvy-web/github-action-effects/testing";
+	CheckRun,
+	CheckRunRef,
+	GitHubError,
+	GitHubGraphQLError,
+	GitHubIssue,
+	LinkedIssue,
+	Repo,
+	RepoRef,
+} from "@effected/github";
+import { ActionEnvironment, ActionOutputs } from "@effected/github-actions";
 import { Effect, Layer, Logger } from "effect";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { CloseLinkedIssuesResult } from "../src/utils/close-linked-issues.js";
 import { closeLinkedIssues } from "../src/utils/close-linked-issues.js";
+import { cleanupTestEnvironment, setupTestEnvironment } from "./utils/github-mocks.js";
 
-interface Fixtures {
-	issueState: GitHubIssueTestState;
-	outputsState: ActionOutputsTestState;
-	checkRunState: CheckRunTestState;
+interface Recorder {
+	readonly created: Array<{ name: string; sha: string }>;
+	readonly completed: Array<{ id: number; conclusion: string; output?: CheckRunOutput | undefined }>;
+	readonly comments: Array<number>;
+	readonly closed: Array<number>;
+	readonly outputs: Array<{ name: string; value: string }>;
+	readonly summaries: Array<string>;
 }
 
-const makeFixtures = (linkedFor: Map<number, Array<{ number: number; title: string }>>): Fixtures => {
-	const { state: issueState, layer: _ } = GitHubIssueTest.empty();
-	for (const [prNumber, linked] of linkedFor) {
-		issueState.linkedIssues.set(prNumber, linked);
-		// Seed `issues` so the test layer's close/comment can find them.
-		for (const issue of linked) {
-			issueState.issues.set(issue.number, {
-				number: issue.number,
-				title: issue.title,
-				state: "open",
-				labels: [],
-				body: "",
-				// biome-ignore lint/suspicious/noExplicitAny: minimal IssueData fixture
-			} as any);
-		}
-	}
-	return {
-		issueState,
-		outputsState: ActionOutputsTest.empty(),
-		checkRunState: CheckRunTest.empty(),
-	};
-};
+const makeRecorder = (): Recorder => ({
+	created: [],
+	completed: [],
+	comments: [],
+	closed: [],
+	outputs: [],
+	summaries: [],
+});
 
-const runStage = (prNumber: number, dryRun: boolean, f: Fixtures): Promise<unknown> => {
-	const layer = Layer.mergeAll(
-		ActionLoggerTest.layer(ActionLoggerTest.empty()),
-		ActionOutputsTest.layer(f.outputsState),
-		ActionEnvironmentTest.layer({
-			GITHUB_SHA: "abc123",
-			GITHUB_REF: "refs/heads/main",
-			GITHUB_REPOSITORY: "test-owner/test-repo",
-			GITHUB_REPOSITORY_OWNER: "test-owner",
-			GITHUB_WORKSPACE: "/workspace",
-			GITHUB_EVENT_NAME: "pull_request",
-			GITHUB_EVENT_PATH: "/dev/null",
-			GITHUB_RUN_ID: "1",
-			GITHUB_RUN_NUMBER: "1",
-			GITHUB_ACTOR: "test",
-			GITHUB_SERVER_URL: "https://github.com",
-			GITHUB_API_URL: "https://api.github.com",
+const linked = (number: number, title: string): LinkedIssue =>
+	LinkedIssue.make({
+		number,
+		title,
+		state: "open",
+		url: `https://x.test/issues/${number}`,
+		nodeId: `I_${number}`,
+		userLinked: true,
+	});
+
+interface Options {
+	readonly issues?: ReadonlyArray<{ number: number; title: string }>;
+	readonly linkedFails?: boolean;
+	readonly closeFails?: boolean;
+}
+
+const makeLayer = (recorder: Recorder, options: Options) =>
+	Layer.mergeAll(
+		ActionEnvironment.layerTest({
+			GITHUB_REPOSITORY: "savvy-web/silk-release-action",
+			GITHUB_REPOSITORY_OWNER: "savvy-web",
+			GITHUB_SHA: "deadbeef",
 		}),
-		CheckRunTest.layer(f.checkRunState),
-		GitHubIssueTest.layer(f.issueState),
+		ActionOutputs.layerTest({
+			set: (name, value) => Effect.sync(() => void recorder.outputs.push({ name, value })),
+			summary: (content) => Effect.sync(() => void recorder.summaries.push(content)),
+		}),
+		CheckRun.layerTest({
+			create: (name, sha) =>
+				Effect.sync(() => {
+					recorder.created.push({ name, sha });
+					return CheckRunRef.make({ id: 55, name, url: "https://x.test/checks/55", status: "in_progress" });
+				}),
+			complete: (id, conclusion, output) => Effect.sync(() => void recorder.completed.push({ id, conclusion, output })),
+		}),
+		GitHubIssue.layerTest({
+			linkedIssues: () =>
+				options.linkedFails === true
+					? // A real `GitHubGraphQLError` — the error type `linkedIssues` actually
+						// declares, rather than a `GitHubError` cast to `never`.
+						Effect.fail(
+							new GitHubGraphQLError({
+								kind: "transport",
+								operation: "GitHubIssue.linkedIssues",
+								reason: "boom",
+								errors: [],
+							}),
+						)
+					: Effect.succeed((options.issues ?? []).map((i) => linked(i.number, i.title))),
+			comment: (number) =>
+				Effect.sync(() => {
+					recorder.comments.push(number);
+					return 1;
+				}),
+			close: (number) =>
+				options.closeFails === true
+					? Effect.fail(GitHubError.rejected("GitHubIssue.close", 403, "no permission"))
+					: Effect.sync(() => void recorder.closed.push(number)),
+		}),
+		Layer.succeed(Repo, RepoRef.make({ owner: "savvy-web", repo: "silk-release-action" })),
 	);
-	return Effect.runPromise(
-		closeLinkedIssues(prNumber, dryRun).pipe(Effect.provide(layer), Effect.provide(Logger.layer([]))),
+
+const run = (recorder: Recorder, options: Options, dryRun = false): Promise<CloseLinkedIssuesResult> =>
+	closeLinkedIssues(42, dryRun).pipe(
+		Effect.provide(makeLayer(recorder, options)),
+		Effect.provide(Logger.layer([])),
+		Effect.runPromise,
 	);
-};
 
 describe("closeLinkedIssues", () => {
-	it("comments on and closes each linked issue", async () => {
-		const fixtures = makeFixtures(
-			new Map([
-				[
-					1,
-					[
-						{ number: 123, title: "Fix bug in auth" },
-						{ number: 456, title: "Add new feature" },
-					],
-				],
-			]),
-		);
+	// Shared harness: clears mocks and silences stdout/stderr so a log line
+	// added to the module under test cannot start leaking into the reporter.
+	beforeEach(() => setupTestEnvironment({ suppressOutput: true }));
+	afterEach(() => cleanupTestEnvironment());
 
-		const result = (await runStage(1, false, fixtures)) as {
-			closedCount: number;
-			failedCount: number;
-			issues: ReadonlyArray<{ number: number; closed: boolean }>;
-		};
+	it("should comment on and close each linked issue", async () => {
+		const recorder = makeRecorder();
 
+		const result = await run(recorder, {
+			issues: [
+				{ number: 1, title: "a" },
+				{ number: 2, title: "b" },
+			],
+		});
+
+		expect(recorder.comments).toEqual([1, 2]);
+		expect(recorder.closed).toEqual([1, 2]);
 		expect(result.closedCount).toBe(2);
 		expect(result.failedCount).toBe(0);
-		expect(result.issues.map((i) => i.number).sort()).toEqual([123, 456]);
-
-		expect(fixtures.issueState.comments).toHaveLength(2);
-		expect(fixtures.issueState.comments.map((c) => c.issueNumber).sort()).toEqual([123, 456]);
-		expect(fixtures.issueState.closeCalls).toHaveLength(2);
-		expect(fixtures.issueState.closeCalls.every((c) => c.reason === "completed")).toBe(true);
 	});
 
-	it("creates a check run reporting the result", async () => {
-		const fixtures = makeFixtures(new Map([[1, [{ number: 123, title: "Test" }]]]));
+	it("should create a check run against the head sha and complete it", async () => {
+		const recorder = makeRecorder();
 
-		await runStage(1, false, fixtures);
+		await run(recorder, { issues: [{ number: 1, title: "a" }] });
 
-		expect(fixtures.checkRunState.runs).toHaveLength(1);
-		expect(fixtures.checkRunState.runs[0].name).toBe("Close Linked Issues");
+		expect(recorder.created[0]?.sha).toBe("deadbeef");
+		expect(recorder.completed).toHaveLength(1);
 	});
 
-	it("emits a dry-run-flavored check name and skips real close calls", async () => {
-		const fixtures = makeFixtures(new Map([[1, [{ number: 123, title: "Test" }]]]));
+	it("should skip real close calls in dry-run and flag the check name", async () => {
+		const recorder = makeRecorder();
 
-		const result = (await runStage(1, true, fixtures)) as {
-			closedCount: number;
-			failedCount: number;
-		};
+		const result = await run(recorder, { issues: [{ number: 1, title: "a" }] }, true);
 
+		expect(recorder.created[0]?.name).toContain("Dry Run");
+		expect(recorder.comments).toEqual([]);
+		expect(recorder.closed).toEqual([]);
 		expect(result.closedCount).toBe(1);
-		expect(fixtures.issueState.comments).toEqual([]);
-		expect(fixtures.issueState.closeCalls).toEqual([]);
-		expect(fixtures.checkRunState.runs[0].name).toContain("Dry Run");
 	});
 
-	it("reports zero closures when the PR has no linked issues", async () => {
-		const fixtures = makeFixtures(new Map([[1, []]]));
+	it("should report zero closures when the PR has no linked issues", async () => {
+		const recorder = makeRecorder();
 
-		const result = (await runStage(1, false, fixtures)) as {
-			closedCount: number;
-			issues: ReadonlyArray<unknown>;
-		};
+		const result = await run(recorder, { issues: [] });
 
 		expect(result.closedCount).toBe(0);
-		expect(result.issues).toHaveLength(0);
-		expect(fixtures.issueState.comments).toEqual([]);
-		expect(fixtures.issueState.closeCalls).toEqual([]);
+		expect(recorder.outputs).toContainEqual({ name: "closed_issues_count", value: "0" });
 	});
 
-	it("sets closed_issues_count and closed_issues outputs", async () => {
-		const fixtures = makeFixtures(new Map([[1, [{ number: 123, title: "Test" }]]]));
+	it("should emit the closed-issue outputs", async () => {
+		const recorder = makeRecorder();
 
-		await runStage(1, false, fixtures);
+		await run(recorder, { issues: [{ number: 7, title: "seven" }] });
 
-		expect(fixtures.outputsState.outputs).toEqual(
-			expect.arrayContaining([
-				{ name: "closed_issues_count", value: "1" },
-				{ name: "failed_issues_count", value: "0" },
-			]),
-		);
+		expect(recorder.outputs).toContainEqual({ name: "closed_issues_count", value: "1" });
+		const payload = recorder.outputs.find((o) => o.name === "closed_issues")?.value ?? "[]";
+		expect(JSON.parse(payload)).toEqual([{ number: 7, title: "seven", closed: true }]);
+	});
+
+	it("should record a failed close without failing the stage", async () => {
+		const recorder = makeRecorder();
+
+		// The stage's error channel is `never` — a 403 on one issue is reported,
+		// not propagated, so a partially-successful run still finishes cleanly.
+		const result = await run(recorder, { issues: [{ number: 1, title: "a" }], closeFails: true });
+
+		expect(result.failedCount).toBe(1);
+		expect(result.closedCount).toBe(0);
+		expect(result.issues[0]?.error).toBeDefined();
+	});
+
+	it("should degrade to zero issues when the linked-issue query fails", async () => {
+		const recorder = makeRecorder();
+
+		const result = await run(recorder, { linkedFails: true });
+
+		expect(result.closedCount).toBe(0);
+		expect(recorder.comments).toEqual([]);
 	});
 });

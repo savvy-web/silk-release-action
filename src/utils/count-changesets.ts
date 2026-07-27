@@ -1,99 +1,106 @@
+// Count changesets per package by reading the **target branch's** `.changeset`
+// directory.
+//
+// Phase 1's `changeset version` consumes `.changeset/*.md` on the release
+// branch, so they are gone there by the time Phase 2 runs. The target branch
+// still carries them until the release PR merges, so this helper reads them via
+// `@effected/git`'s `lsTree` / `show` against that branch — no checkout.
+//
+// Counting is best-effort: any git or parse failure for an individual file is
+// skipped, and a total failure (e.g. `lsTree` errors) yields an empty map. The
+// returned effect never fails — callers treat a missing package entry as "—".
+
+import { Git } from "@effected/git";
+import { MarkdownDocument, YamlFrontmatter } from "@effected/markdown";
+import { Effect, Option, Result } from "effect";
+
+/** The bump levels a changeset entry can name. */
+const BUMP_LEVELS = new Set(["major", "minor", "patch"]);
+
 /**
- * Count changesets per package by reading the **target branch's** `.changeset`
- * directory.
+ * The package names a single changeset file's YAML frontmatter attributes a
+ * bump to.
  *
  * @remarks
- * Phase 1's `changeset version` consumes `.changeset/*.md` on the release
- * branch, so they are gone there by the time Phase 2 runs. The target branch
- * still carries them until the release PR merges, so this helper reads them via
- * `git ls-tree` / `git show` against that branch.
+ * The frontmatter is genuine YAML (`"@scope/pkg": minor`), so it is decoded by
+ * the yaml engine rather than matched with a line regex — the shape this
+ * replaced could not read a quoted key containing a colon, a flow mapping, or
+ * any of the other spellings yaml permits.
  *
- * Counting is best-effort: any git or parse failure for an individual file is
- * skipped, and a total failure (e.g. `git ls-tree` errors) yields an empty
- * map. The returned effect never fails — callers treat a missing package entry
- * as "—".
+ * Deliberately tolerant, matching the behaviour it replaces: entries whose
+ * value is not one of the three bump levels are skipped **individually**
+ * rather than discarding the whole file. A changeset is hand-editable, and one
+ * odd line should not silently zero a package's count.
  *
- * @module utils/count-changesets
+ * @internal
  */
+const parseChangesetPackages = (content: string): Effect.Effect<ReadonlyArray<string>, never, never> =>
+	Effect.gen(function* () {
+		// Frontmatter capture is opt-in: without it a document opening with `---`
+		// parses as a thematic break plus a setext heading, per CommonMark.
+		const parsed = MarkdownDocument.parseResult(content, { frontmatter: true });
+		if (Result.isFailure(parsed)) return [];
 
-import type { CommandRunner } from "@savvy-web/github-action-effects";
-import { Effect } from "effect";
+		const frontmatter = parsed.success.frontmatter;
+		if (frontmatter === undefined) return [];
 
-/**
- * Parse the per-package names attributed by a single changeset file's YAML
- * frontmatter (the block between the first two `---` lines).
- *
- * Each frontmatter line is `"<pkg>": <bump>` (quotes optional). Returns the
- * package names found; lines that do not match the expected shape are ignored.
- *
- * @param content - Raw changeset file content.
- * @returns The package names referenced in the frontmatter.
- */
-function parseChangesetPackages(content: string): ReadonlyArray<string> {
-	const frontmatterMatch = content.match(/^---\n([\s\S]*?)\n---/);
-	if (!frontmatterMatch) {
-		return [];
-	}
+		const decoded = yield* Effect.result(YamlFrontmatter.decode(frontmatter));
+		if (decoded._tag === "Failure") return [];
 
-	const [, frontmatter] = frontmatterMatch;
-	const packages: string[] = [];
+		const data = decoded.success;
+		if (typeof data !== "object" || data === null || Array.isArray(data)) return [];
 
-	for (const line of frontmatter.split("\n")) {
-		const trimmed = line.trim();
-		if (trimmed === "") {
-			continue;
+		const packages: string[] = [];
+		for (const [name, bump] of Object.entries(data as Record<string, unknown>)) {
+			if (typeof bump === "string" && BUMP_LEVELS.has(bump)) {
+				packages.push(name.trim());
+			}
 		}
-		// Match: "package-name": major | 'package-name': minor | package-name: patch
-		const match = trimmed.match(/^["']?([^"':]+)["']?\s*:\s*(major|minor|patch)\s*$/);
-		if (match) {
-			packages.push(match[1].trim());
-		}
-	}
-
-	return packages;
-}
+		return packages;
+	});
 
 /**
  * Count the changesets attributed to each package on a git branch.
  *
- * @param runner - The {@link CommandRunner} service instance.
  * @param targetBranch - Git ref whose `.changeset` directory is inspected.
  * @returns A map of package name to changeset count; an empty map on any
  *   wholesale failure. The effect never fails.
+ *
+ * @public
  */
 export const countChangesetsPerPackage = (
-	runner: typeof CommandRunner.Service,
 	targetBranch: string,
-): Effect.Effect<ReadonlyMap<string, number>, never, never> =>
+): Effect.Effect<ReadonlyMap<string, number>, never, Git> =>
 	Effect.gen(function* () {
-		// List the changeset files tracked on the target branch.
-		const listing = yield* runner
-			.execLines("git", ["ls-tree", "--name-only", targetBranch, ".changeset/"])
-			.pipe(Effect.catch(() => Effect.succeed<ReadonlyArray<string>>([])));
+		const git = yield* Git;
+		const cwd = process.cwd();
 
-		const changesetFiles = listing.filter((path) => {
-			if (!path.endsWith(".md")) {
-				return false;
-			}
-			const base = path.slice(path.lastIndexOf("/") + 1);
+		// List the changeset files tracked on the target branch.
+		const listing = yield* git
+			.lsTree(cwd, targetBranch, { pathspec: [".changeset/"] })
+			.pipe(Effect.catch(() => Effect.succeed([])));
+
+		const changesetFiles = listing.filter((entry) => {
+			if (entry.type !== "blob") return false;
+			if (!entry.path.endsWith(".md")) return false;
+			const base = entry.path.slice(entry.path.lastIndexOf("/") + 1);
 			return base.toLowerCase() !== "readme.md";
 		});
 
 		const counts = new Map<string, number>();
 
-		for (const filePath of changesetFiles) {
-			// Read each file; a per-file failure (git error or no content) is
-			// skipped so one bad file does not discard the whole count.
-			const content = yield* runner.execCapture("git", ["show", `${targetBranch}:${filePath}`]).pipe(
-				Effect.map((output) => output.stdout),
-				Effect.catch(() => Effect.succeed<string | null>(null)),
-			);
+		for (const entry of changesetFiles) {
+			// A per-file failure (git error) or an absent blob is skipped, so one
+			// bad file does not discard the whole count. `show` reports absence as
+			// `Option.none` rather than an error — it is NOT a nullable string, and
+			// `?? null` against it would never fire.
+			const content = yield* git
+				.show(cwd, targetBranch, entry.path)
+				.pipe(Effect.catch(() => Effect.succeed(Option.none<string>())));
 
-			if (content === null) {
-				continue;
-			}
+			if (Option.isNone(content)) continue;
 
-			for (const pkg of parseChangesetPackages(content)) {
+			for (const pkg of yield* parseChangesetPackages(content.value)) {
 				counts.set(pkg, (counts.get(pkg) ?? 0) + 1);
 			}
 		}

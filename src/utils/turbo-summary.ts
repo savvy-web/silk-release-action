@@ -1,24 +1,18 @@
-/**
- * Turbo run-summary detection, diagnostics, and summary rendering.
- *
- * @remarks
- * When a release builds via `turbo run ... --summarize`, Turbo writes a run
- * summary JSON under `.turbo/runs/`. This module detects whether a build is a
- * turbo-summarize build ({@link readTurboDiagnostics}), emits concise live
- * marker lines ({@link emitConciseMarker}), and renders a collapsible
- * step-summary section ({@link renderTurboCacheSection}) so the embedded remote
- * cache's behaviour during a release is observable in the Actions log and
- * job/check summaries.
- *
- * The whole flow is strictly **non-fatal**: callers wrap via
- * {@link Effect.catchCause} and demote any failure to a warning, so build
- * validation never depends on turbo parsing.
- *
- * @module utils/turbo-summary
- */
+// Turbo run-summary detection, diagnostics, and summary rendering.
+//
+// When a release builds via `turbo run ... --summarize`, Turbo writes a run
+// summary JSON under `.turbo/runs/`. This module detects whether a build is a
+// turbo-summarize build (`readTurboDiagnostics`), emits concise live
+// marker lines (`emitConciseMarker`), and renders a collapsible
+// step-summary section (`renderTurboCacheSection`) so the embedded remote
+// cache's behaviour during a release is observable in the Actions log and
+// job/check summaries.
+//
+// The whole flow is strictly **non-fatal**: callers wrap via
+// `Effect.catchCause` and demote any failure to a warning, so build
+// validation never depends on turbo parsing.
 
 import { basename, join } from "node:path";
-import { Step } from "@savvy-web/github-action-effects";
 import { Effect, FileSystem, Option } from "effect";
 import type { PlatformError } from "effect/PlatformError";
 import { summaryWriter } from "./summary-writer.js";
@@ -330,22 +324,32 @@ export function formatConciseMarkerLines(path: string, summary: TurboRunSummary)
 }
 
 /**
- * Emit the concise marker via `Step.line`, which bypasses the Phase-2 step
- * buffer and appears live at the default info level.
+ * Emit the concise marker as ordinary info-level log lines, prefixed `🐢`.
  *
  * @remarks
- * `Effect.logInfo` would be buffered and discarded on a successful build inside
- * the Phase-2 `Step.groupStep`; `Step.line` writes live, so the marker is
- * always visible.
+ * This used to go through the predecessor's `Step.line`, whose sole purpose was
+ * to **bypass** the step buffer: that buffer *discarded* on success, so an
+ * `Effect.logInfo` marker vanished on exactly the runs it was meant to describe.
+ *
+ * `ActionLogger.withBuffer` flushes on **every** exit path, success included, so
+ * the bypass is no longer needed and the marker is a plain `Effect.logInfo`.
+ * That is the load-bearing assumption behind dropping `Step.line`, and it is
+ * pinned by a test that drives the real `ActionLogger` through a *succeeding*
+ * buffered effect.
+ *
+ * Requiring nothing (`R = never`) is deliberate: the marker is emitted from
+ * inside `readTurboDiagnostics`' non-fatal arm in `validateBuilds`, and taking
+ * an `ActionLogger` dependency would push that service into the requirements of
+ * a path that is allowed to fail silently.
  *
  * @param path - Absolute path to the summary file.
  * @param summary - Parsed turbo run summary.
- * @returns Effect that emits all three marker lines to stdout.
+ * @returns Effect that logs all three marker lines.
  *
  * @public
  */
 export const emitConciseMarker = (path: string, summary: TurboRunSummary): Effect.Effect<void> =>
-	Effect.forEach(formatConciseMarkerLines(path, summary), (line) => Step.line("🐢", line), { discard: true });
+	Effect.forEach(formatConciseMarkerLines(path, summary), (line) => Effect.logInfo(`🐢 ${line}`), { discard: true });
 
 /**
  * Result of detecting and reading turbo run summaries.

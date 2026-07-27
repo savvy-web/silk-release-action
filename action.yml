@@ -12,15 +12,29 @@ inputs:
     required: true
   github-token:
     description: |
-      GitHub token for GitHub Packages publishing (optional).
-      Use this when the GitHub App doesn't have packages:write permission.
-      Typically pass secrets.GITHUB_TOKEN with workflow permissions: packages: write.
+      GitHub token for GitHub Packages publishing.
+
+      Pass secrets.GITHUB_TOKEN with workflow permissions: packages: write.
+
+      REQUIRED for GitHub Packages. Pass secrets.GITHUB_TOKEN with workflow
+      permissions: packages: write.
+
+      This is not a preference. GitHub App tokens are not supported for
+      accessing GitHub Packages at all - the sole exception being the default
+      GitHub Actions token, which is a special kind of App token. So the
+      installation token this action provisions can never publish there, no
+      matter which permissions it carries.
+
+      Confirmed the hard way on savvy-web/systems run 30228332922: the same
+      token that resolved the App identity and revoked itself against
+      api.github.com was rejected 403 by npm.pkg.github.com on a plain registry
+      read, while holding packages:write.
+
+      Omitting this input fails every GitHub Packages target and aborts before
+      any GitHub release is created. The action names the missing input rather
+      than surfacing it as a 403.
     required: false
     default: ""
-  skip-token-revoke:
-    description: Skip token revocation in post-action (tokens expire after 1 hour anyway)
-    required: false
-    default: "false"
   release-branch:
     description: Release branch name
     required: false
@@ -29,10 +43,13 @@ inputs:
     description: Target branch for PR (usually main)
     required: false
     default: main
-  pr-title-prefix:
-    description: Prefix for release PR title
+  auto-merge:
+    description: |
+      Enable auto-merge on the release pull request.
+      Requires branch protection with required status checks.
+      Values: merge, squash, rebase, or empty to disable.
     required: false
-    default: "chore: release"
+    default: ""
   dry-run:
     description: Run in dry-run mode (preview only, no actual changes)
     required: false
@@ -118,7 +135,8 @@ inputs:
 
       Note: For npm, use the npm-token input instead of custom-registries
       Note: JSR uses OIDC trusted publishing (no configuration needed)
-      Note: GitHub Packages authenticates automatically with the GitHub App token
+      Note: GitHub Packages needs the github-token input, NOT custom-registries.
+      A GitHub App token cannot access GitHub Packages at all.
     required: false
     default: ""
 outputs:
@@ -131,7 +149,8 @@ outputs:
   result:
     description: |
       Structured JSON describing what the run did. A phase-discriminated object
-      validated by https://json.schemastore.org/silk-release-action.schema.json.
+      validated by
+      https://raw.githubusercontent.com/savvy-web/silk-release-action/main/silk-release-action.output.schema.json.
       Parse it for the full contract; the scalars below mirror the common facts.
   phase:
     description: "Phase that ran: branch-management, validation, or publishing"

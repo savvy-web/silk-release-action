@@ -41,17 +41,15 @@ For full architecture, module dependency graph, and per-module documentation: `@
 | ----- | -------- | ------- | ----------- |
 | `app-client-id` | Yes | - | GitHub App client ID |
 | `app-private-key` | Yes | - | GitHub App private key (PEM) |
-| `github-token` | No | `""` | GitHub token for GitHub Packages publishing |
 | `release-branch` | No | `changeset-release/main` | Release branch name |
 | `target-branch` | No | `main` | Target branch for release PR |
-| `pr-title-prefix` | No | `chore: release` | Release PR title prefix |
+| `auto-merge` | No | `""` | Enable auto-merge on the release PR: `merge`, `squash`, `rebase`, or empty to disable |
 | `dry-run` | No | `false` | Dry-run mode |
 | `phase` | No | `""` | Explicitly set phase (skips auto-detection) |
 | `npm-token` | No | `""` | NPM token (OIDC fallback or first-time publish) |
 | `strict-warnings` | No | `false` | Escalate warnings to failures (blocks auto-merge) |
 | `sbom-config` | No | `""` | SBOM metadata JSON (schema-validated) |
 | `custom-registries` | No | `""` | Custom registry auth (one per line) |
-| `skip-token-revoke` | No | `false` | Skip App token revocation in post |
 
 ### Authentication Model
 
@@ -59,10 +57,12 @@ For full architecture, module dependency graph, and per-module documentation: `@
 | -------- | ------ | ----- |
 | **npm** | OIDC | Trusted publishing; use `npm-token` for first publish or OIDC fallback |
 | **JSR** | OIDC | Trusted publishing, no token needed |
-| **GitHub Packages** | `github-token` input | Pass `secrets.GITHUB_TOKEN` with `packages: write` |
+| **GitHub Packages** | App installation token | The App carries `packages: write`; nothing to pass |
 | **Custom registries** | `custom-registries` input | Format: `https://registry.example.com/_authToken=<TOKEN>` |
 
-For full integration details, token plumbing, and `SILK_GITHUB_PACKAGES_TOKEN`: `@./.claude/design/release-action/integration.md`
+**Removed inputs.** `github-token` (GitHub Packages now authenticates as the App, which carries `packages: write`; the input only shadowed a working credential), `skip-token-revoke` (an opt-out of cleaning up a live secret, buying nothing the one-hour expiry did not), and `pr-title-prefix` (never reached a real title — every branch that names packages or a version builds its own `release: …` string).
+
+For full integration details and token plumbing: `@./.claude/design/release-action/integration.md`
 
 ### Integration Testing
 

@@ -1,13 +1,67 @@
-import {
-	GithubMarkdown,
-	ReportBuilder,
-	getRegistryDisplayName,
-	isGitHubPackagesRegistry,
-	isNpmRegistry,
-} from "@savvy-web/github-action-effects";
+import { Html, Markdown, Root, Table, TableCell, TableRow } from "@effected/markdown";
+import { classifyRegistry } from "@effected/npm";
+import type { SbomMetadata } from "@effected/sbom";
+import { Result } from "effect";
 import type { ValidationOutput } from "../schema/release-output.js";
-import type { ResolvedSBOMMetadata } from "../types/sbom-config.js";
+import { DEFAULT_SERVER_URL, orgPackagePageUrl } from "../utils/github-urls.js";
 import type { ConfigSource } from "../utils/load-release-config.js";
+import { registryDisplayName } from "../utils/registry-label.js";
+
+// ─── Markdown builders ────────────────────────────────────────────────────────
+
+/**
+ * The GFM builders this module needs, replacing the predecessor's
+ * `GithubMarkdown` namespace.
+ *
+ * @remarks
+ * A deliberately thin shim, not a tree-native rewrite. Every renderer here
+ * composes markdown as strings and every public signature returns a string, so
+ * rebuilding them as mdast trees would be an ~800-line change for no output
+ * difference.
+ *
+ * The one place a tree earns its keep is {@link md.table}. The predecessor
+ * built tables by `join(" | ")` and **never escaped cell content**, so a single
+ * `|` anywhere in a cell — an npm error message, a semver range like
+ * `>=1 || <2` — silently shifted every column after it. Serializing a real
+ * `Table` node fixes that, and it escapes pipes inside pre-rendered markdown
+ * cells too (verified: `` `a | b` `` emits as `` `a \| b` ``), which is what
+ * makes {@link md.code} and {@link md.link} safe to keep as plain strings.
+ */
+const md = {
+	/**
+	 * A GFM table. Cells are treated as **pre-rendered markdown** and passed
+	 * through verbatim, with pipes escaped by the serializer.
+	 */
+	table: (headers: ReadonlyArray<string>, rows: ReadonlyArray<ReadonlyArray<string>>): string => {
+		const cell = (value: string): TableCell => TableCell.make({ children: [Html.make({ value })] });
+		const row = (values: ReadonlyArray<string>): TableRow => TableRow.make({ children: values.map(cell) });
+		const table = Table.make({ children: [row(headers), ...rows.map(row)] });
+		const out = Markdown.stringifyResult(Root.make({ children: [table] }));
+		// Stringify is total over parser-produced trees; the only failure is a
+		// hardening-guard trip on a tree nesting past the depth cap, which a
+		// two-level table cannot reach. Falling back to the unescaped join keeps
+		// this total rather than introducing an error channel for a case the
+		// shape of the input rules out.
+		return Result.isSuccess(out)
+			? out.success.trimEnd()
+			: [
+					`| ${headers.join(" | ")} |`,
+					`| ${headers.map(() => "---").join(" | ")} |`,
+					...rows.map((r) => `| ${r.join(" | ")} |`),
+				].join("\n");
+	},
+	/** A markdown heading; level defaults to 2. */
+	heading: (text: string, level = 2): string => `${"#".repeat(level)} ${text}`,
+	/** A collapsible `<details>` block. */
+	details: (summary: string, content: string): string =>
+		`<details>\n<summary>${summary}</summary>\n\n${content}\n\n</details>`,
+	/** A markdown link. */
+	link: (text: string, url: string): string => `[${text}](${url})`,
+	/** Inline code. */
+	code: (text: string): string => `\`${text}\``,
+	/** A fenced code block. */
+	codeBlock: (content: string, lang = ""): string => `\`\`\`${lang}\n${content}\n\`\`\``,
+} as const;
 
 /**
  * The `validation` payload of a {@link ValidationOutput} — the single
@@ -61,24 +115,30 @@ export function getPackagePageUrl(
 	packageName: string,
 	version: string,
 	owner?: string | undefined,
+	// Optional with a public default: every other branch of this function points
+	// at a public registry (npm, JSR) whose host is fixed, so only the GitHub
+	// Packages branch varies by instance, and only a GHES caller has a value to
+	// pass. Defaulting keeps the twelve public-registry call sites unchanged.
+	serverUrl: string = DEFAULT_SERVER_URL,
 ): string | undefined {
 	if (!registry) {
 		// JSR
 		return `https://jsr.io/${packageName}@${version}`;
 	}
 
-	if (isNpmRegistry(registry)) {
+	const kind = classifyRegistry(registry);
+
+	if (kind === "npm") {
 		// npm public registry
 		return `https://www.npmjs.com/package/${packageName}/v/${version}`;
 	}
 
-	if (isGitHubPackagesRegistry(registry)) {
+	if (kind === "github-packages") {
 		// GitHub Packages — URL format:
 		// https://github.com/orgs/{owner}/packages/npm/package/{package-name-without-scope}
 		const repoOwner = owner ?? "unknown";
 		// Remove scope from package name (e.g. @savvy-web/standalone-package -> standalone-package)
-		const pkgNameWithoutScope = packageName.startsWith("@") ? packageName.split("/")[1] : packageName;
-		return `https://github.com/orgs/${repoOwner}/packages/npm/package/${pkgNameWithoutScope}`;
+		return orgPackagePageUrl(serverUrl, repoOwner, packageName);
 	}
 
 	// Custom registries — no standard web UI
@@ -93,7 +153,7 @@ export function getPackagePageUrl(
 function getRegistryIcon(registry: string): string {
 	// JSR is the only non-npm protocol the release pipeline emits; every other
 	// registry (npm public, GitHub Packages, custom) renders with the npm icon.
-	if (!isNpmRegistry(registry) && !isGitHubPackagesRegistry(registry) && /jsr/i.test(registry)) {
+	if (classifyRegistry(registry) === "jsr") {
 		return "\u{1F995}"; // 🦕
 	}
 	return "\u{1F4E6}"; // 📦
@@ -190,25 +250,6 @@ function getPackageStatusIcon(status: PackageStatus): string {
 }
 
 /**
- * Render the `Targets` summary cell for a package.
- */
-function renderTargetsCell(pkg: ValidationPublishPackage, status: PackageStatus): string {
-	const targets = pkg.builds.flatMap((b) => b.targets);
-	if (targets.length === 0) {
-		return "\u{1F3F7}️ Version only"; // 🏷️
-	}
-	const ready = targets.filter((t) => t.status !== "failed").length;
-	const total = targets.length;
-	if (status === "success") {
-		return `✅ ${ready}/${total} ready`;
-	}
-	if (status === "failed") {
-		return `❌ ${ready}/${total}`;
-	}
-	return `⚠️ ${ready}/${total}`;
-}
-
-/**
  * Get the per-target status cell for a build's registry table.
  */
 function getTargetDetailStatus(target: ValidationBuildTarget): string {
@@ -230,7 +271,7 @@ function getTargetDetailStatus(target: ValidationBuildTarget): string {
  * directory (e.g. `dist/npm`) the build-centric `ValidationOutput` carries.
  */
 function renderBuildHeadline(build: ValidationBuild): string {
-	const directory = GithubMarkdown.code(build.directory);
+	const directory = md.code(build.directory);
 	const packed = build.packedBytes === null ? "—" : humanizeSize(build.packedBytes);
 	const unpacked = build.unpackedBytes === null ? "—" : humanizeSize(build.unpackedBytes);
 	const files = build.fileCount === null ? "—" : String(build.fileCount);
@@ -255,12 +296,12 @@ function renderBuildHeadline(build: ValidationBuild): string {
  */
 function renderBuildTargetsTable(build: ValidationBuild): string {
 	const rows: ReadonlyArray<ReadonlyArray<string>> = build.targets.map((t) => {
-		const registry = getRegistryDisplayName(t.registry);
+		const registry = registryDisplayName(t.registry);
 		const icon = getRegistryIcon(t.registry);
 		const provenance = t.provenance ? "✅" : "\u{1F6AB}"; // 🚫
 		return [getTargetDetailStatus(t), `${icon} ${registry}`, t.access, provenance];
 	});
-	return GithubMarkdown.table([" ", "Registry", "Access", "Provenance"], rows);
+	return md.table([" ", "Registry", "Access", "Provenance"], rows);
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -283,60 +324,51 @@ function renderBuildTargetsTable(build: ValidationBuild): string {
  *
  * @public
  */
-export function buildPublishSummary(publish: ValidationPublish, options?: PublishSummaryOptions): string {
-	const dryRun = options?.dryRun ?? false;
-	const dryRunLabel = dryRun ? " \u{1F9EA} (Dry Run)" : "";
-	const title = `\u{1F680} What will be released${dryRunLabel}`;
-
-	// Summary table rows
-	const tableRows: ReadonlyArray<ReadonlyArray<string>> = publish.packages.map((pkg) => {
-		const pkgStatus = getPackageStatus(pkg);
-		const statusCell = getPackageStatusIcon(pkgStatus);
-		const changesets = pkg.changesetCount === null ? "—" : String(pkg.changesetCount);
-
-		return [
-			statusCell,
-			pkg.name,
-			renderVersionTransition(pkg),
-			renderBumpCell(pkg),
-			changesets,
-			renderTargetsCell(pkg, pkgStatus),
-		];
-	});
-
-	const summaryTable = GithubMarkdown.table(
-		[" ", "Package", "Current → Next", "Bump", "Changesets", "Targets"],
-		tableRows,
-	);
-
-	const legend = "**Legend:** ✅ Ready · ⏭️ Skipped · ⚠️ Warning · ❌ Failed · 🔴 major · 🟡 minor · 🟢 patch";
-
-	// Totals — sum the per-build byte sizes and file counts across all packages.
-	let totalPacked = 0;
-	let totalUnpacked = 0;
-	let totalFiles = 0;
-	let totalTargets = 0;
-	let readyTargets = 0;
+/**
+ * The aggregate line that belongs under the release table.
+ *
+ * @remarks
+ * Separated from {@link buildPublishSummary} so it can sit with the table it
+ * totals. It was previously buried inside the detail section, two headings
+ * below the table whose rows it sums — a reader had to scroll past the
+ * per-package breakdown to find the total of what was above it.
+ *
+ * @param publish - The build-centric publish payload.
+ * @returns One line of totals.
+ *
+ * @public
+ */
+export function buildReleaseTotals(publish: ValidationPublish): string {
+	let packed = 0;
+	let unpacked = 0;
+	let files = 0;
+	let targets = 0;
+	let ready = 0;
 	for (const pkg of publish.packages) {
 		for (const build of pkg.builds) {
-			if (build.packedBytes !== null) totalPacked += build.packedBytes;
-			if (build.unpackedBytes !== null) totalUnpacked += build.unpackedBytes;
-			if (build.fileCount !== null) totalFiles += build.fileCount;
+			if (build.packedBytes !== null) packed += build.packedBytes;
+			if (build.unpackedBytes !== null) unpacked += build.unpackedBytes;
+			if (build.fileCount !== null) files += build.fileCount;
 			for (const t of build.targets) {
-				totalTargets++;
-				if (t.status !== "failed") readyTargets++;
+				targets++;
+				// `=== "ready"`, matching `toValidatedReleaseRows` in
+				// `src/utils/release-table.ts`. Counting every non-`failed` target
+				// here made `skipped` targets count as ready, so the same release
+				// reported two different `n/m ready` figures in two adjacent sections
+				// of the same comment.
+				if (t.status === "ready") ready++;
 			}
 		}
 	}
-	const totals =
-		`**Totals:** \u{1F4E6} ${humanizeSize(totalPacked)} packed · ` +
-		`\u{1F4C2} ${humanizeSize(totalUnpacked)} unpacked · ` +
-		`\u{1F4C4} ${totalFiles} files · ` +
-		`\u{1F3AF} ${readyTargets}/${totalTargets} targets ready`;
+	return (
+		`**Totals:** \u{1F4E6} ${humanizeSize(packed)} packed · ` +
+		`\u{1F4C2} ${humanizeSize(unpacked)} unpacked · ` +
+		`\u{1F4C4} ${files} files · ` +
+		`\u{1F3AF} ${ready}/${targets} targets ready`
+	);
+}
 
-	const intro = "On merge, these packages publish:";
-	const summarySection = `${intro}\n\n${summaryTable}\n\n${legend}\n\n${totals}`;
-
+export function buildPublishSummary(publish: ValidationPublish): string {
 	// Per-package detail sections. Version-only packages (no builds) are
 	// excluded — a `<details>` block around a header-only, zero-row table is
 	// malformed output. They still appear in the summary table above with the
@@ -355,17 +387,23 @@ export function buildPublishSummary(publish: ValidationPublish, options?: Publis
 				.map((build) => `${renderBuildHeadline(build)}\n\n${renderBuildTargetsTable(build)}`)
 				.join("\n\n");
 
-			return GithubMarkdown.details(summary, buildSections);
+			return md.details(summary, buildSections);
 		})
 		.join("\n");
 
-	let report = ReportBuilder.create(title).section("Summary", summarySection);
-
+	// The predecessor's `ReportBuilder` was a fluent wrapper over exactly this:
+	// an H2 title followed by H3 sections, joined by blank lines. Its other
+	// members (`stat`, `toSummary`, `toComment`, `toCheckRun`) had no consumer
+	// here — the caller already owns delivery — so only the composition survives.
+	// No title and no Summary wrapper: this renders INSIDE a section that already
+	// carries a heading, so an H2 here produced "Details ▸ What will be released
+	// ▸ Summary" for one list of packages. The totals moved to the release table
+	// they total.
+	const parts: string[] = [];
 	if (detailSections.length > 0) {
-		report = report.section("Details", detailSections);
+		parts.push(detailSections);
 	}
-
-	return report.toMarkdown();
+	return parts.join("\n\n");
 }
 
 /**
@@ -381,14 +419,52 @@ export function buildPublishSummary(publish: ValidationPublish, options?: Publis
  *
  * @public
  */
+/**
+ * The validation checks, in the order they are reported.
+ *
+ * @remarks
+ * Shared so the pending table Phase 1 renders and the real table Phase 2
+ * renders describe the same five rows in the same order. A reader watching the
+ * comment sees rows resolve in place rather than the table changing shape.
+ *
+ * @public
+ */
+export const VALIDATION_CHECK_NAMES: ReadonlyArray<string> = [
+	"Link Issues from Commits",
+	"Build Validation",
+	"Publish Validation",
+	"Release Notes Preview",
+	"SBOM Preview",
+];
+
+/**
+ * The checks table before anything has run — every row pending.
+ *
+ * @remarks
+ * Rendered by Phase 1 so the verdict section carries a table from the moment
+ * the pull request exists. The previous "_Validation has not run yet._" said
+ * less than an all-pending table does, and changed shape when validation
+ * replaced it.
+ *
+ * @returns The table, with no links since no check run exists yet.
+ *
+ * @public
+ */
+export function buildPendingChecksTable(): string {
+	return md.table(
+		[" ", "Check", "Outcome"],
+		VALIDATION_CHECK_NAMES.map((name) => ["⏳", name, "pending"]),
+	);
+}
+
 export function buildChecksTable(checks: ReadonlyArray<ValidationCheck>): string {
 	const statusIcon = (status: ValidationCheck["status"]): "✅" | "⚠️" | "❌" =>
 		status === "error" ? "❌" : status === "warning" ? "⚠️" : "✅";
 	const tableRows: ReadonlyArray<ReadonlyArray<string>> = checks.map((check) => {
-		const checkCell = check.url !== null ? GithubMarkdown.link(check.name, check.url) : check.name;
+		const checkCell = check.url !== null ? md.link(check.name, check.url) : check.name;
 		return [statusIcon(check.status), checkCell, check.outcome];
 	});
-	return GithubMarkdown.table([" ", "Check", "Outcome"], tableRows);
+	return md.table([" ", "Check", "Outcome"], tableRows);
 }
 
 /**
@@ -433,7 +509,7 @@ export function buildFindingsTable(findings: ReadonlyArray<ValidationFinding>): 
 					: `${f.scope.package} · ${f.scope.directory}`;
 		return [icon, f.check, scopeCell, f.message];
 	});
-	const table = GithubMarkdown.table([" ", "Check", "Package", "Detail"], tableRows);
+	const table = md.table([" ", "Check", "Package", "Detail"], tableRows);
 
 	return `${heading}\n\n${table}`;
 }
@@ -475,21 +551,59 @@ export interface ValidationCommentOptions {
  *
  * @public
  */
-export function buildValidationComment(validation: ValidationPayload, options?: ValidationCommentOptions): string {
-	const dryRun = options?.dryRun ?? false;
+export function validationStatusTitle(validation: ValidationPayload | null): string {
+	// `null` is "validation has not run", which Phase 1 reports.
+	if (validation === null) return "⏳ Release Validation";
 	const hasError = validation.findings.some((f) => f.severity === "error");
 	const hasWarning = validation.findings.some((f) => f.severity === "warning");
-	const headerIcon = hasError ? "❌" : hasWarning ? "⚠️" : "✅";
+	return `${hasError ? "❌" : hasWarning ? "⚠️" : "✅"} Release Validation`;
+}
 
+/**
+ * The validation verdict's body — everything under its heading.
+ *
+ * @remarks
+ * The heading itself is {@link validationStatusTitle}, carried as the managed
+ * section's title rather than baked in here: a section renders its own heading,
+ * so a body that repeated it produced the heading twice. The icon has to move
+ * with the title because it *is* the verdict.
+ *
+ * Empty on a normal run — the verdict is the heading, and there is nothing more
+ * to say until something is wrong.
+ *
+ * @param validation - The canonical build-centric validation payload.
+ * @param options - Optional display options.
+ * @returns The verdict body, or `""` when there is nothing to add.
+ *
+ * @public
+ */
+export function buildValidationHeader(validation: ValidationPayload, options?: ValidationCommentOptions): string {
+	const dryRun = options?.dryRun === true ? "> \u{1F9EA} **DRY RUN MODE** - No actual publishing will occur\n\n" : "";
+	return `${dryRun}${buildChecksTable(validation.checks)}`;
+}
+
+/**
+ * The validation comment's detail body — everything below the release table.
+ *
+ * @remarks
+ * Split from {@link buildValidationHeader} so the two can occupy separate
+ * managed sections of one comment: the verdict at the top updates on its own,
+ * the detail below it updates on its own, and the release table sits between
+ * them owned by a third. Each is independently stamped, so a phase rewriting
+ * one leaves the others exactly as it found them.
+ *
+ * @param validation - The canonical build-centric validation payload.
+ * @param options - Optional display options.
+ * @returns The detail markdown, without the verdict header.
+ *
+ * @public
+ */
+export function buildValidationDetails(validation: ValidationPayload, options?: ValidationCommentOptions): string {
+	const dryRun = options?.dryRun ?? false;
 	const parts: string[] = [];
-	parts.push(`## \u{1F4E6} Release Validation ${headerIcon}`);
 
-	if (dryRun) {
-		parts.push("> \u{1F9EA} **DRY RUN MODE** - No actual publishing will occur");
-	}
-
-	parts.push(buildChecksTable(validation.checks));
-
+	// No checks table here: the verdict section above carries it, so a reader
+	// meets the state of every check before any of the detail behind them.
 	const findingsTable = buildFindingsTable(validation.findings);
 	if (findingsTable !== "") {
 		parts.push(findingsTable);
@@ -514,22 +628,48 @@ export function buildValidationComment(validation: ValidationPayload, options?: 
 				"_No packages have version differences against the target branch — nothing will be published or released on merge._",
 		);
 	} else {
-		parts.push(buildPublishSummary(validation.publish, { dryRun }));
-
-		// Release-notes preview is only meaningful when something is being
-		// released; suppressed alongside the degraded states above.
-		const releaseNotesUrl = options?.releaseNotesUrl;
-		const releaseNotes =
-			releaseNotesUrl !== undefined && releaseNotesUrl !== ""
-				? `### \u{1F4CB} Release Notes Preview\n\n${GithubMarkdown.link("View detailed release notes →", releaseNotesUrl)}`
-				: "### \u{1F4CB} Release Notes Preview\n\n_Release notes will be generated on merge._";
-		parts.push(releaseNotes);
+		parts.push(buildPublishSummary(validation.publish));
 	}
 
+	// One footer, carrying the link and the timestamp.
+	//
+	// The link was previously headed "📋 Release Notes Preview", which named the
+	// wrong thing: it points at the unified validation check run — the full
+	// summary, structured output included — and the release-notes preview is a
+	// section on that page rather than the page itself. A heading asserting
+	// otherwise sent a reader looking for notes and delivered a summary.
+	//
+	// Folded into the footer rather than given its own heading: it is a pointer
+	// away from this comment, which is what a footer is for.
 	const now = options?.now ?? new Date();
-	parts.push(`---\n\n<sub>Updated at ${now.toISOString()}</sub>`);
+	const summaryUrl = options?.releaseNotesUrl;
+	const link =
+		summaryUrl !== undefined && summaryUrl !== "" ? `${md.link("Full validation summary →", summaryUrl)} · ` : "";
+	parts.push(`---\n\n${link}<sub>Updated at ${now.toISOString()}</sub>`);
 
 	return parts.join("\n\n");
+}
+
+/**
+ * The whole validation comment, header and detail together.
+ *
+ * @remarks
+ * Retained as the composition of {@link buildValidationHeader} and
+ * {@link buildValidationDetails} for the check-run and job-summary surfaces,
+ * which render one body and have no sections to update independently. The PR
+ * comment uses the two halves separately.
+ *
+ * @param validation - The canonical build-centric validation payload.
+ * @param options - Optional display options.
+ * @returns The full markdown comment body.
+ *
+ * @public
+ */
+export function buildValidationComment(validation: ValidationPayload, options?: ValidationCommentOptions): string {
+	const header = buildValidationHeader(validation, options);
+	return [`## ${validationStatusTitle(validation)}`, header, buildValidationDetails(validation, options)]
+		.filter((part) => part !== "")
+		.join("\n\n");
 }
 
 /**
@@ -671,7 +811,7 @@ export function buildReleaseNotesPreviewSummary(validation: ValidationPayload): 
 		const changesets = pkg.changesetCount === null ? "—" : String(pkg.changesetCount);
 		return [pkg.name, renderVersionTransition(pkg), renderBumpCell(pkg), changesets, notesIcon(pkg.releaseNotes)];
 	});
-	const table = GithubMarkdown.table(["Package", "Current → Next", "Bump", "Changesets", "Notes"], tableRows);
+	const table = md.table(["Package", "Current → Next", "Bump", "Changesets", "Notes"], tableRows);
 
 	const intro = `**${packages.length} package(s) ready for release on merge.**`;
 
@@ -733,7 +873,7 @@ function formatSbomConfigSource(source: ConfigSource): string {
  */
 export function buildSbomPreviewSummary(
 	validation: ValidationPayload,
-	resolvedSbomConfig: ReadonlyMap<string, ResolvedSBOMMetadata> | null,
+	resolvedSbomConfig: ReadonlyMap<string, SbomMetadata> | null,
 	sbomConfigSource: ConfigSource | null = null,
 ): string {
 	// The check-run page already renders the title; the body must not repeat
@@ -787,7 +927,7 @@ export function buildSbomPreviewSummary(
 		}
 
 		for (const buildEntry of pkg.builds) {
-			const buildHeader = `**${GithubMarkdown.code(buildEntry.directory)}**`;
+			const buildHeader = `**${md.code(buildEntry.directory)}**`;
 			sections.push(buildHeader);
 
 			if (buildEntry.sbom === null) {
@@ -806,7 +946,7 @@ export function buildSbomPreviewSummary(
 			const resolved = resolvedSbomConfig !== null ? resolvedSbomConfig.get(key) : undefined;
 			if (resolved !== undefined) {
 				sections.push("_Resolved `sbom-config` metadata used:_");
-				sections.push(GithubMarkdown.codeBlock(JSON.stringify(resolved, null, 2), "json"));
+				sections.push(md.codeBlock(JSON.stringify(resolved, null, 2), "json"));
 			} else if (resolvedSbomConfig !== null) {
 				// Map exists but no entry for this build — keep the per-build
 				// rendering honest.

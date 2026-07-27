@@ -1,51 +1,38 @@
-/**
- * Phase-2 validation orchestrator.
- *
- * Enumerates workspace packages, diffs versions against the target branch to
- * discover which packages are being released, resolves publish targets, groups
- * them by build directory, runs a real dry-run per build directory via
- * `PackagePublish.dryRun`, generates one SBOM per build directory via `Sbom`
- * (with `sbom-config` metadata applied), and assembles a `ValidationReport`.
- *
- * The report is build-centric: the per-package `validationPackages` carry the
- * builds, sizes, SBOMs, and registry targets. `main.ts` projects them into the
- * canonical `ValidationOutput`, which is both emitted and rendered to the
- * sticky comment — this module does not render markdown.
- *
- * @module release/validation
- */
+// Phase-2 validation orchestrator.
+//
+// Enumerates workspace packages, diffs versions against the target branch to
+// discover which packages are being released, resolves publish targets, groups
+// them by build directory, runs a real dry-run per build directory via
+// `PackagePublish.dryRun`, generates one SBOM per build directory via `Sbom`
+// (with `sbom-config` metadata applied), and assembles a `ValidationReport`.
+//
+// The report is build-centric: the per-package `validationPackages` carry the
+// builds, sizes, SBOMs, and registry targets. `main.ts` projects them into the
+// canonical `ValidationOutput`, which is both emitted and rendered to the
+// sticky comment — this module does not render markdown.
 
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
+import { ActionLogger } from "@effected/github-actions";
+import { PackagePublish, classifyRegistry } from "@effected/npm";
+import { Package } from "@effected/package-json";
+import type { Component, SbomMetadataOptions } from "@effected/sbom";
+import { Contact, NtiaReport, Sbom, SbomMetadata, SbomMetadataSource, Supplier } from "@effected/sbom";
 import type { PublishTarget, WorkspacePackage } from "@effected/workspaces";
-import { WorkspaceDiscovery } from "@effected/workspaces";
-import type { PackagePublishError, ResolvedDependency, SbomError, SbomInput } from "@savvy-web/github-action-effects";
-import {
-	ActionState,
-	CommandRunner,
-	PackagePublish,
-	Sbom,
-	Step,
-	isGitHubPackagesRegistry,
-	isNpmRegistry,
-} from "@savvy-web/github-action-effects";
-import { Config, Effect, Option, Redacted } from "effect";
-import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
-import type { EnhancedCycloneDXDocument, ResolvedSBOMMetadata, SBOMMetadataConfig } from "../types/sbom-config.js";
+import { WorkspaceDiscovery, WorkspaceSnapshots } from "@effected/workspaces";
+import { Clock, Effect } from "effect";
+import type { SBOMMetadataConfig } from "../types/sbom-config.js";
 import { countChangesetsPerPackage } from "../utils/count-changesets.js";
 import { extractReleaseNotes } from "../utils/extract-release-notes.js";
 import { getGroupId } from "../utils/group-id.js";
-import { inferSBOMMetadata, resolveSBOMMetadata } from "../utils/infer-sbom-metadata.js";
 import type { ConfigSource } from "../utils/load-release-config.js";
 import { loadSBOMConfig } from "../utils/load-release-config.js";
-import { normalizePackageManager } from "../utils/normalize-package-manager.js";
 import { registryShortLabel } from "../utils/registry-label.js";
 import { sortReleasesTopologically } from "../utils/sort-releases-topologically.js";
-import { validateNTIACompliance } from "../utils/validate-ntia-compliance.js";
 import { ChangesetConfig } from "./changeset-config.js";
 import { ValidationError } from "./errors.js";
 import { humanizeSize } from "./report.js";
-import { pickToken, resolvePublishableTargets } from "./resolve-targets.js";
+import { resolvePublishableTargets } from "./resolve-targets.js";
 import type {
 	BuildSbom,
 	BuildTargetResult,
@@ -101,15 +88,14 @@ export interface ValidationReport {
 	 * summary so config-or-mapping bugs are immediately visible; intentionally
 	 * NOT exposed on the public `ValidationOutput` schema.
 	 *
-	 * Every populated value is a `ResolvedSBOMMetadata` — `resolveSBOMMetadata`
-	 * never returns `null`, and the map only records builds the validation
-	 * loop actually processed. A missing key for a known build means that
-	 * build was filtered out before SBOM generation (e.g. version-only package
-	 * with no publish targets). An entirely empty map signals "no sbom-config
-	 * was resolved at all" (no released packages, or every released package
-	 * was version-only).
+	 * Every populated value is the `SbomMetadata` actually threaded onto the
+	 * emitted BOM, and the map only records builds the validation loop
+	 * processed. A missing key for a known build means that build was filtered
+	 * out before SBOM generation (e.g. version-only package with no publish
+	 * targets). An entirely empty map signals "no sbom-config was resolved at
+	 * all" (no released packages, or every released package was version-only).
 	 */
-	readonly resolvedSbomConfig: ReadonlyMap<string, ResolvedSBOMMetadata>;
+	readonly resolvedSbomConfig: ReadonlyMap<string, SbomMetadata>;
 	/**
 	 * Debug-only — where the `sbom-config` was loaded from this run.
 	 *
@@ -210,177 +196,192 @@ function groupTargetsIntoBuilds(pkg: WorkspacePackage, targets: ReadonlyArray<Pu
 }
 
 /**
- * Read the runtime dependencies of a built package from `dist/<dir>/package.json`.
- *
- * The built artifact's `package.json` is the one that actually ships, so its
- * `dependencies` are the BOM's components — not the workspace-source
- * `pkg.dependencies` (which carry workspace protocol refs and devDependencies
- * are absent from both).
- *
- * A missing or unreadable `package.json`, or one with no `dependencies`,
- * yields an empty list (a dependency-free package has a component-less BOM).
- */
-function readBuiltDependencies(buildDirectory: string): ReadonlyArray<ResolvedDependency> {
-	const pkgJsonPath = join(buildDirectory, "package.json");
-	if (!existsSync(pkgJsonPath)) {
-		return [];
-	}
-	try {
-		const parsed = JSON.parse(readFileSync(pkgJsonPath, "utf-8")) as { dependencies?: Record<string, unknown> };
-		const deps = parsed.dependencies;
-		// The cast above does not reflect runtime: `JSON.parse` of a literal
-		// `"dependencies": null` yields a real `null`, and `typeof null` is
-		// `"object"` — so the explicit `null` check is what rejects it, not the
-		// `typeof` clause.
-		if (deps === undefined || deps === null || typeof deps !== "object") {
-			return [];
-		}
-		return Object.entries(deps)
-			.filter((entry): entry is [string, string] => typeof entry[1] === "string")
-			.map(([name, version]) => ({ name, version }));
-	} catch {
-		return [];
-	}
-}
-
-/**
- * The `supplier` / `authors` fields of {@link SbomInput} derived from a
- * resolved `sbom-config` metadata template.
- */
-interface SbomMetadataInput {
-	readonly supplier?: SbomInput["supplier"];
-	readonly authors?: SbomInput["authors"];
-}
-
-/**
- * Map the resolved `sbom-config` metadata into the `supplier` / `authors`
- * shape that `Sbom.generate` threads onto the emitted BOM's
- * `metadata.supplier` / `metadata.authors`.
+ * The three outcomes of reading a built package's `package.json`.
  *
  * @remarks
- * `Sbom.generate` now carries this metadata into the BOM it actually produces
- * (and ships), so `validateNTIACompliance` runs against the real artifact — no
- * post-serialization document mutation. An absent supplier name or author
- * yields `undefined` for that field (NTIA then genuinely warns).
+ * `absent` and `undecodable` are deliberately **not** the same thing. A build
+ * directory with no manifest is the shape the predecessor treated as benign —
+ * it returned an empty dependency list and a dependency-free package
+ * legitimately has a component-less BOM. A manifest that is present but will
+ * not decode is a genuine problem with an artifact about to be published, and
+ * is the one condition that degrades the SBOM.
  */
-function toSbomMetadataInput(metadata: ResolvedSBOMMetadata): SbomMetadataInput {
-	// `exactOptionalPropertyTypes` on the library types forbids explicit
-	// `undefined` — each field is spread in only when it has a value.
-	let supplier: SbomMetadataInput["supplier"];
-	if (metadata.supplier?.name !== undefined && metadata.supplier.name !== "") {
-		const contact = metadata.supplier.contact?.map((c) => ({
-			...(c.name !== undefined && { name: c.name }),
-			...(c.email !== undefined && { email: c.email }),
-			...(c.phone !== undefined && { phone: c.phone }),
-		}));
-		supplier = {
-			name: metadata.supplier.name,
-			...(metadata.supplier.url !== undefined && { url: metadata.supplier.url }),
-			...(contact !== undefined && { contact }),
-		};
-	}
-
-	const authors: SbomMetadataInput["authors"] =
-		metadata.author !== undefined && metadata.author !== "" ? [{ name: metadata.author }] : undefined;
-
-	return {
-		...(supplier !== undefined && { supplier }),
-		...(authors !== undefined && { authors }),
-	};
-}
+type BuiltManifest =
+	| { readonly _tag: "absent" }
+	| { readonly _tag: "undecodable"; readonly reason: string }
+	| { readonly _tag: "present"; readonly pkg: Package };
 
 /**
- * Attempt to read the version of a package from the target branch using git.
+ * Read a built package's `package.json` as a decoded {@link Package}.
  *
- * @param runner - CommandRunner service instance.
- * @param targetBranch - Local git ref (already fetched by `main.ts`).
- * @param relativePackageJsonPath - Path to `package.json` relative to the repo
- *   root (e.g. `packages/foo/package.json`).
- * @returns The version string, or `null` if the file does not exist on that
- *   branch (brand-new package).
+ * @remarks
+ * The built artifact's manifest is the one that actually ships, so it is the
+ * source both for the BOM's components (its `dependencies`) and for the root
+ * component's own metadata — not the workspace-source manifest, whose
+ * dependency specifiers carry `workspace:` protocol refs.
+ *
+ * `Package.decode` is **strict** where the predecessor's
+ * `JSON.parse(...) as PackageJsonForSBOM` was not: a non-SemVer `version`, a
+ * non-SPDX `license`, or a missing `name` fails. That is the right posture for
+ * an artifact about to be published — but it must not abort validation, so a
+ * decode failure degrades the BOM and records a finding rather than throwing.
  */
-const readVersionOnBranch = (
-	runner: typeof CommandRunner.Service,
-	targetBranch: string,
-	relativePackageJsonPath: string,
-): Effect.Effect<string | null, ValidationError> =>
-	runner.execCapture("git", ["show", `${targetBranch}:${relativePackageJsonPath}`]).pipe(
-		Effect.map((output) => {
-			try {
-				const parsed = JSON.parse(output.stdout) as { version?: unknown };
-				return typeof parsed.version === "string" ? parsed.version : null;
-			} catch {
-				return null;
-			}
-		}),
-		Effect.catch(() =>
-			// git show fails when the path doesn't exist on the target branch →
-			// brand-new package, treat as released with null base version.
-			Effect.succeed(null),
-		),
-	);
+const readBuiltManifest = (buildDirectory: string): Effect.Effect<BuiltManifest, never, never> =>
+	Effect.gen(function* () {
+		const pkgJsonPath = join(buildDirectory, "package.json");
+		if (!existsSync(pkgJsonPath)) return { _tag: "absent" as const };
+
+		let raw: unknown;
+		try {
+			raw = JSON.parse(readFileSync(pkgJsonPath, "utf-8"));
+		} catch (e) {
+			return { _tag: "undecodable" as const, reason: e instanceof Error ? e.message : String(e) };
+		}
+
+		const decoded = yield* Effect.result(Package.decode(raw));
+		if (decoded._tag === "Failure") {
+			return { _tag: "undecodable" as const, reason: decoded.failure.message };
+		}
+		return { _tag: "present" as const, pkg: decoded.success };
+	});
+
+/**
+ * Turn the resolved `sbom-config` template into the {@link SbomMetadataOptions}
+ * that `SbomMetadataSource` threads onto the BOM.
+ *
+ * @remarks
+ * This is all that survives of the old `infer-sbom-metadata` module. The
+ * *inference* half — parsing `author` / `repository` / `bugs` / `homepage` out
+ * of a manifest and normalizing git URLs to HTTPS — is `SbomMetadataSource`'s
+ * job now, driven by the decoded {@link Package}. What remains here is only the
+ * consumer's own precedence rule: the configured template wins over anything
+ * derived from the manifest.
+ *
+ * `nowMillis` is passed in rather than read from the wall clock, matching the
+ * kit's `formatCopyright` posture — the ambient read belongs at the caller's
+ * edge, which is what makes the copyright year testable.
+ */
+const sbomOptionsFromConfig = (config: SBOMMetadataConfig | undefined, nowMillis: number): SbomMetadataOptions => {
+	const now = new Date(nowMillis);
+	const options: {
+		supplier?: Supplier;
+		authors?: ReadonlyArray<Contact>;
+		timestamp?: string;
+		publisher?: string;
+		copyright?: string;
+		documentationUrl?: string;
+	} = {
+		// NTIA minimum element 7. The predecessor never set one, so every
+		// generated BOM reported `timestamp` missing.
+		timestamp: now.toISOString(),
+	};
+
+	const supplierName = config?.supplier?.name;
+	if (supplierName !== undefined && supplierName !== "") {
+		const urls = config?.supplier?.url;
+		const contacts = config?.supplier?.contact;
+		const urlList = urls === undefined ? undefined : Array.isArray(urls) ? urls : [urls];
+		const contactList = contacts === undefined ? undefined : Array.isArray(contacts) ? contacts : [contacts];
+		options.supplier = Supplier.make({
+			name: supplierName,
+			...(urlList !== undefined && urlList.length > 0 && { url: urlList }),
+			...(contactList !== undefined &&
+				contactList.length > 0 && {
+					contact: contactList.map((c) =>
+						Contact.make({
+							...(c.name !== undefined && { name: c.name }),
+							...(c.email !== undefined && { email: c.email }),
+							...(c.phone !== undefined && { phone: c.phone }),
+						}),
+					),
+				}),
+		});
+	}
+
+	// `publisher` resolves explicit → supplier name → the manifest's author.
+	// The kit's `rootComponent` already does the last hop, so only the first
+	// two are the consumer's to decide.
+	const publisher = config?.publisher ?? supplierName;
+	if (publisher !== undefined && publisher !== "") options.publisher = publisher;
+
+	const copyrightHolder = config?.copyright?.holder ?? supplierName;
+	if (copyrightHolder !== undefined && copyrightHolder !== "") {
+		const startYear = config?.copyright?.startYear;
+		options.copyright = SbomMetadataSource.formatCopyright(copyrightHolder, {
+			...(startYear !== undefined && { startYear }),
+			year: now.getFullYear(),
+		});
+	}
+
+	const docUrl = config?.documentationUrl;
+	if (docUrl !== undefined && docUrl !== "") options.documentationUrl = docUrl;
+
+	// NTIA minimum element 6 — who assembled the BOM. The supplier is the
+	// honest answer when the template names one; the manifest's author fills in
+	// otherwise, via `fromPackage`.
+	if (supplierName !== undefined && supplierName !== "") {
+		options.authors = [Contact.make({ name: supplierName })];
+	}
+
+	return options;
+};
 
 /**
  * Collect workspace packages that are being released (version differs from
  * target branch, or package is brand-new on the target branch).
+ *
+ * @remarks
+ * Reads the target branch through {@link WorkspaceSnapshots} — one cached
+ * snapshot per `(root, ref)` — rather than the N unbounded-concurrency
+ * `git show <branch>:<pkg>/package.json` calls this replaces, each of which
+ * `JSON.parse`d inside a swallowing `try`/`catch` and needed a bespoke
+ * relativePath→git-path normalizer for the root-workspace shapes (`""` and
+ * `"."`). The snapshot keys on package **name**, so that normalizer is gone
+ * along with the platform-specific `./package.json` hazard it existed for.
+ *
+ * A package absent from the snapshot is brand-new on the target branch and
+ * therefore released. Unlike the per-file reads, a failure to read the ref at
+ * all now **fails** rather than making every package look brand-new — which
+ * would have reported the entire workspace as releasing.
+ *
+ * Root workspaces are deliberately NOT filtered out. In a typical monorepo the
+ * root is a private orchestrator whose version never changes, so it falls
+ * through the version-diff check naturally. In a single-root-workspace repo
+ * (pnpm-workspace.yaml `packages: [.]`) the root IS the publishable package,
+ * and filtering it would silently drop the only thing the action releases.
  *
  * Packages whose names match a pattern in `.changeset/config.json`'s `ignore`
  * list are fully excluded — they must not appear in the validation report.
  */
 export const detectReleasedPackages = (
 	workspacePackages: ReadonlyArray<WorkspacePackage>,
-	runner: typeof CommandRunner.Service,
 	targetBranch: string,
-): Effect.Effect<ReadonlyArray<ReleasedPackage>, ValidationError, ChangesetConfig> =>
+): Effect.Effect<ReadonlyArray<ReleasedPackage>, ValidationError, ChangesetConfig | WorkspaceSnapshots> =>
 	Effect.gen(function* () {
 		const config = yield* ChangesetConfig;
+		const snapshots = yield* WorkspaceSnapshots;
 		const root = process.cwd();
 
-		// We deliberately do NOT filter out root workspaces here. In a typical
-		// monorepo the root is a private orchestrator whose version never changes,
-		// so it falls through the version-diff check naturally (currentVersion ===
-		// baseVersion). In a single-root-workspace repo like `github-action-builder`
-		// (pnpm-workspace.yaml `packages: [.]`), the root IS the publishable
-		// package — filtering it out here would silently drop the only thing the
-		// action is supposed to release. Downstream `resolvePublishableTargets`
-		// handles the "private root without publishConfig" case correctly by
-		// returning an empty target list, which validation then emits as a
-		// version-only package entry.
-		const candidates = yield* Effect.all(
-			workspacePackages.map((pkg) => {
-				// The relative path to package.json from the repo root, used for
-				// `git show <branch>:<path>`. WorkspacePackage.relativePath is the
-				// workspace-relative path from the root: `""` for the legacy "no
-				// relative path" shape, `"."` for the canonical root workspace
-				// (pnpm-workspace.yaml `packages: [.]`), or a nested path like
-				// `"packages/alpha"`. Normalise the root shapes to an empty
-				// string so the git ref path is the canonical `package.json`
-				// rather than the non-canonical `./package.json` git rejects on
-				// some platforms.
-				const rel = pkg.relativePath === "." ? "" : pkg.relativePath;
-				const relPkgJsonPath = rel !== "" ? `${rel}/package.json` : "package.json";
-
-				return readVersionOnBranch(runner, targetBranch, relPkgJsonPath).pipe(
-					Effect.map((baseVersion): ReleasedPackage | null => {
-						const currentVersion = pkg.version;
-						// Brand-new package (doesn't exist on target branch) → released.
-						// Changed version → released.
-						// Same version → NOT released, excluded from validation.
-						if (baseVersion === null || currentVersion !== baseVersion) {
-							return { pkg, currentVersion, baseVersion };
-						}
-						return null;
+		const snapshot = yield* snapshots.at(targetBranch).pipe(
+			Effect.mapError(
+				(e) =>
+					new ValidationError({
+						reason: "dry-run",
+						message: `Could not read the workspace at '${targetBranch}': ${String(e)}`,
+						cause: e,
 					}),
-				);
-			}),
-			{ concurrency: "unbounded" },
-		).pipe(Effect.map((results) => results.filter((r): r is ReleasedPackage => r !== null)));
+			),
+		);
+		const baseVersions = snapshot.versions;
 
-		// Drop packages whose names are listed in the changeset ignore list.
 		const kept: ReleasedPackage[] = [];
-		for (const c of candidates) {
-			if (yield* config.isIgnored(c.pkg.name, root)) continue;
-			kept.push(c);
+		for (const pkg of workspacePackages) {
+			const baseVersion = baseVersions.get(pkg.name) ?? null;
+			// Brand-new package (absent from the target branch) → released.
+			// Changed version → released. Same version → not released.
+			if (baseVersion !== null && pkg.version === baseVersion) continue;
+			if (yield* config.isIgnored(pkg.name, root)) continue;
+			kept.push({ pkg, currentVersion: pkg.version, baseVersion });
 		}
 		return kept;
 	});
@@ -409,29 +410,25 @@ export const runValidation = (args: ValidationInputArgs) =>
 	Effect.gen(function* () {
 		const discovery = yield* WorkspaceDiscovery;
 		const publish = yield* PackagePublish;
-		const sbomSvc = yield* Sbom;
-		const runner = yield* CommandRunner;
-		const state = yield* ActionState;
+		const logger = yield* ActionLogger;
+		// Read once at the edge: `SbomMetadataSource.formatCopyright` takes the
+		// year as an argument precisely so the ambient clock read lives here and
+		// the emitted copyright is testable.
+		const nowMillis = yield* Clock.currentTimeMillis;
 
-		// ── Resolve registry tokens once (Effect-native) ─────────────────────
-		// npm token: read via Config from the `npm-token` action input.
-		// An absent or empty input yields null (OIDC / no token).
-		const npmTokenOpt = yield* Config.string("npm-token").pipe(Config.option);
-		const npmToken: string | null = Option.isSome(npmTokenOpt) && npmTokenOpt.value !== "" ? npmTokenOpt.value : null;
-
-		// GitHub Packages token: read from ActionState (persisted by pre.ts).
-		// getOptional returns Option.none when the key is absent; any error is
-		// caught and treated as "no token".
-		const ghPkgsTokenOpt = yield* state
-			.getOptional(STATE_KEYS.githubPackagesToken, GithubPackagesTokenState)
-			.pipe(Effect.catch(() => Effect.succeed(Option.none<GithubPackagesTokenState>())));
-		const ghPkgsToken: string | null =
-			Option.isSome(ghPkgsTokenOpt) && ghPkgsTokenOpt.value.token !== "" ? ghPkgsTokenOpt.value.token : null;
+		// NO registry tokens are resolved here, deliberately. Phase 2 read the
+		// `npm-token` input and the GitHub Packages token out of `ActionState`
+		// for exactly one purpose: a `setupAuth` call issued before
+		// `npm pack --dry-run`. That command never contacts a registry, so the
+		// credential was resolved, decrypted and written to an npmrc for a
+		// process that could not use it. With the call gone, the whole block
+		// goes — Phase 2 now touches no publish credential at all. Phase 3's
+		// real publish still resolves both, where they are load-bearing.
 
 		// ── Resolve the SBOM metadata template once ──────────────────────────
 		// `loadSBOMConfig` looks up `.github/silk-release.json`, then the
-		// `sbom-config` action input (read via `Config.string("sbom-config")`
-		// under the ambient `ActionsConfigProvider`, which uses the canonical
+		// `sbom-config` action input (read via `ActionInput.string("sbom-config")`
+		// under the ambient `ActionInput` provider, which uses the canonical
 		// GitHub Actions env-var convention `INPUT_SBOM-CONFIG` — hyphens
 		// preserved, only spaces mapped to underscores), then the
 		// `SILK_RELEASE_SBOM_TEMPLATE` variable. Each candidate is decoded
@@ -482,7 +479,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 		// the target branch to discover what is being released.
 
 		yield* Effect.logDebug("runValidation: detecting released packages via version diff");
-		const releasedPackages = yield* detectReleasedPackages(workspacePackages, runner, args.targetBranch).pipe(
+		const releasedPackages = yield* detectReleasedPackages(workspacePackages, args.targetBranch).pipe(
 			Effect.mapError(
 				(e) =>
 					new ValidationError({
@@ -526,7 +523,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 				sbomOk: true,
 				sbomSummary: "No packages require SBOM",
 				findings: [...sbomConfigFindings, noPackagesWarning],
-				resolvedSbomConfig: new Map<string, ResolvedSBOMMetadata>(),
+				resolvedSbomConfig: new Map<string, SbomMetadata>(),
 				sbomConfigSource: sbomConfigResult.source,
 			} satisfies ValidationReport;
 		}
@@ -556,13 +553,13 @@ export const runValidation = (args: ValidationInputArgs) =>
 		// Per-package changeset counts read from the target branch's `.changeset`
 		// directory (still present there — Phase 1 consumed them only on the
 		// release branch). Best-effort: an empty map on any failure.
-		const changesetCounts = yield* countChangesetsPerPackage(runner, args.targetBranch);
+		const changesetCounts = yield* countChangesetsPerPackage(args.targetBranch);
 
 		const workspaceRoot = process.cwd();
 		const validationPackages: ValidationPackageResult[] = [];
 		// Per-build resolved SBOM metadata, keyed by `${pkg.name}:${build.directory}`.
 		// Debug-only — fed into the SBOM Preview check-run summary by `main.ts`.
-		const resolvedSbomConfig = new Map<string, ResolvedSBOMMetadata>();
+		const resolvedSbomConfig = new Map<string, SbomMetadata>();
 		let allPublishOk = true;
 		let npmReadyAll = true;
 		let githubPackagesReadyAll = true;
@@ -633,92 +630,70 @@ export const runValidation = (args: ValidationInputArgs) =>
 				// group title with the group id, exactly like the Phase-3 publish tree.
 				const groupSuffix = builds.length > 1 ? ` · ${group}` : "";
 
-				// The tarball is a property of the directory: identical across the
-				// registries publishing it. Run the dry-run once; the first target's
-				// access/provenance drive the npm-pack invocation (pack output is the
-				// same regardless). Per-registry publish readiness is decided below.
-				const sizingTarget = build.targets[0];
+				// The tarball is a property of the DIRECTORY: identical across every
+				// registry publishing it. So the dry-run runs once per build, and
+				// per-registry publish readiness is decided from that single result
+				// below. There is no longer a "sizing target" — the kit's `dryRun`
+				// takes no registry, access or provenance, which is the honest
+				// signature: `npm pack --dry-run` is not affected by any of them.
 
-				// Dependencies + resolved SBOM metadata come from the built
-				// `dist/<dir>/package.json` — the artifact that actually ships. The
-				// resolved metadata is passed to `Sbom.generate` so the emitted BOM
-				// genuinely carries supplier/author — NTIA validates the real artifact.
-				const dependencies = readBuiltDependencies(build.absoluteDirectory);
-				const resolved = resolveSBOMMetadata(inferSBOMMetadata(build.absoluteDirectory), sbomConfig);
-				resolvedSbomConfig.set(`${pkg.name}:${build.directory}`, resolved);
-				const sbomMetadata = toSbomMetadataInput(resolved);
+				// The built `dist/<dir>/package.json` is the artifact that actually
+				// ships, so it is the source for both the BOM's components and the
+				// root component's metadata. Undecodable → `Option.none`, and the
+				// SBOM falls back to the workspace package's own name/version.
+				const manifest = yield* readBuiltManifest(build.absoluteDirectory);
+				const sbomOptions = sbomOptionsFromConfig(sbomConfig, nowMillis);
 
 				// One collapsible group per package-build, mirroring the Phase-3 publish
-				// tree: a `📦 pack` step (dry-run sizing), per-registry readiness rows,
-				// and a `📄 sbom` step, capped by a group summary line.
-				const buildResult = yield* Step.groupStep(
+				// tree: a `📦 pack` line (dry-run sizing), per-registry readiness rows,
+				// and a `📄 sbom` line, capped by a group summary line.
+				const buildResult = yield* logger.group(
 					`Validate · ${pkg.name}@${pkg.version}${groupSuffix}`,
 					Effect.gen(function* () {
 						// ── 📦 pack / dry-run (sizing, one per directory) ──────────────
-						const dryRunOutcome = yield* Step.withStep(
-							"pack",
-							Effect.gen(function* () {
-								yield* Effect.logDebug(`cwd: ${build.absoluteDirectory}`);
+						const dryRunOutcome = yield* Effect.gen(function* () {
+							yield* Effect.logDebug(`npm pack --dry-run in ${build.absoluteDirectory}`);
 
-								// Set up auth for the sizing target's registry before the dry-run.
-								if (sizingTarget !== undefined) {
-									const token = pickToken(sizingTarget.registry, npmToken, ghPkgsToken);
-									if (token !== null) {
-										yield* publish
-											.setupAuth(sizingTarget.registry, Redacted.make(token))
-											.pipe(
-												Effect.catch((e: PackagePublishError) =>
-													Effect.logWarning(`setupAuth failed for ${sizingTarget.registry}: ${e.message}`),
-												),
-											);
-									}
-								}
+							// No `setupAuth` here, deliberately. `npm pack --dry-run` never
+							// contacts a registry — it packs the directory and reports sizes
+							// — so writing a token into an npmrc before it was a no-op that
+							// still resolved and decrypted a credential. Phase 3's real
+							// publish does its own auth setup, where it is load-bearing.
+							const result = yield* publish.dryRun(build.absoluteDirectory).pipe(
+								Effect.map((dryRunResult) => ({
+									success: dryRunResult.ok,
+									output: dryRunResult.output,
+									packedSize: dryRunResult.packedSize,
+									unpackedSize: dryRunResult.unpackedSize,
+									fileCount: dryRunResult.fileCount,
+								})),
+								Effect.catch((e) =>
+									Effect.succeed({
+										success: false as const,
+										output: e.message,
+										packedSize: undefined,
+										unpackedSize: undefined,
+										fileCount: undefined,
+									}),
+								),
+							);
 
-								yield* Effect.logDebug(`npm pack --dry-run in ${build.absoluteDirectory}`);
-
-								const result = yield* publish
-									.dryRun(build.absoluteDirectory, {
-										registry: sizingTarget?.registry ?? "https://registry.npmjs.org/",
-										access: sizingTarget?.access ?? "public",
-										provenance: sizingTarget?.provenance ?? false,
-										// Dispatch through the same npm executor the live publish uses, so the
-										// dry-run validates against the exact npm (incl. fresh `pnpm dlx npm`).
-										packageManager: normalizePackageManager(args.packageManager),
-									})
-									.pipe(
-										Effect.map((dryRunResult) => ({
-											success: dryRunResult.ok,
-											output: dryRunResult.output,
-											packedSize: dryRunResult.packedSize,
-											unpackedSize: dryRunResult.unpackedSize,
-											fileCount: dryRunResult.fileCount,
-										})),
-										Effect.catch((e: PackagePublishError) =>
-											Effect.succeed({
-												success: false as const,
-												output: e.message,
-												packedSize: undefined,
-												unpackedSize: undefined,
-												fileCount: undefined,
-											}),
-										),
-									);
-
-								if (result.success) {
-									yield* Step.success(
+							if (result.success) {
+								yield* Effect.logInfo(
+									`  \u{1F4E6} pack: ${
 										result.packedSize !== undefined && result.fileCount !== undefined
 											? `${humanizeSize(result.packedSize)} · ${result.fileCount} files`
-											: "sized",
-									);
-								} else {
-									// Concise failure line (first line of npm's error); the full output
-									// is carried in the per-registry finding, not spilled into the tree.
-									yield* Step.failure((result.output ?? "").trim().split("\n")[0] || "dry-run failed");
-								}
-								return result;
-							}),
-							{ icon: "📦" },
-						);
+											: "sized"
+									}`,
+								);
+							} else {
+								// Concise failure line (first line of npm's error); the full output
+								// is carried in the per-registry finding, not spilled into the tree.
+								const first = (result.output ?? "").trim().split("\n")[0] || "dry-run failed";
+								yield* Effect.logWarning(`  \u{1F4E6} pack: ${first}`);
+							}
+							return result;
+						});
 
 						// ── ⬆ per-registry publish readiness ───────────────────────────
 						// All targets share the single dry-run above, so these are
@@ -726,8 +701,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 						const targetResults: BuildTargetResult[] = [];
 						for (const target of build.targets) {
 							totalTargets++;
-							const targetIsNpm = isNpmRegistry(target.registry);
-							const targetIsGhPkgs = isGitHubPackagesRegistry(target.registry);
+							const kind = classifyRegistry(target.registry);
 							const label = registryShortLabel(target.registry);
 
 							if (dryRunOutcome.success) {
@@ -738,11 +712,11 @@ export const runValidation = (args: ValidationInputArgs) =>
 									access: target.access,
 									provenance: target.provenance,
 								});
-								yield* Step.line("⬆", `${label} · ready`);
+								yield* Effect.logInfo(`  \u{2B06} ${label} · ready`);
 							} else {
 								allPublishOk = false;
-								if (targetIsNpm) npmReadyAll = false;
-								if (targetIsGhPkgs) githubPackagesReadyAll = false;
+								if (kind === "npm") npmReadyAll = false;
+								if (kind === "github-packages") githubPackagesReadyAll = false;
 								const detail = (dryRunOutcome.output ?? "").trim() || "unknown error";
 								targetResults.push({
 									registry: target.registry,
@@ -757,100 +731,93 @@ export const runValidation = (args: ValidationInputArgs) =>
 									scope: { package: pkg.name, directory: build.directory },
 									message: `dry-run failed: ${detail}`,
 								});
-								yield* Step.line("⬆", `${label} · not-ready`);
+								yield* Effect.logWarning(`  \u{2B06} ${label} · not-ready`);
 							}
 						}
 
 						// ── 📄 sbom (one per directory) ────────────────────────────────
 						sbomCount++;
-						const sbomOutcome = yield* Step.withStep(
-							"sbom",
-							Effect.gen(function* () {
-								yield* Effect.logDebug(
-									`workspace package: ${pkg.name}@${pkg.version} · group: ${group} · ${dependencies.length} dep(s)`,
-								);
-
-								return yield* sbomSvc
-									.generate({
-										rootName: pkg.name,
-										rootVersion: pkg.version,
-										dependencies,
-										...(sbomMetadata.supplier !== undefined && { supplier: sbomMetadata.supplier }),
-										...(sbomMetadata.authors !== undefined && { authors: sbomMetadata.authors }),
-									})
-									.pipe(
-										Effect.flatMap((bom) =>
-											Effect.gen(function* () {
-												const bomJson = yield* sbomSvc.serializeJson(bom);
-												yield* Effect.logDebug(`generated CycloneDX BOM:\n${bomJson}`);
-
-												// The CycloneDX `Bom` model is a class instance, not the
-												// plain `EnhancedCycloneDXDocument` the NTIA validator
-												// reads. Parse the canonical CycloneDX JSON form into the
-												// plain document shape.
-												let document: EnhancedCycloneDXDocument | null = null;
-												try {
-													document = JSON.parse(bomJson) as EnhancedCycloneDXDocument;
-												} catch {
-													document = null;
-												}
-
-												const sbomFindings: ValidationFinding[] = [];
-												let sbom: BuildSbom | null = null;
-
-												if (document !== null) {
-													const ntia = validateNTIACompliance(document);
-													const missing = ntia.fields.filter((f) => !f.passed).map((f) => f.name);
-													const componentCount = document.components?.length ?? 0;
-
-													if (!ntia.compliant) {
-														sbomFindings.push({
-															severity: "warning",
-															check: "SBOM Preview",
-															scope: { package: pkg.name, directory: build.directory },
-															message: `SBOM generated but missing NTIA fields: ${missing.join(", ")}`,
-														});
-													}
-													// A dependency-free package legitimately has a
-													// component-less BOM — that is not a finding.
-
-													sbom = {
-														componentCount,
-														ntiaCompliant: ntia.compliant,
-														missingNtiaFields: missing,
-													};
-													yield* Step.success(`${componentCount} components · NTIA ${ntia.compliant ? "✓" : "⚠"}`);
-												} else {
-													yield* Step.success("generated");
-												}
-
-												return { ok: true as const, sbom, findings: sbomFindings };
-											}),
-										),
-										Effect.catch((e: SbomError) =>
-											Effect.gen(function* () {
-												yield* Step.failure(`generation failed: ${e.message}`);
-												return {
-													ok: false as const,
-													sbom: null as BuildSbom | null,
-													findings: [
-														{
-															severity: "error" as const,
-															check: "SBOM Preview",
-															scope: { package: pkg.name, directory: build.directory },
-															message: `SBOM generation failed: ${e.message}`,
-														} satisfies ValidationFinding,
-													],
-												};
-											}),
-										),
-									);
-							}),
-							{ icon: "📄" },
+						// `Sbom.generate`, `Sbom.toJson` and `NtiaReport.of` are TOTAL —
+						// assembling and serializing an owned model over validated values has
+						// nothing to fail at. So there is no `Effect.catch` arm here and no
+						// `ok: false` branch: the predecessor's `SbomError` channel existed
+						// only to guard a library that might throw, and the package it
+						// guarded no longer can.
+						const componentInputs =
+							manifest._tag === "present"
+								? Array.from(manifest.pkg.dependencies, ([name, version]) => ({ name, version }))
+								: [];
+						const components: ReadonlyArray<Component> = componentInputs.map((input) =>
+							SbomMetadataSource.componentFor(input),
 						);
 
-						findings.push(...sbomOutcome.findings);
-						if (sbomOutcome.ok) {
+						yield* Effect.logDebug(
+							`workspace package: ${pkg.name}@${pkg.version} · group: ${group} · ${components.length} dep(s)`,
+						);
+
+						// A missing or undecodable manifest still yields a BOM, built from
+						// the workspace package's own coordinates — reproducing the
+						// predecessor's `return {}` tolerance without pretending an
+						// undecodable manifest was well-formed.
+						const root =
+							manifest._tag === "present"
+								? SbomMetadataSource.rootComponent(manifest.pkg, sbomOptions)
+								: SbomMetadataSource.componentFor({ name: pkg.name, version: pkg.version });
+						const metadata =
+							manifest._tag === "present"
+								? SbomMetadataSource.fromPackage(manifest.pkg, sbomOptions)
+								: SbomMetadata.make({
+										...(sbomOptions.supplier !== undefined && { supplier: sbomOptions.supplier }),
+										...(sbomOptions.authors !== undefined && { authors: [...sbomOptions.authors] }),
+										...(sbomOptions.timestamp !== undefined && { timestamp: sbomOptions.timestamp }),
+									});
+
+						resolvedSbomConfig.set(`${pkg.name}:${build.directory}`, metadata);
+
+						const document = Sbom.generate({ root, components, metadata });
+						yield* Effect.logDebug(`generated CycloneDX BOM:\n${Sbom.toJson(document)}`);
+
+						const ntia = NtiaReport.of(document);
+						const missing = [...ntia.missing];
+						const componentCount = document.components.length;
+
+						const sbomFindings: ValidationFinding[] = [];
+						if (!ntia.compliant) {
+							sbomFindings.push({
+								severity: "warning",
+								check: "SBOM Preview",
+								scope: { package: pkg.name, directory: build.directory },
+								message: `SBOM generated but missing NTIA fields: ${missing.join(", ")}`,
+							});
+						}
+						// A dependency-free package legitimately has a component-less BOM —
+						// that is not a finding.
+
+						// The one thing that can still degrade an SBOM: a manifest that is
+						// PRESENT but will not decode, so the BOM carries no dependencies
+						// and no manifest-derived metadata. Generation itself cannot fail,
+						// and an ABSENT manifest is not a degradation — a dependency-free
+						// package legitimately has a component-less BOM.
+						const manifestOk = manifest._tag !== "undecodable";
+						if (manifest._tag === "undecodable") {
+							sbomFindings.push({
+								severity: "warning",
+								check: "SBOM Preview",
+								scope: { package: pkg.name, directory: build.directory },
+								message: `Built package.json could not be decoded (${manifest.reason}); SBOM generated without dependencies or manifest metadata`,
+							});
+						}
+						const buildSbom: BuildSbom = {
+							componentCount,
+							ntiaCompliant: ntia.compliant,
+							missingNtiaFields: missing,
+						};
+						yield* Effect.logInfo(
+							`  \u{1F4C4} sbom: ${componentCount} components · NTIA ${ntia.compliant ? "\u2713" : "\u26A0"}`,
+						);
+
+						findings.push(...sbomFindings);
+						if (manifestOk) {
 							sbomSuccess++;
 						} else {
 							sbomOk = false;
@@ -861,18 +828,14 @@ export const runValidation = (args: ValidationInputArgs) =>
 						const notReadyCount = targetResults.length - readyCount;
 						const sizePart =
 							dryRunOutcome.packedSize !== undefined ? humanizeSize(dryRunOutcome.packedSize) : "unsized";
-						const sbomPart = sbomOutcome.ok
-							? sbomOutcome.sbom?.ntiaCompliant === false
-								? "SBOM ⚠"
-								: "SBOM ok"
-							: "SBOM failed";
+						const sbomPart = !manifestOk ? "SBOM degraded" : ntia.compliant ? "SBOM ok" : "SBOM ⚠";
 						const readyPart =
 							notReadyCount > 0 ? `${readyCount} ready, ${notReadyCount} not-ready` : `${readyCount} ready`;
 						const summary = `${readyPart} · ${sizePart} · ${sbomPart}`;
-						if (notReadyCount > 0 || !sbomOutcome.ok) {
-							yield* Step.failure(summary);
+						if (notReadyCount > 0 || !manifestOk) {
+							yield* Effect.logWarning(`\u274C ${summary}`);
 						} else {
-							yield* Step.success(summary);
+							yield* Effect.logInfo(`\u2705 ${summary}`);
 						}
 
 						return {
@@ -880,7 +843,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 							packedBytes: dryRunOutcome.packedSize ?? null,
 							unpackedBytes: dryRunOutcome.unpackedSize ?? null,
 							fileCount: dryRunOutcome.fileCount ?? null,
-							sbom: sbomOutcome.sbom,
+							sbom: buildSbom,
 							targets: targetResults,
 						} satisfies PackageBuildResult;
 					}),

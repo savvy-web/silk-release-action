@@ -8,9 +8,11 @@
  * feedback.
  */
 
-import type { GitHubIssueError } from "@savvy-web/github-action-effects";
-import { ActionEnvironment, ActionOutputs, CheckRun, GitHubIssue } from "@savvy-web/github-action-effects";
+import type { GitHubError, LinkedIssue, Repo } from "@effected/github";
+import { CheckRun, CheckRunOutput, GitHubIssue } from "@effected/github";
+import { ActionEnvironment, ActionOutputs } from "@effected/github-actions";
 import { Effect } from "effect";
+import { issueUrl, resolveServerUrl } from "./github-urls.js";
 import { summaryWriter } from "./summary-writer.js";
 
 /** Per-issue result. */
@@ -38,7 +40,7 @@ const closeOne = (
 	title: string,
 	prNumber: number,
 	dryRun: boolean,
-): Effect.Effect<ClosedIssue, never, GitHubIssue> =>
+): Effect.Effect<ClosedIssue, never, GitHubIssue | Repo> =>
 	Effect.gen(function* () {
 		if (dryRun) {
 			yield* Effect.logInfo(`[DRY RUN] Would close issue #${issueNumber}: ${title}`);
@@ -57,7 +59,10 @@ const closeOne = (
 			return { number: issueNumber, title, closed: true } satisfies ClosedIssue;
 		}
 
-		const reason = (result.failure as GitHubIssueError).reason ?? String(result.failure);
+		// One `GitHubError` for every REST failure; `reason` is the human-readable
+		// half, `kind` the routing surface (unused here — any failure to close is
+		// reported the same way).
+		const reason = (result.failure as GitHubError).reason ?? String(result.failure);
 		yield* Effect.logWarning(`Failed to close issue #${issueNumber}: ${reason}`);
 		return { number: issueNumber, title, closed: false, error: reason } satisfies ClosedIssue;
 	});
@@ -73,8 +78,9 @@ const closeOne = (
 export const closeLinkedIssues = (
 	prNumber: number,
 	dryRun: boolean,
-): Effect.Effect<CloseLinkedIssuesResult, never, ActionEnvironment | ActionOutputs | CheckRun | GitHubIssue> =>
+): Effect.Effect<CloseLinkedIssuesResult, never, ActionEnvironment | ActionOutputs | CheckRun | GitHubIssue | Repo> =>
 	Effect.gen(function* () {
+		const serverUrl = yield* resolveServerUrl();
 		const env = yield* ActionEnvironment;
 		const outputs = yield* ActionOutputs;
 		const checks = yield* CheckRun;
@@ -88,11 +94,11 @@ export const closeLinkedIssues = (
 
 		yield* Effect.logInfo(`Querying linked issues for PR #${prNumber}`);
 
-		const linked = yield* ghIssues.getLinkedIssues(prNumber).pipe(
+		const linked = yield* ghIssues.linkedIssues(prNumber).pipe(
 			Effect.catch((e) =>
 				Effect.gen(function* () {
 					yield* Effect.logWarning(`Failed to query linked issues: ${e.reason}`);
-					return [] as Array<{ number: number; title: string }>;
+					return [] as ReadonlyArray<LinkedIssue>;
 				}),
 			),
 		);
@@ -100,10 +106,14 @@ export const closeLinkedIssues = (
 		yield* Effect.logInfo(`Found ${linked.length} linked issue(s) for PR #${prNumber}`);
 
 		if (linked.length === 0) {
-			yield* checks.complete(checkId, "success", {
-				title: "No linked issues to close",
-				summary: `PR #${prNumber} had no linked issues.`,
-			});
+			yield* checks.complete(
+				checkId,
+				"success",
+				CheckRunOutput.make({
+					title: "No linked issues to close",
+					summary: `PR #${prNumber} had no linked issues.`,
+				}),
+			);
 			yield* outputs.set("closed_issues_count", "0");
 			yield* outputs.set("failed_issues_count", "0");
 			yield* outputs.set("closed_issues", JSON.stringify([]));
@@ -122,7 +132,7 @@ export const closeLinkedIssues = (
 		const issuesTable = summaryWriter.table(
 			["Issue", "Title", "Status"],
 			issueResults.map((issue) => [
-				`[#${issue.number}](https://github.com/${owner}/${repo}/issues/${issue.number})`,
+				`[#${issue.number}](${issueUrl(serverUrl, owner, repo, issue.number)})`,
 				issue.title,
 				issue.closed ? "✅ Closed" : `❌ ${issue.error ?? "Unknown error"}`,
 			]),
@@ -137,10 +147,14 @@ export const closeLinkedIssues = (
 		]);
 
 		const conclusion = failedCount > 0 ? "neutral" : "success";
-		yield* checks.complete(checkId, conclusion, {
-			title: `Closed ${closedCount} linked issue(s)`,
-			summary,
-		});
+		yield* checks.complete(
+			checkId,
+			conclusion,
+			CheckRunOutput.make({
+				title: `Closed ${closedCount} linked issue(s)`,
+				summary,
+			}),
+		);
 
 		yield* outputs.summary(summary);
 		yield* outputs.set("closed_issues_count", String(closedCount));

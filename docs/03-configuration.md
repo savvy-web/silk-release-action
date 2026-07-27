@@ -6,15 +6,14 @@
 | --- | --- | --- | --- |
 | `app-client-id` | Yes | -- | GitHub App client ID for authentication |
 | `app-private-key` | Yes | -- | GitHub App private key (PEM format) |
-| `github-token` | No | `""` | GitHub token for GitHub Packages publishing. Use when the GitHub App lacks `packages:write` permission. Typically `secrets.GITHUB_TOKEN` |
-| `skip-token-revoke` | No | `"false"` | Skip token revocation in post-action (tokens expire after 1 hour anyway) |
+| `github-token` | For GitHub Packages | `""` | The workflow's `secrets.GITHUB_TOKEN`, with `packages: write` on the job. Required by every GitHub Packages target — the App token is not a fallback (see [GitHub Packages auth](#github-packages-auth)) |
 | `release-branch` | No | `changeset-release/main` | Name of the release branch |
 | `target-branch` | No | `main` | Target branch for the release PR |
-| `pr-title-prefix` | No | `chore: release` | Fallback title for the release PR and commit subject. Used only when no releasable package or version can be determined; otherwise the title is derived as `release: <version>` (see [How it works](./02-how-it-works.md)) |
+| `auto-merge` | No | `""` | Enable auto-merge on the release PR: `merge`, `squash`, `rebase` or empty to disable. Requires branch protection with required status checks (see [Auto-merge](#auto-merge)) |
 | `dry-run` | No | `"false"` | Run in dry-run mode (preview only, no actual changes) |
 | `phase` | No | `""` | Explicitly set the workflow phase, skipping automatic detection. Values: `branch-management`, `validation`, `publishing`, `close-issues`, `none` |
 | `npm-token` | No | `""` | NPM access token for publishing to npmjs.org. Only needed for first-time publish or when OIDC is not configured |
-| `strict-warnings` | No | `"false"` | When `"true"`, warning-severity validation findings escalate the check run conclusion from `neutral` to `failure`, blocking auto-merge rules that gate on check status. Errors always fail regardless of this setting |
+| `strict-warnings` | No | `"false"` | When `"true"`, warning-severity validation findings escalate the per-step and unified check-run conclusions from `neutral` to `failure`, blocking anything that gates on check status — a branch-protection required check, and the auto-merge the `auto-merge` input enables. Errors always fail regardless of this setting |
 | `sbom-config` | No | `""` | SBOM metadata configuration (JSON string) for NTIA-compliant SBOM generation. Must conform to the `SilkReleaseConfig` schema |
 | `custom-registries` | No | `""` | Custom registries with authentication (one per line). Format: `https://registry.example.com/_authToken=<token>` |
 
@@ -32,14 +31,33 @@
 | `package-count` | Number of packages the phase touched |
 | `release-pr-number` | Release PR number, when one is involved (empty otherwise) |
 
-The `result` output is a phase-discriminated JSON object validated by
-`https://raw.githubusercontent.com/savvy-web/silk-release-action/main/silk-release-action.output.schema.json`. It carries the
-machine-readable contract: the three orthogonal flags (`noop`, `succeeded`,
-`hasFailures`), a `dryRun` marker, and exactly one phase payload block. Read fields with the `fromJSON()` expression function — e.g.
-`${{ fromJSON(steps.release.outputs.result).status }}` — and branch on
-`schemaVersion` for forward compatibility.
+The `result` output is a phase-discriminated JSON object validated by `https://raw.githubusercontent.com/savvy-web/silk-release-action/main/silk-release-action.output.schema.json`. It carries the machine-readable contract: the three orthogonal flags (`noop`, `succeeded`, `hasFailures`), a `dryRun` marker and exactly one phase payload block. Read fields with the `fromJSON()` expression function — `${{ fromJSON(steps.release.outputs.result).status }}` — and branch on `schemaVersion` for forward compatibility.
 
 The serialized payload does not include per-package release notes. The validation phase still computes the next CHANGELOG entries, but it surfaces them in the dedicated Release Notes Preview check rather than in `result`. To read release notes from a workflow, fetch the GitHub release body after Phase 3, or read the Release Notes Preview check on the release PR.
+
+## Auto-merge
+
+The `auto-merge` input enables GitHub's auto-merge on the release PR, so the next green check publishes:
+
+```yaml
+auto-merge: squash
+```
+
+| Value | Effect |
+| --- | --- |
+| `""` (default) | Auto-merge is not enabled; merge the release PR yourself |
+| `merge` | Auto-merge with a merge commit |
+| `squash` | Auto-merge with a squash |
+| `rebase` | Auto-merge with a rebase |
+| anything else | Fails the run, naming the value and the accepted set |
+
+Auto-merge is off by default because enabling it on a release PR means the next green check publishes packages, which is a call about a repository's release posture rather than one the action should make for you.
+
+A typo fails rather than quietly disabling. A workflow that writes `auto-merge: sqush` wants auto-merge, and treating that as "off" leaves the release PR open indefinitely, looking like a defect in the action.
+
+Two repository-level prerequisites sit outside the action: auto-merge has to be enabled on the repository, and branch protection has to define required status checks — without them there is nothing for auto-merge to gate on. When either is missing, the action logs a warning and continues, because the release has already succeeded and the PR is there to merge by hand.
+
+`strict-warnings` composes with this. Escalating warnings to `failure` makes the validation check red, which blocks the auto-merge that the check gates.
 
 ## Changelog configuration
 
@@ -72,7 +90,7 @@ The action uses a tiered approach for multi-registry publishing:
 | --- | --- | --- |
 | npm | OIDC trusted publishing, with token-auth fallback | No token needed once trusted publishing is configured. Provide `npm-token` for first-time publishes or as a fallback |
 | JSR | OIDC trusted publishing | No configuration needed |
-| GitHub Packages | Token auth | Uses the generated GitHub App token (or the `github-token` input) automatically |
+| GitHub Packages | Token auth | Requires the `github-token` input, set to the workflow's `secrets.GITHUB_TOKEN`, with `packages: write` on the job |
 | Custom registries | `custom-registries` input | Format: `https://registry.example.com/_authToken=<token>` |
 
 ### npm trusted publishing and token fallback
@@ -81,7 +99,24 @@ For OIDC trusted publishing to npm, your workflow needs `id-token: write` permis
 
 ### GitHub Packages auth
 
-GitHub Packages does not support npm's tokenless OIDC trusted publishing, so the action authenticates with the GitHub App token (or the `github-token` input) from the first attempt rather than letting npm's auto-attempted OIDC exchange fail.
+GitHub Packages does not support npm's tokenless OIDC trusted publishing, so the action authenticates with a token from the first attempt rather than letting npm's auto-attempted OIDC exchange fail. That token has to be the workflow's own `secrets.GITHUB_TOKEN`, passed as `github-token`:
+
+```yaml
+permissions:
+  packages: write
+
+# ...
+
+- uses: savvy-web/silk-release-action@v4
+  with:
+    app-client-id: ${{ vars.APP_CLIENT_ID }}
+    app-private-key: ${{ secrets.APP_PRIVATE_KEY }}
+    github-token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+The GitHub App installation token the action provisions is not an alternative and cannot be made into one. **GitHub App tokens cannot access GitHub Packages at all** — the sole exception is the default GitHub Actions token, which is a special kind of App token. Permissions do not change this: an installation token holding `packages: write` is rejected `403` on a plain read of `npm.pkg.github.com` while the same token resolves the App identity and revokes itself against `api.github.com`.
+
+Omitting the input fails every GitHub Packages target immediately, naming the missing input, and aborts before any GitHub release is created. Granting the App a `Packages` permission to work around it accomplishes nothing.
 
 ### Custom registry format
 

@@ -5,7 +5,7 @@
 - A GitHub repository using [changesets](https://github.com/changesets/changesets) for version management
 - A `.changeset/config.json` whose `changelog` field uses a supported changelog id (see [Changelog configuration](./03-configuration.md#changelog-configuration))
 - A [GitHub App](https://docs.github.com/en/apps/creating-github-apps) with the required permissions (see below)
-- Node.js project with a supported package manager (npm, pnpm, yarn, or bun)
+- Node.js project with a supported package manager (npm, pnpm, yarn or bun)
 
 ## GitHub App permissions
 
@@ -13,12 +13,13 @@ Your GitHub App needs these repository permissions:
 
 | Permission | Access | Purpose |
 | --- | --- | --- |
-| Contents | Read & Write | Checkout, create branches, tags, and releases |
+| Contents | Read & Write | Checkout, create branches, tags and releases |
 | Pull Requests | Read & Write | Create and update release PRs |
 | Checks | Read & Write | Create validation check runs |
 | Issues | Read & Write | Link and close issues from releases |
-| Packages | Read & Write | Publish to GitHub Packages |
 | Attestations | Write | Create build provenance attestations |
+
+Publishing to GitHub Packages is not on that list, and no App permission puts it there. GitHub App tokens cannot access GitHub Packages at all — the sole exception is the default GitHub Actions token, which is a special kind of App token. Granting the App `Packages: Read & Write` changes nothing; the registry rejects the installation token regardless. Pass the workflow's own `secrets.GITHUB_TOKEN` as the `github-token` input instead.
 
 The workflow also requires these GitHub Actions permissions:
 
@@ -28,10 +29,12 @@ permissions:
   pull-requests: write
   checks: write
   id-token: write      # OIDC publishing (npm, JSR)
-  packages: write      # GitHub Packages
+  packages: write      # scopes secrets.GITHUB_TOKEN for GitHub Packages
   attestations: write  # Provenance attestations
   issues: write        # Close linked issues
 ```
+
+`packages: write` scopes the workflow's `secrets.GITHUB_TOKEN`, which you then pass to the action as `github-token`. The permission on its own publishes nothing.
 
 ## Required secrets
 
@@ -39,6 +42,7 @@ permissions:
 | --- | --- | --- |
 | `vars.APP_CLIENT_ID` | Yes | GitHub App client ID |
 | `secrets.APP_PRIVATE_KEY` | Yes | GitHub App private key (PEM format) |
+| `secrets.GITHUB_TOKEN` | For GitHub Packages | Provided by Actions, no setup needed — pass it as the `github-token` input and give the job `packages: write` |
 
 ## Install
 
@@ -84,12 +88,15 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: savvy-web/silk-release-action@v3
+      - uses: savvy-web/silk-release-action@v4
         with:
           app-client-id: ${{ vars.APP_CLIENT_ID }}
           app-private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           dry-run: ${{ inputs.dry_run || 'false' }}
 ```
+
+Drop the `github-token` line only if nothing in the repository publishes to GitHub Packages. Every GitHub Packages target fails immediately without it, and the failure names the missing input.
 
 ### Split workflows (advanced)
 

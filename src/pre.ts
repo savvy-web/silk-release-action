@@ -1,72 +1,85 @@
-/**
- * Pre-action entry point.
- *
- * @remarks
- * Runs before the main action. Responsibilities:
- *
- * 1. Record the start time for `post.ts` duration reporting.
- * 2. Provision a GitHub App installation token via `GitHubToken.provision`,
- *    which reads `app-client-id` / `app-private-key`, generates the token,
- *    resolves the App identity (slug, bot user ID, name), and persists the
- *    whole envelope to `ActionState` for `main.ts` and `post.ts`.
- * 3. Persist the optional `github-token` input for GitHub Packages auth.
- *
- * State is grouped into Schema.Class bundles defined in `./state.ts`.
- */
+// Pre-action entry point.
+//
+// Runs before the main action, in its own Node process. Three jobs:
+//
+// 1. Record the start time, for `post.ts` duration reporting.
+// 2. Provision a GitHub App installation token. The kit's
+//    `GitHubToken.provision` takes its credentials explicitly rather than
+//    reading the inputs itself, so `app-client-id` / `app-private-key` are read
+//    here. It mints the token, verifies the granted scopes, resolves the App
+//    identity best-effort, masks the token, and persists the whole envelope to
+//    `ActionState` for `main.ts` and `post.ts`.
+// 3. Persist the optional `github-token` input for GitHub Packages auth.
+//
+// State bundles are `Schema.Class`es in `./state.ts`.
 
-import { NodeServices } from "@effect/platform-node";
+import { GitHubApp } from "@effected/github";
 import {
 	Action,
+	ActionEnvironment,
+	ActionInput,
 	ActionOutputs,
 	ActionState,
-	GitHubAppLive,
 	GitHubToken,
-	OctokitAuthAppLive,
-} from "@savvy-web/github-action-effects";
-import { Config, Effect, Layer, Redacted } from "effect";
-import { FetchHttpClient } from "effect/unstable/http";
+	Secret,
+} from "@effected/github-actions";
+import type { Layer } from "effect";
+import { Config, Effect } from "effect";
 import { GithubPackagesTokenState, STATE_KEYS, StartTimeState } from "./state.js";
 
 /**
- * Pre-action Effect program.
+ * Pre-action program.
+ *
+ * @public
  */
 export const pre = Effect.gen(function* () {
 	const outputs = yield* ActionOutputs;
 	const state = yield* ActionState;
+	const env = yield* ActionEnvironment;
 
 	yield* Effect.logDebug("Running pre-action script");
 
-	// 1. Initial state: start time.
-	yield* state.save(STATE_KEYS.startTime, new StartTimeState({ startedAt: Date.now() }), StartTimeState);
+	// 1. Start time, for post-phase duration reporting.
+	yield* state.save(STATE_KEYS.startTime, StartTimeState.make({ startedAt: Date.now() }), StartTimeState);
 
-	// 2. Optional GitHub Packages token (workflow `secrets.GITHUB_TOKEN`,
-	//    passed as the `github-token` input). registry-auth prefers it over
-	//    the App token for GitHub Packages because it carries org-level
-	//    `packages:write` from the workflow's own permissions.
-	const githubToken = yield* Config.string("github-token").pipe(Config.withDefault(""));
+	// 2. The optional GitHub Packages token — the workflow's own
+	//    `secrets.GITHUB_TOKEN`, passed as the `github-token` input. Registry
+	//    auth prefers it over the App token for GitHub Packages because it
+	//    carries org-level `packages:write` from the workflow's permissions.
+	//
+	//    Read through `ActionInput`, never a bare `Config`: the runner publishes
+	//    `INPUT_GITHUB-TOKEN`, so a plain-named lookup finds nothing and silently
+	//    takes the default. An input the workflow omitted arrives as `""`, which
+	//    the kit treats as missing data — hence the explicit `withDefault`.
+	const githubToken = yield* ActionInput.string("github-token").pipe(Config.withDefault(""));
 
-	// 3. Provision the GitHub App installation token. `provision` reads the
-	//    `app-client-id` + `app-private-key` inputs, generates the token,
-	//    resolves the App identity best-effort, and persists the envelope to
-	//    `ActionState` under its own internal key.
+	// 3. Provision the installation token.
+	const appId = yield* ActionInput.string("app-client-id");
+	const privateKey = yield* ActionInput.redacted("app-private-key");
+	// `owner` preserves the predecessor's auto-resolution of the installation
+	// from the repository owner when no explicit installation id is given.
+	const { repositoryOwner } = yield* env.github;
+
 	yield* Effect.logInfo("Generating GitHub App installation token...");
-	const token = yield* GitHubToken.provision();
+	const token = yield* GitHubToken.provision({ appId, privateKey, owner: repositoryOwner });
 
-	// 4. Persist the optional GitHub Packages token for `main.ts`.
+	// 4. Persist the GitHub Packages token for `main.ts`.
 	if (githubToken !== "") {
 		yield* state.save(
 			STATE_KEYS.githubPackagesToken,
-			new GithubPackagesTokenState({ token: githubToken }),
+			GithubPackagesTokenState.make({ token: githubToken }),
 			GithubPackagesTokenState,
 		);
 		yield* outputs.setSecret(githubToken);
 		yield* Effect.logInfo("GitHub token provided for GitHub Packages authentication");
 	}
 
-	// 5. Action outputs (exposed for subsequent workflow steps).
-	// `InstallationToken.token` is a `Redacted<string>` in 2.0; unwrap it for
-	// the plain-string output (the runtime masks it via `setSecret` upstream).
-	yield* outputs.set("token", Redacted.value(token.token));
+	// 5. Action outputs, for subsequent workflow steps.
+	//    `InstallationToken.token` is a `Redacted<string>`. `Secret.forRunnerFile`
+	//    is the declassification seam for a runner file: it masks and unwraps in
+	//    one call, so plaintext cannot reach `GITHUB_OUTPUT` — which is plaintext
+	//    by protocol — without the runner's log filter already knowing it.
+	yield* outputs.set("token", yield* Secret.forRunnerFile(token.token));
 	yield* outputs.set("installation-id", String(token.installationId));
 	if (token.appSlug !== undefined) {
 		yield* outputs.set("app-slug", token.appSlug);
@@ -78,24 +91,19 @@ export const pre = Effect.gen(function* () {
 	yield* Effect.logDebug("Pre-action completed");
 });
 
-// ---------------------------------------------------------------------------
-// Layer composition and execution
-// ---------------------------------------------------------------------------
-
 /**
- * Domain layers for pre-action. `Action.run` provides core services
- * (`ActionLogger`, `ActionOutputs`, `ActionEnvironment`, `ActionState`,
- * `ActionsConfigProvider`).
+ * Domain layers for the pre-action.
  *
- * `GitHubToken.provision` needs a `GitHubApp` layer — composed here from
- * `GitHubAppLive` over `OctokitAuthAppLive`. In 2.0 `GitHubAppLive` also
- * requires `HttpClient.HttpClient`, provided here via `FetchHttpClient.layer`.
- * `NodeServices.layer` backs `ActionStateLive`.
+ * @remarks
+ * `GitHubToken.provision` needs a `GitHubApp`, which in the kit is a
+ * self-contained layer — the App JWT signer is internal to it, so there is no
+ * octokit auth strategy to compose and no `HttpClient` to wire.
+ * `ActionEnvironment`, `ActionOutputs` and `ActionState` all arrive from
+ * `ActionRuntime` via `Action.run`.
+ *
+ * @public
  */
-export const PreLive = Layer.mergeAll(
-	GitHubAppLive.pipe(Layer.provide(OctokitAuthAppLive), Layer.provide(FetchHttpClient.layer)),
-	NodeServices.layer,
-);
+export const PreLive: Layer.Layer<GitHubApp> = GitHubApp.layer;
 
 /* v8 ignore next 3 -- entry-point guard, only runs in GitHub Actions */
 if (process.env.GITHUB_ACTIONS) {

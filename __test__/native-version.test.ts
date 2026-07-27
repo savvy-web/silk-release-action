@@ -1,4 +1,4 @@
-import { CommandRunnerTest } from "@savvy-web/github-action-effects/testing";
+import { ScriptedSpawner } from "@effected/commands";
 import { Changesets } from "@savvy-web/silk-effects";
 import { Effect, Exit, FileSystem, Layer, Logger } from "effect";
 import { describe, expect, it } from "vitest";
@@ -26,7 +26,13 @@ const fsWithConfig = FileSystem.layerNoop({
 	exists: (path) => Effect.succeed(path.endsWith(".changeset/config.json")),
 });
 
-const noCommands = CommandRunnerTest.layer(new Map());
+/**
+ * A spawner that FAILS any spawn. The predecessor's `CommandRunnerTest`
+ * defaulted every unregistered command to exit 0, so a test could not tell
+ * whether a command ran. Here an unexpected spawn fails the effect, and
+ * `spawner.spawns` records exactly what was attempted.
+ */
+const noSpawns = (): ScriptedSpawner => ScriptedSpawner.make((command) => ScriptedSpawner.notFound(command));
 
 const run = <A, E>(effect: Effect.Effect<A, E, never>) =>
 	Effect.runPromiseExit(effect.pipe(Effect.provide(Logger.layer([]))));
@@ -50,7 +56,7 @@ describe("runNativeVersion", () => {
 			Changesets.makeReleasePlannerTest({ apply: applied }),
 			inspectorValid,
 			fsWithConfig,
-			noCommands,
+			noSpawns().layer,
 		);
 		const exit = await run(runNativeVersion("/repo").pipe(Effect.provide(layer)));
 		expect(Exit.isSuccess(exit)).toBe(true);
@@ -73,7 +79,7 @@ describe("runNativeVersion", () => {
 				}),
 		});
 		try {
-			const layer = Layer.mergeAll(planner, inspectorValid, fsWithConfig, noCommands);
+			const layer = Layer.mergeAll(planner, inspectorValid, fsWithConfig, noSpawns().layer);
 			await run(runNativeVersion("/repo").pipe(Effect.provide(layer)));
 			expect(seenDuringApply).toBe("app-token-value");
 			expect(process.env.GITHUB_TOKEN).toBeUndefined();
@@ -100,7 +106,7 @@ describe("runNativeVersion", () => {
 				}),
 		});
 		try {
-			const layer = Layer.mergeAll(planner, inspectorValid, fsWithConfig, noCommands);
+			const layer = Layer.mergeAll(planner, inspectorValid, fsWithConfig, noSpawns().layer);
 			await run(runNativeVersion("/repo").pipe(Effect.provide(layer)));
 			expect(seenDuringApply).toBe("app-token-value");
 			expect(process.env.GITHUB_TOKEN).toBe("ambient-value");
@@ -112,6 +118,12 @@ describe("runNativeVersion", () => {
 		}
 	});
 
+	// NOTE: this case spends a real second in `runNativeVersion`'s retry backoff.
+	// `vi.useFakeTimers()` does not help — `Effect.sleep` goes through Effect's
+	// `Clock` service, not a bare `setTimeout`. The `TestClock` alternative needs
+	// the forked effect to have reached the sleep before the clock is advanced,
+	// and the filesystem and spawn work ahead of it makes that ordering racy. One
+	// second per run is the cheaper trade until the backoff is injectable.
 	it("resets the working tree and retries once on a transient network failure", async () => {
 		let calls = 0;
 		const planner = Layer.succeed(Changesets.ReleasePlanner, {
@@ -126,16 +138,48 @@ describe("runNativeVersion", () => {
 					: Effect.succeed(applied);
 			},
 		});
-		const commands = CommandRunnerTest.layer(
-			new Map([
-				["git checkout -- .", { exitCode: 0, stdout: "", stderr: "" }],
-				["git clean -fd", { exitCode: 0, stdout: "", stderr: "" }],
-			]),
-		);
-		const layer = Layer.mergeAll(planner, inspectorValid, fsWithConfig, commands);
+		// Records the reset commands instead of defaulting them to success, so the
+		// assertion below proves the tree was ACTUALLY reset before the retry —
+		// `apply` deletes the changesets it consumes, so retrying on a half-applied
+		// tree would corrupt the release.
+		const spawner = ScriptedSpawner.make(() => ({ exit: 0, stdout: "", stderr: "" }));
+		const layer = Layer.mergeAll(planner, inspectorValid, fsWithConfig, spawner.layer);
 		const exit = await run(runNativeVersion("/repo").pipe(Effect.provide(layer)));
 		expect(Exit.isSuccess(exit)).toBe(true);
 		expect(calls).toBe(2);
+		// Both halves of the reset, in order. `@effected/git` ships neither, and
+		// its `checkout` refuses `--`, so these are raw commands by necessity.
+		expect(spawner.spawns.map((s) => [s.command, ...s.args].join(" "))).toEqual(["git checkout -- .", "git clean -fd"]);
+	});
+
+	it("runs the reset commands in the directory it was given, not the process cwd", async () => {
+		// `git clean -fd` DELETES untracked files. Run in the ambient process CWD
+		// instead of the directory under release, it cleans the wrong tree — and
+		// the retry then re-applies onto a still half-applied one. The repo root is
+		// a plausible ambient CWD here, so a regression is genuinely destructive.
+		let calls = 0;
+		const planner = Layer.succeed(Changesets.ReleasePlanner, {
+			plan: () => Effect.die("unused"),
+			preview: () => Effect.die("unused"),
+			apply: () => {
+				calls += 1;
+				return calls === 1
+					? Effect.fail(
+							new Changesets.ReleasePlanError({ phase: "apply", reason: "request to api failed: ECONNRESET" }),
+						)
+					: Effect.succeed(applied);
+			},
+		});
+		const spawner = ScriptedSpawner.make(() => ({ exit: 0, stdout: "", stderr: "" }));
+		const layer = Layer.mergeAll(planner, inspectorValid, fsWithConfig, spawner.layer);
+
+		const exit = await run(runNativeVersion("/somewhere/else").pipe(Effect.provide(layer)));
+
+		expect(Exit.isSuccess(exit)).toBe(true);
+		expect(spawner.spawns).toHaveLength(2);
+		for (const spawn of spawner.spawns) {
+			expect(spawn.options?.cwd).toBe("/somewhere/else");
+		}
 	});
 
 	it("fails without retry on a non-transient ReleasePlanError", async () => {
@@ -150,7 +194,7 @@ describe("runNativeVersion", () => {
 				);
 			},
 		});
-		const layer = Layer.mergeAll(planner, inspectorValid, fsWithConfig, noCommands);
+		const layer = Layer.mergeAll(planner, inspectorValid, fsWithConfig, noSpawns().layer);
 		const exit = await run(runNativeVersion("/repo").pipe(Effect.provide(layer)));
 		expect(Exit.isFailure(exit)).toBe(true);
 		expect(calls).toBe(1);
@@ -166,7 +210,7 @@ describe("runNativeVersion", () => {
 			Changesets.makeReleasePlannerTest({ apply: applied }),
 			inspectorUnused,
 			fsNoConfig,
-			noCommands,
+			noSpawns().layer,
 		);
 		const exit = await run(runNativeVersion("/repo").pipe(Effect.provide(layer)));
 		expect(Exit.isSuccess(exit)).toBe(true);

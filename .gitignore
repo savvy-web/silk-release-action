@@ -40,3 +40,5 @@ CLAUDE.local.md
 .claude/plugins-debug.log
 # Superpowers working docs (specs, plans) — kept local, not tracked
 docs/superpowers/
+
+.claude/dogfood

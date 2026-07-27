@@ -1,41 +1,58 @@
 /**
  * Unit tests for runReleases (Phase-3 tag / release / attestation / storage-record).
  *
- * All dependencies are provided via in-memory test layers; no real git, GitHub
- * API, or attestation tooling is exercised.
+ * All dependencies are provided via kit test seams; no real git, GitHub API,
+ * subprocess or Sigstore traffic is exercised.
  *
- * Note on OIDC / SLSA: `OidcTokenIssuerTest` returns a synthetic non-JWT
- * token.  `decodeJwtClaims` cannot decode it, so `buildProvenancePredicate`
- * returns null and `attest.provenance` is not called.  This matches the
- * behaviour of `runPublish` tests — attestation is silently skipped when OIDC
- * claims are unavailable.  What IS asserted is that the tag, release, and
- * upload state machines executed the correct calls.
+ * Note on OIDC / SLSA: the shared layer set below uses
+ * `OidcTokenIssuer.layerFor(...)`, which answers with **real, decodable
+ * claims** — unlike the predecessor's double, whose synthetic non-JWT made
+ * `decodeJwtClaims` yield nothing and silently skipped the attestation path in
+ * every test. So attestation now RUNS here, through a `SigstoreSigner` double
+ * and an `Attestation` double, and the asserted `attestationUrl` is evidence
+ * the path executed.
  */
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PackageNotFoundError, WorkspaceDiscovery } from "@effected/workspaces";
-import { CommandRunner, CommandRunnerError } from "@savvy-web/github-action-effects";
+import { ScriptedSpawner } from "@effected/commands";
 import {
-	ActionLoggerTest,
-	AttestTest,
-	CommandRunnerTest,
-	GitHubArtifactMetadataTest,
-	GitHubClientTest,
-	GitHubReleaseTest,
-	GitTagTest,
-	OidcTokenIssuerTest,
-	SigstoreSignerTest,
-} from "@savvy-web/github-action-effects/testing";
-import { Effect, Layer, Option, References } from "effect";
+	ArtifactMetadata,
+	Attestation,
+	AttestationRecord,
+	GitHubError,
+	GitHubRelease,
+	ReleaseInfo as GitHubReleaseInfo,
+	GitTag,
+	ReleaseAsset,
+	Repo,
+	RepoRef,
+} from "@effected/github";
+import { ActionEnvironment, ActionLogger, OidcClaims, OidcTokenIssuer } from "@effected/github-actions";
+import { SIGSTORE_BUNDLE_V0_3_MEDIA_TYPE, SigningError, SigstoreBundle, SigstoreSigner } from "@effected/sbom";
+import { PackageNotFoundError, WorkspaceDiscovery } from "@effected/workspaces";
+import { Effect, Layer, Option } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getGroupId, insertGroupToken } from "../utils/group-id.js";
+
 import type { ReleasesInputArgs, ReleasesReport } from "./releases.js";
 import { copySbomIntoMeta, findApiDocFile, metaDirFor, runReleases } from "./releases.js";
 import type { PackagePublishResult, TagInfo } from "./types.js";
 
+/**
+ * `tarMetaFolder` runs `tar` through `@effected/commands`, so the suite needs a
+ * `ChildProcessSpawner`. Scripted rather than real: `tar` succeeds and anything
+ * else is not-found, so a stray subprocess fails loudly.
+ */
+const tarSpawner = ScriptedSpawner.make((command) =>
+	command === "tar" ? { exit: 0, stdout: "", stderr: "" } : ScriptedSpawner.notFound(command),
+).layer;
+
 // ─── Test helpers ─────────────────────────────────────────────────────────────
+
+/** A valid SHA-256 hex digest, so `Sha256Digest.parse` accepts the subject. */
+const DIGEST_HEX = "a".repeat(64);
 
 /** Minimal PackagePublishResult for a successfully-published package. */
 const makePublishResult = (
@@ -59,7 +76,7 @@ const makePublishResult = (
 			},
 			success: true,
 			tarballPath: tarballPath ?? `/tmp/dist/${name}/pkg.tgz`,
-			tarballDigest: "sha256:abc123",
+			tarballDigest: `sha256:${DIGEST_HEX}`,
 			sbomPath,
 		},
 	],
@@ -82,14 +99,172 @@ const makePublishPackagesResult = (packages: PackagePublishResult[]) => ({
 	successfulTargets: packages.reduce((n, p) => n + p.targets.filter((t) => t.success).length, 0),
 });
 
-// ─── Shared base layers ───────────────────────────────────────────────────────
+// ─── Kit doubles ──────────────────────────────────────────────────────────────
 
-const loggerLayer = ActionLoggerTest.layer(ActionLoggerTest.empty());
-const oidcLayer = OidcTokenIssuerTest;
-const sigstoreLayer = SigstoreSignerTest;
+const loggerLayer = ActionLogger.layerSilent;
+const repoLayer = Layer.succeed(Repo, RepoRef.make({ owner: "test-owner", repo: "test-repo" }));
+
+/** Real, decodable OIDC claims, so the provenance path actually executes. */
+const oidcLayer = OidcTokenIssuer.layerFor(
+	OidcClaims.make({
+		iss: "https://token.actions.githubusercontent.com",
+		ref: "refs/heads/main",
+		sha: "cafebabe",
+		repository: "test-owner/test-repo",
+		event_name: "push",
+		job_workflow_ref: "test-owner/test-repo/.github/workflows/release.yml@refs/heads/main",
+		workflow_ref: "test-owner/test-repo/.github/workflows/release.yml@refs/heads/main",
+		repository_id: "1",
+		repository_owner_id: "2",
+		runner_environment: "github-hosted",
+		run_id: "10",
+		run_attempt: "1",
+	}),
+);
 
 /**
- * Minimal WorkspaceDiscovery stub for releases tests.
+ * A `SigstoreSigner` whose `sign` returns a placeholder bundle.
+ *
+ * @remarks
+ * `SigstoreSigner.makeTest` **dies** on an unstubbed `sign` by design — there is
+ * no honest fabricated signature — so every suite that reaches the attestation
+ * path must say what signing does. This one says "it succeeds", which is what
+ * makes the downstream upload assertion meaningful.
+ */
+const sigstoreLayer = SigstoreSigner.layerTest({
+	sign: () =>
+		Effect.succeed(
+			SigstoreBundle.make({
+				mediaType: SIGSTORE_BUNDLE_V0_3_MEDIA_TYPE,
+				verificationMaterial: {},
+				dsseEnvelope: { payload: "", payloadType: "application/vnd.in-toto+json", signatures: [] },
+			}),
+		),
+});
+
+/** Records every attestation upload so a test can assert the path ran. */
+const makeAttestationLayer = () => {
+	const uploads: unknown[] = [];
+	const layer = Attestation.layerTest({
+		upload: (bundle) => {
+			uploads.push(bundle);
+			return Effect.succeed(
+				AttestationRecord.make({
+					id: uploads.length,
+					url: `https://github.com/test-owner/test-repo/attestations/${uploads.length}`,
+				}),
+			);
+		},
+		listForSubject: () => Effect.succeed([]),
+	});
+	return { uploads, layer };
+};
+
+/** Records every storage-record call. */
+const makeArtifactMetadataLayer = () => {
+	const calls: Array<Record<string, unknown>> = [];
+	const layer = ArtifactMetadata.layerTest({
+		createStorageRecord: (input) => {
+			calls.push(input as unknown as Record<string, unknown>);
+			return Effect.succeed([1]);
+		},
+	});
+	return { calls, layer };
+};
+
+/** Records every `GitTag` call and succeeds. */
+const makeGitTagLayer = (
+	overrides: {
+		create?: (tag: string, sha: string) => Effect.Effect<void, GitHubError, Repo>;
+		resolve?: (tag: string) => Effect.Effect<string, GitHubError, Repo>;
+	} = {},
+) => {
+	const createCalls: Array<{ tag: string; sha: string }> = [];
+	const resolveCalls: string[] = [];
+	const layer = GitTag.layerTest({
+		create: (tag, sha) => {
+			createCalls.push({ tag, sha });
+			return overrides.create?.(tag, sha) ?? Effect.void;
+		},
+		resolve: (tag) => {
+			resolveCalls.push(tag);
+			return overrides.resolve?.(tag) ?? Effect.succeed("resolved-sha");
+		},
+	});
+	return { createCalls, resolveCalls, layer };
+};
+
+/** An in-memory `GitHubRelease` recording creates, updates and asset uploads. */
+const makeGitHubReleaseLayer = (
+	overrides: {
+		create?: (tag: string) => Effect.Effect<GitHubReleaseInfo, GitHubError, Repo> | undefined;
+		seedAssets?: ReadonlyArray<ReleaseAsset>;
+	} = {},
+) => {
+	const releases = new Map<string, GitHubReleaseInfo>();
+	const createCalls: Array<{ tag: string; name: string; body: string }> = [];
+	const uploadCalls: Array<{ releaseId: number; name: string; contentType: string }> = [];
+	const updateCalls: Array<{ id: number; body: string | undefined }> = [];
+	const assets = new Map<number, ReleaseAsset[]>();
+	if (overrides.seedAssets !== undefined) assets.set(1, [...overrides.seedAssets]);
+
+	const infoFor = (tag: string, name: string, body: string): GitHubReleaseInfo =>
+		GitHubReleaseInfo.make({
+			id: releases.size + 1,
+			tag,
+			name,
+			body,
+			draft: false,
+			prerelease: false,
+			url: `https://github.com/test-owner/test-repo/releases/tag/${tag}`,
+			uploadUrl: `https://uploads.github.com/releases/${releases.size + 1}/assets`,
+		});
+
+	const layer = GitHubRelease.layerTest({
+		create: (input) => {
+			createCalls.push({ tag: input.tag, name: input.name ?? "", body: input.body ?? "" });
+			const overridden = overrides.create?.(input.tag);
+			if (overridden !== undefined) return overridden;
+			const info = infoFor(input.tag, input.name ?? "", input.body ?? "");
+			releases.set(input.tag, info);
+			return Effect.succeed(info);
+		},
+		getByTag: (tag) => {
+			const found = releases.get(tag);
+			return found !== undefined
+				? Effect.succeed(found)
+				: Effect.fail(GitHubError.notFound("GitHubRelease.getByTag", tag));
+		},
+		listAssets: (id) => Effect.succeed(assets.get(id) ?? []),
+		uploadAsset: (release, asset) => {
+			uploadCalls.push({ releaseId: release.id, name: asset.name, contentType: asset.contentType });
+			const stored = ReleaseAsset.make({
+				id: uploadCalls.length,
+				name: asset.name,
+				url: `https://github.com/test-owner/test-repo/releases/assets/${uploadCalls.length}`,
+				size: 1024,
+			});
+			assets.set(release.id, [...(assets.get(release.id) ?? []), stored]);
+			return Effect.succeed(stored);
+		},
+		update: (id, patch) => {
+			updateCalls.push({ id, body: patch.body });
+			const existing = [...releases.values()].find((r) => r.id === id);
+			return Effect.succeed(
+				GitHubReleaseInfo.make({
+					...(existing ?? infoFor("", "", "")),
+					id,
+					...(patch.body !== undefined ? { body: patch.body } : {}),
+				}),
+			);
+		},
+	});
+
+	return { releases, createCalls, uploadCalls, updateCalls, assets, layer };
+};
+
+/**
+ * Minimal WorkspaceDiscovery stub.
  *
  * Returns PackageNotFoundError for every package lookup so buildReleaseNotes
  * falls back to process.cwd() for the CHANGELOG path — the test cases don't
@@ -106,23 +281,23 @@ const workspaceDiscoveryLayer = Layer.succeed(WorkspaceDiscovery, {
 	refresh: () => Effect.void,
 });
 
-/**
- * Build a GitHubClientTest layer for runReleases.
- *
- * runReleases no longer makes raw REST calls — release / storage-record
- * traffic now goes through the `GitHubRelease` and `GitHubArtifactMetadata`
- * services. The only thing read off `GitHubClient` is the `repo` slug
- * (in `runReleases` itself and `createStorageRecord`).
- */
-const makeGhClientLayer = () => {
-	const state: import("@savvy-web/github-action-effects").GitHubClientTestState = {
-		restResponses: new Map(),
-		graphqlResponses: new Map<string, unknown>(),
-		paginateResponses: new Map<string, Array<unknown[]>>(),
-		repo: { owner: "test-owner", repo: "test-repo" },
-	};
-	return GitHubClientTest.layer(state);
-};
+/** Everything `runReleases` needs that no individual test varies. */
+const baseLayers = (
+	options: {
+		readonly headSha?: string;
+		readonly signer?: Layer.Layer<SigstoreSigner>;
+		readonly logger?: Layer.Layer<ActionLogger>;
+	} = {},
+) =>
+	Layer.mergeAll(
+		options.logger ?? loggerLayer,
+		repoLayer,
+		oidcLayer,
+		options.signer ?? sigstoreLayer,
+		workspaceDiscoveryLayer,
+		tarSpawner,
+		ActionEnvironment.layerTest(options.headSha !== undefined ? { GITHUB_SHA: options.headSha } : {}),
+	);
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
@@ -130,9 +305,9 @@ describe("runReleases", () => {
 	describe("happy-path: two tags → two releases", () => {
 		it("creates two git tags and two GitHub releases and returns success: true", async () => {
 			// Arrange
-			const { state: tagState, layer: tagLayer } = GitTagTest.empty();
-			const { state: releaseState, layer: releaseLayer } = GitHubReleaseTest.empty();
-			const attestLayer = AttestTest.empty();
+			const tag = makeGitTagLayer();
+			const release = makeGitHubReleaseLayer();
+			const attestation = makeAttestationLayer();
 
 			const tags: TagInfo[] = [makeTag("v1.0.0", "@test/pkg-a", "1.0.0"), makeTag("v2.0.0", "@test/pkg-b", "2.0.0")];
 			const publishResult = makePublishPackagesResult([
@@ -148,22 +323,15 @@ describe("runReleases", () => {
 			};
 
 			const layers = Layer.mergeAll(
-				loggerLayer,
-				tagLayer,
-				releaseLayer,
-				attestLayer,
-				oidcLayer,
-				sigstoreLayer,
-				makeGhClientLayer(),
-				GitHubArtifactMetadataTest.empty().layer,
-				workspaceDiscoveryLayer,
-				CommandRunnerTest.empty(),
+				baseLayers(),
+				tag.layer,
+				release.layer,
+				attestation.layer,
+				makeArtifactMetadataLayer().layer,
 			);
 
 			// Act
-			const result: ReleasesReport = await Effect.runPromise(
-				runReleases(args).pipe(Effect.provide(layers)) as Effect.Effect<ReleasesReport>,
-			);
+			const result: ReleasesReport = await Effect.runPromise(runReleases(args).pipe(Effect.provide(layers)));
 
 			// Assert: report
 			expect(result.success).toBe(true);
@@ -172,101 +340,186 @@ describe("runReleases", () => {
 			expect(result.releases.map((r) => r.tag)).toContain("v1.0.0");
 			expect(result.releases.map((r) => r.tag)).toContain("v2.0.0");
 
-			// Assert: two git tags were created in Test-layer state
-			expect(tagState.createCalls).toHaveLength(2);
-			expect(tagState.createCalls.map((c) => c.tag)).toContain("v1.0.0");
-			expect(tagState.createCalls.map((c) => c.tag)).toContain("v2.0.0");
+			// Assert: two git tags were created
+			expect(tag.createCalls).toHaveLength(2);
+			expect(tag.createCalls.map((c) => c.tag)).toContain("v1.0.0");
+			expect(tag.createCalls.map((c) => c.tag)).toContain("v2.0.0");
 
-			// Assert: two GitHub releases were created in Test-layer state
-			expect(releaseState.createCalls).toHaveLength(2);
-			expect(releaseState.createCalls.map((c) => c.tag)).toContain("v1.0.0");
-			expect(releaseState.createCalls.map((c) => c.tag)).toContain("v2.0.0");
+			// Assert: two GitHub releases were created
+			expect(release.createCalls).toHaveLength(2);
+			expect(release.createCalls.map((c) => c.tag)).toContain("v1.0.0");
+			expect(release.createCalls.map((c) => c.tag)).toContain("v2.0.0");
+		});
+
+		it("creates the git tag at GITHUB_SHA read through ActionEnvironment", async () => {
+			const tag = makeGitTagLayer();
+			const release = makeGitHubReleaseLayer();
+
+			const args: ReleasesInputArgs = {
+				tags: [makeTag("v1.2.3", "@test/pkg-sha", "1.2.3")],
+				publishResult: makePublishPackagesResult([makePublishResult("@test/pkg-sha", "1.2.3")]),
+				packageManager: "pnpm",
+				dryRun: false,
+			};
+
+			const layers = Layer.mergeAll(
+				baseLayers({ headSha: "feedface" }),
+				tag.layer,
+				release.layer,
+				makeAttestationLayer().layer,
+				makeArtifactMetadataLayer().layer,
+			);
+
+			await Effect.runPromise(runReleases(args).pipe(Effect.provide(layers)));
+
+			expect(tag.createCalls).toEqual([{ tag: "v1.2.3", sha: "feedface" }]);
+		});
+	});
+
+	describe("attestation", () => {
+		it("signs and uploads a provenance attestation for the tarball, and reports its URL", async () => {
+			const tmpDir = mkdtempSync(join(tmpdir(), "releases-attest-"));
+			try {
+				const tarballPath = join(tmpDir, "pkg.tgz");
+				writeFileSync(tarballPath, Buffer.from("fake tarball"));
+
+				const attestation = makeAttestationLayer();
+				const release = makeGitHubReleaseLayer();
+
+				const publishResult = makePublishPackagesResult([makePublishResult("@test/pkg-att", "1.0.0", tarballPath)]);
+				const firstTarget = publishResult.packages[0]?.targets[0];
+				if (firstTarget) firstTarget.target.directory = tmpDir;
+
+				const args: ReleasesInputArgs = {
+					tags: [makeTag("v1.0.0", "@test/pkg-att", "1.0.0")],
+					publishResult,
+					packageManager: "pnpm",
+					dryRun: false,
+				};
+
+				const layers = Layer.mergeAll(
+					baseLayers(),
+					makeGitTagLayer().layer,
+					release.layer,
+					attestation.layer,
+					makeArtifactMetadataLayer().layer,
+				);
+
+				const result: ReleasesReport = await Effect.runPromise(runReleases(args).pipe(Effect.provide(layers)));
+
+				// The attestation path ran: exactly one bundle was uploaded, and the
+				// URL it returned reached the reported asset.
+				expect(attestation.uploads).toHaveLength(1);
+				const asset = result.releases[0]?.assets[0];
+				expect(asset?.attestationUrl).toBe("https://github.com/test-owner/test-repo/attestations/1");
+			} finally {
+				rmSync(tmpDir, { recursive: true, force: true });
+			}
+		});
+
+		it("skips attestation — without uploading anything — when the target has no tarball digest", async () => {
+			const tmpDir = mkdtempSync(join(tmpdir(), "releases-attest-"));
+			try {
+				const tarballPath = join(tmpDir, "pkg.tgz");
+				writeFileSync(tarballPath, Buffer.from("fake tarball"));
+
+				const attestation = makeAttestationLayer();
+				const release = makeGitHubReleaseLayer();
+
+				const publishResult = makePublishPackagesResult([
+					makePublishResult("@test/pkg-nodigest", "1.0.0", tarballPath),
+				]);
+				const firstTarget = publishResult.packages[0]?.targets[0];
+				if (firstTarget) {
+					firstTarget.target.directory = tmpDir;
+					// The predecessor substituted `sha256:<filename>` here and signed it.
+					firstTarget.tarballDigest = undefined;
+				}
+
+				const args: ReleasesInputArgs = {
+					tags: [makeTag("v1.0.0", "@test/pkg-nodigest", "1.0.0")],
+					publishResult,
+					packageManager: "pnpm",
+					dryRun: false,
+				};
+
+				const layers = Layer.mergeAll(
+					baseLayers(),
+					makeGitTagLayer().layer,
+					release.layer,
+					attestation.layer,
+					makeArtifactMetadataLayer().layer,
+				);
+
+				const result: ReleasesReport = await Effect.runPromise(runReleases(args).pipe(Effect.provide(layers)));
+
+				// Nothing was signed or stored, the asset still uploaded, and the run
+				// still succeeded — attestation is best-effort, not a gate.
+				expect(attestation.uploads).toHaveLength(0);
+				expect(result.success).toBe(true);
+				const asset = result.releases[0]?.assets[0];
+				expect(asset).toBeDefined();
+				expect(asset?.attestationUrl).toBeUndefined();
+			} finally {
+				rmSync(tmpDir, { recursive: true, force: true });
+			}
+		});
+
+		it("does not fail the release when signing fails", async () => {
+			const tmpDir = mkdtempSync(join(tmpdir(), "releases-attest-"));
+			try {
+				const tarballPath = join(tmpDir, "pkg.tgz");
+				writeFileSync(tarballPath, Buffer.from("fake tarball"));
+
+				const attestation = makeAttestationLayer();
+				const release = makeGitHubReleaseLayer();
+
+				const publishResult = makePublishPackagesResult([
+					makePublishResult("@test/pkg-signfail", "1.0.0", tarballPath),
+				]);
+				const firstTarget = publishResult.packages[0]?.targets[0];
+				if (firstTarget) firstTarget.target.directory = tmpDir;
+
+				const args: ReleasesInputArgs = {
+					tags: [makeTag("v1.0.0", "@test/pkg-signfail", "1.0.0")],
+					publishResult,
+					packageManager: "pnpm",
+					dryRun: false,
+				};
+
+				const layers = Layer.mergeAll(
+					baseLayers({
+						signer: SigstoreSigner.layerTest({
+							sign: () => Effect.fail(new SigningError({ kind: "identity", cause: new Error("no token") })),
+						}),
+					}),
+					makeGitTagLayer().layer,
+					release.layer,
+					attestation.layer,
+					makeArtifactMetadataLayer().layer,
+				);
+
+				const result: ReleasesReport = await Effect.runPromise(runReleases(args).pipe(Effect.provide(layers)));
+
+				expect(result.success).toBe(true);
+				expect(attestation.uploads).toHaveLength(0);
+				expect(result.releases[0]?.assets[0]?.attestationUrl).toBeUndefined();
+			} finally {
+				rmSync(tmpDir, { recursive: true, force: true });
+			}
 		});
 	});
 
 	describe("resilient batch: one release failure does not abort the other", () => {
 		it("captures the failing release in errors but still creates the succeeding release", async () => {
 			// Arrange: GitHubRelease.create fails for the first tag (v1.0.0)
-			const { state: tagState, layer: tagLayer } = GitTagTest.empty();
-
-			const { GitHubReleaseError } = await import("@savvy-web/github-action-effects");
-
-			// Custom release state shared by the hand-rolled layer so tests can
-			// inspect what was recorded.
-			const customReleaseState: import("@savvy-web/github-action-effects").GitHubReleaseTestState = {
-				releases: new Map(),
-				createCalls: [],
-				uploadCalls: [],
-				assets: new Map(),
-			};
-
-			const failingReleaseLayer = Layer.succeed((await import("@savvy-web/github-action-effects")).GitHubRelease, {
-				create: (options: { tag: string; name: string; body: string; draft?: boolean; prerelease?: boolean }) => {
-					customReleaseState.createCalls.push({ tag: options.tag, name: options.name });
-
-					if (options.tag === "v1.0.0") {
-						return Effect.fail(
-							new GitHubReleaseError({
-								operation: "create",
-								tag: options.tag,
-								reason: "Simulated create failure for pkg-a",
-								retryable: false,
-							}),
-						);
-					}
-
-					// v2.0.0 (pkg-b) succeeds
-					const releaseData: import("@savvy-web/github-action-effects").ReleaseData = {
-						id: 101,
-						tag: options.tag,
-						name: options.name,
-						body: options.body,
-						draft: options.draft ?? false,
-						prerelease: options.prerelease ?? false,
-						uploadUrl: "https://uploads.github.com/releases/101/assets",
-					};
-					customReleaseState.releases.set(options.tag, releaseData);
-					return Effect.succeed(releaseData);
-				},
-				uploadAsset: (releaseId: number, name: string) => {
-					customReleaseState.uploadCalls.push({ releaseId, name });
-					const asset: import("@savvy-web/github-action-effects").ReleaseAsset = {
-						id: 1,
-						name,
-						url: `https://github.com/test-owner/test-repo/releases/assets/1`,
-						size: 1024,
-					};
-					const existing = customReleaseState.assets.get(releaseId) ?? [];
-					existing.push(asset);
-					customReleaseState.assets.set(releaseId, existing);
-					return Effect.succeed(asset);
-				},
-				getByTag: (tag: string) => {
-					const r = customReleaseState.releases.get(tag);
-					if (r) return Effect.succeed(r);
-					return Effect.fail(
-						new GitHubReleaseError({ operation: "getByTag", tag, reason: "not found", retryable: false }),
-					);
-				},
-				list: () => Effect.succeed([...customReleaseState.releases.values()]),
-				updateRelease: (releaseId: number, options: { body?: string; name?: string }) => {
-					const existing = [...customReleaseState.releases.values()].find((r) => r.id === releaseId);
-					const updated: import("@savvy-web/github-action-effects").ReleaseData = {
-						id: releaseId,
-						tag: existing?.tag ?? "",
-						name: options.name ?? existing?.name ?? "",
-						body: options.body ?? existing?.body ?? "",
-						draft: existing?.draft ?? false,
-						prerelease: existing?.prerelease ?? false,
-						uploadUrl: existing?.uploadUrl ?? "",
-					};
-					if (existing) customReleaseState.releases.set(existing.tag, updated);
-					return Effect.succeed(updated);
-				},
-				listReleaseAssets: (releaseId: number) => Effect.succeed(customReleaseState.assets.get(releaseId) ?? []),
+			const tag = makeGitTagLayer();
+			const release = makeGitHubReleaseLayer({
+				create: (tagName) =>
+					tagName === "v1.0.0"
+						? Effect.fail(GitHubError.rejected("GitHubRelease.create", 500, "Simulated create failure for pkg-a"))
+						: undefined,
 			});
-
-			const attestLayer = AttestTest.empty();
 
 			const tags: TagInfo[] = [makeTag("v1.0.0", "@test/pkg-a", "1.0.0"), makeTag("v2.0.0", "@test/pkg-b", "2.0.0")];
 			const publishResult = makePublishPackagesResult([
@@ -282,26 +535,19 @@ describe("runReleases", () => {
 			};
 
 			const layers = Layer.mergeAll(
-				loggerLayer,
-				tagLayer,
-				failingReleaseLayer,
-				attestLayer,
-				oidcLayer,
-				sigstoreLayer,
-				makeGhClientLayer(),
-				GitHubArtifactMetadataTest.empty().layer,
-				workspaceDiscoveryLayer,
-				CommandRunnerTest.empty(),
+				baseLayers(),
+				tag.layer,
+				release.layer,
+				makeAttestationLayer().layer,
+				makeArtifactMetadataLayer().layer,
 			);
 
 			// Act
-			const result: ReleasesReport = await Effect.runPromise(
-				runReleases(args).pipe(Effect.provide(layers)) as Effect.Effect<ReleasesReport>,
-			);
+			const result: ReleasesReport = await Effect.runPromise(runReleases(args).pipe(Effect.provide(layers)));
 
 			// Assert: both git tags were created (tag step happens before release step)
-			expect(tagState.createCalls.map((c) => c.tag)).toContain("v1.0.0");
-			expect(tagState.createCalls.map((c) => c.tag)).toContain("v2.0.0");
+			expect(tag.createCalls.map((c) => c.tag)).toContain("v1.0.0");
+			expect(tag.createCalls.map((c) => c.tag)).toContain("v2.0.0");
 
 			// Assert: only one release succeeded (pkg-b / v2.0.0)
 			expect(result.releases).toHaveLength(1);
@@ -314,224 +560,194 @@ describe("runReleases", () => {
 			// Assert: overall success is false due to the error
 			expect(result.success).toBe(false);
 		});
+
+		it("recovers an already-existing release via getByTag on `alreadyExists`", async () => {
+			// The recovery branches on the structural `kind`, not on the message.
+			const seeded = GitHubReleaseInfo.make({
+				id: 77,
+				tag: "v1.0.0",
+				name: "v1.0.0",
+				body: "prior",
+				draft: false,
+				prerelease: false,
+				url: "https://github.com/test-owner/test-repo/releases/tag/v1.0.0",
+				uploadUrl: "https://uploads.github.com/releases/77/assets",
+			});
+
+			const layers = Layer.mergeAll(
+				baseLayers(),
+				makeGitTagLayer().layer,
+				GitHubRelease.layerTest({
+					create: () => Effect.fail(GitHubError.alreadyExists("GitHubRelease.create", "v1.0.0")),
+					getByTag: () => Effect.succeed(seeded),
+					listAssets: () => Effect.succeed([]),
+				}),
+				makeAttestationLayer().layer,
+				makeArtifactMetadataLayer().layer,
+			);
+
+			const args: ReleasesInputArgs = {
+				tags: [makeTag("v1.0.0", "@test/pkg-exists", "1.0.0")],
+				publishResult: makePublishPackagesResult([makePublishResult("@test/pkg-exists", "1.0.0")]),
+				packageManager: "pnpm",
+				dryRun: false,
+			};
+
+			const result: ReleasesReport = await Effect.runPromise(runReleases(args).pipe(Effect.provide(layers)));
+
+			expect(result.success).toBe(true);
+			expect(result.releases[0]?.id).toBe(77);
+		});
+
+		it("does NOT recover a non-alreadyExists create failure", async () => {
+			// The mutation guard for the branch above: a `rejected` create must be
+			// reported, not silently turned into a `getByTag`.
+			const layers = Layer.mergeAll(
+				baseLayers(),
+				makeGitTagLayer().layer,
+				GitHubRelease.layerTest({
+					create: () => Effect.fail(GitHubError.rejected("GitHubRelease.create", 422, "validation failed")),
+					getByTag: () => Effect.die(new Error("getByTag must not be reached")),
+					listAssets: () => Effect.succeed([]),
+				}),
+				makeAttestationLayer().layer,
+				makeArtifactMetadataLayer().layer,
+			);
+
+			const args: ReleasesInputArgs = {
+				tags: [makeTag("v1.0.0", "@test/pkg-rejected", "1.0.0")],
+				publishResult: makePublishPackagesResult([makePublishResult("@test/pkg-rejected", "1.0.0")]),
+				packageManager: "pnpm",
+				dryRun: false,
+			};
+
+			const result: ReleasesReport = await Effect.runPromise(runReleases(args).pipe(Effect.provide(layers)));
+
+			expect(result.success).toBe(false);
+			expect(result.errors).toHaveLength(1);
+		});
 	});
 
 	describe("idempotent tag recovery on create failure", () => {
-		it("logs info (not warning) when tag.create fails but resolve returns the head SHA", async () => {
-			// Arrange — GitTag.create fails, but GitTag.resolve returns the same
-			// SHA the orchestrator tried to create the tag at. This is the
-			// idempotent path: the tag already points at the right SHA, so the
-			// run proceeds without raising a warning annotation.
-			const { GitTag: GitTagSvc, GitTagError } = await import("@savvy-web/github-action-effects");
-
+		it("proceeds without a warning when tag.create fails but resolve returns the head SHA", async () => {
 			const headSha = "head-sha-deadbeef";
-			const savedSha = process.env.GITHUB_SHA;
-			process.env.GITHUB_SHA = headSha;
-
-			const createCalls: Array<{ tag: string; sha: string }> = [];
-			const resolveCalls: Array<string> = [];
-
-			const idempotentTagLayer = Layer.succeed(GitTagSvc, {
-				create: (tag: string, sha: string) => {
-					createCalls.push({ tag, sha });
-					return Effect.fail(
-						new GitTagError({
-							operation: "create",
-							tag,
-							reason: "Reference already exists",
-						}),
-					);
-				},
-				delete: (_tag: string) => Effect.void,
-				list: () => Effect.succeed([]),
-				resolve: (tag: string) => {
-					resolveCalls.push(tag);
-					// Return the SAME SHA the orchestrator tried to point at —
-					// idempotent case.
-					return Effect.succeed(headSha);
-				},
+			const tag = makeGitTagLayer({
+				create: (tagName) => Effect.fail(GitHubError.alreadyExists("GitTag.create", tagName)),
+				resolve: () => Effect.succeed(headSha),
 			});
-
-			const { state: releaseState, layer: releaseLayer } = GitHubReleaseTest.empty();
-			const attestLayer = AttestTest.empty();
-
-			const tags: TagInfo[] = [makeTag("v7.0.0", "@test/pkg-idem", "7.0.0")];
-			const publishResult = makePublishPackagesResult([makePublishResult("@test/pkg-idem", "7.0.0")]);
+			const release = makeGitHubReleaseLayer();
 
 			const args: ReleasesInputArgs = {
-				tags,
-				publishResult,
+				tags: [makeTag("v7.0.0", "@test/pkg-idem", "7.0.0")],
+				publishResult: makePublishPackagesResult([makePublishResult("@test/pkg-idem", "7.0.0")]),
 				packageManager: "pnpm",
 				dryRun: false,
 			};
 
 			const layers = Layer.mergeAll(
-				loggerLayer,
-				idempotentTagLayer,
-				releaseLayer,
-				attestLayer,
-				oidcLayer,
-				sigstoreLayer,
-				makeGhClientLayer(),
-				GitHubArtifactMetadataTest.empty().layer,
-				workspaceDiscoveryLayer,
-				CommandRunnerTest.empty(),
+				baseLayers({ headSha }),
+				tag.layer,
+				release.layer,
+				makeAttestationLayer().layer,
+				makeArtifactMetadataLayer().layer,
 			);
 
-			// Act
-			let result: ReleasesReport;
-			try {
-				result = await Effect.runPromise(
-					runReleases(args).pipe(Effect.provide(layers)) as Effect.Effect<ReleasesReport>,
-				);
-			} finally {
-				if (savedSha === undefined) delete process.env.GITHUB_SHA;
-				else process.env.GITHUB_SHA = savedSha;
-			}
+			const result: ReleasesReport = await Effect.runPromise(runReleases(args).pipe(Effect.provide(layers)));
 
-			// Assert — create was attempted and resolve was called to confirm
-			// the existing tag's SHA matched. The release was still created.
-			expect(createCalls).toHaveLength(1);
-			expect(resolveCalls).toEqual(["v7.0.0"]);
-			expect(releaseState.createCalls).toHaveLength(1);
+			expect(tag.createCalls).toHaveLength(1);
+			expect(tag.resolveCalls).toEqual(["v7.0.0"]);
+			expect(release.createCalls).toHaveLength(1);
 			expect(result.success).toBe(true);
 			expect(result.releases).toHaveLength(1);
 		});
 
-		it("logs a warning with both SHAs when tag.create fails and resolve returns a DIFFERENT SHA", async () => {
-			// Arrange — GitTag.create fails, GitTag.resolve returns a SHA that
-			// does NOT match the head we tried to point at. The orchestrator
-			// must log a warning naming BOTH SHAs so the divergence is
-			// auditable, then proceed.
-			const { GitTag: GitTagSvc, GitTagError } = await import("@savvy-web/github-action-effects");
-
+		it("logs a warning naming BOTH SHAs when resolve returns a DIFFERENT SHA", async () => {
 			const headSha = "head-sha-aaaa";
 			const existingSha = "existing-sha-bbbb";
-			const savedSha = process.env.GITHUB_SHA;
-			process.env.GITHUB_SHA = headSha;
 
-			// `Step.withStep` installs a buffering logger that intercepts the
-			// Effect logger pipeline; warnings emit directly via
-			// `WorkflowCommand.issue("warning", ...)` as `::warning::…` lines
-			// on stdout. Capture stdout for the duration of the run instead of
-			// the Effect logger.
-			const stdoutChunks: string[] = [];
-			const origStdoutWrite = process.stdout.write.bind(process.stdout);
-			// biome-ignore lint/suspicious/noExplicitAny: monkey-patch for test capture
-			(process.stdout.write as any) = (chunk: unknown, ...rest: unknown[]) => {
-				stdoutChunks.push(typeof chunk === "string" ? chunk : Buffer.from(chunk as Uint8Array).toString("utf-8"));
-				return origStdoutWrite(chunk as string, ...(rest as []));
-			};
-
-			const divergentTagLayer = Layer.succeed(GitTagSvc, {
-				create: (tag: string, _sha: string) =>
-					Effect.fail(
-						new GitTagError({
-							operation: "create",
-							tag,
-							reason: "Reference already exists",
-						}),
-					),
-				delete: (_tag: string) => Effect.void,
-				list: () => Effect.succeed([]),
-				resolve: (_tag: string) => Effect.succeed(existingSha),
+			const tag = makeGitTagLayer({
+				create: (tagName) => Effect.fail(GitHubError.alreadyExists("GitTag.create", tagName)),
+				resolve: () => Effect.succeed(existingSha),
 			});
 
-			const { layer: releaseLayer } = GitHubReleaseTest.empty();
-			const attestLayer = AttestTest.empty();
-
-			const tags: TagInfo[] = [makeTag("v8.0.0", "@test/pkg-div", "8.0.0")];
-			const publishResult = makePublishPackagesResult([makePublishResult("@test/pkg-div", "8.0.0")]);
-
 			const args: ReleasesInputArgs = {
-				tags,
-				publishResult,
+				tags: [makeTag("v8.0.0", "@test/pkg-div", "8.0.0")],
+				publishResult: makePublishPackagesResult([makePublishResult("@test/pkg-div", "8.0.0")]),
 				packageManager: "pnpm",
 				dryRun: false,
 			};
 
+			// The REAL `ActionLogger`, not the silent double: the assertion is about
+			// what a maintainer reads in the run log, so a double that swallows the
+			// line would make it vacuous. `ActionLogger.logger` renders `Warn` as a
+			// `::warning::` workflow command through core `Console`, which makes
+			// `console.log` the observation point.
+			const environment = ActionEnvironment.layerTest({ GITHUB_SHA: headSha });
 			const layers = Layer.mergeAll(
-				loggerLayer,
-				divergentTagLayer,
-				releaseLayer,
-				attestLayer,
+				repoLayer,
 				oidcLayer,
 				sigstoreLayer,
-				makeGhClientLayer(),
-				GitHubArtifactMetadataTest.empty().layer,
 				workspaceDiscoveryLayer,
-				CommandRunnerTest.empty(),
+				tarSpawner,
+				environment,
+				ActionLogger.layer.pipe(Layer.provide(environment)),
+				tag.layer,
+				makeGitHubReleaseLayer().layer,
+				makeAttestationLayer().layer,
+				makeArtifactMetadataLayer().layer,
 			);
 
+			const lines: string[] = [];
+			const originalLog = console.log;
+			console.log = (...parts: unknown[]) => {
+				lines.push(parts.map((p) => (typeof p === "string" ? p : String(p))).join(" "));
+			};
 			let result: ReleasesReport;
 			try {
 				result = await Effect.runPromise(
-					runReleases(args).pipe(
-						Effect.provide(layers),
-						Effect.provideService(References.MinimumLogLevel, "All"),
-					) as Effect.Effect<ReleasesReport>,
+					runReleases(args).pipe(Effect.provide(layers), Effect.provide(ActionLogger.layerLogger)),
 				);
 			} finally {
-				process.stdout.write = origStdoutWrite;
-				if (savedSha === undefined) delete process.env.GITHUB_SHA;
-				else process.env.GITHUB_SHA = savedSha;
+				console.log = originalLog;
 			}
 
-			// Assert — the run proceeded and the warning logged both SHAs so
-			// a reader can see what diverged. Warnings from inside a Step
-			// envelope reach stdout as `::warning::…` workflow-command lines.
+			// The divergence path proceeded rather than aborting, and the warning
+			// names BOTH SHAs so the divergence is auditable after the fact.
 			expect(result.success).toBe(true);
-			const captured = stdoutChunks.join("");
-			const warningLines = captured.split("\n").filter((l) => l.includes("::warning::") && l.includes("v8.0.0"));
-			expect(warningLines.length).toBeGreaterThan(0);
-			const divergenceWarning = warningLines.find((w) => w.includes(headSha) && w.includes(existingSha));
-			expect(divergenceWarning).toBeDefined();
-			expect(divergenceWarning).toContain(headSha);
-			expect(divergenceWarning).toContain(existingSha);
+			expect(tag.resolveCalls).toEqual(["v8.0.0"]);
+			const warning = lines.find((l) => l.includes("::warning::") && l.includes("v8.0.0"));
+			expect(warning).toBeDefined();
+			expect(warning).toContain(headSha);
+			expect(warning).toContain(existingSha);
 		});
 	});
 
 	describe("dry-run mode", () => {
 		it("does not mutate tag/release state when dryRun: true", async () => {
-			// Arrange
-			const { state: tagState, layer: tagLayer } = GitTagTest.empty();
-			const { state: releaseState, layer: releaseLayer } = GitHubReleaseTest.empty();
-			const attestLayer = AttestTest.empty();
-
-			const tags: TagInfo[] = [makeTag("v3.0.0", "@test/pkg-c", "3.0.0")];
-			const publishResult = makePublishPackagesResult([makePublishResult("@test/pkg-c", "3.0.0")]);
+			const tag = makeGitTagLayer();
+			const release = makeGitHubReleaseLayer();
 
 			const args: ReleasesInputArgs = {
-				tags,
-				publishResult,
+				tags: [makeTag("v3.0.0", "@test/pkg-c", "3.0.0")],
+				publishResult: makePublishPackagesResult([makePublishResult("@test/pkg-c", "3.0.0")]),
 				packageManager: "pnpm",
 				dryRun: true,
 			};
 
 			const layers = Layer.mergeAll(
-				loggerLayer,
-				tagLayer,
-				releaseLayer,
-				attestLayer,
-				oidcLayer,
-				sigstoreLayer,
-				makeGhClientLayer(),
-				GitHubArtifactMetadataTest.empty().layer,
-				workspaceDiscoveryLayer,
-				CommandRunnerTest.empty(),
+				baseLayers(),
+				tag.layer,
+				release.layer,
+				makeAttestationLayer().layer,
+				makeArtifactMetadataLayer().layer,
 			);
 
-			// Act
-			const result: ReleasesReport = await Effect.runPromise(
-				runReleases(args).pipe(Effect.provide(layers)) as Effect.Effect<ReleasesReport>,
-			);
+			const result: ReleasesReport = await Effect.runPromise(runReleases(args).pipe(Effect.provide(layers)));
 
-			// Assert: no real mutations in Test-layer state
-			expect(tagState.createCalls).toHaveLength(0);
-			expect(releaseState.createCalls).toHaveLength(0);
-			expect(releaseState.uploadCalls).toHaveLength(0);
+			expect(tag.createCalls).toHaveLength(0);
+			expect(release.createCalls).toHaveLength(0);
+			expect(release.uploadCalls).toHaveLength(0);
 
-			// Assert: report still describes what would have happened
 			expect(result.success).toBe(true);
 			expect(result.releases).toHaveLength(1);
 			expect(result.releases[0]?.tag).toBe("v3.0.0");
@@ -570,9 +786,8 @@ describe("runReleases", () => {
 			writeFileSync(sbomPath, JSON.stringify({ bomFormat: "CycloneDX" }));
 			writeFileSync(apiDocPath, JSON.stringify({ metadata: { toolPackage: "@microsoft/api-extractor" } }));
 
-			const { state: tagState, layer: tagLayer } = GitTagTest.empty();
-			const { state: releaseState, layer: releaseLayer } = GitHubReleaseTest.empty();
-			const attestLayer = AttestTest.empty();
+			const tag = makeGitTagLayer();
+			const release = makeGitHubReleaseLayer();
 
 			const publishResult = makePublishPackagesResult([
 				makePublishResult("@test/pkg-d", "4.0.0", tarballPath, sbomPath),
@@ -586,44 +801,32 @@ describe("runReleases", () => {
 				firstTarget.target.directory = pkgDir;
 			}
 
-			const tags: TagInfo[] = [makeTag("v4.0.0", "@test/pkg-d", "4.0.0")];
-
 			const args: ReleasesInputArgs = {
-				tags,
+				tags: [makeTag("v4.0.0", "@test/pkg-d", "4.0.0")],
 				publishResult,
 				packageManager: "pnpm",
 				dryRun: false,
 			};
 
 			const layers = Layer.mergeAll(
-				loggerLayer,
-				tagLayer,
-				releaseLayer,
-				attestLayer,
-				oidcLayer,
-				sigstoreLayer,
-				makeGhClientLayer(),
-				GitHubArtifactMetadataTest.empty().layer,
-				workspaceDiscoveryLayer,
-				CommandRunnerTest.empty(),
+				baseLayers(),
+				tag.layer,
+				release.layer,
+				makeAttestationLayer().layer,
+				makeArtifactMetadataLayer().layer,
 			);
 
-			// Act
-			const result: ReleasesReport = await Effect.runPromise(
-				runReleases(args).pipe(Effect.provide(layers)) as Effect.Effect<ReleasesReport>,
-			);
+			const result: ReleasesReport = await Effect.runPromise(runReleases(args).pipe(Effect.provide(layers)));
 
-			// Assert: overall success
 			expect(result.success).toBe(true);
 			expect(result.releases).toHaveLength(1);
 
-			// Assert: tag and release were created
-			expect(tagState.createCalls).toHaveLength(1);
-			expect(releaseState.createCalls).toHaveLength(1);
+			expect(tag.createCalls).toHaveLength(1);
+			expect(release.createCalls).toHaveLength(1);
 
 			// Assert: three assets were uploaded — tarball, SBOM, API doc
-			expect(releaseState.uploadCalls).toHaveLength(3);
-			const uploadedNames = releaseState.uploadCalls.map((c) => c.name);
+			expect(release.uploadCalls).toHaveLength(3);
+			const uploadedNames = release.uploadCalls.map((c) => c.name);
 			const group = getGroupId(pkgDir);
 			const expectedTarball = insertGroupToken("pkg.tgz", group);
 			const expectedSbom = insertGroupToken("pkg.tgz", group, ".sbom.json");
@@ -632,11 +835,10 @@ describe("runReleases", () => {
 			expect(uploadedNames).toContain(expectedSbom);
 			expect(uploadedNames).toContain(expectedApiDoc);
 
-			// Assert: result AssetInfo[] contains all three assets
-			const release = result.releases[0];
-			expect(release).toBeDefined();
-			if (!release) return;
-			const assetNames = release.assets.map((a) => a.name);
+			const releaseResult = result.releases[0];
+			expect(releaseResult).toBeDefined();
+			if (!releaseResult) return;
+			const assetNames = releaseResult.assets.map((a) => a.name);
 			expect(assetNames).toContain(expectedTarball);
 			expect(assetNames).toContain(expectedSbom);
 			expect(assetNames).toContain(expectedApiDoc);
@@ -656,10 +858,6 @@ describe("runReleases", () => {
 
 		it("packs the group meta/ folder and uploads it as an unattested .npm.meta.tgz asset", async () => {
 			// Arrange: mirror the bundler prod layout dist/prod/npm/{pkg,meta}.
-			// target.directory points at the pkg/ dir; metaDirFor derives the
-			// sibling meta/ folder. The tarball is a real file so the upload
-			// loop runs; the meta/ folder holds at least one file so the
-			// archiver has content to pack.
 			const pkgDir = join(tmpDir, "dist", "prod", "npm", "pkg");
 			const metaDir = join(tmpDir, "dist", "prod", "npm", "meta");
 			mkdirSync(pkgDir, { recursive: true });
@@ -670,76 +868,29 @@ describe("runReleases", () => {
 			writeFileSync(join(metaDir, "pkg-meta.api.json"), JSON.stringify({ metadata: {} }));
 			writeFileSync(join(metaDir, "tsconfig.json"), JSON.stringify({ compilerOptions: {} }));
 
-			const { layer: tagLayer } = GitTagTest.empty();
-			const attestLayer = AttestTest.empty();
+			// A spawner whose `tar` actually WRITES the output tarball to its
+			// `-czf <outPath>` arg (args[1]), so the post-tar `existsSync(metaOut)`
+			// guard passes and the upload fires.
+			const writingTarSpawner = ScriptedSpawner.make((command, args) => {
+				if (command !== "tar") return ScriptedSpawner.notFound(command);
+				// Derived from the flag rather than hard-coded at `args[1]`: with a
+				// fixed index, any reordering of `releases.ts`'s argv would make this
+				// double write to a flag string (or nothing) and the assertion below
+				// would fail without naming the cause.
+				const flagIndex = args.findIndex((a) => a === "-czf" || a === "-f");
+				const outPath = flagIndex === -1 ? undefined : args[flagIndex + 1];
+				if (outPath !== undefined) writeFileSync(outPath, "fake-tgz");
+				return { exit: 0, stdout: "", stderr: "" };
+			}).layer;
 
-			// Custom GitHubRelease layer that records the content-type passed to
-			// uploadAsset (GitHubReleaseTest.empty only records id + name).
-			const { GitHubRelease } = await import("@savvy-web/github-action-effects");
-			const uploadCalls: Array<{ name: string; contentType: string }> = [];
-			const releaseData: import("@savvy-web/github-action-effects").ReleaseData = {
-				id: 99,
-				tag: "v9.0.0",
-				name: "v9.0.0",
-				body: "",
-				draft: false,
-				prerelease: false,
-				uploadUrl: "https://uploads.github.com/releases/99/assets",
-			};
-			const recordingReleaseLayer = Layer.succeed(GitHubRelease, {
-				create: () => Effect.succeed(releaseData),
-				uploadAsset: (releaseId: number, name: string, _data: Uint8Array | string, contentType: string) => {
-					uploadCalls.push({ name, contentType });
-					const asset: import("@savvy-web/github-action-effects").ReleaseAsset = {
-						id: uploadCalls.length,
-						name,
-						url: `https://github.com/test-owner/test-repo/releases/assets/${uploadCalls.length}`,
-						size: 8,
-					};
-					void releaseId;
-					return Effect.succeed(asset);
-				},
-				getByTag: (tag: string) => Effect.succeed({ ...releaseData, tag }),
-				list: () => Effect.succeed([releaseData]),
-				updateRelease: (releaseId: number) => Effect.succeed({ ...releaseData, id: releaseId }),
-				listReleaseAssets: () => Effect.succeed([]),
-			});
-
-			// CommandRunner whose execCapture("tar", …) actually writes the
-			// output tarball to its -czf <outPath> arg (args[1]) so the
-			// post-tar existsSync(metaOut) guard passes and the upload fires.
-			const recordingRunnerLayer = Layer.succeed(
-				CommandRunner,
-				CommandRunner.of({
-					exec: (command: string, args: ReadonlyArray<string> = []) =>
-						Effect.fail(
-							new CommandRunnerError({ command, args: [...args], exitCode: 1, stderr: "", reason: "not implemented" }),
-						),
-					execCapture: (command: string, args: ReadonlyArray<string> = []) =>
-						Effect.sync(() => {
-							const outPath = args[1];
-							if (command === "tar" && outPath) writeFileSync(outPath, "fake-tgz");
-							return { exitCode: 0, stdout: "", stderr: "" };
-						}),
-					execJson: <A, _I>(command: string, args: ReadonlyArray<string> = []) =>
-						Effect.fail(
-							new CommandRunnerError({ command, args: [...args], exitCode: 1, stderr: "", reason: "not implemented" }),
-						) as Effect.Effect<A, CommandRunnerError>,
-					execLines: (command: string, args: ReadonlyArray<string> = []) =>
-						Effect.fail(
-							new CommandRunnerError({ command, args: [...args], exitCode: 1, stderr: "", reason: "not implemented" }),
-						),
-				}),
-			);
+			const release = makeGitHubReleaseLayer();
 
 			const publishResult = makePublishPackagesResult([makePublishResult("@test/pkg-meta", "9.0.0", tarballPath)]);
 			const firstTarget = publishResult.packages[0]?.targets[0];
 			if (firstTarget) firstTarget.target.directory = pkgDir;
 
-			const tags: TagInfo[] = [makeTag("v9.0.0", "@test/pkg-meta", "9.0.0")];
-
 			const args: ReleasesInputArgs = {
-				tags,
+				tags: [makeTag("v9.0.0", "@test/pkg-meta", "9.0.0")],
 				publishResult,
 				packageManager: "pnpm",
 				dryRun: false,
@@ -747,34 +898,32 @@ describe("runReleases", () => {
 
 			const layers = Layer.mergeAll(
 				loggerLayer,
-				tagLayer,
-				recordingReleaseLayer,
-				attestLayer,
+				repoLayer,
 				oidcLayer,
 				sigstoreLayer,
-				makeGhClientLayer(),
-				GitHubArtifactMetadataTest.empty().layer,
 				workspaceDiscoveryLayer,
-				recordingRunnerLayer,
+				writingTarSpawner,
+				ActionEnvironment.layerTest(),
+				makeGitTagLayer().layer,
+				release.layer,
+				makeAttestationLayer().layer,
+				makeArtifactMetadataLayer().layer,
 			);
 
-			// Act
-			const result: ReleasesReport = await Effect.runPromise(
-				runReleases(args).pipe(Effect.provide(layers)) as Effect.Effect<ReleasesReport>,
-			);
+			const result: ReleasesReport = await Effect.runPromise(runReleases(args).pipe(Effect.provide(layers)));
 
 			// Assert: a group-keyed meta.tgz asset was uploaded as application/gzip.
 			expect(result.success).toBe(true);
-			const metaUpload = uploadCalls.find((c) => /\.npm\.meta\.tgz$/.test(c.name));
+			const metaUpload = release.uploadCalls.find((c) => /\.npm\.meta\.tgz$/.test(c.name));
 			expect(metaUpload).toBeDefined();
 			expect(metaUpload?.contentType).toBe("application/gzip");
 
 			// Assert: it surfaces in the release's AssetInfo[] (and carries no
 			// attestation — only the primary tarball is attested).
-			const release = result.releases[0];
-			expect(release).toBeDefined();
-			if (!release) return;
-			const metaAsset = release.assets.find((a) => /\.npm\.meta\.tgz$/.test(a.name));
+			const releaseResult = result.releases[0];
+			expect(releaseResult).toBeDefined();
+			if (!releaseResult) return;
+			const metaAsset = releaseResult.assets.find((a) => /\.npm\.meta\.tgz$/.test(a.name));
 			expect(metaAsset).toBeDefined();
 			expect(metaAsset?.attestationUrl).toBeUndefined();
 		});
@@ -792,14 +941,12 @@ describe("runReleases", () => {
 		});
 
 		it("creates an artifact-metadata storage record for a GitHub Packages target", async () => {
-			// Arrange: a real tarball published to a GitHub Packages registry.
 			const tarballPath = join(tmpDir, "pkg.tgz");
 			writeFileSync(tarballPath, Buffer.from("fake tarball"));
 
-			const { state: tagState, layer: tagLayer } = GitTagTest.empty();
-			const { state: releaseState, layer: releaseLayer } = GitHubReleaseTest.empty();
-			const attestLayer = AttestTest.empty();
-			const { state: artifactState, layer: artifactLayer } = GitHubArtifactMetadataTest.empty();
+			const tag = makeGitTagLayer();
+			const release = makeGitHubReleaseLayer();
+			const artifact = makeArtifactMetadataLayer();
 
 			// A package whose only target is GitHub Packages — triggers the
 			// createStorageRecord path.
@@ -820,124 +967,130 @@ describe("runReleases", () => {
 							},
 							success: true,
 							tarballPath,
-							tarballDigest: "sha256:deadbeef",
+							tarballDigest: `sha256:${DIGEST_HEX}`,
 						},
 					],
 				},
 			]);
 
-			const tags: TagInfo[] = [makeTag("v5.0.0", "@test/pkg-gh", "5.0.0")];
-
 			const args: ReleasesInputArgs = {
-				tags,
+				tags: [makeTag("v5.0.0", "@test/pkg-gh", "5.0.0")],
 				publishResult,
 				packageManager: "pnpm",
 				dryRun: false,
 			};
 
 			const layers = Layer.mergeAll(
-				loggerLayer,
-				tagLayer,
-				releaseLayer,
-				attestLayer,
-				oidcLayer,
-				sigstoreLayer,
-				makeGhClientLayer(),
-				artifactLayer,
-				workspaceDiscoveryLayer,
-				CommandRunnerTest.empty(),
+				baseLayers(),
+				tag.layer,
+				release.layer,
+				makeAttestationLayer().layer,
+				artifact.layer,
 			);
 
-			// Act
-			const result: ReleasesReport = await Effect.runPromise(
-				runReleases(args).pipe(Effect.provide(layers)) as Effect.Effect<ReleasesReport>,
-			);
+			const result: ReleasesReport = await Effect.runPromise(runReleases(args).pipe(Effect.provide(layers)));
 
-			// Assert: release succeeded and the tarball was uploaded
 			expect(result.success).toBe(true);
-			expect(tagState.createCalls).toHaveLength(1);
-			expect(releaseState.createCalls).toHaveLength(1);
+			expect(tag.createCalls).toHaveLength(1);
+			expect(release.createCalls).toHaveLength(1);
 			const expectedTarballName = insertGroupToken("pkg.tgz", getGroupId(tmpDir));
-			expect(releaseState.uploadCalls.map((c) => c.name)).toContain(expectedTarballName);
+			expect(release.uploadCalls.map((c) => c.name)).toContain(expectedTarballName);
 
-			// Assert: a storage record was created via GitHubArtifactMetadata
-			expect(artifactState.calls).toHaveLength(1);
-			const call = artifactState.calls[0];
+			// Assert: a storage record was created, against the ORG, with exactly
+			// the fields the endpoint declares — `repository`, not `repo`, and no
+			// fabricated `version`.
+			expect(artifact.calls).toHaveLength(1);
+			const call = artifact.calls[0];
 			expect(call).toBeDefined();
 			if (!call) return;
+			// The org is no longer passed positionally — the service resolves it
+			// from `Repo`, like every other resource method.
 			expect(call.name).toBe("pkg:npm/@test/pkg-gh@5.0.0");
-			expect(call.version).toBe("5.0.0");
-			expect(call.digest).toBe("sha256:deadbeef");
-			expect(call.repo).toBe("pkg-gh");
+			expect(call.digest).toBe(`sha256:${DIGEST_HEX}`);
+			expect(call.repository).toBe("pkg-gh");
 			expect(call.registryUrl).toBe("https://npm.pkg.github.com/");
 			expect(call.artifactUrl).toBe("https://github.com/test-owner/pkgs/npm/pkg-gh");
+			expect(call).not.toHaveProperty("version");
 		});
 
-		it("reuses a pre-existing release asset instead of re-uploading", async () => {
-			// Arrange: a real tarball, and a release asset already attached so
-			// listReleaseAssets returns it.
+		it("does NOT create a storage record for a non-GitHub-Packages target", async () => {
+			// Mutation guard for the `classifyRegistry(...) === "github-packages"`
+			// branch: the npm-registry default target must not reach the endpoint.
 			const tarballPath = join(tmpDir, "pkg.tgz");
 			writeFileSync(tarballPath, Buffer.from("fake tarball"));
 
-			const { layer: tagLayer } = GitTagTest.empty();
-			const { state: releaseState, layer: releaseLayer } = GitHubReleaseTest.empty();
-			const attestLayer = AttestTest.empty();
-			const { layer: artifactLayer } = GitHubArtifactMetadataTest.empty();
-
-			// GitHubReleaseTest.create assigns the first release id 1 (size + 1
-			// over an empty map). Pre-seed the group-keyed asset name so the
-			// idempotent-reuse path in processOneTag is taken.
-			// makePublishResult sets directory to /tmp/dist/@test/pkg-e, so
-			// getGroupId resolves to "pkg-e" and the tarball name is "pkg.pkg-e.tgz".
-			releaseState.assets.set(1, [
-				{
-					id: 9,
-					name: "pkg.pkg-e.tgz",
-					url: "https://github.com/test-owner/test-repo/releases/assets/9",
-					size: 4096,
-				},
-			]);
-
-			const publishResult = makePublishPackagesResult([makePublishResult("@test/pkg-e", "6.0.0", tarballPath)]);
-			const tags: TagInfo[] = [makeTag("v6.0.0", "@test/pkg-e", "6.0.0")];
+			const artifact = makeArtifactMetadataLayer();
+			const publishResult = makePublishPackagesResult([makePublishResult("@test/pkg-npm", "1.0.0", tarballPath)]);
+			const firstTarget = publishResult.packages[0]?.targets[0];
+			if (firstTarget) firstTarget.target.directory = tmpDir;
 
 			const args: ReleasesInputArgs = {
-				tags,
+				tags: [makeTag("v1.0.0", "@test/pkg-npm", "1.0.0")],
 				publishResult,
 				packageManager: "pnpm",
 				dryRun: false,
 			};
 
 			const layers = Layer.mergeAll(
-				loggerLayer,
-				tagLayer,
-				releaseLayer,
-				attestLayer,
-				oidcLayer,
-				sigstoreLayer,
-				makeGhClientLayer(),
-				artifactLayer,
-				workspaceDiscoveryLayer,
-				CommandRunnerTest.empty(),
+				baseLayers(),
+				makeGitTagLayer().layer,
+				makeGitHubReleaseLayer().layer,
+				makeAttestationLayer().layer,
+				artifact.layer,
 			);
 
-			// Act
-			const result: ReleasesReport = await Effect.runPromise(
-				runReleases(args).pipe(Effect.provide(layers)) as Effect.Effect<ReleasesReport>,
+			const result: ReleasesReport = await Effect.runPromise(runReleases(args).pipe(Effect.provide(layers)));
+
+			expect(result.success).toBe(true);
+			expect(artifact.calls).toHaveLength(0);
+		});
+
+		it("reuses a pre-existing release asset instead of re-uploading", async () => {
+			const tarballPath = join(tmpDir, "pkg.tgz");
+			writeFileSync(tarballPath, Buffer.from("fake tarball"));
+
+			// makePublishResult sets directory to /tmp/dist/@test/pkg-e, so
+			// getGroupId resolves to "pkg-e" and the tarball name is "pkg.pkg-e.tgz".
+			const release = makeGitHubReleaseLayer({
+				seedAssets: [
+					ReleaseAsset.make({
+						id: 9,
+						name: "pkg.pkg-e.tgz",
+						url: "https://github.com/test-owner/test-repo/releases/assets/9",
+						size: 4096,
+					}),
+				],
+			});
+
+			const publishResult = makePublishPackagesResult([makePublishResult("@test/pkg-e", "6.0.0", tarballPath)]);
+
+			const args: ReleasesInputArgs = {
+				tags: [makeTag("v6.0.0", "@test/pkg-e", "6.0.0")],
+				publishResult,
+				packageManager: "pnpm",
+				dryRun: false,
+			};
+
+			const layers = Layer.mergeAll(
+				baseLayers(),
+				makeGitTagLayer().layer,
+				release.layer,
+				makeAttestationLayer().layer,
+				makeArtifactMetadataLayer().layer,
 			);
 
-			// Assert: release succeeded
+			const result: ReleasesReport = await Effect.runPromise(runReleases(args).pipe(Effect.provide(layers)));
+
 			expect(result.success).toBe(true);
 			expect(result.releases).toHaveLength(1);
 
 			// Assert: the pre-existing asset was reused — no upload recorded
-			expect(releaseState.uploadCalls).toHaveLength(0);
+			expect(release.uploadCalls).toHaveLength(0);
 
-			// Assert: the released AssetInfo carries the pre-existing asset's URL/size
-			const release = result.releases[0];
-			expect(release).toBeDefined();
-			if (!release) return;
-			const tarballAsset = release.assets.find((a) => a.name === "pkg.pkg-e.tgz");
+			const releaseResult = result.releases[0];
+			expect(releaseResult).toBeDefined();
+			if (!releaseResult) return;
+			const tarballAsset = releaseResult.assets.find((a) => a.name === "pkg.pkg-e.tgz");
 			expect(tarballAsset).toBeDefined();
 			expect(tarballAsset?.downloadUrl).toBe("https://github.com/test-owner/test-repo/releases/assets/9");
 			expect(tarballAsset?.size).toBe(4096);

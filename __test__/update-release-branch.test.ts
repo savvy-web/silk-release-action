@@ -2,48 +2,63 @@
  * Fixture tests for the update-release-branch stage.
  *
  * @remarks
- * Exercises the paths rewired onto the `PullRequest` and `GitHubIssue` library
- * services: PR discovery (open/closed), creation, title/body updates, reopen,
- * and linked-issue harvesting. The still-raw `client.rest` calls (`git.getRef`)
- * are satisfied through `GitHubClientTest` recorded responses; issue details
- * are seeded via `GitHubIssueTest`.
+ * Everything is driven through kit seams: `PullRequest`, `GitHubIssue`,
+ * `GitBranch` and `GitCommit` `layerTest` doubles over a small mutable fixture,
+ * and a `ScriptedSpawner` for the git commands. The predecessor harness needed
+ * `GitHubClientTest` recorded REST responses to satisfy a raw
+ * `client.rest("git.getRef")`; that call is gone, replaced by `GitBranch.sha`.
  *
- * The no-version-change path closes any release PR and deletes the release
- * branch via the `GitBranch` library service, asserted through
- * `GitBranchTest`'s recorded `branches` map.
+ * Three invariants are pinned here beyond the original coverage, because none
+ * of them is visible to the typechecker:
+ *
+ * 1. **Build the commit, THEN move the ref once.** The release branch must
+ *    never be pointed at the target head: an open release PR whose head equals
+ *    its base is closed by GitHub. `commitFiles` cannot be used at all — it
+ *    roots on the branch's own tree and cannot force-move a ref.
+ * 2. **The commit is rooted on the TARGET branch head**, not the release
+ *    branch's own head — what keeps the release branch one clean commit on main.
+ * 3. **`mergedAt` is an `Option`.** The predecessor's `(p.mergedAt ?? null) ===
+ *    null` compiles unchanged against an Option and is always false, which would
+ *    silently stop closed-but-unmerged release PRs from ever being reopened.
  */
 
-import { PublishabilityDetector, WorkspaceDiscovery } from "@effected/workspaces";
-import type {
-	ActionOutputsTestState,
-	ActionStateTestState,
-	CheckRunTestState,
-	GitBranchTestState,
-	GitCommitTestState,
-	GitHubClientTestState,
-	GitHubIssueTestState,
-	PullRequestTestState,
-} from "@savvy-web/github-action-effects/testing";
+import type { SpawnRecord } from "@effected/commands";
+import { ScriptedSpawner, ToolDiscovery } from "@effected/commands";
+import type { CheckRunOutput, FileChange, IssueInfo, PullRequestInfo } from "@effected/github";
 import {
-	ActionEnvironmentTest,
-	ActionOutputsTest,
-	ActionStateTest,
-	CheckRunTest,
-	CommandRunnerTest,
-	GitBranchTest,
-	GitCommitTest,
-	GitHubClientTest,
-	GitHubIssueTest,
-	PullRequestTest,
-} from "@savvy-web/github-action-effects/testing";
+	CheckRun,
+	CheckRunRef,
+	CommitComparison,
+	CommitRef,
+	CommitSummary,
+	GitBranch,
+	GitCommit,
+	GitHubCommit,
+	GitHubError,
+	GitHubIssue,
+	LinkedIssue as KitLinkedIssue,
+	PullRequest,
+	Repo,
+	RepoRef,
+} from "@effected/github";
+import { ActionEnvironment, ActionInput, ActionOutputs, ActionState, ActionStateError } from "@effected/github-actions";
+import { PublishabilityDetector, WorkspaceDiscovery } from "@effected/workspaces";
 import { Changesets } from "@savvy-web/silk-effects";
-import { ConfigProvider, Effect, FileSystem, Layer, Logger, Option } from "effect";
-import { describe, expect, it } from "vitest";
+import { DateTime, Effect, FileSystem, Layer, Logger, Option } from "effect";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ChangesetConfig } from "../src/release/changeset-config.js";
+import { MANAGED_END, MANAGED_START } from "../src/utils/pr-body.js";
 import type { LinkedIssue, UpdateReleaseBranchResult } from "../src/utils/update-release-branch.js";
 import { updateReleaseBranch } from "../src/utils/update-release-branch.js";
+import { cleanupTestEnvironment, setupTestEnvironment } from "./utils/github-mocks.js";
 
-/** Minimal WorkspaceDiscovery stub: no packages. */
+const RELEASE_BRANCH = "changeset-release/main";
+const TARGET_BRANCH = "main";
+/** The sha `GitBranch.sha(TARGET_BRANCH)` reports — the expected commit parent. */
+const TARGET_HEAD = "targethead000";
+
+// --- ambient stubs -------------------------------------------------------
+
 const workspaceDiscoveryStub = Layer.succeed(WorkspaceDiscovery, {
 	info: () => Effect.die("not implemented"),
 	listPackages: () => Effect.succeed([]),
@@ -54,12 +69,8 @@ const workspaceDiscoveryStub = Layer.succeed(WorkspaceDiscovery, {
 	refresh: () => Effect.void,
 });
 
-/** Minimal PublishabilityDetector stub: no publish targets for any package. */
-const publishabilityDetectorStub = Layer.succeed(PublishabilityDetector, {
-	detect: () => Effect.succeed([]),
-});
+const publishabilityDetectorStub = Layer.succeed(PublishabilityDetector, { detect: () => Effect.succeed([]) });
 
-/** Minimal ChangesetConfig stub: no ignore, no fixed. */
 const changesetConfigStub = Layer.succeed(ChangesetConfig, {
 	mode: () => Effect.succeed("silk" as const),
 	versionPrivate: () => Effect.succeed(false),
@@ -89,147 +100,315 @@ const configInspectorStub = Changesets.makeConfigInspectorTest({
 	legacyVersionFilesUsed: false,
 });
 
-const RELEASE_BRANCH = "changeset-release/main";
-const TARGET_BRANCH = "main";
+// --- fixture -------------------------------------------------------------
+
+interface SeedPr {
+	number: number;
+	head: string;
+	base: string;
+	state: "open" | "closed";
+	title?: string;
+	body?: string;
+	/** Drives `mergedAt`: an `Option`, NOT a nullable string. */
+	merged?: boolean;
+}
 
 interface Fixtures {
-	outputsState: ActionOutputsTestState;
-	stateState: ActionStateTestState;
-	checkRunState: CheckRunTestState;
-	commitState: GitCommitTestState;
-	branchState: GitBranchTestState;
-	prState: PullRequestTestState;
-	issueState: GitHubIssueTestState;
-	clientState: GitHubClientTestState;
+	prs: PullRequestInfo[];
+	/** Commits `GitHubCommit.list` reports for the target branch. */
+	branchCommits: CommitSummary[];
+	labels: Map<number, string[]>;
+	issues: Map<number, IssueInfo>;
+	linked: Map<number, KitLinkedIssue[]>;
+	branches: Map<string, string>;
+	/** Every `GitBranch.upsert` call, in order. */
+	upserts: Array<{ name: string; sha: string }>;
+	/** Every commit written, in order. */
+	commits: Array<{ branch: string; message: string; changes: ReadonlyArray<FileChange> }>;
+	/** Every `GitCommit.createTree` call, in order. */
+	trees: Array<{ baseTree: string | undefined; changes: ReadonlyArray<FileChange> }>;
+	/** Every `GitCommit.createCommit` call, in order. */
+	createdCommits: Array<{ message: string; tree: string; parents: ReadonlyArray<string> }>;
+	deleted: string[];
+	completed: Array<{ conclusion: string; output: CheckRunOutput | undefined }>;
+	summaries: string[];
+	nextPrNumber: number;
+	/** When set, closes that PR the moment the branch ref moves. */
+	closeOnRefMove?: number;
+	/** With `closeOnRefMove`, marks it MERGED rather than merely closed. */
+	mergeOnRefMove?: boolean;
 }
+
+const makePr = (seed: SeedPr): PullRequestInfo =>
+	({
+		number: seed.number,
+		nodeId: `node-${seed.number}`,
+		url: `https://github.com/owner/repo/pull/${seed.number}`,
+		title: seed.title ?? `PR #${seed.number}`,
+		body: seed.body ?? "",
+		state: seed.state,
+		head: seed.head,
+		base: seed.base,
+		draft: false,
+		merged: seed.merged ?? false,
+		// An `Option`, which is the whole point of the landmine test below.
+		mergedAt: seed.merged === true ? Option.some(DateTime.makeUnsafe("2026-01-01T00:00:00Z")) : Option.none(),
+	}) as unknown as PullRequestInfo;
 
 const makeFixtures = (
 	params: {
-		prs?: Array<{
-			number: number;
-			head: string;
-			base: string;
-			state: "open" | "closed";
-			title?: string;
-			body?: string;
-			merged?: boolean;
-		}>;
-		/** Branches to seed into GitBranchTest (name → sha). Defaults to the release branch. */
+		prs?: SeedPr[];
 		branches?: Array<[string, string]>;
 		linkedIssues?: Array<[number, Array<{ number: number; title: string }>]>;
-		issueDetails?: Array<{ number: number; title: string; state: string; htmlUrl?: string; nodeId?: string }>;
-		restResponses?: Array<[string, unknown]>;
+		issueDetails?: Array<{ number: number; title: string; state: "open" | "closed"; url?: string; nodeId?: string }>;
+		branchCommits?: CommitSummary[];
 	} = {},
 ): Fixtures => {
-	const prState = PullRequestTest.empty();
-	let nextNumber = 1;
-	for (const pr of params.prs ?? []) {
-		prState.prs.push({
-			number: pr.number,
-			nodeId: `node-${pr.number}`,
-			url: `https://github.com/owner/repo/pull/${pr.number}`,
-			title: pr.title ?? `PR #${pr.number}`,
-			body: pr.body ?? "",
-			state: pr.state,
-			head: pr.head,
-			base: pr.base,
-			draft: false,
-			merged: pr.merged ?? false,
-			mergedAt: pr.merged ? "2026-01-01T00:00:00Z" : null,
+	const prs = (params.prs ?? []).map(makePr);
+	const linked = new Map<number, KitLinkedIssue[]>();
+	for (const [prNumber, entries] of params.linkedIssues ?? []) {
+		linked.set(
+			prNumber,
+			entries.map((e) =>
+				KitLinkedIssue.make({
+					number: e.number,
+					title: e.title,
+					state: "open",
+					url: `https://x/${e.number}`,
+					nodeId: `I_${e.number}`,
+					userLinked: false,
+				}),
+			),
+		);
+	}
+	const issues = new Map<number, IssueInfo>();
+	for (const d of params.issueDetails ?? []) {
+		issues.set(d.number, {
+			number: d.number,
+			title: d.title,
+			state: d.state,
 			labels: [],
-			reviewers: [],
-			teamReviewers: [],
-			autoMerge: undefined,
-		});
-		nextNumber = Math.max(nextNumber, pr.number + 1);
+			url: d.url ?? `https://x/${d.number}`,
+			nodeId: d.nodeId ?? `I_${d.number}`,
+		} as unknown as IssueInfo);
 	}
-	prState.nextNumber = nextNumber;
-
-	const issue = GitHubIssueTest.empty();
-	for (const [prNumber, linked] of params.linkedIssues ?? []) {
-		issue.state.linkedIssues.set(prNumber, linked);
-	}
-	for (const detail of params.issueDetails ?? []) {
-		issue.state.issues.set(detail.number, {
-			number: detail.number,
-			title: detail.title,
-			state: detail.state,
-			labels: [],
-			...(detail.htmlUrl !== undefined ? { htmlUrl: detail.htmlUrl } : {}),
-			...(detail.nodeId !== undefined ? { nodeId: detail.nodeId } : {}),
-		});
-	}
-
-	const clientState: GitHubClientTestState = {
-		restResponses: new Map((params.restResponses ?? []).map(([op, data]) => [op, { data }])),
-		graphqlResponses: new Map(),
-		paginateResponses: new Map(),
-		repo: { owner: "owner", repo: "repo" },
-	};
-
-	const branchState = GitBranchTest.empty();
-	for (const [name, sha] of params.branches ?? [[RELEASE_BRANCH, "deadbeef"]]) {
-		branchState.branches.set(name, sha);
-	}
-
 	return {
-		outputsState: ActionOutputsTest.empty(),
-		stateState: ActionStateTest.empty(),
-		checkRunState: CheckRunTest.empty(),
-		commitState: GitCommitTest.empty(),
-		branchState,
-		prState,
-		issueState: issue.state,
-		clientState,
+		prs,
+		branchCommits: params.branchCommits ?? [],
+		labels: new Map(),
+		issues,
+		linked,
+		branches: new Map(params.branches ?? [[RELEASE_BRANCH, "deadbeef"]]),
+		upserts: [],
+		trees: [],
+		createdCommits: [],
+		commits: [],
+		deleted: [],
+		completed: [],
+		summaries: [],
+		nextPrNumber: Math.max(0, ...prs.map((p) => p.number)) + 1,
 	};
 };
 
-/**
- * Run `updateReleaseBranch` against the given fixtures.
- *
- * @remarks
- * `commandResponses` keys are `"<command> <args...>"`; unrecorded commands
- * succeed with empty output. A `git status --porcelain` of empty stdout drives
- * the no-version-change branch (close PR + delete branch). A non-empty status
- * drives the version-change branch; an empty `git status --porcelain -z` keeps
- * the API-commit path a no-op (`files.length === 0`), so only the `git.getRef`
- * REST response is needed to reach the PR reopen/title/create steps.
- */
-const runStage = (
+// --- git script ----------------------------------------------------------
+
+/** A commit as `GitHubCommit.list` reports it for the target branch. */
+const branchCommit = (sha: string, message: string): CommitSummary =>
+	CommitSummary.make({ sha, message, author: "Test Author", url: `https://x/commit/${sha}`, parents: [] });
+
+/** `git status --porcelain` stdout that drives the version-change branch. */
+const PORCELAIN_CHANGED = "M package.json\nM CHANGELOG.md";
+
+interface GitOptions {
+	/** `git status --porcelain` stdout. Empty drives the no-change cleanup path. */
+	readonly porcelain?: string;
+	/** `git status --porcelain` exit code. Non-zero must FAIL the stage, not read as "no changes". */
+	readonly porcelainExit?: number;
+	/** `git status --porcelain -z` stdout, which becomes the commit's file list. */
+	readonly porcelainZ?: string;
+	/** `git log` stdout, keyed by the changeset file path it targets. */
+	readonly logs?: Record<string, string>;
+}
+
+const gitScript = (options: GitOptions) => (command: string, args: ReadonlyArray<string>) => {
+	if (command !== "git") return ScriptedSpawner.notFound(command);
+	const argv = args.join(" ");
+	if (argv === "status --porcelain") {
+		const exit = options.porcelainExit ?? 0;
+		// Only the failure case carries the fatal stderr. Emitting it on exit 0 too
+		// is contradictory and misleads the next reader debugging a failure.
+		return {
+			exit,
+			stdout: options.porcelain ?? "",
+			stderr: exit === 0 ? "" : "fatal: not a git repository",
+		};
+	}
+	if (argv === "status --porcelain -z") return { exit: 0, stdout: options.porcelainZ ?? "", stderr: "" };
+	if (args[0] === "log") {
+		const path = args[args.length - 1];
+		return { exit: 0, stdout: options.logs?.[path] ?? "", stderr: "" };
+	}
+	// branch -D, checkout -b, add ., fetch …
+	return { exit: 0, stdout: "", stderr: "" };
+};
+
+// --- runner --------------------------------------------------------------
+
+const runStage = async (
 	f: Fixtures,
-	commandResponses: Array<[string, string]> = [],
+	git: GitOptions = { porcelain: PORCELAIN_CHANGED },
 	changesetFiles: ReadonlyArray<string> = [],
 	plannerLayer: Layer.Layer<Changesets.ReleasePlanner> = releasePlannerStub,
-): Promise<UpdateReleaseBranchResult> => {
+	/** Overrides on top of the seeded `GITHUB_*` block — e.g. a GHES host. */
+	envOverrides: Readonly<Record<string, string>> = {},
+): Promise<{ result: UpdateReleaseBranchResult; spawns: ReadonlyArray<SpawnRecord> }> => {
+	const spawner = ScriptedSpawner.make(gitScript(git));
 	const layer = Layer.mergeAll(
-		ActionEnvironmentTest.layer({
+		ActionEnvironment.layerTest({
 			GITHUB_SHA: "abc123",
 			GITHUB_REF: "refs/heads/main",
 			GITHUB_REPOSITORY: "owner/repo",
 			GITHUB_REPOSITORY_OWNER: "owner",
 			GITHUB_WORKSPACE: "/workspace",
 			GITHUB_EVENT_NAME: "push",
-			GITHUB_EVENT_PATH: "/dev/null",
+			GITHUB_EVENT_PATH: "",
 			GITHUB_RUN_ID: "1",
 			GITHUB_RUN_NUMBER: "1",
 			GITHUB_ACTOR: "test",
 			GITHUB_SERVER_URL: "https://github.com",
 			GITHUB_API_URL: "https://api.github.com",
+			...envOverrides,
 		}),
-		ActionOutputsTest.layer(f.outputsState),
-		ActionStateTest.layer(f.stateState),
-		CheckRunTest.layer(f.checkRunState),
-		CommandRunnerTest.layer(
-			new Map(commandResponses.map(([key, stdout]) => [key, { exitCode: 0, stdout, stderr: "" }])),
-		),
-		GitBranchTest.layer(f.branchState),
-		GitCommitTest.layer(f.commitState),
-		GitHubClientTest.layer(f.clientState),
-		GitHubIssueTest.layer(f.issueState),
-		PullRequestTest.layer(f.prState),
+		ActionOutputs.layerTest({
+			summary: (content) =>
+				Effect.sync(() => {
+					f.summaries.push(content);
+				}),
+		}),
+		// No token persisted, so the sign-off takes its `github-actions[bot]` fallback.
+		ActionState.layerTest({
+			get: ((key: string) =>
+				Effect.fail(new ActionStateError({ reason: "missing", key }))) as ActionState["Service"]["get"],
+		}),
+		// `exists` answers false, so `formatWorkspaceWithBiome` returns before
+		// probing — an unstubbed `isAvailable` would die if it did not.
+		ToolDiscovery.layerTest(),
+		spawner.layer,
+		CheckRun.layerTest({
+			create: (name) =>
+				Effect.succeed(
+					CheckRunRef.make({ id: 1, name, url: "https://github.com/owner/repo/runs/1", status: "in_progress" }),
+				),
+			complete: (_id, conclusion, output) =>
+				Effect.sync(() => {
+					f.completed.push({ conclusion, output });
+				}),
+		}),
+		GitBranch.layerTest({
+			sha: (name) =>
+				name === TARGET_BRANCH ? Effect.succeed(TARGET_HEAD) : Effect.succeed(f.branches.get(name) ?? "unknownsha"),
+			upsert: (name, sha) =>
+				Effect.sync(() => {
+					f.upserts.push({ name, sha });
+					f.branches.set(name, sha);
+					// Models the real mechanism: GitHub closed #243 as a side effect of
+					// the ref moving, mid-run, after the opening snapshot was taken.
+					if (f.closeOnRefMove !== undefined) {
+						const idx = f.prs.findIndex((p) => p.number === f.closeOnRefMove);
+						if (idx !== -1) {
+							f.prs[idx] = {
+								...(f.prs[idx] as unknown as Record<string, unknown>),
+								state: "closed",
+								...(f.mergeOnRefMove === true
+									? { merged: true, mergedAt: Option.some(DateTime.makeUnsafe("2026-01-01T00:00:00Z")) }
+									: {}),
+							} as PullRequestInfo;
+						}
+					}
+					return "reset" as const;
+				}),
+			delete: (name) =>
+				Effect.sync(() => {
+					f.deleted.push(name);
+					f.branches.delete(name);
+				}),
+		}),
+		GitCommit.layerTest({
+			// `commitFiles` is deliberately UNSTUBBED: it roots on the branch's own
+			// tree and cannot force-move a ref, so reaching it here would be the bug
+			// this suite exists to prevent. Unstubbed members die loudly.
+			get: (sha) => Effect.succeed(CommitRef.make({ sha, treeSha: `tree-of-${sha}`, parents: [] })),
+			createTree: ({ changes, baseTree }) =>
+				Effect.sync(() => {
+					f.trees.push({ baseTree, changes });
+					return "newtreesha";
+				}),
+			createCommit: ({ message, tree, parents }) =>
+				Effect.sync(() => {
+					f.commits.push({ branch: RELEASE_BRANCH, message, changes: f.trees[f.trees.length - 1]?.changes ?? [] });
+					f.createdCommits.push({ message, tree, parents });
+					return "newcommitsha";
+				}),
+		}),
+		// The issue walk runs before versioning now. With no merged release PR in
+		// these fixtures it takes the list-the-branch path, and an empty branch
+		// yields no linked issues — which is what these cases asserted all along,
+		// previously by way of an absent `.changeset` directory.
+		GitHubCommit.layerTest({
+			list: () => Effect.succeed(f.branchCommits),
+			compare: () =>
+				Effect.succeed(CommitComparison.make({ status: "ahead", aheadBy: 0, behindBy: 0, commits: [], files: [] })),
+		}),
+		GitHubIssue.layerTest({
+			linkedIssues: (prNumber) => Effect.succeed(f.linked.get(prNumber) ?? []),
+			get: (number) => {
+				const found = f.issues.get(number);
+				return found === undefined
+					? Effect.fail(GitHubError.notFound("GitHubIssue.get", `issue ${number}`))
+					: Effect.succeed(found);
+			},
+		}),
+		PullRequest.layerTest({
+			list: (options) =>
+				Effect.succeed(
+					f.prs.filter((p) => (options?.state === undefined || p.state === options.state) && p.base === TARGET_BRANCH),
+				),
+			get: (number) => {
+				const found = f.prs.find((p) => p.number === number);
+				return found === undefined
+					? Effect.fail(GitHubError.notFound("PullRequest.get", `pr ${number}`))
+					: Effect.succeed(found);
+			},
+			create: (input) =>
+				Effect.sync(() => {
+					const created = makePr({
+						number: f.nextPrNumber++,
+						head: input.head,
+						base: input.base,
+						state: "open",
+						title: input.title,
+						...(input.body === undefined ? {} : { body: input.body }),
+					});
+					f.prs.push(created);
+					return created;
+				}),
+			update: (number, patch) =>
+				Effect.sync(() => {
+					const idx = f.prs.findIndex((p) => p.number === number);
+					const merged = { ...(f.prs[idx] as unknown as Record<string, unknown>), ...patch } as PullRequestInfo;
+					f.prs[idx] = merged;
+					return merged;
+				}),
+			addLabels: (number, labels) =>
+				Effect.sync(() => {
+					f.labels.set(number, [...(f.labels.get(number) ?? []), ...labels]);
+				}),
+		}),
+		Layer.succeed(Repo, RepoRef.make({ owner: "owner", repo: "repo" })),
 		FileSystem.layerNoop({
 			exists: () => Effect.succeed(false),
 			readDirectory: () => Effect.succeed([...changesetFiles]),
+			readFileString: () => Effect.succeed("file contents"),
 		}),
 		workspaceDiscoveryStub,
 		publishabilityDetectorStub,
@@ -237,104 +416,306 @@ const runStage = (
 		plannerLayer,
 		configInspectorStub,
 	);
-	const config = ConfigProvider.fromUnknown({
-		"release-branch": RELEASE_BRANCH,
-		"target-branch": TARGET_BRANCH,
-		"pr-title-prefix": "chore: release",
-		"dry-run": "false",
+	// Runner-shaped input names (`INPUT_<MANGLED>`), through `ActionInput.layer`.
+	// The bare-name provider this replaces was keyed by names the runner never
+	// writes, so the reads under test were resolving through a path production
+	// does not take.
+	//
+	// NOTE: every value here equals its production default, so a mis-named input
+	// still resolves to the same string — these reads are exercised but not yet
+	// *discriminated*. Making them so needs non-default fixture values, which
+	// ripples into the assertions; recorded as follow-up rather than done here.
+	const inputs = ActionInput.layer({
+		"INPUT_RELEASE-BRANCH": RELEASE_BRANCH,
+		"INPUT_TARGET-BRANCH": TARGET_BRANCH,
+		"INPUT_DRY-RUN": "false",
 	});
-	return Effect.runPromise(
-		updateReleaseBranch().pipe(
-			Effect.provide(layer),
-			Effect.provide(Logger.layer([])),
-			Effect.provide(ConfigProvider.layer(config)),
-		),
+	const result = await Effect.runPromise(
+		updateReleaseBranch().pipe(Effect.provide(layer), Effect.provide(Logger.layer([])), Effect.provide(inputs)),
 	);
+	return { result, spawns: spawner.spawns };
 };
 
-/** A `git status --porcelain` with empty stdout drives the no-change (cleanup) branch. */
-const noVersionChange: Array<[string, string]> = [["git status --porcelain", ""]];
+/** Version-change path with one modified file in the `-z` status. */
+const withCommit: GitOptions = { porcelain: PORCELAIN_CHANGED, porcelainZ: "M  package.json\0" };
 
-/**
- * Commands that drive the version-change branch: a non-empty porcelain status
- * plus an empty `-z` status so the API-commit path is a no-op and control
- * reaches the PR reopen/title/create steps.
- */
-const versionChange: Array<[string, string]> = [
-	["git status --porcelain", "M package.json\nM CHANGELOG.md"],
-	["git status --porcelain -z", ""],
-];
-
-/** `git.getRef` REST response consumed by `commitChangesOntoTarget` on the version-change path. */
-const refResponse: Array<[string, unknown]> = [["git.getRef", { object: { sha: "deadbeef" } }]];
+/** No version changes — drives the close-PR-and-delete-branch cleanup path. */
+const noVersionChange: GitOptions = { porcelain: "" };
 
 describe("updateReleaseBranch", () => {
-	it("creates a release PR when none exists and applies the automated/release labels", async () => {
-		const f = makeFixtures({ restResponses: refResponse });
+	// Shared harness: clears mocks and silences stdout/stderr so a log line
+	// added to the module under test cannot start leaking into the reporter.
+	beforeEach(() => setupTestEnvironment({ suppressOutput: true }));
+	afterEach(() => cleanupTestEnvironment());
 
-		const result = await runStage(f, versionChange);
+	it("creates a release PR when none exists and applies the automated/release labels", async () => {
+		const f = makeFixtures();
+
+		const { result } = await runStage(f);
 
 		expect(result.deleted).toBe(false);
-		const created = f.prState.prs.find((pr) => pr.head === RELEASE_BRANCH);
+		const created = f.prs.find((pr) => pr.head === RELEASE_BRANCH);
 		expect(created).toBeDefined();
 		expect(result.prNumber).toBe(created?.number);
 		expect(created?.base).toBe(TARGET_BRANCH);
 		expect(created?.state).toBe("open");
-		expect(created?.labels).toEqual(["automated", "release"]);
+		expect(f.labels.get(created?.number ?? -1)).toEqual(["automated", "release"]);
 	});
 
 	it("updates the existing open PR's title and does not create a new one", async () => {
 		const f = makeFixtures({
 			prs: [{ number: 42, head: RELEASE_BRANCH, base: TARGET_BRANCH, state: "open", title: "stale title" }],
-			restResponses: refResponse,
 		});
 
-		const result = await runStage(f, versionChange);
+		const { result } = await runStage(f);
 
 		expect(result.prNumber).toBe(42);
-		expect(f.prState.prs).toHaveLength(1); // no new PR created
-		expect(f.prState.prs[0].title).toBe("chore: release");
+		expect(f.prs).toHaveLength(1);
+		expect(f.prs[0].title).toBe("release: pending");
+	});
+
+	it("builds the PR link from GITHUB_SERVER_URL — not a hardcoded github.com (GHES)", async () => {
+		// The summary table hardcoded `https://github.com`, so every link in it was
+		// wrong on GitHub Enterprise Server. The seeded default is *also*
+		// `https://github.com`, so a hardcoded host passes against it — this test
+		// seeds a GHES host precisely so the two answers differ.
+		const f = makeFixtures({
+			prs: [{ number: 42, head: RELEASE_BRANCH, base: TARGET_BRANCH, state: "open" }],
+		});
+
+		await runStage(f, withCommit, [], releasePlannerStub, {
+			GITHUB_SERVER_URL: "https://ghes.acme.internal",
+		});
+
+		// The linked PR row lives in the CHECK RUN output, not the job summary —
+		// the job summary's PR cell is a bare `#42` with no link. Asserting on
+		// `f.summaries` would pass or fail for the wrong reason.
+		const checkOutput = f.completed.map((c) => c.output?.summary ?? "").join("\n");
+		expect(checkOutput).toContain("https://ghes.acme.internal/owner/repo/pull/42");
+		expect(checkOutput).not.toContain("https://github.com/owner/repo/pull/42");
+	});
+
+	it("REUSES an open PR — refreshes its managed body region even with no linked issues", async () => {
+		// Spencer's directive: an open release PR is a resource to update in place,
+		// never to close and recreate — its number, comments and review history are
+		// attached to it.
+		//
+		// The body refresh used to be gated on `linkedIssues.length > 0`, so a
+		// release with no linked issues kept a body from an earlier run, still
+		// describing versions that had since moved. The managed region carries the
+		// version summary and the squash block too, not just closing references.
+		const f = makeFixtures({
+			prs: [
+				{
+					number: 42,
+					head: RELEASE_BRANCH,
+					base: TARGET_BRANCH,
+					state: "open",
+					title: "stale title",
+				},
+			],
+		});
+
+		const { result } = await runStage(f);
+
+		// Same PR, not a replacement.
+		expect(result.prNumber).toBe(42);
+		expect(f.prs).toHaveLength(1);
+		expect(f.prs[0].state).toBe("open");
+
+		// …and its body now carries our managed region.
+		expect(f.prs[0].body ?? "").toContain(MANAGED_START);
+		expect(f.prs[0].body ?? "").toContain(MANAGED_END);
+	});
+
+	it("REOPENS a PR closed MID-RUN — the guard reads state fresh, not the opening snapshot", async () => {
+		// The stale-snapshot defect. `prWasClosed` is captured before the branch is
+		// touched, so it can only answer "was it closed when we started". GitHub
+		// closed #243 as a side effect of the ref moving — AFTER that snapshot —
+		// and the reopen guard was therefore blind to it.
+		//
+		// The zero-diff window that caused it is gone, but the guard must survive
+		// anything else that closes a release PR mid-run.
+		const f = makeFixtures({
+			prs: [{ number: 42, head: RELEASE_BRANCH, base: TARGET_BRANCH, state: "open", title: "stale title" }],
+		});
+		f.closeOnRefMove = 42;
+
+		const { result } = await runStage(f, withCommit);
+
+		expect(result.prNumber).toBe(42);
+		expect(f.prs).toHaveLength(1);
+		expect(f.prs[0].state).toBe("open");
+		// …and it is REUSED, not just revived: the title is refreshed too. The old
+		// guard skipped the title update whenever the PR had been closed.
+		expect(f.prs[0].title).toBe("release: pending");
+	});
+
+	it("does NOT reopen a PR that was MERGED mid-run", async () => {
+		// The merged check has to be reached to mean anything. Seeding a merged PR
+		// at startup does not reach it — the closed-PR selection already skips
+		// merged ones, so `prNumber` is never set and the guard never runs. The
+		// case that DOES reach it is someone merging the release PR while the run
+		// is in flight, which is also the case where reopening is catastrophic.
+		const f = makeFixtures({
+			prs: [{ number: 42, head: RELEASE_BRANCH, base: TARGET_BRANCH, state: "open", title: "stale title" }],
+		});
+		f.closeOnRefMove = 42;
+		f.mergeOnRefMove = true;
+
+		await runStage(f, withCommit);
+
+		const pr42 = f.prs.find((p) => p.number === 42);
+		expect(pr42?.state).toBe("closed");
+		expect(pr42?.merged).toBe(true);
 	});
 
 	it("reopens a closed, unmerged PR instead of creating a new one", async () => {
+		// THE LANDMINE. `mergedAt` is `Option.none()` here. The predecessor's
+		// `(p.mergedAt ?? null) === null` is ALWAYS FALSE against an Option, so the
+		// unmerged PR would never be found and a brand-new PR would be opened.
 		const f = makeFixtures({
-			prs: [{ number: 7, head: RELEASE_BRANCH, base: TARGET_BRANCH, state: "closed", merged: false }],
-			restResponses: refResponse,
+			prs: [
+				{ number: 7, head: RELEASE_BRANCH, base: TARGET_BRANCH, state: "closed", merged: false, title: "stale title" },
+			],
 		});
 
-		const result = await runStage(f, versionChange);
+		const { result } = await runStage(f);
 
 		expect(result.prNumber).toBe(7);
-		expect(f.prState.prs).toHaveLength(1);
-		expect(f.prState.prs[0].state).toBe("open");
+		expect(f.prs).toHaveLength(1);
+		expect(f.prs[0].state).toBe("open");
+		// REUSE, not merely revive: a reopened PR gets the current title too. The
+		// title update used to be gated on `!prWasClosed`, so a reopened release PR
+		// kept a title naming an earlier version.
+		expect(f.prs[0].title).toBe("release: pending");
 	});
 
-	it("surfaces linked issues harvested from changeset commits", async () => {
+	it("ignores a closed PR that was actually merged", async () => {
+		// The other side of the same guard: a merged PR must NOT be reopened, so a
+		// new one is created instead.
 		const f = makeFixtures({
-			prs: [{ number: 9, head: RELEASE_BRANCH, base: TARGET_BRANCH, state: "open" }],
-			linkedIssues: [[123, [{ number: 55, title: "Linked bug" }]]],
-			issueDetails: [{ number: 55, title: "Linked bug", state: "open", htmlUrl: "https://x/55", nodeId: "I_55" }],
-			restResponses: [...refResponse],
+			prs: [{ number: 8, head: RELEASE_BRANCH, base: TARGET_BRANCH, state: "closed", merged: true }],
 		});
 
-		// One changeset file whose harvested commit message references PR #123
-		// via the `(#NNN)` merge-commit suffix; the git-log format is
-		// `%H%n%B%n---END---`. `getLinkedIssues(123)` then yields issue #55,
-		// whose details are seeded via `GitHubIssueTest` and resolved
-		// through the `GitHubIssue.get` service method.
-		const result = await runStage(
-			f,
-			[
-				...versionChange,
-				[
-					"git log origin/main --diff-filter=A --follow --reverse --format=%H%n%B%n---END--- -- .changeset/feat.md",
-					"sha111\nfeat: add thing (#123)\n---END---\n",
-				],
-			],
-			["feat.md"],
-		);
+		const { result } = await runStage(f);
+
+		expect(result.prNumber).not.toBe(8);
+		expect(f.prs.find((p) => p.number === 8)?.state).toBe("closed");
+		expect(f.prs).toHaveLength(2);
+	});
+
+	it("recreates the release branch from an EXPLICIT origin/<target> start point", async () => {
+		// `git checkout -b <branch>` with no start point branches from ambient HEAD,
+		// which this module never establishes. Branching from the wrong point
+		// discards the release branch's prior commits, so the push that follows is a
+		// non-descendant ref update — recorded by GitHub as `head_ref_force_pushed`,
+		// which is the event seen on run 30212579721 despite no `--force` anywhere
+		// in this module.
+		const f = makeFixtures();
+
+		const { spawns } = await runStage(f, withCommit);
+
+		const checkout = spawns.find((sp) => sp.command === "git" && sp.args[0] === "checkout");
+		expect(checkout).toBeDefined();
+		expect(checkout?.args).toEqual(["checkout", "-b", RELEASE_BRANCH, `origin/${TARGET_BRANCH}`]);
+	});
+
+	it("NEVER points the release branch at the target head — the zero-diff window", async () => {
+		// THE REGRESSION THIS SUITE EXISTS FOR. The previous sequence was
+		// `upsert(branch, TARGET_HEAD)` then `commitFiles`, which left the release
+		// branch EQUAL to the target head between the two calls. An open release
+		// PR then has head === base, and **GitHub closes a PR whose head becomes
+		// identical to its base**. Run 30212579721 lost PR #243 in a ~3.2s window
+		// exactly there.
+		//
+		// The ref must move once, straight to the finished commit.
+		const f = makeFixtures();
+
+		await runStage(f, withCommit);
+
+		expect(f.upserts).toEqual([{ name: RELEASE_BRANCH, sha: "newcommitsha" }]);
+		expect(f.upserts.map((u) => u.sha)).not.toContain(TARGET_HEAD);
+		expect(f.branches.get(RELEASE_BRANCH)).not.toBe(TARGET_HEAD);
+	});
+
+	it("roots the commit on the TARGET head's tree, with the target head as sole parent", async () => {
+		// INVARIANT 2, unchanged by the atomic rewrite: the release branch stays a
+		// single clean commit on the target, so the tree is built on the TARGET's
+		// tree and the parent is the TARGET head — not the release branch's own.
+		const f = makeFixtures();
+
+		await runStage(f, withCommit);
+
+		expect(f.trees).toHaveLength(1);
+		expect(f.trees[0].baseTree).toBe(`tree-of-${TARGET_HEAD}`);
+		expect(f.createdCommits).toHaveLength(1);
+		expect(f.createdCommits[0].parents).toEqual([TARGET_HEAD]);
+	});
+
+	it("carries the staged changes into the commit", async () => {
+		const f = makeFixtures();
+
+		await runStage(f, withCommit);
+
+		expect(f.commits[0].changes).toHaveLength(1);
+		expect(f.commits[0].changes[0].path).toBe("package.json");
+		expect(f.commits[0].message).toContain("Signed-off-by:");
+	});
+
+	it("records a deletion rather than a content change for a deleted file", async () => {
+		const f = makeFixtures();
+
+		await runStage(f, { porcelain: PORCELAIN_CHANGED, porcelainZ: "D  gone.txt\0" });
+
+		expect(f.commits[0].changes).toHaveLength(1);
+		expect(f.commits[0].changes[0]._tag).toBe("FileDeletion");
+		expect(f.commits[0].changes[0].path).toBe("gone.txt");
+	});
+
+	it("does not commit at all when the -z status is empty", async () => {
+		const f = makeFixtures();
+
+		await runStage(f, { porcelain: PORCELAIN_CHANGED, porcelainZ: "" });
+
+		expect(f.commits).toHaveLength(0);
+		expect(f.upserts).toHaveLength(0);
+	});
+
+	it("surfaces an issue linked only through a merge commit's pull request", async () => {
+		// The case the changeset-scoped predecessor could not see. The squash-merge
+		// commit carries no closing keyword — the reference lives on PR #123, put
+		// there by its body or by hand in the sidebar — and the commit adds no
+		// changeset. Only the merge-commit half of the walk recovers it.
+		const f = makeFixtures({
+			prs: [{ number: 9, head: RELEASE_BRANCH, base: TARGET_BRANCH, state: "open" }],
+			branchCommits: [branchCommit("sha111", "feat: add thing (#123)")],
+			linkedIssues: [[123, [{ number: 55, title: "Linked bug" }]]],
+			issueDetails: [{ number: 55, title: "Linked bug", state: "open", url: "https://x/55", nodeId: "I_55" }],
+		});
+
+		const { result } = await runStage(f, { porcelain: PORCELAIN_CHANGED }, ["feat.md"]);
 
 		expect(result.linkedIssues.map((i: LinkedIssue) => i.number)).toContain(55);
+	});
+
+	it("omits an already-closed issue from the release", async () => {
+		const f = makeFixtures({
+			prs: [{ number: 9, head: RELEASE_BRANCH, base: TARGET_BRANCH, state: "open" }],
+			branchCommits: [
+				branchCommit("sha111", "fix: old work\n\nCloses #54"),
+				branchCommit("sha222", "feat: new (#123)"),
+			],
+			linkedIssues: [[123, [{ number: 55, title: "Linked bug" }]]],
+			issueDetails: [
+				{ number: 54, title: "Shipped already", state: "closed" },
+				{ number: 55, title: "Linked bug", state: "open", url: "https://x/55", nodeId: "I_55" },
+			],
+		});
+
+		const { result } = await runStage(f, { porcelain: PORCELAIN_CHANGED }, ["feat.md"]);
+
+		expect(result.linkedIssues.map((i: LinkedIssue) => i.number)).toEqual([55]);
 	});
 
 	it("closes the open release PR and deletes the branch when there are no version changes", async () => {
@@ -342,14 +723,12 @@ describe("updateReleaseBranch", () => {
 			prs: [{ number: 42, head: RELEASE_BRANCH, base: TARGET_BRANCH, state: "open" }],
 		});
 
-		const result = await runStage(f, noVersionChange);
+		const { result } = await runStage(f, noVersionChange);
 
 		expect(result.deleted).toBe(true);
 		expect(result.prNumber).toBeNull();
-		// The open PR is explicitly closed before the branch is removed.
-		expect(f.prState.prs.find((pr) => pr.number === 42)?.state).toBe("closed");
-		// The invalid release branch is deleted.
-		expect(f.branchState.branches.has(RELEASE_BRANCH)).toBe(false);
+		expect(f.prs.find((pr) => pr.number === 42)?.state).toBe("closed");
+		expect(f.deleted).toContain(RELEASE_BRANCH);
 	});
 
 	it("leaves an already-closed PR closed and still deletes the branch when there are no version changes", async () => {
@@ -357,30 +736,48 @@ describe("updateReleaseBranch", () => {
 			prs: [{ number: 7, head: RELEASE_BRANCH, base: TARGET_BRANCH, state: "closed", merged: false }],
 		});
 
-		const result = await runStage(f, noVersionChange);
+		const { result } = await runStage(f, noVersionChange);
 
 		expect(result.deleted).toBe(true);
 		expect(result.prNumber).toBeNull();
-		expect(f.prState.prs.find((pr) => pr.number === 7)?.state).toBe("closed");
-		expect(f.branchState.branches.has(RELEASE_BRANCH)).toBe(false);
+		expect(f.prs.find((pr) => pr.number === 7)?.state).toBe("closed");
+		expect(f.deleted).toContain(RELEASE_BRANCH);
 	});
 
 	it("deletes the branch and creates no PR when there are no version changes and no PR exists", async () => {
 		const f = makeFixtures();
 
-		const result = await runStage(f, noVersionChange);
+		const { result } = await runStage(f, noVersionChange);
 
 		expect(result.deleted).toBe(true);
 		expect(result.prNumber).toBeNull();
-		// No PR was created during cleanup.
-		expect(f.prState.prs).toHaveLength(0);
-		expect(f.branchState.branches.has(RELEASE_BRANCH)).toBe(false);
+		expect(f.prs).toHaveLength(0);
+		expect(f.deleted).toContain(RELEASE_BRANCH);
+	});
+
+	it("FAILS when `git status` exits non-zero — it must never read as 'no version changes'", async () => {
+		// The three tests above are exactly why this one matters. A demoted
+		// non-zero exit yields empty stdout, which is indistinguishable from a
+		// clean tree — and this module's no-change path CLOSES THE RELEASE PR
+		// AND DELETES THE REMOTE RELEASE BRANCH, then returns `success: true`.
+		// A transient git failure would destroy a live release and report a
+		// clean run. `Run.text` makes the exit a typed failure; `Run.collect`
+		// would make it a value and take the destructive branch.
+		const f = makeFixtures({
+			prs: [{ number: 42, head: RELEASE_BRANCH, base: TARGET_BRANCH, state: "open" }],
+		});
+
+		await expect(runStage(f, { porcelain: "", porcelainExit: 128 })).rejects.toThrow();
+
+		// Nothing was destroyed on the way out.
+		expect(f.prs.find((pr) => pr.number === 42)?.state).toBe("open");
+		expect(f.deleted).not.toContain(RELEASE_BRANCH);
 	});
 
 	it("fails when native versioning fails", async () => {
-		const f = makeFixtures({ restResponses: refResponse });
-		// Planner test layer with no apply fixture → apply fails with ReleasePlanError.
+		const f = makeFixtures();
 		const failingPlanner = Changesets.makeReleasePlannerTest({});
-		await expect(runStage(f, versionChange, [], failingPlanner)).rejects.toThrow(/ReleasePlanError|not provided/);
+
+		await expect(runStage(f, withCommit, [], failingPlanner)).rejects.toThrow(/ReleasePlanError|not provided/);
 	});
 });

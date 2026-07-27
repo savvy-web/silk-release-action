@@ -50,7 +50,12 @@ describe("ReleaseOutput schema", () => {
 				hasConflicts: false,
 			},
 			releasePr: { number: 42, url: "https://example.com/pr/42", action: "updated" },
-			changesets: { count: 1, packages: [{ name: "@savvy-web/foo", bumpType: "minor" }] },
+			changesets: {
+				count: 1,
+				packages: [
+					{ name: "@savvy-web/foo", bumpType: "minor", changesetCount: 1, oldVersion: "1.0.0", newVersion: "1.1.0" },
+				],
+			},
 		},
 	};
 

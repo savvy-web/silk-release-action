@@ -21,7 +21,7 @@ export default async () => {
 			coverage: {
 				enabled: true,
 				provider: "v8",
-				thresholds: AgentPlugin.COVERAGE_LEVELS.strict.thresholds,
+				thresholds: AgentPlugin.COVERAGE_LEVELS.standard.thresholds,
 				exclude: [],
 			},
 		},

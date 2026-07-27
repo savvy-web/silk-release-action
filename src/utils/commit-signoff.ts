@@ -10,18 +10,34 @@
  * the well-known `github-actions[bot]` identity.
  */
 
-import type { ActionState } from "@savvy-web/github-action-effects";
-import { GitHubToken } from "@savvy-web/github-action-effects";
+import { BotIdentity } from "@effected/github";
+import type { ActionState } from "@effected/github-actions";
+import { GitHubToken } from "@effected/github-actions";
 import { Effect } from "effect";
-
-/** Well-known `github-actions[bot]` identity, used when the App identity is unavailable. */
-const FALLBACK_IDENTITY = {
-	name: "github-actions[bot]",
-	email: "41898282+github-actions[bot]@users.noreply.github.com",
-} as const;
 
 /**
  * Resolve the DCO `Signed-off-by` trailer line for an action-created commit.
+ *
+ * @remarks
+ * The hand-rolled `FALLBACK_IDENTITY` constant that lived here is gone: the kit
+ * ships the same well-known identity as `BotIdentity.githubActions`, with
+ * byte-identical `name` and `email`.
+ *
+ * Note the two fallbacks are at different depths and both are load-bearing.
+ * `InstallationToken.botIdentity()` *already* returns `BotIdentity.githubActions`
+ * when the persisted token carries no `appSlug`; the `Effect.catch` here covers
+ * the outer case where the state read itself fails, i.e. no token was persisted
+ * at all.
+ *
+ * The trailer itself is rendered by `BotIdentity.signoff` rather than
+ * interpolated here. `Signed-off-by:` is DCO 1.1, not our convention — fixed
+ * casing, spacing and angle brackets — and a commit created through the Git
+ * Data API bypasses `git commit -s`, so nothing validates it at commit time. A
+ * malformed trailer surfaces as a red DCO check on someone else's pull request,
+ * in another repository, after the release has already reported success.
+ *
+ * What stays here is the **policy**: which identity to sign as, and that a
+ * missing token degrades to the well-known bot rather than failing a release.
  *
  * @returns A `Signed-off-by: Name <email>` line built from the GitHub App bot
  *   identity, or the `github-actions[bot]` fallback when the persisted token
@@ -29,6 +45,6 @@ const FALLBACK_IDENTITY = {
  */
 export const resolveSignoff = (): Effect.Effect<string, never, ActionState> =>
 	GitHubToken.botIdentity().pipe(
-		Effect.catch(() => Effect.succeed(FALLBACK_IDENTITY)),
-		Effect.map((identity) => `Signed-off-by: ${identity.name} <${identity.email}>`),
+		Effect.catch(() => Effect.succeed(BotIdentity.githubActions)),
+		Effect.map((identity) => identity.signoff),
 	);

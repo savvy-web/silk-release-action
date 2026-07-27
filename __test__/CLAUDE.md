@@ -18,6 +18,36 @@ A CLI file argument does __not__ filter to a single file in this repo (vitest pr
 
 Co-located tests for `src/release/*.ts` modules live in `src/release/*.test.ts`, not in `__test__/`. Integration tests live in `__test__/integration/` with fixture workspaces under `__test__/integration/fixtures/`.
 
+## ⚠️ `__test__/utils/**` is NEVER collected
+
+__A `*.test.ts` file placed under `__test__/utils/` does not run, and nothing reports that it
+did not.__ Verified empirically (2026-07-26): a trivial passing test dropped there left the
+collected count at __527, not 528__.
+
+`__test__/utils/` is for helpers only — today, `github-mocks.ts`.
+
+__Why this matters more than it looks.__ The obvious tidy-up — "move the co-located
+`src/**/*.test.ts` into `__test__/`, mirroring the source layout" — would move
+`src/utils/*.test.ts` into `__test__/utils/` and __silently delete four suites' worth of
+coverage__:
+
+```text
+src/utils/sort-releases-topologically.test.ts
+src/utils/count-changesets.test.ts
+src/utils/turbo-summary.test.ts
+src/utils/group-id.test.ts
+```
+
+Everything would stay green. The only signal is the collected count going *down*, which is why
+the gate for this repo is __the test count, never the exit code__.
+
+__If you move tests here:__ put them __flat in `__test__/`__ (matching the ~28 that already
+live there, several of which test `src/utils/` modules), or rename the helper directory to
+`utilities/` first. `src/release/*.test.ts` → `__test__/release/` is safe.
+
+__Always state the count arithmetic__ when a move changes it — "N moved, N collected" — rather
+than reporting "all green".
+
 ## Coverage Requirements
 
 85% threshold for branches, functions, lines, and statements (configured in `vitest.config.ts`).

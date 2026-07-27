@@ -9,6 +9,7 @@
  *    (`closes #N`, `fixes #N`, `resolves #N`, plus their variants).
  * 2. GitHub's `closingIssuesReferences` GraphQL field on merged PRs —
  *    covers both keyword-linked and manually-linked-via-sidebar issues.
+ *    `GitHubIssue.linkedIssues` owns that document.
  *
  * Top-level entry point `linkIssuesFromCommits` reports through a Check
  * Run and cross-references the linked issues on the active PR. The
@@ -16,35 +17,13 @@
  * `create-release-branch`).
  */
 
-import type {
-	ActionEnvironmentError,
-	ActionOutputError,
-	CheckRunError,
-	GitHubClientError,
-	GitHubIssueError,
-	IssueData,
-	PullRequestError,
-} from "@savvy-web/github-action-effects";
-import {
-	ActionEnvironment,
-	ActionEnvironmentLive,
-	ActionOutputs,
-	CheckRun,
-	GitHubClient,
-	GitHubClientLive,
-	GitHubCommit,
-	GitHubCommitLive,
-	GitHubGraphQLLive,
-	GitHubIssue,
-	GitHubIssueLive,
-	GitTag,
-	GitTagLive,
-	PullRequest,
-	SemverResolver,
-} from "@savvy-web/github-action-effects";
-import { Config, Effect, Layer } from "effect";
+import type { GitHubError, Repo } from "@effected/github";
+import { CheckRun, CheckRunOutput, GitHubCommit, GitHubIssue, PullRequest } from "@effected/github";
+import type { ActionEnvironmentError, ActionOutputError } from "@effected/github-actions";
+import { ActionEnvironment, ActionInput, ActionOutputs } from "@effected/github-actions";
+import { Config, Effect, Option } from "effect";
+import { commitUrl, resolveServerUrl } from "./github-urls.js";
 import { summaryWriter } from "./summary-writer.js";
-import { appToken } from "./tokens.js";
 
 /** Linked issue, with the SHA(s) of the commits that reference it. */
 export interface LinkedIssue {
@@ -101,91 +80,130 @@ const extractPRNumber = (message: string): number | null => {
 	return match ? Number.parseInt(match[1], 10) : null;
 };
 
-/** A tag entry enriched with its extracted semver version string. @internal */
-interface TagEntry {
-	tag: string;
-	sha: string;
-	version: string;
-}
-
 /**
- * Extract the version string from a tag name.
+ * The merge commit of the most recently merged release pull request, or
+ * `Option.none` when this repository has not released through one yet.
  *
- * Handles both `vX.Y.Z` (single-package / `v`-prefixed) and
- * `@scope/pkg@X.Y.Z` (monorepo per-package) formats by taking the
- * substring after the last `@` sign when present, or stripping a
- * leading `v` otherwise.
+ * @remarks
+ * **A tag lookup is the wrong instrument here, and this is the bug it caused.**
+ * The predecessor asked `GitTag.latestSemver` for "the last release", which
+ * orders tags by version. In a monorepo the per-package version lines are not
+ * comparable — `@scope/a@5.0.25` outranks `@scope/b@2.3.7` numerically while
+ * being several releases older. On `savvy-web/silk-integration` that selected
+ * release #244's tag as the boundary for a run whose previous release was
+ * actually #245, so #245's own merge commit fell *inside* the range and the
+ * issues it had already closed were harvested into the next release.
+ *
+ * The compounding part was worse than the double count: the boundary was
+ * **stuck**. Nothing advances it until some package out-bumps the highest
+ * version anywhere in the repository, so every subsequent release walked a
+ * range one release longer than the last and re-harvested every release in
+ * between.
+ *
+ * `GitTag.list` is not the repair — GitHub returns tags grouped by name rather
+ * than by creation, so its first entry is the alphabetically-last package's
+ * newest version. The release pull request is the only boundary that means
+ * "everything after this is unreleased" no matter how packages are versioned
+ * or tags are named.
  *
  * @internal
  */
-const extractVersionFromTag = (tag: string): string => {
-	const atIdx = tag.lastIndexOf("@");
-	if (atIdx !== -1) return tag.slice(atIdx + 1);
-	return tag.startsWith("v") ? tag.slice(1) : tag;
-};
+const lastReleaseBoundary = (
+	targetBranch: string,
+	releaseBranch: string,
+): Effect.Effect<Option.Option<string>, never, PullRequest | Repo> =>
+	Effect.gen(function* () {
+		const pulls = yield* PullRequest;
+		const result = yield* Effect.result(pulls.list({ base: targetBranch, state: "closed" }));
+		if (result._tag === "Failure") {
+			yield* Effect.logWarning(`Failed to list release pull requests: ${result.failure.reason}`);
+			return Option.none<string>();
+		}
+
+		// The head branch is matched here rather than through `list`'s own `head`
+		// option: GitHub expects an `owner:ref` there, while the projection hands
+		// back the bare ref (`raw.head.ref`), so filtering locally compares like
+		// with like instead of guessing at the qualified spelling.
+		//
+		// Highest number wins rather than latest `mergedAt`. Only one release PR
+		// is open against a given head branch at a time and they merge in order,
+		// so the numbers are already the merge order — and an integer comparison
+		// cannot go wrong the way an absent or unparsed timestamp can.
+		// `flatMap` rather than `filter` so the merge SHA arrives as a plain
+		// `string`: `mergeCommitSha` is an optional key, and a predicate that
+		// rules out `undefined` does not narrow the element type.
+		const released = result.success
+			.filter((pr) => pr.merged && pr.head === releaseBranch)
+			.flatMap((pr) => (pr.mergeCommitSha === undefined ? [] : [{ number: pr.number, sha: pr.mergeCommitSha }]))
+			.sort((a, b) => b.number - a.number);
+
+		const newest = released[0];
+		if (newest === undefined) {
+			yield* Effect.logInfo(`No merged '${releaseBranch}' pull request found`);
+			return Option.none<string>();
+		}
+
+		yield* Effect.logInfo(`Last release: PR #${newest.number} (${newest.sha})`);
+		return Option.some(newest.sha);
+	});
 
 /**
- * Fetch the latest release tag's SHA. Returns `null` when no tags exist,
- * none yield a parseable semver, or the API call fails.
+ * Issues attached to the open release pull request itself.
  *
  * @remarks
- * Selects the tag with the highest **semantic** version using
- * `SemverResolver.compare`, so multi-digit version components (e.g.
- * `v1.10.0` vs `v1.9.0`) are ordered correctly regardless of how
- * `GitTag.list()` returns the entries.
+ * The commit walk cannot see these. It reaches an issue either through a
+ * closing keyword in a commit body or through the pull request of a merge
+ * commit *in the range* — and the release PR is neither. So an issue a human
+ * attaches to the release PR in the sidebar was closed on merge (Phase 3 asks
+ * GitHub directly) while never appearing in the PR's own description or in the
+ * check that reports what the release closes.
  *
- * Exported for direct unit testing; consuming modules should prefer
- * {@link getLinkedIssuesFromCommits} which composes this internally.
+ * Observed on `savvy-web/silk-integration` PR #251: the body declared three
+ * issues, the merge closed four. The fourth was `#253`, attached by hand after
+ * the body had been generated. Under-reporting what a merge will close is the
+ * kind of thing a reviewer only notices afterwards.
  *
- * @public
+ * Looked up by listing open PRs rather than through `listAssociatedWithCommit`,
+ * which is what the cross-referencing step uses and which does not reliably
+ * answer for a branch head. The head branch is matched locally for the same
+ * reason as in {@link lastReleaseBoundary}.
+ *
+ * @internal
  */
-export const getLatestTagSha = Effect.gen(function* () {
-	const gitTag = yield* GitTag;
-	const result = yield* Effect.result(gitTag.list());
-	if (result._tag === "Failure") {
-		yield* Effect.logWarning(`Failed to get latest tag: ${result.failure.reason}`);
-		return null;
-	}
-	const tags = result.success;
-	if (tags.length === 0) return null;
-
-	// Filter to tags with parseable semver versions.
-	const parseable: TagEntry[] = [];
-	for (const entry of tags) {
-		const version = extractVersionFromTag(entry.tag);
-		const parseResult = yield* Effect.result(SemverResolver.parse(version));
-		if (parseResult._tag === "Success") {
-			parseable.push({ ...entry, version });
+const issuesOnOpenReleasePr = (
+	targetBranch: string,
+	releaseBranch: string,
+): Effect.Effect<
+	Array<{ number: number; title: string; state: string; url: string; node_id: string }>,
+	never,
+	GitHubIssue | PullRequest | Repo
+> =>
+	Effect.gen(function* () {
+		const pulls = yield* PullRequest;
+		const result = yield* Effect.result(pulls.list({ base: targetBranch, state: "open" }));
+		if (result._tag === "Failure") {
+			yield* Effect.logWarning(`Failed to list open pull requests: ${result.failure.reason}`);
+			return [];
 		}
-	}
 
-	if (parseable.length === 0) return null;
+		const releasePr = result.success.find((pr) => pr.head === releaseBranch);
+		if (releasePr === undefined) return [];
 
-	// Select the tag with the highest semantic version.
-	let latest = parseable[0] as TagEntry;
-	for (let i = 1; i < parseable.length; i++) {
-		const candidate = parseable[i] as TagEntry;
-		const cmp = yield* Effect.result(SemverResolver.compare(candidate.version, latest.version));
-		// On parse failure, keep the current latest.
-		if (cmp._tag === "Success" && cmp.success === 1) {
-			latest = candidate;
-		}
-	}
-
-	return latest.sha;
-});
+		yield* Effect.logInfo(`Checking release PR #${releasePr.number} for directly attached issues`);
+		return yield* getLinkedIssuesFromPR(releasePr.number);
+	});
 
 /**
  * Fetch all commits on a branch, paginated.
  *
  * @internal
  */
-const getAllCommitsOnBranch = (branch: string): Effect.Effect<CommitInfo[], never, GitHubCommit> =>
+const getAllCommitsOnBranch = (branch: string): Effect.Effect<CommitInfo[], never, GitHubCommit | Repo> =>
 	Effect.gen(function* () {
 		const commits = yield* GitHubCommit;
 		yield* Effect.logInfo(`Fetching all commits from ${branch} branch...`);
 
-		const all = yield* commits.list(branch).pipe(
+		const all = yield* commits.list({ ref: branch }).pipe(
 			Effect.catch((e) =>
 				Effect.gen(function* () {
 					yield* Effect.logWarning(`Failed to fetch commits: ${e.reason}`);
@@ -198,50 +216,8 @@ const getAllCommitsOnBranch = (branch: string): Effect.Effect<CommitInfo[], neve
 		return all.map((c) => ({ sha: c.sha, message: c.message, author: c.author }));
 	});
 
-/** GraphQL response for the closingIssuesReferences query. */
-interface ClosingIssuesResponse {
-	repository: {
-		pullRequest: {
-			allLinked: {
-				nodes: Array<{
-					id: string;
-					number: number;
-					title: string;
-					state: string;
-					url: string;
-				}>;
-			};
-			manuallyLinked: {
-				nodes: Array<{
-					id: string;
-					number: number;
-					title: string;
-					state: string;
-					url: string;
-				}>;
-			};
-		};
-	};
-}
-
-const CLOSING_ISSUES_QUERY = `
-	query ($owner: String!, $repo: String!, $prNumber: Int!) {
-		repository(owner: $owner, name: $repo) {
-			pullRequest(number: $prNumber) {
-				allLinked: closingIssuesReferences(first: 50) {
-					nodes { id number title state url }
-				}
-				manuallyLinked: closingIssuesReferences(first: 50, userLinkedOnly: true) {
-					nodes { id number title state url }
-				}
-			}
-		}
-	}
-`;
-
 /**
- * Fetch all issues linked to a merged PR via the GraphQL
- * `closingIssuesReferences` field.
+ * Fetch all issues linked to a merged PR.
  *
  * @internal
  */
@@ -249,41 +225,38 @@ const getLinkedIssuesFromPR = (
 	prNumber: number,
 ): Effect.Effect<
 	Array<{ number: number; title: string; state: string; url: string; node_id: string }>,
-	ActionEnvironmentError,
-	ActionEnvironment | GitHubClient
+	never,
+	GitHubIssue | Repo
 > =>
 	Effect.gen(function* () {
-		const client = yield* GitHubClient;
-		const env = yield* ActionEnvironment;
-		const { repository } = yield* env.github;
-		const [owner, repo] = repository.split("/");
-		const result = yield* Effect.result(
-			client.graphql<ClosingIssuesResponse>(CLOSING_ISSUES_QUERY, { owner, repo, prNumber }),
-		);
+		const issues = yield* GitHubIssue;
+		const result = yield* Effect.result(issues.linkedIssues(prNumber));
 		if (result._tag === "Failure") {
 			yield* Effect.logWarning(`Failed to get linked issues for PR #${prNumber}: ${result.failure.reason}`);
 			return [];
 		}
 
-		const issuesMap = new Map<number, { number: number; title: string; state: string; url: string; node_id: string }>();
-		for (const node of result.success.repository.pullRequest.allLinked.nodes) {
-			issuesMap.set(node.number, { ...node, node_id: node.id });
-		}
-		for (const node of result.success.repository.pullRequest.manuallyLinked.nodes) {
-			if (!issuesMap.has(node.number)) {
-				issuesMap.set(node.number, { ...node, node_id: node.id });
-			}
-		}
-		return Array.from(issuesMap.values());
+		// `linkedIssues` returns every closing reference once, with `userLinked`
+		// distinguishing sidebar links from inferred ones. The document this
+		// replaced aliased the same connection twice and merged the two node
+		// lists by number to reach the identical set.
+		return result.success.map((issue) => ({
+			number: issue.number,
+			title: issue.title,
+			state: issue.state,
+			url: issue.url,
+			node_id: issue.nodeId,
+		}));
 	});
 
 /**
- * Fetch issue details (title/state/url/node_id) for an issue we only
- * found in commit-message text.
+ * Fetch issue details for an issue we only found in commit-message text.
  *
  * @internal
  */
-const fetchIssueDetails = (issueNumber: number): Effect.Effect<IssueData | null, GitHubIssueError, GitHubIssue> =>
+const fetchIssueDetails = (
+	issueNumber: number,
+): Effect.Effect<{ title: string; state: string; url: string; nodeId: string } | null, never, GitHubIssue | Repo> =>
 	Effect.gen(function* () {
 		const issues = yield* GitHubIssue;
 		const result = yield* Effect.result(issues.get(issueNumber));
@@ -291,7 +264,8 @@ const fetchIssueDetails = (issueNumber: number): Effect.Effect<IssueData | null,
 			yield* Effect.logWarning(`Failed to fetch issue #${issueNumber}: ${result.failure.reason}`);
 			return null;
 		}
-		return result.success;
+		const issue = result.success;
+		return { title: issue.title, state: issue.state, url: issue.url, nodeId: issue.nodeId };
 	});
 
 /**
@@ -302,19 +276,20 @@ const fetchIssueDetails = (issueNumber: number): Effect.Effect<IssueData | null,
  */
 export const getLinkedIssuesFromCommits = (
 	targetBranch: string,
+	releaseBranch: string,
 ): Effect.Effect<
 	{ linkedIssues: LinkedIssue[]; commits: CommitInfo[] },
-	ActionEnvironmentError | GitHubIssueError,
-	ActionEnvironment | GitHubClient | GitHubCommit | GitHubIssue | GitTag
+	never,
+	GitHubCommit | GitHubIssue | PullRequest | Repo
 > =>
 	Effect.gen(function* () {
 		const commitsSvc = yield* GitHubCommit;
-		const latestTagSha = yield* getLatestTagSha;
+		const boundary = yield* lastReleaseBoundary(targetBranch, releaseBranch);
 
 		let commits: CommitInfo[];
-		if (latestTagSha !== null) {
-			yield* Effect.logInfo(`Comparing ${latestTagSha}...${targetBranch}`);
-			const compareResult = yield* Effect.result(commitsSvc.compare(latestTagSha, targetBranch));
+		if (Option.isSome(boundary)) {
+			yield* Effect.logInfo(`Comparing ${boundary.value}...${targetBranch}`);
+			const compareResult = yield* Effect.result(commitsSvc.compare(boundary.value, targetBranch));
 			if (compareResult._tag === "Failure") {
 				yield* Effect.logWarning(`Failed to compare commits: ${compareResult.failure.reason}`);
 				commits = [];
@@ -323,7 +298,7 @@ export const getLinkedIssuesFromCommits = (
 				yield* Effect.logInfo(`Found ${commits.length} commit(s) since last release`);
 			}
 		} else {
-			yield* Effect.logInfo("No tags found - fetching all commits from branch");
+			yield* Effect.logInfo("No previous release - fetching all commits from branch");
 			commits = yield* getAllCommitsOnBranch(targetBranch);
 		}
 
@@ -343,12 +318,15 @@ export const getLinkedIssuesFromCommits = (
 		}
 
 		// Pass 2: for each merge commit, query the linked issues on its PR.
-		yield* Effect.logInfo("Checking merged PRs for linked issues...");
-		let prCount = 0;
-		for (const commit of commits) {
+		//
+		// The count is computed up front so it can be logged *before* the
+		// per-commit lines it describes. Printed afterwards it read as a total
+		// for whatever came next.
+		const mergeCommits = commits.filter((commit) => extractPRNumber(commit.message) !== null);
+		yield* Effect.logInfo(`Checking ${mergeCommits.length} merged PR(s) for linked issues...`);
+		for (const commit of mergeCommits) {
 			const prNumber = extractPRNumber(commit.message);
 			if (prNumber === null) continue;
-			prCount++;
 			yield* Effect.logInfo(
 				`  Commit ${commit.sha.slice(0, 7)}: "${commit.message.split("\n")[0]}" -> PR #${prNumber}`,
 			);
@@ -377,29 +355,61 @@ export const getLinkedIssuesFromCommits = (
 				}
 			}
 		}
-		yield* Effect.logInfo(`Found ${prCount} PR merge commit(s) to check`);
 		yield* Effect.logInfo(`Found ${issueMap.size} unique issue reference(s)`);
 
-		// Pass 3: backfill details for issues only found via commit-message text.
+		// Pass 3: backfill details for issues only found via commit-message text,
+		// and drop anything already closed.
+		//
+		// A closed issue is not part of this release. It reaches the map honestly —
+		// an earlier release's merge commit is a legitimate merge commit, and its
+		// pull request still reports the issues it closed — but announcing it again
+		// would claim this release closes work that already shipped. Filtering here
+		// rather than at each renderer keeps the check run, the PR description and
+		// the branch links describing the same set.
 		const linkedIssues: LinkedIssue[] = [];
 		for (const [issueNumber, issue] of issueMap) {
-			if (issue.title !== "") {
-				linkedIssues.push(issue);
-				yield* Effect.logInfo(`✓ Issue #${issueNumber}: ${issue.title} (${issue.state})`);
+			const resolved =
+				issue.title !== ""
+					? issue
+					: yield* fetchIssueDetails(issueNumber).pipe(
+							Effect.map((details) =>
+								details === null
+									? null
+									: {
+											number: issueNumber,
+											title: details.title,
+											state: details.state,
+											url: details.url,
+											node_id: details.nodeId,
+											commits: issue.commits,
+										},
+							),
+						);
+			if (resolved === null) continue;
+
+			if (resolved.state.toLowerCase() === "closed") {
+				yield* Effect.logInfo(`- Issue #${issueNumber}: ${resolved.title} (closed — already released, skipping)`);
 				continue;
 			}
-			const details = yield* fetchIssueDetails(issueNumber);
-			if (details !== null) {
-				linkedIssues.push({
-					number: issueNumber,
-					title: details.title,
-					state: details.state,
-					url: details.htmlUrl ?? "",
-					node_id: details.nodeId ?? "",
-					commits: issue.commits,
-				});
-				yield* Effect.logInfo(`✓ Issue #${issueNumber}: ${details.title} (${details.state})`);
-			}
+
+			linkedIssues.push(resolved);
+			yield* Effect.logInfo(`✓ Issue #${issueNumber}: ${resolved.title} (${resolved.state})`);
+		}
+
+		// Pass 4: whatever is attached to the release PR itself.
+		//
+		// Unreachable from the commit walk, and closed on merge regardless — so
+		// leaving it out means the description and the check under-report what the
+		// release will close. Same open-only rule; `commits` is empty because no
+		// commit references it, which is the honest answer rather than an invented
+		// association.
+		const seen = new Set(linkedIssues.map((issue) => issue.number));
+		for (const issue of yield* issuesOnOpenReleasePr(targetBranch, releaseBranch)) {
+			if (seen.has(issue.number)) continue;
+			if (issue.state.toLowerCase() === "closed") continue;
+			seen.add(issue.number);
+			linkedIssues.push({ ...issue, state: issue.state.toLowerCase(), commits: [] });
+			yield* Effect.logInfo(`✓ Issue #${issue.number}: ${issue.title} (attached to the release PR)`);
 		}
 
 		return { linkedIssues, commits };
@@ -407,20 +417,22 @@ export const getLinkedIssuesFromCommits = (
 
 /**
  * Cross-reference linked issues against the current PR by adding a
- * comment to each issue (avoids duplicate cross-references via timeline
- * inspection).
+ * comment to each issue.
+ *
+ * @remarks
+ * `GitHubIssue.isCrossReferencedBy` is the idempotence guard — without it
+ * a re-run comments a second time on every issue.
  *
  * @internal
  */
 const linkIssuesToPR = (
 	linkedIssues: ReadonlyArray<LinkedIssue>,
-): Effect.Effect<void, ActionEnvironmentError | PullRequestError, ActionEnvironment | GitHubClient | PullRequest> =>
+): Effect.Effect<void, ActionEnvironmentError, ActionEnvironment | GitHubIssue | PullRequest | Repo> =>
 	Effect.gen(function* () {
 		const env = yield* ActionEnvironment;
-		const client = yield* GitHubClient;
+		const issues = yield* GitHubIssue;
 		const prSvc = yield* PullRequest;
-		const { sha, repository } = yield* env.github;
-		const [owner, repo] = repository.split("/");
+		const { sha } = yield* env.github;
 
 		yield* Effect.logInfo(`Looking for PR associated with commit ${sha}`);
 
@@ -441,61 +453,20 @@ const linkIssuesToPR = (
 
 		let linkedCount = 0;
 		for (const issue of linkedIssues) {
-			const timelineResult = yield* Effect.result(
-				client.graphql<{
-					repository: {
-						issue: {
-							timelineItems: {
-								nodes: Array<{ __typename: string; source?: { __typename: string; number?: number } }>;
-							};
-						};
-					};
-				}>(
-					`
-					query ($owner: String!, $repo: String!, $issueNumber: Int!) {
-						repository(owner: $owner, name: $repo) {
-							issue(number: $issueNumber) {
-								timelineItems(last: 50, itemTypes: CROSS_REFERENCED_EVENT) {
-									nodes {
-										__typename
-										... on CrossReferencedEvent {
-											source { __typename ... on PullRequest { number } }
-										}
-									}
-								}
-							}
-						}
-					}
-				`,
-					{ owner, repo, issueNumber: issue.number },
-				),
-			);
+			const crossRefResult = yield* Effect.result(issues.isCrossReferencedBy(issue.number, pr.number));
 
-			if (timelineResult._tag === "Failure") {
-				yield* Effect.logWarning(`Failed to inspect issue #${issue.number} timeline: ${timelineResult.failure.reason}`);
+			if (crossRefResult._tag === "Failure") {
+				yield* Effect.logWarning(`Failed to inspect issue #${issue.number} timeline: ${crossRefResult.failure.reason}`);
 				continue;
 			}
 
-			const alreadyLinked = timelineResult.success.repository.issue.timelineItems.nodes.some(
-				(node) => node.source?.__typename === "PullRequest" && node.source.number === pr.number,
-			);
-
-			if (alreadyLinked) {
+			if (crossRefResult.success) {
 				yield* Effect.logInfo(`  Issue #${issue.number} already linked to PR #${pr.number}`);
 				continue;
 			}
 
 			const addCommentResult = yield* Effect.result(
-				client.graphql(
-					`
-					mutation ($subjectId: ID!, $body: String!) {
-						addComment(input: { subjectId: $subjectId, body: $body }) {
-							commentEdge { node { id } }
-						}
-					}
-				`,
-					{ subjectId: issue.node_id, body: `🔗 Linked to release PR #${pr.number}` },
-				),
+				issues.comment(issue.number, `🔗 Linked to release PR #${pr.number}`),
 			);
 
 			if (addCommentResult._tag === "Failure") {
@@ -522,27 +493,23 @@ const linkIssuesToPR = (
  */
 export const linkIssuesFromCommits: Effect.Effect<
 	LinkIssuesResult,
-	| ActionEnvironmentError
-	| ActionOutputError
-	| CheckRunError
-	| Config.ConfigError
-	| GitHubClientError
-	| GitHubIssueError
-	| PullRequestError,
-	ActionEnvironment | ActionOutputs | CheckRun | GitHubClient | GitHubCommit | GitHubIssue | GitTag | PullRequest
+	ActionEnvironmentError | ActionOutputError | Config.ConfigError | GitHubError,
+	ActionEnvironment | ActionOutputs | CheckRun | GitHubCommit | GitHubIssue | PullRequest | Repo
 > = Effect.gen(function* () {
+	const serverUrl = yield* resolveServerUrl();
 	const env = yield* ActionEnvironment;
 	const outputs = yield* ActionOutputs;
 	const checks = yield* CheckRun;
 
-	const targetBranch = yield* Config.string("target-branch").pipe(Config.withDefault("main"));
-	const dryRun = yield* Config.boolean("dry-run").pipe(Config.withDefault(false));
+	const targetBranch = yield* ActionInput.string("target-branch").pipe(Config.withDefault("main"));
+	const releaseBranch = yield* ActionInput.string("release-branch").pipe(Config.withDefault("changeset-release/main"));
+	const dryRun = yield* ActionInput.boolean("dry-run").pipe(Config.withDefault(false));
 
 	const { sha, repository } = yield* env.github;
 	const [owner, repo] = repository.split("/");
 
 	yield* Effect.logInfo("Linking issues from commits");
-	const { linkedIssues, commits } = yield* getLinkedIssuesFromCommits(targetBranch);
+	const { linkedIssues, commits } = yield* getLinkedIssuesFromCommits(targetBranch, releaseBranch);
 
 	const checkTitle = dryRun ? "🧪 Link Issues from Commits (Dry Run)" : "Link Issues from Commits";
 	const checkSummary =
@@ -562,9 +529,9 @@ export const linkIssuesFromCommits: Effect.Effect<
 			? commits
 					.map((commit) => {
 						const shortSha = commit.sha.slice(0, 7);
-						const commitUrl = `https://github.com/${owner}/${repo}/commit/${commit.sha}`;
+						const commitLink = commitUrl(serverUrl, owner, repo, commit.sha);
 						const firstLine = commit.message.split("\n")[0];
-						return `[\`${shortSha}\`](${commitUrl})\n> ${firstLine}`;
+						return `[\`${shortSha}\`](${commitLink})\n> ${firstLine}`;
 					})
 					.join("\n\n")
 			: "_No commits found_";
@@ -574,8 +541,8 @@ export const linkIssuesFromCommits: Effect.Effect<
 		{ heading: "📝 Commits Analyzed", level: 3, content: commitsContent },
 	]);
 
-	const { id: checkId, htmlUrl } = yield* checks.create(checkTitle, sha);
-	yield* checks.complete(checkId, "success", { title: checkSummary, summary: checkDetails });
+	const { id: checkId, url: htmlUrl } = yield* checks.create(checkTitle, sha);
+	yield* checks.complete(checkId, "success", CheckRunOutput.make({ title: checkSummary, summary: checkDetails }));
 	yield* outputs.summary(checkDetails);
 
 	if (linkedIssues.length > 0 && !dryRun) {
@@ -584,29 +551,3 @@ export const linkIssuesFromCommits: Effect.Effect<
 
 	return { linkedIssues, commits, checkId, htmlUrl } satisfies LinkIssuesResult;
 });
-
-/**
- * Temporary Promise-shaped bridge for callers still in imperative form.
- * Runs {@link getLinkedIssuesFromCommits} with the live layer stack.
- *
- * @deprecated Use the Effect export directly once the caller migrates.
- * @internal
- */
-export const getLinkedIssuesFromCommitsPromise = (
-	targetBranch: string,
-): Promise<{ linkedIssues: LinkedIssue[]; commits: CommitInfo[] }> => {
-	const client = GitHubClientLive.fromToken(appToken());
-	return Effect.runPromise(
-		getLinkedIssuesFromCommits(targetBranch).pipe(
-			Effect.provide(
-				Layer.mergeAll(
-					ActionEnvironmentLive,
-					client,
-					GitHubCommitLive.pipe(Layer.provide(client)),
-					GitTagLive.pipe(Layer.provide(client)),
-					GitHubIssueLive.pipe(Layer.provide(GitHubGraphQLLive), Layer.provide(client)),
-				),
-			),
-		),
-	);
-};
