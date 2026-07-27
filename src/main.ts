@@ -34,6 +34,7 @@ import { Changesets } from "@savvy-web/silk-effects";
 import { Config, Effect, FileSystem, Layer, Option } from "effect";
 import { ChildProcess } from "effect/unstable/process";
 import { makeAppLayer } from "./layers/app.js";
+import { PublishError } from "./release/errors.js";
 import { ReleaseLive } from "./release/layers.js";
 import type { DetectedRelease } from "./release/publish.js";
 import { detectReleases, runBuildAndSbom, runPublishTargets } from "./release/publish.js";
@@ -1226,7 +1227,9 @@ const runPublishing = (mergedReleasePRNumber: number | undefined) =>
 				yield* emitPublishing(failed, [], [], {});
 				yield* Effect.logInfo("Release publishing: ❌ aborted at Build & SBOM — nothing published");
 				yield* outputs.setFailed("Phase 3 aborted at Build & SBOM");
-				return;
+				// FAIL, do not return. `setFailed` only annotates; the exit code comes
+				// from whether this effect fails.
+				return yield* Effect.fail(new PublishError({ reason: "build", message: "Phase 3 aborted at Build & SBOM" }));
 			}
 
 			// ── Step 4: Publish to registries ──────────────────────────────────────
@@ -1238,7 +1241,14 @@ const runPublishing = (mergedReleasePRNumber: number | undefined) =>
 				yield* emitPublishing(publishResult, [], [], {});
 				yield* Effect.logInfo("Release publishing: ❌ failed at Publish");
 				yield* outputs.setFailed("Publishing failed");
-				return;
+				// FAIL, do not return — see the note on `PublishError`. Returning here
+				// is what let a 4-of-8-targets publish report a green run.
+				return yield* Effect.fail(
+					new PublishError({
+						reason: "publish",
+						message: `Published ${publishResult.successfulTargets}/${publishResult.totalTargets} target(s)`,
+					}),
+				);
 			}
 			yield* Effect.logInfo(`✅ Published ${publishResult.successfulTargets}/${publishResult.totalTargets} target(s)`);
 
