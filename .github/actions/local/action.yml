@@ -10,6 +10,31 @@ inputs:
   app-private-key:
     description: GitHub App private key (PEM format)
     required: true
+  github-token:
+    description: |
+      GitHub token for GitHub Packages publishing.
+
+      Pass secrets.GITHUB_TOKEN with workflow permissions: packages: write.
+
+      REQUIRED for GitHub Packages. Pass secrets.GITHUB_TOKEN with workflow
+      permissions: packages: write.
+
+      This is not a preference. GitHub App tokens are not supported for
+      accessing GitHub Packages at all - the sole exception being the default
+      GitHub Actions token, which is a special kind of App token. So the
+      installation token this action provisions can never publish there, no
+      matter which permissions it carries.
+
+      Confirmed the hard way on savvy-web/systems run 30228332922: the same
+      token that resolved the App identity and revoked itself against
+      api.github.com was rejected 403 by npm.pkg.github.com on a plain registry
+      read, while holding packages:write.
+
+      Omitting this input fails every GitHub Packages target and aborts before
+      any GitHub release is created. The action names the missing input rather
+      than surfacing it as a 403.
+    required: false
+    default: ""
   release-branch:
     description: Release branch name
     required: false

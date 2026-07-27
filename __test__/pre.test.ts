@@ -167,16 +167,29 @@ describe("pre", () => {
 		expect(typeof startTime?.startedAt).toBe("number");
 	});
 
-	it("does not persist any GitHub Packages token state", async () => {
-		// The `github-token` input is gone: GitHub Packages authenticates as the
-		// App. A workflow still passing it must not resurrect the old state key,
-		// which `main.ts` no longer bridges and nothing reads.
+	it("persists the github-token input and registers it as a secret", async () => {
 		const recorder = makeRecorder();
-
 		await runPre(recorder, { ...BASE_INPUTS, "INPUT_GITHUB-TOKEN": "ghp_packages_token" });
 
+		expect(recorder.state.get("githubPackagesToken")).toEqual({ token: "ghp_packages_token" });
+		expect(recorder.secrets).toContain("ghp_packages_token");
+	});
+
+	it("skips the github-packages state when the input is absent", async () => {
+		const recorder = makeRecorder();
+		await runPre(recorder, BASE_INPUTS);
+
 		expect(recorder.state.has("githubPackagesToken")).toBe(false);
-		expect(recorder.secrets).not.toContain("ghp_packages_token");
+	});
+
+	it("treats an empty github-token input as absent", async () => {
+		const recorder = makeRecorder();
+		// The runner writes "" for an input the workflow omitted, so "" and missing
+		// must behave identically — the kit calls both "missing data".
+		await runPre(recorder, { ...BASE_INPUTS, "INPUT_GITHUB-TOKEN": "" });
+
+		expect(recorder.state.has("githubPackagesToken")).toBe(false);
+		expect(recorder.secrets).not.toContain("");
 	});
 
 	it("omits the app-slug output when identity could not be resolved", async () => {

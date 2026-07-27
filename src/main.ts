@@ -25,6 +25,7 @@ import {
 	ActionInput,
 	ActionLogger,
 	ActionOutputs,
+	ActionState,
 	GitHubToken,
 	Secret,
 } from "@effected/github-actions";
@@ -58,6 +59,7 @@ import { runValidation as runValidationEffect } from "./release/validation.js";
 import { toBranchManagementOutput, toPublishingOutput, toValidationOutput } from "./schema/projections.js";
 import type { ValidationOutput } from "./schema/release-output.js";
 import { ReleaseOutput } from "./schema/release-output.js";
+import { GithubPackagesTokenState, STATE_KEYS } from "./state.js";
 import { checkReleaseBranch } from "./utils/check-release-branch.js";
 import { cleanupValidationChecks } from "./utils/cleanup-validation-checks.js";
 import { closeLinkedIssues } from "./utils/close-linked-issues.js";
@@ -1327,6 +1329,8 @@ const runCloseIssues = Effect.gen(function* () {
 // ---------------------------------------------------------------------------
 
 export const main = Effect.gen(function* () {
+	const state = yield* ActionState;
+
 	// The installation token provisioned by pre.ts is read back here and
 	// bridged into the `STATE_token` env var so the imperative publish helpers
 	// (tokens.ts) can read it via `process.env.STATE_token`.
@@ -1342,6 +1346,18 @@ export const main = Effect.gen(function* () {
 	// mechanism is exactly right, and `utils/tokens.ts` still reads
 	// `process.env.STATE_token` for `native-version.ts`.
 	process.env.STATE_token = yield* Secret.forSigning(installationToken.token);
+
+	// Bridge the optional workflow-issued `github-token` (saved by pre.ts as
+	// `githubPackagesToken`) into the `STATE_githubToken` env var so
+	// `registry-auth.setupRegistryAuth` can prefer it for GitHub Packages
+	// publishing. Without this bridge, tokens.ts's `packagesToken()` reads
+	// empty and falls back to the App installation token — which may not
+	// carry org-level `packages:read` even when the workflow's
+	// `secrets.GITHUB_TOKEN` does.
+	const pkgToken = yield* state.getOptional(STATE_KEYS.githubPackagesToken, GithubPackagesTokenState);
+	if (Option.isSome(pkgToken)) {
+		process.env.STATE_githubToken = pkgToken.value.token;
+	}
 
 	// Identity diagnostics — the App identity resolved by `provision`.
 	if (installationToken.appName !== undefined || installationToken.appSlug !== undefined) {

@@ -266,8 +266,17 @@ const makeLayerForCommit = (
 // ─── Shared "always-on" base layers ──────────────────────────────────────────
 
 const loggerLayer = ActionLogger.layerSilent;
-// Empty ActionState (no tokens persisted) — tests exercise the "no token" / OIDC path.
-const actionStateLayer = ActionState.layerTest({ getOptional: () => Effect.succeed(Option.none()) });
+// ActionState carrying a GitHub Packages token.
+//
+// Not empty, deliberately. The fixtures below publish to
+// `https://npm.pkg.github.com/`, and a GitHub Packages target with no token is
+// not a state production can reach — OIDC covers npm and JSR, never GitHub
+// Packages, which needs the workflow's `secrets.GITHUB_TOKEN` via the
+// `github-token` input. An empty state here modelled an impossible case and let
+// the missing-credential guard go unexercised by every test that used it.
+const actionStateLayer = ActionState.layerTest({
+	getOptional: () => Effect.succeed(Option.some({ token: "ghp-fixture-token" })) as never,
+});
 // Empty ConfigProvider — `npm-token` is absent, Config.option returns None (OIDC path).
 const configProviderLayer = ConfigProvider.layer(ConfigProvider.fromUnknown({}));
 // Default ChangesetConfig stub: no packages ignored (isIgnored always false).
@@ -957,6 +966,44 @@ describe("runPublishTargets", () => {
 			expect(result.packages[0]?.targets).toHaveLength(2);
 		});
 
+		it("names the missing github-token rather than letting it surface as a 403", async () => {
+			// The production failure this guard replaces: savvy-web/systems run
+			// 30228332922 emitted four identical "integrity probe failed — status
+			// 403" lines, which read as a packages-permission problem rather than a
+			// missing input. The App installation token is not a substitute for
+			// GitHub Packages, so an absent token can only mean the input is absent.
+			const pub = makePackagePublishLayer();
+			const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, `/tmp/test/${PACK_NAME}`);
+			const target = new PublishTarget({
+				name: PACK_NAME,
+				registry: "https://npm.pkg.github.com/",
+				directory: `/tmp/test/${PACK_NAME}`,
+				access: "public",
+				provenance: false,
+			});
+			const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
+
+			const noToken = ActionState.layerTest({ getOptional: () => Effect.succeed(Option.none()) });
+
+			const result: PublishPackagesResult = await Effect.runPromise(
+				runPublishTargets(detected).pipe(
+					Effect.provide(
+						Layer.mergeAll(
+							makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [target]),
+							// Merged last so it wins over the credentialed default.
+							noToken,
+						),
+					),
+				),
+			);
+
+			expect(result.success).toBe(false);
+			expect(result.packages[0]?.targets[0]?.error).toContain("no github-token input");
+			// It must not have tried: no auth setup, no publish.
+			expect(pub.setupAuthCalls).toHaveLength(0);
+			expect(pub.publishTarballCalls).toHaveLength(0);
+		});
+
 		it("writes each registry's token to the resolved npmrc before publishing", async () => {
 			// GitHub Packages requires token auth; the npmrc is the file npm reads.
 			const pub = makePackagePublishLayer();
@@ -970,21 +1017,21 @@ describe("runPublishTargets", () => {
 			});
 			const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
 
-			// The token is the App installation token, read from the env var
-			// `main.ts` writes. It used to come from action state, populated by a
-			// `github-token` input that no longer exists.
-			const previousToken = process.env.STATE_token;
-			process.env.STATE_token = "ghp-test-token";
-			try {
-				await Effect.runPromise(
-					runPublishTargets(detected).pipe(
-						Effect.provide(makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [target])),
+			const withToken = ActionState.layerTest({
+				getOptional: () => Effect.succeed(Option.some({ token: "ghp-test-token" })) as never,
+			});
+
+			await Effect.runPromise(
+				runPublishTargets(detected).pipe(
+					Effect.provide(
+						Layer.mergeAll(
+							makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [target]),
+							// Merged last so it wins over the empty state above.
+							withToken,
+						),
 					),
-				);
-			} finally {
-				if (previousToken === undefined) delete process.env.STATE_token;
-				else process.env.STATE_token = previousToken;
-			}
+				),
+			);
 
 			expect(pub.setupAuthCalls).toHaveLength(1);
 			expect(pub.setupAuthCalls[0]?.registry).toBe("https://npm.pkg.github.com/");
