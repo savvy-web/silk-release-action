@@ -4,8 +4,36 @@
 
 ## Breaking Changes
 
-The action is rebuilt on the `@effected` kit. Its `action.yml` inputs and outputs are
-unchanged — no workflow needs editing — but several runtime behaviours differ.
+The action is rebuilt on the `@effected` kit, and its `action.yml` input surface changes:
+two inputs are removed, one is added, and one becomes required in practice. Outputs are
+unchanged. Several runtime behaviours differ as well.
+
+### Removed inputs: `skip-token-revoke` and `pr-title-prefix`
+
+`skip-token-revoke` was an opt-out of cleaning up a live credential, buying nothing the
+one-hour token expiry did not already provide while leaving a usable token in the runner for
+whatever ran next. **Revocation is now unconditional.**
+
+`pr-title-prefix` never reached a real title. Every branch that names packages or a version
+builds its own `release: …` string, so the input only worded two fallbacks that both mean
+"nothing is releasing" — a state in which Phase 1 closes the pull request and deletes the
+branch anyway. That fallback now reads `release: pending`, so every title the action emits
+carries one prefix.
+
+A workflow still passing either input gets GitHub's `Unexpected input(s)` **warning**, not a
+failure, so nothing breaks at the point of upgrade.
+
+### `github-token` is required for GitHub Packages, not optional
+
+The input remains optional in `action.yml`, but any workflow publishing to GitHub Packages
+must pass it. **GitHub App tokens cannot access GitHub Packages at all** — the sole exception
+being the default GitHub Actions token, itself a special kind of App token — so the App
+installation token this action provisions is not a fallback, whatever permissions it carries.
+
+Without it, every GitHub Packages target now fails immediately with the missing input named,
+before any authentication or publish is attempted. Previously the same condition surfaced as a
+403 on the registry integrity probe, which reads as a package-permissions problem rather than a
+missing input.
 
 ### Validation fails on an unreadable target ref
 
@@ -65,6 +93,19 @@ was previously invisible in this output. `count` continues to report the number 
 **files**, which is not the length of `packages` — one file may name several packages, and two
 files may name the same one.
 
+### Opt-in auto-merge for the release pull request
+
+A new `auto-merge` input takes `merge`, `squash` or `rebase`, or empty to disable. It is **off
+by default**: enabling auto-merge on a release pull request means the next green check publishes
+packages, which is a decision about a repository's release posture rather than one this action
+should make on a consumer's behalf. Requires branch protection with required status checks.
+
+An unrecognised value **fails** rather than quietly disabling — a workflow that writes
+`auto-merge: sqush` wants auto-merge, and treating the typo as "off" leaves the release pull
+request open indefinitely looking like a defect in the action. A repository that rejects
+auto-merge only warns, because the release itself has already succeeded and the pull request
+remains there to be merged by hand.
+
 ### The release plan is posted to the pull request as soon as it is known
 
 Phase 1 now comments a "what will be released" table on the release pull request, listing every
@@ -84,6 +125,54 @@ before the branch work starts and reaches a terminal state on every exit — inc
 a cancellation, which previously would have left a stale result looking current.
 
 ## Bug Fixes
+
+### A failed publish reported a successful run
+
+`ActionOutputs.setFailed` emits the error annotation and deliberately does not set the exit
+code — that is the runtime's job, decided by whether the effect fails. Both Phase 3 abort paths
+annotated and then **returned**, so the effect succeeded and the step, job and workflow run all
+reported success.
+
+A release that published to some registries and not others, created no GitHub release, and
+logged `Publishing failed` was therefore **green**. Anyone reading the run status — including
+automation — saw a clean release. Both paths now fail with a typed error after annotating.
+
+### The release window was bounded by the highest version tag, not the last release
+
+The commit walk that collects linked issues asked for the newest version-shaped tag. Across a
+monorepo those version lines are not comparable: `@scope/a@5.0.25` outranks `@scope/b@2.3.7`
+numerically while being several releases older. The boundary therefore landed on whichever
+package happened to hold the highest version anywhere in the repository.
+
+Worse, it was **stuck**. Nothing advanced it until some package out-bumped that version, so each
+release walked a range one release longer than the last and re-harvested issues that earlier
+releases had already closed. The boundary is now the merge commit of the most recently merged
+release pull request, which means "everything after this is unreleased" regardless of how
+packages are versioned or tags named.
+
+### Issue collection disagreed with itself depending on whether the pull request existed
+
+Two independent collectors were in play. Creating the release pull request walked every commit
+in the range; updating an existing one scanned only **changeset commits** — for each pending
+changeset file, the single commit that added it.
+
+The narrower scope silently lost two cases: an issue attached to a pull request by hand
+contributed nothing unless that same commit also added a changeset, and a squash merge whose
+message dropped the closing reference could not be recovered from its merge point. The two
+paths also disagreed in the open: one release pull request reported four linked issues in its
+check and two in its description.
+
+Both paths now share one walk — close keywords from commit bodies, plus `closingIssuesReferences`
+from each merge commit's pull request — and issues attached to the release pull request itself
+are included, since they are closed on merge regardless and were otherwise absent from both the
+description and the check.
+
+### Already-closed issues were re-announced by later releases
+
+An earlier release's merge commit is a legitimate merge commit, and its pull request still
+reports the issues it closed. Those issues were collected again, so a release could claim to
+close work that had already shipped. Closed issues are now dropped from the walk, so the check
+run, the pull request description and the branch links describe the same set.
 
 ### Phase 1 reported zero changesets while cutting a release
 
@@ -204,14 +293,18 @@ Enterprise sets the variable.
 
 | Dependency | Type | Action | From | To |
 | :--------- | :--- | :----- | :--- | :-- |
-| @effected/commands | dependency | added | — | 0.1.0 |
+| @effected/commands | dependency | added | — | 0.2.0 |
 | @effected/git | dependency | added | — | 0.5.1 |
-| @effected/github | dependency | added | — | 0.1.0 |
-| @effected/github-actions | dependency | added | — | 0.1.0 |
-| @effected/markdown | dependency | added | — | 0.3.0 |
-| @effected/npm | dependency | added | — | 0.5.0 |
+| @effected/github | dependency | added | — | 0.2.0 |
+| @effected/github-actions | dependency | added | — | 0.2.0 |
+| @effected/markdown | dependency | added | — | 0.4.0 |
+| @effected/npm | dependency | added | — | 0.6.0 |
 | @effected/package-json | dependency | added | — | ~0.6.0 |
-| @effected/sbom | dependency | added | — | 0.1.0 |
+| @effected/sbom | dependency | added | — | 0.2.0 |
 | @effected/semver | dependency | added | — | 0.2.1 |
+| @effected/workspaces | dependency | updated | ^0.8.0 | ^0.9.0 |
 | @effected/yaml | dependency | added | — | ~0.6.0 |
 | @savvy-web/github-action-effects | dependency | removed | ^3.1.0 | — |
+| @savvy-web/silk-effects | dependency | updated | ^4.2.6 | ^5.0.1 |
+| @savvy-web/github-action-builder | devDependency | updated | ^2.0.6 | ^2.1.0 |
+| @savvy-web/silk | devDependency | updated | ^3.2.3 | ^3.2.5 |
