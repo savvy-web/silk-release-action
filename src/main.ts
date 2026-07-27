@@ -76,6 +76,7 @@ import { linkIssuesFromCommits } from "./utils/link-issues-from-commits.js";
 import type { ConfigSource } from "./utils/load-release-config.js";
 import type { Section } from "./utils/managed-sections.js";
 import { refreshBanners, upsertSection, withSection } from "./utils/managed-sections.js";
+import { ensureNpmCacheEnv } from "./utils/npm-cache.js";
 import { toReleasePlanReport } from "./utils/release-plan.js";
 import {
 	RELEASE_TABLE_LEGEND,
@@ -1329,6 +1330,11 @@ const runCloseIssues = Effect.gen(function* () {
 // ---------------------------------------------------------------------------
 
 export const main = Effect.gen(function* () {
+	// Redirect npm's cache off the potentially root-owned `~/.npm/_cacache` on
+	// GitHub's macOS runners, before any phase (including Phase 2 dry-runs and
+	// npm view calls) runs a single npm command. See `utils/npm-cache.ts`.
+	ensureNpmCacheEnv();
+
 	const state = yield* ActionState;
 
 	// The installation token provisioned by pre.ts is read back here and
