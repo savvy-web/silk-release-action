@@ -970,21 +970,21 @@ describe("runPublishTargets", () => {
 			});
 			const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
 
-			// The token is the App installation token, read from the env var
-			// `main.ts` writes. It used to come from action state, populated by a
-			// `github-token` input that no longer exists.
-			const previousToken = process.env.STATE_token;
-			process.env.STATE_token = "ghp-test-token";
-			try {
-				await Effect.runPromise(
-					runPublishTargets(detected).pipe(
-						Effect.provide(makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [target])),
+			const withToken = ActionState.layerTest({
+				getOptional: () => Effect.succeed(Option.some({ token: "ghp-test-token" })) as never,
+			});
+
+			await Effect.runPromise(
+				runPublishTargets(detected).pipe(
+					Effect.provide(
+						Layer.mergeAll(
+							makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [target]),
+							// Merged last so it wins over the empty state above.
+							withToken,
+						),
 					),
-				);
-			} finally {
-				if (previousToken === undefined) delete process.env.STATE_token;
-				else process.env.STATE_token = previousToken;
-			}
+				),
+			);
 
 			expect(pub.setupAuthCalls).toHaveLength(1);
 			expect(pub.setupAuthCalls[0]?.registry).toBe("https://npm.pkg.github.com/");

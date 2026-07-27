@@ -10,6 +10,23 @@ inputs:
   app-private-key:
     description: GitHub App private key (PEM format)
     required: true
+  github-token:
+    description: |
+      GitHub token for GitHub Packages publishing.
+
+      Pass secrets.GITHUB_TOKEN with workflow permissions: packages: write.
+
+      NOT optional in practice for GitHub Packages. Removing this input made
+      every GitHub Packages target fail 403 on a registry read (savvy-web/systems
+      run 30228332922) while npm succeeded, aborting before any GitHub release
+      was created.
+
+      The App installation token is not a substitute even though it carries
+      packages:write - verified on that run's own token dump. The discriminator
+      is the token TYPE, not the permission bit: npm.pkg.github.com accepts the
+      workflow GITHUB_TOKEN and rejects an App installation token.
+    required: false
+    default: ""
   release-branch:
     description: Release branch name
     required: false
