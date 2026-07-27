@@ -2,19 +2,26 @@
 
 ## Common issues
 
-### "Installation not allowed to Create organization package"
+### GitHub Packages publishing fails with "no github-token input"
 
-The GitHub App needs the **Packages: Write** repository permission. Update the app's permissions in GitHub Settings > Developer Settings > GitHub Apps.
-
-Alternatively, pass a `github-token` with `packages: write` permission:
+GitHub Packages requires the workflow's own `secrets.GITHUB_TOKEN`, passed as the `github-token` input, with `packages: write` on the job:
 
 ```yaml
-- uses: savvy-web/silk-release-action@v3
+permissions:
+  packages: write
+
+# ...
+
+- uses: savvy-web/silk-release-action@v4
   with:
     app-client-id: ${{ vars.APP_CLIENT_ID }}
     app-private-key: ${{ secrets.APP_PRIVATE_KEY }}
     github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
+
+Adjusting the GitHub App's permissions will not fix this. **GitHub App tokens cannot access GitHub Packages at all** — the sole exception is the default GitHub Actions token, which is a special kind of App token — so the installation token this action provisions is not a fallback, whatever it carries. An App token holding `packages: write` is still rejected `403` on a plain read of `npm.pkg.github.com`.
+
+Older versions surfaced the same condition as repeated `integrity probe failed — status 403` lines, or as `Installation not allowed to Create organization package`, both of which read as a permissions problem on the packages rather than a missing input. The action now names the input and stops before attempting authentication.
 
 ### Publishing fails for new npm packages
 
@@ -23,7 +30,7 @@ OIDC trusted publishing to npm requires two things: the package must already exi
 If a publish fails and you have not supplied an `npm-token`, provide one so the token-auth fallback can complete the publish:
 
 ```yaml
-- uses: savvy-web/silk-release-action@v3
+- uses: savvy-web/silk-release-action@v4
   with:
     app-client-id: ${{ vars.APP_CLIENT_ID }}
     app-private-key: ${{ secrets.APP_PRIVATE_KEY }}
@@ -60,6 +67,18 @@ git rebase --continue
 git push --force-with-lease
 ```
 
+### Auto-merge was not enabled on the release PR
+
+The run logs `Could not enable auto-merge on PR #<n>` as a warning and continues, because the release itself succeeded. Two prerequisites sit outside the action: auto-merge has to be enabled on the repository (Settings > General > Pull Requests), and branch protection on the target branch has to define required status checks. Without required checks there is nothing for auto-merge to gate on, so GitHub rejects the request. Merge the PR by hand for this release, then fix the repository settings.
+
+If the run failed outright instead, naming the value you passed, the `auto-merge` input was not one of `merge`, `squash` or `rebase`. A typo fails rather than quietly disabling — see [Auto-merge](./03-configuration.md#auto-merge).
+
+### Warning: "Unexpected input(s) 'pr-title-prefix'" or "'skip-token-revoke'"
+
+Both inputs were removed. The warning is GitHub's, comes from the workflow file, and breaks nothing — delete the lines.
+
+Token revocation is now unconditional, so `skip-token-revoke` has no replacement. `pr-title-prefix` has none either: every release PR title is derived from the packages that will release, and the fallback for "nothing is releasing" is the literal `release: pending`.
+
 ### No phase detected (action does nothing)
 
 The action uses context clues to determine which phase to run. If none match, it exits early. Check that:
@@ -71,7 +90,7 @@ The action uses context clues to determine which phase to run. If none match, it
 You can also set the phase explicitly:
 
 ```yaml
-- uses: savvy-web/silk-release-action@v3
+- uses: savvy-web/silk-release-action@v4
   with:
     app-client-id: ${{ vars.APP_CLIENT_ID }}
     app-private-key: ${{ secrets.APP_PRIVATE_KEY }}
@@ -98,7 +117,7 @@ Phase 2 runs `pnpm build` (or your configured package manager's build command). 
 
 ### Publish validation fails on an unpublishable artifact
 
-Phase 2 dry-run packs each publishable package and refuses artifacts that would ship something broken rather than packing them silently. Any of the cases below records an `error` finding, fails the **Publish Validation** check and blocks auto-merge; the remaining packages still validate and report. Fix the offending package, then push the release branch (or push to `main` and let the action rebase).
+Phase 2 dry-run packs each publishable package and refuses artifacts that would ship something broken rather than packing them silently. Any of the cases below records an `error` finding and fails the **Publish Validation** check, which blocks anything gated on check status — including auto-merge, whether it came from the `auto-merge` input or was turned on by hand. The remaining packages still validate and report. Fix the offending package, then push the release branch (or push to `main` and let the action rebase).
 
 - **Unresolved `catalog:` or `workspace:` specifiers** — the built `package.json` still carries a `catalog:` or `workspace:` dependency range, which publishes a package that is uninstallable outside the workspace (`EUNSUPPORTEDPROTOCOL`). Your build step must rewrite these to concrete versions before the artifact is packed.
 - **Zero-file tarball** — `npm pack` would produce an empty archive. Check the package's `files` field and confirm the build wrote output to the directory being packed.
