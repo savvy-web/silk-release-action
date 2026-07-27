@@ -16,11 +16,12 @@
 import { NodeFileSystem } from "@effect/platform-node";
 import { ActionEnvironment, ActionInput, ActionLogger, ActionOutputs } from "@effected/github-actions";
 import { Changesets } from "@savvy-web/silk-effects";
-import { Effect, Layer } from "effect";
-import { describe, expect, it } from "vitest";
+import { Effect, Layer, Logger } from "effect";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { BranchManagementSeams } from "../src/main.js";
 import { runBranchManagement } from "../src/main.js";
 import type { ReleaseBranchCheckResult } from "../src/utils/check-release-branch.js";
+import { cleanupTestEnvironment, setupTestEnvironment } from "./utils/github-mocks.js";
 
 const HEAD_SHA = "abc1234def5678";
 
@@ -69,7 +70,11 @@ const branchCheck = (over: Partial<ReleaseBranchCheckResult> = {}): ReleaseBranc
 const run = async (
 	seams: Partial<BranchManagementSeams>,
 	options: { readonly dryRun?: boolean; readonly existingComment?: string } = {},
-): Promise<{ published: Array<Published>; exit: "ok" | "failed" | "died" }> => {
+	// `"died"` was declared here but never produced — every non-`Success` exit
+	// maps to `"failed"` below, so the variant was unreachable. The suite's
+	// defect case asserts on the published sections rather than on the exit
+	// classification, so the distinction was never needed.
+): Promise<{ published: Array<Published>; exit: "ok" | "failed" }> => {
 	const published: Array<Published> = [];
 	let commentBody = options.existingComment ?? "";
 
@@ -132,7 +137,13 @@ const run = async (
 		NodeFileSystem.layer,
 	);
 
-	const exit = await Effect.runPromiseExit(runBranchManagement(full).pipe(Effect.provide(layer)));
+	// `Logger.layer([])` removes every logger from the runtime. Without it the
+	// `Effect.logInfo` calls in `runBranchManagement` reach Effect's DEFAULT
+	// logger, which writes via `console.log` — not `process.stdout.write`, so
+	// `suppressOutput` cannot catch it — and leak into the reporter.
+	const exit = await Effect.runPromiseExit(
+		runBranchManagement(full).pipe(Effect.provide(layer), Effect.provide(Logger.layer([]))),
+	);
 
 	return {
 		published,
@@ -141,6 +152,11 @@ const run = async (
 };
 
 describe("runBranchManagement — what reaches the pull request", () => {
+	// Mock hygiene between cases. Log suppression is NOT this — it is the
+	// `Logger.layer([])` in `run` above; see the note there.
+	beforeEach(() => setupTestEnvironment({ suppressOutput: true }));
+	afterEach(() => cleanupTestEnvironment());
+
 	it("publishes the plan while the branch work runs, before it finishes", async () => {
 		const seen: Array<string> = [];
 		await run({

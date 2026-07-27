@@ -5,7 +5,7 @@
  * registry, git, or SBOM tooling is exercised.
  */
 
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeServices } from "@effect/platform-node";
@@ -23,7 +23,7 @@ import {
 	WorkspaceStateSnapshot,
 } from "@effected/workspaces";
 import { Effect, Layer, Option } from "effect";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { matchesIgnorePattern } from "../utils/detect-repo-type.js";
 import { ChangesetConfig } from "./changeset-config.js";
@@ -552,8 +552,16 @@ describe("runValidation", () => {
 		 * absent vs. present-but-undecodable — is exactly what decides whether
 		 * an SBOM is merely dependency-free or genuinely degraded.
 		 */
+		/** Directories created below, removed in `afterEach` so runs do not litter `tmpdir()`. */
+		const buildDirs: Array<string> = [];
+
+		afterEach(() => {
+			for (const dir of buildDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+		});
+
 		const withBuildDir = (manifest: string | null): string => {
 			const dir = mkdtempSync(join(tmpdir(), "validation-build-"));
+			buildDirs.push(dir);
 			if (manifest !== null) writeFileSync(join(dir, "package.json"), manifest, "utf-8");
 			return dir;
 		};
@@ -711,8 +719,6 @@ describe("runValidation", () => {
 			});
 
 			const baseVersions: Readonly<Record<string, string>> = { "@test/provenance-pkg": "1.0.0" };
-
-			// We use the stateful version to inspect calls
 
 			const { layer: pubLayer } = makePublishDouble();
 

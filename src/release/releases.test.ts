@@ -873,7 +873,12 @@ describe("runReleases", () => {
 			// guard passes and the upload fires.
 			const writingTarSpawner = ScriptedSpawner.make((command, args) => {
 				if (command !== "tar") return ScriptedSpawner.notFound(command);
-				const outPath = args[1];
+				// Derived from the flag rather than hard-coded at `args[1]`: with a
+				// fixed index, any reordering of `releases.ts`'s argv would make this
+				// double write to a flag string (or nothing) and the assertion below
+				// would fail without naming the cause.
+				const flagIndex = args.findIndex((a) => a === "-czf" || a === "-f");
+				const outPath = flagIndex === -1 ? undefined : args[flagIndex + 1];
 				if (outPath !== undefined) writeFileSync(outPath, "fake-tgz");
 				return { exit: 0, stdout: "", stderr: "" };
 			}).layer;

@@ -15,9 +15,10 @@
 // That decision is what these two tests hold.
 
 import { ActionEnvironment, OidcClaims, OidcTokenError, OidcTokenIssuer } from "@effected/github-actions";
-import { Effect, Layer } from "effect";
-import { describe, expect, it } from "vitest";
+import { Effect, Layer, Logger } from "effect";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildProvenancePredicate } from "../src/release/attest-helpers.js";
+import { cleanupTestEnvironment, setupTestEnvironment } from "./utils/github-mocks.js";
 
 const CLAIMS = OidcClaims.make({
 	iss: "https://token.actions.githubusercontent.com",
@@ -36,10 +37,18 @@ const CLAIMS = OidcClaims.make({
 
 const run = (issuer: Layer.Layer<OidcTokenIssuer>) =>
 	Effect.runPromise(
-		buildProvenancePredicate().pipe(Effect.provide(Layer.mergeAll(ActionEnvironment.layerTest(), issuer))),
+		buildProvenancePredicate().pipe(
+			Effect.provide(Layer.mergeAll(ActionEnvironment.layerTest(), issuer)),
+			Effect.provide(Logger.layer([])),
+		),
 	);
 
 describe("buildProvenancePredicate — the catch-and-skip policy", () => {
+	// The skip path emits a warning through `ActionLogger` (stdout); suppress it
+	// so the suite does not leak that line into the reporter.
+	beforeEach(() => setupTestEnvironment({ suppressOutput: true }));
+	afterEach(() => cleanupTestEnvironment());
+
 	it("returns null rather than failing when the OIDC exchange fails", async () => {
 		// THE policy. A workflow without `permissions: id-token: write` must still
 		// publish; only the attestation is skipped. Without the catch this rejects

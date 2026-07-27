@@ -90,11 +90,24 @@ describe("url builders", () => {
 		expect(orgPackagePageUrl(GHES, "acme", "widget")).toBe(`${GHES}/orgs/acme/packages/npm/package/widget`);
 	});
 
-	it("carries a release tag containing a slash through verbatim", () => {
-		// Monorepo tags are routinely `@scope/pkg@1.0.0`.
+	it("encodes a scoped release tag per path segment, as GitHub itself does", () => {
+		// Monorepo tags are routinely `@scope/pkg@1.0.0`. GitHub's own canonical
+		// `html_url` for such a release encodes the `@` and leaves the `/` a real
+		// path separator — verified against the Releases API:
+		//
+		//   @changesets/cli@2.31.1
+		//     → /releases/tag/%40changesets/cli%402.31.1
+		//
+		// So NOT `encodeURIComponent(tag)` (which would emit `%2F` for the slash)
+		// and not verbatim (which would emit a bare `@`).
 		expect(releaseTagUrl(GHES, "acme", "widgets", "@acme/widget@1.0.0")).toBe(
-			`${GHES}/acme/widgets/releases/tag/@acme/widget@1.0.0`,
+			`${GHES}/acme/widgets/releases/tag/%40acme/widget%401.0.0`,
 		);
+	});
+
+	it("leaves an unscoped release tag unchanged", () => {
+		// `v1.2.3` has nothing to encode; the scoped-tag fix must not disturb it.
+		expect(releaseTagUrl(GHES, "acme", "widgets", "v1.2.3")).toBe(`${GHES}/acme/widgets/releases/tag/v1.2.3`);
 	});
 });
 

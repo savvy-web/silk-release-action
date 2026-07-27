@@ -22,9 +22,10 @@ import {
 } from "@effected/github";
 import { ActionEnvironment, ActionOutputs } from "@effected/github-actions";
 import { Effect, Layer, Logger, Option } from "effect";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ReleaseBranchCheckResult } from "../src/utils/check-release-branch.js";
 import { checkReleaseBranch } from "../src/utils/check-release-branch.js";
+import { cleanupTestEnvironment, setupTestEnvironment } from "./utils/github-mocks.js";
 
 interface Recorder {
 	readonly created: Array<{ name: string; sha: string }>;
@@ -98,6 +99,11 @@ const run = (recorder: Recorder, options: Options, dryRun = false): Promise<Rele
 	);
 
 describe("checkReleaseBranch", () => {
+	// Shared harness: clears mocks and silences stdout/stderr so a log line
+	// added to the module under test cannot start leaking into the reporter.
+	beforeEach(() => setupTestEnvironment({ suppressOutput: true }));
+	afterEach(() => cleanupTestEnvironment());
+
 	it("should report the branch and its open PR", async () => {
 		const result = await run(makeRecorder(), {
 			exists: true,

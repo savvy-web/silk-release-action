@@ -13,7 +13,7 @@
 // batching is trading against.
 
 import type { Scope } from "effect";
-import { Duration, Effect, Option, Queue, Ref } from "effect";
+import { Duration, Effect, Fiber, Option, Queue, Ref, Semaphore } from "effect";
 import type { Section } from "./managed-sections.js";
 import { refreshBanners, upsertSection } from "./managed-sections.js";
 
@@ -111,21 +111,33 @@ export const makeSectionQueue = (options: {
 		// prevent. Holding it here keeps it reachable throughout.
 		const inFlight = yield* Ref.make<ReadonlyArray<Section>>([]);
 
-		/** Fold a batch into the comment and write it once. */
+		// One permit, guarding `writeBatch`.
+		//
+		// `writeBatch` is a read-modify-write over the whole comment, and three
+		// callers can reach it: the forked loop when its window elapses, `flush` on
+		// demand, and the scope finalizer. Two overlapping runs both read the same
+		// `existing` body and the second `publish` overwrites the first's sections —
+		// exactly the staleness the queue exists to prevent.
+		const writeLock = yield* Semaphore.make(1);
+
+		/** Fold a batch into the comment and write it once. Serialized by `writeLock`. */
 		const writeBatch = (batch: ReadonlyArray<Section>) =>
-			Effect.gen(function* () {
-				if (batch.length === 0) return;
-				const existing = yield* options.read;
-				// Every banner recomputed, not just the written sections': a banner is
-				// baked into the text at write time, so a section left alone would go
-				// on claiming it is current after the branch moved.
-				const body = refreshBanners(
-					coalesce(batch).reduce((acc, section) => upsertSection(acc, section, options.headSha), existing),
-					options.headSha,
-				);
-				yield* options.publish(body);
-				yield* Effect.logDebug(`section-queue: wrote ${coalesce(batch).length} section(s)`);
-			});
+			Semaphore.withPermit(
+				writeLock,
+				Effect.gen(function* () {
+					if (batch.length === 0) return;
+					const existing = yield* options.read;
+					// Every banner recomputed, not just the written sections': a banner is
+					// baked into the text at write time, so a section left alone would go
+					// on claiming it is current after the branch moved.
+					const body = refreshBanners(
+						coalesce(batch).reduce((acc, section) => upsertSection(acc, section, options.headSha), existing),
+						options.headSha,
+					);
+					yield* options.publish(body);
+					yield* Effect.logDebug(`section-queue: wrote ${coalesce(batch).length} section(s)`);
+				}),
+			);
 
 		/**
 		 * Everything pending: what is held in flight, plus whatever is queued.
@@ -159,10 +171,18 @@ export const makeSectionQueue = (options: {
 			yield* writeBatch(yield* drain);
 		}).pipe(Effect.forever);
 
-		yield* Effect.forkScoped(loop);
+		const loopFiber = yield* Effect.forkScoped(loop);
 
 		// Whatever is still queued when the scope closes, written once.
-		yield* Effect.addFinalizer(() => drain.pipe(Effect.flatMap(writeBatch), Effect.ignore));
+		//
+		// The loop is INTERRUPTED first. Otherwise it can be sitting inside its own
+		// `writeBatch` while the finalizer drains, and — now that the write lock
+		// serializes them — the finalizer would simply queue behind a write whose
+		// batch it has already drained, publishing a body that omits it.
+		// Interrupting first makes the final drain the last word.
+		yield* Effect.addFinalizer(() =>
+			Fiber.interrupt(loopFiber).pipe(Effect.andThen(drain.pipe(Effect.flatMap(writeBatch), Effect.ignore))),
+		);
 
 		return {
 			update: (section: Section) => Queue.offer(queue, section).pipe(Effect.asVoid),

@@ -16,6 +16,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { NodeServices } from "@effect/platform-node";
 import { ScriptedSpawner } from "@effected/commands";
 import type { AttestationShape } from "@effected/github";
 import {
@@ -656,7 +657,6 @@ describe("runBuildAndSbom", () => {
 			// a real `ChildProcessSpawner`. The scripted spawner is merged LAST so
 			// it wins; merged first, the suite silently shells out to a real
 			// `pnpm ci:build` (3.5s per test, and a green that proves nothing).
-			const { NodeServices } = await import("@effect/platform-node");
 			const layers = Layer.mergeAll(
 				loggerLayer,
 				NodeServices.layer,
@@ -691,7 +691,6 @@ describe("runBuildAndSbom", () => {
 				makeDetected("@test/sbom-b", "2.0.0", pkgB.path),
 			];
 
-			const { NodeServices } = await import("@effect/platform-node");
 			const layers = Layer.mergeAll(
 				loggerLayer,
 				NodeServices.layer,
@@ -711,7 +710,7 @@ describe("runBuildAndSbom", () => {
 			expect(result.sbomPaths.get("@test/sbom-b")).toBe(join(pkgBPath, "sbom-b.sbom.json"));
 		});
 
-		it("returns ok: false and lists the package when the SBOM WRITE fails", async () => {
+		it("keeps ok: true and only lists the package when the SBOM WRITE fails", async () => {
 			// The predecessor's test failed `Sbom.generate`. That is no longer
 			// expressible: `Sbom.generate` and `Sbom.toJson` are **total**, and
 			// `SbomError` does not exist. `Sbom.write` is the one fallible member —
@@ -730,7 +729,6 @@ describe("runBuildAndSbom", () => {
 				makeDetected("@test/sbom-bad", "1.0.0", pkgBad.path),
 			];
 
-			const { NodeServices } = await import("@effect/platform-node");
 			const layers = Layer.mergeAll(
 				loggerLayer,
 				NodeServices.layer,
@@ -742,12 +740,23 @@ describe("runBuildAndSbom", () => {
 				runBuildAndSbom(detected, buildArgs).pipe(Effect.provide(layers)),
 			);
 
-			expect(result.ok).toBe(false);
+			// `ok` stays TRUE. This is the load-bearing half of the assertion:
+			// `runPublishing` treats `!ok` as a fail-fast gate that aborts Phase 3
+			// and fails the workflow with `PublishError`. Folding an SBOM write
+			// failure into `ok` meant an unwritable package directory blocked a
+			// release whose build had succeeded — contradicting both this function's
+			// own remark ("stays non-fatal") and its warning ("release asset will be
+			// skipped"). The write failure costs the release its SBOM asset, nothing
+			// more.
+			expect(result.ok).toBe(true);
 			expect(result.sbomFailures).toEqual(["@test/sbom-bad"]);
 			expect(result.buildError).toBeUndefined();
 			expect(result.packageCount).toBe(detected.length);
 			// The good package still wrote its SBOM — one failure does not abort.
 			expect(result.sbomPaths.get("@test/sbom-good")).toBe(join(goodPath, "sbom-good.sbom.json"));
+			// ...and the failing package has no asset path, which is how the release
+			// step knows to skip it.
+			expect(result.sbomPaths.has("@test/sbom-bad")).toBe(false);
 		});
 	});
 });

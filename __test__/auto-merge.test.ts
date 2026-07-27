@@ -17,7 +17,7 @@
  */
 
 import type { PullRequestInfo } from "@effected/github";
-import { GitHubError, PullRequest, Repo, RepoRef } from "@effected/github";
+import { GitHubGraphQLError, PullRequest, Repo, RepoRef } from "@effected/github";
 import { ActionInput } from "@effected/github-actions";
 import { Effect, Layer, Logger, Option } from "effect";
 import { describe, expect, it } from "vitest";
@@ -68,7 +68,17 @@ const pullRequestLayer = (calls: Calls, fail: boolean): Layer.Layer<PullRequest 
 		PullRequest.layerTest({
 			setAutoMerge: (pr, method) =>
 				fail
-					? Effect.fail(GitHubError.rejected("PullRequest.setAutoMerge", 422, "auto-merge disabled") as never)
+					? // A real `GitHubGraphQLError` — the error type `setAutoMerge` actually
+						// declares. The previous `GitHubError.rejected(...) as never` bypassed
+						// that signature, so a change to it would not have failed typechecking.
+						Effect.fail(
+							new GitHubGraphQLError({
+								kind: "rejected",
+								operation: "PullRequest.setAutoMerge",
+								reason: "auto-merge disabled",
+								errors: [],
+							}),
+						)
 					: Effect.sync(() => {
 							calls.setAutoMerge.push({ number: pr.number, method });
 						}),

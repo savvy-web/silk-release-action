@@ -108,7 +108,10 @@ describe("releaseTable", () => {
 	});
 
 	it("legends every icon the table can emit", () => {
-		for (const icon of ["✅", "⏳", "🔴", "🟡", "🟢"]) {
+		// `⏭️` (no targets) and `❌` (failed) are emitted by `toValidatedReleaseRows`
+		// alongside the plan icons. Omitting them here let a legend that dropped
+		// either one still pass.
+		for (const icon of ["✅", "⏳", "⏭️", "❌", "🔴", "🟡", "🟢"]) {
 			expect(RELEASE_TABLE_LEGEND).toContain(icon);
 		}
 	});
@@ -204,6 +207,41 @@ describe("toValidatedReleaseRows", () => {
 		expect(rendered).toContain("🔴 major");
 		expect(rendered).toContain("🟡 minor");
 		expect(rendered).toContain("🟢 patch");
+	});
+
+	it("reports a prerelease major transition as major, not patch", () => {
+		// `"2.0.0-rc.1".split(".")` yields `["2","0","0-rc","1"]`, whose third
+		// element is `NaN` — which sent the guard down the `patch` path and rendered
+		// a MAJOR transition as `🟢 patch`. The severity column would understate
+		// every prerelease.
+		const rows = toValidatedReleaseRows([
+			{ name: "@scope/rc-major", version: "2.0.0-rc.1", baseVersion: "1.9.9", changesetCount: 1, builds: [] },
+			{ name: "@scope/rc-minor", version: "1.3.0-beta.0", baseVersion: "1.2.9", changesetCount: 1, builds: [] },
+			{ name: "@scope/rc-patch", version: "1.2.4-alpha.2", baseVersion: "1.2.3", changesetCount: 1, builds: [] },
+		]);
+
+		expect(rows[0]?.bump).toBe("major");
+		expect(rows[1]?.bump).toBe("minor");
+		expect(rows[2]?.bump).toBe("patch");
+	});
+
+	it("reports a bump across build metadata honestly", () => {
+		// `+build` suffixes trip the same `Number` parse as `-prerelease`.
+		const [row] = toValidatedReleaseRows([
+			{ name: "@scope/build", version: "2.0.0+20260727", baseVersion: "1.0.0", changesetCount: 1, builds: [] },
+		]);
+
+		expect(row?.bump).toBe("major");
+	});
+
+	it("still falls back to patch when a version is genuinely unparseable", () => {
+		// The documented behaviour for a version that is not SemVer at all:
+		// understating severity beats overstating it.
+		const [row] = toValidatedReleaseRows([
+			{ name: "@scope/weird", version: "not-a-version", baseVersion: "1.0.0", changesetCount: 1, builds: [] },
+		]);
+
+		expect(row?.bump).toBe("patch");
 	});
 
 	it("still renders an unknown changeset count as an em dash", () => {

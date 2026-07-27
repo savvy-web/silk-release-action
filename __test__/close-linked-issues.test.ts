@@ -9,12 +9,22 @@
  */
 
 import type { CheckRunOutput } from "@effected/github";
-import { CheckRun, CheckRunRef, GitHubError, GitHubIssue, LinkedIssue, Repo, RepoRef } from "@effected/github";
+import {
+	CheckRun,
+	CheckRunRef,
+	GitHubError,
+	GitHubGraphQLError,
+	GitHubIssue,
+	LinkedIssue,
+	Repo,
+	RepoRef,
+} from "@effected/github";
 import { ActionEnvironment, ActionOutputs } from "@effected/github-actions";
 import { Effect, Layer, Logger } from "effect";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { CloseLinkedIssuesResult } from "../src/utils/close-linked-issues.js";
 import { closeLinkedIssues } from "../src/utils/close-linked-issues.js";
+import { cleanupTestEnvironment, setupTestEnvironment } from "./utils/github-mocks.js";
 
 interface Recorder {
 	readonly created: Array<{ name: string; sha: string }>;
@@ -72,7 +82,16 @@ const makeLayer = (recorder: Recorder, options: Options) =>
 		GitHubIssue.layerTest({
 			linkedIssues: () =>
 				options.linkedFails === true
-					? Effect.fail(GitHubError.rejected("GitHubIssue.linkedIssues", 500, "boom") as never)
+					? // A real `GitHubGraphQLError` — the error type `linkedIssues` actually
+						// declares, rather than a `GitHubError` cast to `never`.
+						Effect.fail(
+							new GitHubGraphQLError({
+								kind: "transport",
+								operation: "GitHubIssue.linkedIssues",
+								reason: "boom",
+								errors: [],
+							}),
+						)
 					: Effect.succeed((options.issues ?? []).map((i) => linked(i.number, i.title))),
 			comment: (number) =>
 				Effect.sync(() => {
@@ -95,6 +114,11 @@ const run = (recorder: Recorder, options: Options, dryRun = false): Promise<Clos
 	);
 
 describe("closeLinkedIssues", () => {
+	// Shared harness: clears mocks and silences stdout/stderr so a log line
+	// added to the module under test cannot start leaking into the reporter.
+	beforeEach(() => setupTestEnvironment({ suppressOutput: true }));
+	afterEach(() => cleanupTestEnvironment());
+
 	it("should comment on and close each linked issue", async () => {
 		const recorder = makeRecorder();
 

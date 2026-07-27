@@ -12,9 +12,10 @@
 
 import type { CommentMarker } from "@effected/github";
 import { CommentRecord, PullRequestComment, Repo, RepoRef } from "@effected/github";
-import { Effect, Layer } from "effect";
-import { describe, expect, it } from "vitest";
-import { updateStickyComment } from "../src/utils/update-sticky-comment.js";
+import { Effect, Layer, Logger, Option } from "effect";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { readStickyComment, updateStickyComment } from "../src/utils/update-sticky-comment.js";
+import { cleanupTestEnvironment, setupTestEnvironment } from "./utils/github-mocks.js";
 
 interface Upserted {
 	readonly issueNumber: number;
@@ -41,10 +42,20 @@ const run = (
 				Layer.succeed(Repo, RepoRef.make({ owner: "savvy-web", repo: "silk-release-action" })),
 			),
 		),
+		// `Logger.layer([])` removes every logger from the runtime. Without it the
+		// module's `Effect.log*` calls reach Effect's DEFAULT logger, which writes
+		// via `console.log` — not `process.stdout.write`, so `suppressOutput`
+		// cannot catch it — and leak into the reporter.
+		Effect.provide(Logger.layer([])),
 		Effect.runPromise,
 	);
 
 describe("updateStickyComment", () => {
+	// Mock hygiene between cases. Log suppression is NOT this — it is the
+	// `Logger.layer([])` in `run` above; see the note there.
+	beforeEach(() => setupTestEnvironment({ suppressOutput: true }));
+	afterEach(() => cleanupTestEnvironment());
+
 	it("should render the marker as <!-- savvy-web:<key> --> byte for byte", async () => {
 		const recorder: Array<Upserted> = [];
 		await run(recorder);
@@ -81,5 +92,98 @@ describe("updateStickyComment", () => {
 		const result = await run([]);
 
 		expect(result).toEqual({ commentId: 1234 });
+	});
+
+	it("should strip a pre-existing marker when the body already carries one", async () => {
+		// The accumulating-marker bug: `upsert` APPENDS the marker, so a
+		// read-modify-write caller hands back a body that already has one and gets
+		// a second. Four copies were observed on silk-integration PR #248.
+		//
+		// Without the strip at update-sticky-comment.ts:61 the recorded body still
+		// contains the marker, so this assertion is what holds that line in place.
+		const recorder: Array<Upserted> = [];
+		await run(recorder, 42, "## report\n\n<!-- savvy-web:release-validation -->");
+
+		expect(recorder[0]?.body).toBe("## report");
+		expect(recorder[0]?.body).not.toContain("<!-- savvy-web:release-validation -->");
+	});
+
+	it("should strip every copy when the body carries the marker more than once", async () => {
+		// `split(...).join("")` removes ALL copies, which is what recovers a comment
+		// that already accumulated several before the fix landed.
+		const recorder: Array<Upserted> = [];
+		await run(
+			recorder,
+			42,
+			"<!-- savvy-web:release-validation -->## report<!-- savvy-web:release-validation --><!-- savvy-web:release-validation -->",
+		);
+
+		expect(recorder[0]?.body).toBe("## report");
+	});
+
+	it("should leave a different key's marker in place when stripping", async () => {
+		// Only this comment's own marker is the caller's to remove; another
+		// section's marker is content.
+		const recorder: Array<Upserted> = [];
+		await run(recorder, 42, "## report\n\n<!-- savvy-web:other-key -->", "release-validation");
+
+		expect(recorder[0]?.body).toBe("## report\n\n<!-- savvy-web:other-key -->");
+	});
+});
+
+describe("readStickyComment", () => {
+	beforeEach(() => setupTestEnvironment({ suppressOutput: true }));
+	afterEach(() => cleanupTestEnvironment());
+
+	const runRead = (found: Option.Option<CommentRecord>, prNumber = 42, key = "release-validation"): Promise<string> =>
+		readStickyComment(prNumber, key).pipe(
+			Effect.provide(
+				Layer.mergeAll(
+					PullRequestComment.layerTest({ find: () => Effect.succeed(found) }),
+					Layer.succeed(Repo, RepoRef.make({ owner: "savvy-web", repo: "silk-release-action" })),
+				),
+			),
+			Effect.provide(Logger.layer([])),
+			Effect.runPromise,
+		);
+
+	it("should return the existing body when the comment is found", async () => {
+		const body = await runRead(
+			Option.some(CommentRecord.make({ id: 1234, body: "## existing", url: "https://x.test/c/1234" })),
+		);
+
+		expect(body).toBe("## existing");
+	});
+
+	it("should return an empty string when no such comment exists", async () => {
+		// A missing comment is `""`, not a failure: the first write of a run
+		// legitimately has nothing to preserve.
+		const body = await runRead(Option.none());
+
+		expect(body).toBe("");
+	});
+
+	it("should look the comment up by the same namespaced marker it writes", async () => {
+		// The read and write halves must agree on the marker or a read-modify-write
+		// silently starts from `""` and discards every other section.
+		const markers: Array<CommentMarker> = [];
+		await readStickyComment(7, "some-other-key").pipe(
+			Effect.provide(
+				Layer.mergeAll(
+					PullRequestComment.layerTest({
+						find: (_issueNumber, marker) =>
+							Effect.sync(() => {
+								markers.push(marker);
+								return Option.none();
+							}),
+					}),
+					Layer.succeed(Repo, RepoRef.make({ owner: "savvy-web", repo: "silk-release-action" })),
+				),
+			),
+			Effect.provide(Logger.layer([])),
+			Effect.runPromise,
+		);
+
+		expect(markers[0]?.html).toBe("<!-- savvy-web:some-other-key -->");
 	});
 });

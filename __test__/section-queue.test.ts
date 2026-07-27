@@ -7,12 +7,10 @@
 
 import { Duration, Effect, Layer } from "effect";
 import { TestClock } from "effect/testing";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Section } from "../src/utils/managed-sections.js";
 import { makeSectionQueue } from "../src/utils/section-queue.js";
-
-/** The live recorder for the queue under test, for mid-scope assertions. */
-let writesSoFar: Array<string> = [];
+import { cleanupTestEnvironment, setupTestEnvironment } from "./utils/github-mocks.js";
 
 const HEAD = "abc1234";
 const WINDOW = Duration.seconds(10);
@@ -24,12 +22,21 @@ const section = (key: string, body: string): Section => ({
 	body,
 });
 
-/** Runs `use` against a queue, recording every body it publishes. */
+/**
+ * Runs `use` against a queue, recording every body it publishes.
+ *
+ * @remarks
+ * The recorder is passed **into** `use` as its second argument rather than kept
+ * in a module-level binding: a shared binding is only correct for the most
+ * recent caller, so any test reading it depends on suite ordering.
+ */
 const withQueue = <A>(
-	use: (q: { update: (s: Section) => Effect.Effect<void>; flush: Effect.Effect<void> }) => Effect.Effect<A>,
+	use: (
+		q: { update: (s: Section) => Effect.Effect<void>; flush: Effect.Effect<void> },
+		writes: ReadonlyArray<string>,
+	) => Effect.Effect<A>,
 ): Promise<Array<string>> => {
 	const writes: Array<string> = [];
-	writesSoFar = writes;
 	const program = Effect.gen(function* () {
 		const queue = yield* makeSectionQueue({
 			headSha: HEAD,
@@ -37,15 +44,23 @@ const withQueue = <A>(
 			read: Effect.sync(() => writes.at(-1) ?? ""),
 			publish: (body) => Effect.sync(() => void writes.push(body)),
 		});
-		yield* use(queue);
+		yield* use(queue, writes);
 	});
 
-	return Effect.runPromise(
-		Effect.scoped(program).pipe(Effect.provide(Layer.mergeAll(TestClock.layer()))) as Effect.Effect<void, never, never>,
-	).then(() => writes);
+	// No cast: `Effect.scoped` discharges `Scope.Scope` and `TestClock.layer()`
+	// provides the rest, so the requirement channel is already `never`. Casting
+	// here would hide a genuine service gap rather than prove there is none.
+	return Effect.runPromise(Effect.scoped(program).pipe(Effect.provide(Layer.mergeAll(TestClock.layer())))).then(
+		() => writes,
+	);
 };
 
 describe("makeSectionQueue", () => {
+	// Shared harness: clears mocks and silences stdout/stderr so a log line
+	// added to the module under test cannot start leaking into the reporter.
+	beforeEach(() => setupTestEnvironment({ suppressOutput: true }));
+	afterEach(() => cleanupTestEnvironment());
+
 	it("writes nothing while nothing is queued", async () => {
 		const writes = await withQueue(() => Effect.yieldNow.pipe(Effect.andThen(TestClock.adjust(Duration.minutes(5)))));
 
@@ -95,12 +110,12 @@ describe("makeSectionQueue", () => {
 		// would mask what this asserts. The question is whether a write happens
 		// while the window is still open, not whether one ever happens.
 		let midWindow = -1;
-		await withQueue((q) =>
+		await withQueue((q, writes) =>
 			Effect.gen(function* () {
 				yield* q.update(section("plan", "table"));
 				yield* Effect.yieldNow;
 				yield* TestClock.adjust(Duration.seconds(9));
-				midWindow = writesSoFar.length;
+				midWindow = writes.length;
 			}),
 		);
 
@@ -135,15 +150,24 @@ describe("makeSectionQueue", () => {
 	});
 
 	it("flushes on demand without waiting for the window", async () => {
-		const writes = await withQueue((q) =>
+		// Observed INSIDE the scope, like the window test above. Closing the scope
+		// flushes too, so asserting after `withQueue` resolves would hold whether or
+		// not `flush` did anything — the test could not fail on a no-op `flush`.
+		let afterFlush = -1;
+		let bodyAtFlush = "";
+		await withQueue((q, writes) =>
 			Effect.gen(function* () {
 				yield* q.update(section("plan", "urgent"));
 				yield* q.flush;
+				afterFlush = writes.length;
+				bodyAtFlush = writes[0] ?? "";
 			}),
 		);
 
-		expect(writes.length).toBeGreaterThanOrEqual(1);
-		expect(writes[0]).toContain("urgent");
+		// The window is 10s and no clock time was advanced, so this write can only
+		// be `flush`'s doing.
+		expect(afterFlush).toBe(1);
+		expect(bodyAtFlush).toContain("urgent");
 	});
 
 	it("keeps a section's position when it is updated again", async () => {

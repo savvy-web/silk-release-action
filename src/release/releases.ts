@@ -169,8 +169,19 @@ const buildReleaseNotes = (
 			const wsPkg = yield* discovery.getPackage(pkg.name).pipe(Effect.option);
 			const pkgPath = Option.isSome(wsPkg) ? wsPkg.value.path : undefined;
 			const changelogPaths: string[] = [];
-			if (pkgPath) changelogPaths.push(join(pkgPath, "CHANGELOG.md"));
-			changelogPaths.push(join(process.cwd(), "CHANGELOG.md"));
+			if (pkgPath) {
+				changelogPaths.push(join(pkgPath, "CHANGELOG.md"));
+			} else {
+				// The root CHANGELOG is a fallback for a package whose OWN path could
+				// not be resolved — not for one that resolved fine but has no
+				// changelog yet (a first release, or one changesets wrote no notes
+				// for). Appending it unconditionally meant that in a monorepo whose
+				// root CHANGELOG happens to carry a heading for the same version
+				// string, `extractVersionReleaseNotes` matched it and that package's
+				// notes silently became the root's — worse than the generic default
+				// below, because it reads authoritative.
+				changelogPaths.push(join(process.cwd(), "CHANGELOG.md"));
+			}
 
 			let changelog: string | undefined;
 			for (const cp of changelogPaths) {

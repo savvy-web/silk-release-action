@@ -23,9 +23,10 @@
 import { readFile } from "node:fs/promises";
 import { AppIdentity, GitHubApp, GitHubAppError, InstallationToken } from "@effected/github";
 import { ActionEnvironment, ActionInput, ActionOutputs, ActionState } from "@effected/github-actions";
-import { DateTime, Effect, Layer, Redacted, Schema } from "effect";
-import { describe, expect, it } from "vitest";
+import { DateTime, Effect, Layer, Logger, Redacted, Schema } from "effect";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { pre } from "../src/pre.js";
+import { cleanupTestEnvironment, setupTestEnvironment } from "./utils/github-mocks.js";
 
 /** What the fake runner recorded while `pre` ran. */
 interface Recorder {
@@ -102,7 +103,11 @@ const makeLayer = (recorder: Recorder, inputs: Record<string, string>) =>
 	);
 
 const runPre = (recorder: Recorder, inputs: Record<string, string>): Promise<void> =>
-	pre.pipe(Effect.provide(makeLayer(recorder, inputs)), Effect.runPromise);
+	// `Logger.layer([])` removes every logger from the runtime. Without it `pre`'s
+	// `Effect.log*` calls reach Effect's DEFAULT logger, which writes via
+	// `console.log` — not `process.stdout.write`, so `suppressOutput` cannot
+	// catch it — and leak into the reporter.
+	pre.pipe(Effect.provide(makeLayer(recorder, inputs)), Effect.provide(Logger.layer([])), Effect.runPromise);
 
 const BASE_INPUTS = {
 	"INPUT_APP-CLIENT-ID": "test-client-id",
@@ -113,6 +118,11 @@ const outputValue = (recorder: Recorder, name: string): string | undefined =>
 	recorder.outputs.find((o) => o.name === name)?.value;
 
 describe("pre", () => {
+	// Mock hygiene between cases. Log suppression is NOT this — it is the
+	// `Logger.layer([])` at each run site; see the note on `runPre`.
+	beforeEach(() => setupTestEnvironment({ suppressOutput: true }));
+	afterEach(() => cleanupTestEnvironment());
+
 	it("provisions a token and exposes it as action outputs", async () => {
 		const recorder = makeRecorder();
 		await runPre(recorder, BASE_INPUTS);
@@ -225,7 +235,9 @@ describe("pre", () => {
 			ActionInput.layer(BASE_INPUTS),
 		);
 
-		await pre.pipe(Effect.provide(layer), Effect.runPromise);
+		// Same `Logger.layer([])` as `runPre`; this case builds its own layer stack
+		// rather than going through the helper, so it needs its own.
+		await pre.pipe(Effect.provide(layer), Effect.provide(Logger.layer([])), Effect.runPromise);
 
 		expect(outputValue(recorder, "token")).toBe(TOKEN);
 		expect(outputValue(recorder, "app-slug")).toBeUndefined();

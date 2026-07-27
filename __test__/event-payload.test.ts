@@ -8,18 +8,35 @@
 // `makeTest` with a real FileSystem is what makes these assertions mean
 // anything — the same trap cost a green-but-blind suite earlier.
 
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
 import { ActionEnvironment } from "@effected/github-actions";
 import { Effect, Layer, Option } from "effect";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { readEventPayload, readEventPullRequestNumber } from "../src/utils/event-payload.js";
 
+/**
+ * Temp directories created by `withEvent`, removed in `afterEach`.
+ *
+ * @remarks
+ * Each call used to `mkdtempSync` a fresh directory and leave it behind, so a
+ * full run littered `tmpdir()`. Tracked here and cleaned up per test.
+ */
+const tempDirs: Array<string> = [];
+
 const withEvent = (contents: string | undefined, path?: string) => {
-	const eventPath =
-		path ?? (contents === undefined ? "" : join(mkdtempSync(join(tmpdir(), "silk-event-")), "event.json"));
+	let eventPath: string;
+	if (path !== undefined) {
+		eventPath = path;
+	} else if (contents === undefined) {
+		eventPath = "";
+	} else {
+		const dir = mkdtempSync(join(tmpdir(), "silk-event-"));
+		tempDirs.push(dir);
+		eventPath = join(dir, "event.json");
+	}
 	if (contents !== undefined && path === undefined) writeFileSync(eventPath, contents);
 
 	return Layer.effect(ActionEnvironment)(
@@ -39,7 +56,12 @@ const runPayload = (contents: string | undefined, path?: string) =>
 const runPrNumber = (contents: string | undefined, path?: string) =>
 	Effect.runPromise(readEventPullRequestNumber().pipe(Effect.provide(withEvent(contents, path))));
 
+const cleanupTempDirs = (): void => {
+	for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+};
+
 describe("readEventPayload", () => {
+	afterEach(cleanupTempDirs);
 	it("reads the fields the action actually uses", async () => {
 		const payload = await runPayload(
 			JSON.stringify({
@@ -105,6 +127,8 @@ describe("readEventPayload", () => {
 });
 
 describe("readEventPullRequestNumber", () => {
+	afterEach(cleanupTempDirs);
+
 	it("finds the number when the event carries a pull request", async () => {
 		const number = await runPrNumber(JSON.stringify({ pull_request: { number: 7 } }));
 

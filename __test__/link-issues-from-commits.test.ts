@@ -40,7 +40,7 @@ import {
 } from "@effected/github";
 import { ActionEnvironment, ActionInput, ActionOutputs } from "@effected/github-actions";
 import { Effect, Layer, Logger, Option } from "effect";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import type { LinkIssuesResult } from "../src/utils/link-issues-from-commits.js";
 import { getLinkedIssuesFromCommits, linkIssuesFromCommits } from "../src/utils/link-issues-from-commits.js";
 
@@ -192,6 +192,12 @@ const compareCalls: Array<{ base: string; head: string }> = [];
  */
 const listCalls: Array<{ base: string | undefined; state: string | undefined; head: string | undefined }> = [];
 
+/** Clears both module-level recorders; installed as a `beforeEach` in each suite. */
+const resetRecorders = (): void => {
+	compareCalls.length = 0;
+	listCalls.length = 0;
+};
+
 const gitHubServices = (f: Fixtures): Layer.Layer<GitHubCommit | GitHubIssue | PullRequest | Repo> =>
 	Layer.mergeAll(
 		GitHubCommit.layerTest({
@@ -313,9 +319,13 @@ const runStage = (f: Fixtures, dryRun = false): Promise<LinkIssuesResult> => {
 // --- getLinkedIssuesFromCommits ------------------------------------------
 
 describe("getLinkedIssuesFromCommits", () => {
+	// Both recorders are module-level and shared across the whole file. Resetting
+	// them here rather than by hand at the top of individual cases means a new
+	// test that asserts on them cannot silently inherit the previous test's
+	// entries — a false green or a spurious failure depending on suite order.
+	beforeEach(resetRecorders);
+
 	it("compares against the merge commit of the last merged release PR", async () => {
-		compareCalls.length = 0;
-		listCalls.length = 0;
 		const f = makeFixtures({
 			releasePrs: [releasePr(245, "sha-245")],
 			comparisons: new Map([[`sha-245...${TARGET_BRANCH}`, [commit("commit-abc", "feat: add feature")]]]),
@@ -330,7 +340,6 @@ describe("getLinkedIssuesFromCommits", () => {
 	});
 
 	it("filters the head branch locally rather than through the list option", async () => {
-		listCalls.length = 0;
 		const f = makeFixtures({ releasePrs: [releasePr(245, "sha-245")] });
 
 		await runCollect(f);
@@ -346,7 +355,6 @@ describe("getLinkedIssuesFromCommits", () => {
 	});
 
 	it("picks the newest release PR by number, not by any version ordering", async () => {
-		compareCalls.length = 0;
 		const f = makeFixtures({
 			// The regression guard. Release #244 published the package holding the
 			// repository's numerically highest version, #245 published lower-versioned
@@ -363,7 +371,6 @@ describe("getLinkedIssuesFromCommits", () => {
 	});
 
 	it("ignores closed-but-unmerged PRs and PRs from another head branch", async () => {
-		compareCalls.length = 0;
 		const f = makeFixtures({
 			releasePrs: [
 				// Higher-numbered but abandoned: closed without merging.
@@ -381,7 +388,6 @@ describe("getLinkedIssuesFromCommits", () => {
 	});
 
 	it("skips a merged release PR carrying no merge commit SHA", async () => {
-		compareCalls.length = 0;
 		const f = makeFixtures({
 			releasePrs: [releasePr(246, undefined), releasePr(245, "sha-245")],
 			comparisons: new Map([[`sha-245...${TARGET_BRANCH}`, [commit("commit-abc", "feat: add feature")]]]),
@@ -393,7 +399,6 @@ describe("getLinkedIssuesFromCommits", () => {
 	});
 
 	it("falls back to listing the branch when nothing has been released yet", async () => {
-		compareCalls.length = 0;
 		const f = makeFixtures({
 			releasePrs: [],
 			commitLists: new Map([
@@ -409,7 +414,6 @@ describe("getLinkedIssuesFromCommits", () => {
 	});
 
 	it("degrades to the list path when listing pull requests fails outright", async () => {
-		compareCalls.length = 0;
 		const f = makeFixtures({
 			releasePrs: "fail",
 			commitLists: new Map([[TARGET_BRANCH, [commit("sha-only", "fix: bug\n\nCloses #5")]]]),
@@ -553,6 +557,8 @@ describe("getLinkedIssuesFromCommits", () => {
 // --- linkIssuesFromCommits (top-level stage) -----------------------------
 
 describe("linkIssuesFromCommits", () => {
+	beforeEach(resetRecorders);
+
 	const richFixtures = (): Fixtures =>
 		makeFixtures({
 			commitLists: new Map([

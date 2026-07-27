@@ -982,7 +982,14 @@ export const detectReleases = (
  * @public
  */
 export interface BuildSbomResult {
-	/** True when `ci:build` succeeded and every package's SBOM generated. */
+	/**
+	 * True when `ci:build` succeeded.
+	 *
+	 * @remarks
+	 * The caller's fail-fast gate. Deliberately NOT affected by
+	 * {@link BuildSbomResult.sbomFailures} — a failed SBOM write costs the
+	 * release its SBOM asset, not the release itself.
+	 */
 	readonly ok: boolean;
 	/** `ci:build` stderr/output when the build failed. */
 	readonly buildError?: string;
@@ -1012,7 +1019,9 @@ export interface BuildSbomResult {
  * an owned model over validated values has nothing to fail at — so the
  * predecessor's `SbomError` generation channel is gone along with the package
  * that raised it. `Sbom.write` is the one fallible member, and it stays
- * non-fatal exactly as the predecessor's `save` did.
+ * non-fatal exactly as the predecessor's `save` did — so a write failure names
+ * the package in `sbomFailures` and leaves `ok` **true**. Only a failed
+ * `ci:build` sets `ok` to `false`.
  *
  * @public
  */
@@ -1119,8 +1128,19 @@ export const runBuildAndSbom = (
 				}
 
 				yield* Effect.logInfo(`  ✅ ${detected.length} package(s) ready`);
+				// `ok: true` — an SBOM WRITE failure is not a release-blocking event.
+				//
+				// This used to be `sbomFailures.length === 0`, which contradicted both
+				// the remark on this function and the warning above it ("release asset
+				// will be skipped"): `runPublishing` treats `!ok` as a fail-fast gate,
+				// so an unwritable package directory aborted Phase 3 entirely and
+				// failed the workflow for a release whose build had succeeded.
+				//
+				// `ok` now means what the field says it means — `ci:build` succeeded —
+				// and `sbomFailures` is informational, naming the packages that will
+				// have no SBOM asset attached.
 				return {
-					ok: sbomFailures.length === 0,
+					ok: true,
 					sbomFailures,
 					packageCount: detected.length,
 					sbomPaths,

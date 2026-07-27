@@ -6,9 +6,10 @@
  */
 
 import { WorkspaceDiscovery, WorkspacePackage } from "@effected/workspaces";
-import { Effect, Layer } from "effect";
-import { describe, expect, it } from "vitest";
+import { Effect, Layer, Logger } from "effect";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { cleanupTestEnvironment, setupTestEnvironment } from "../../__test__/utils/github-mocks.js";
 import { sortReleasesTopologically } from "./sort-releases-topologically.js";
 
 /** Build a WorkspacePackage fixture whose workspace dependency edges point at `deps`. */
@@ -41,6 +42,13 @@ const makeDiscoveryLayer = (packages: ReadonlyArray<WorkspacePackage>): Layer.La
 	});
 
 describe("sortReleasesTopologically", () => {
+	// Mock hygiene between cases. Log suppression is the `Logger.layer([])`
+	// provided at each run site: the cyclic-dependency fallback warns through
+	// Effect's DEFAULT logger, which writes via `console.log` — not
+	// `process.stdout.write`, so `suppressOutput` cannot catch it.
+	beforeEach(() => setupTestEnvironment({ suppressOutput: true }));
+	afterEach(() => cleanupTestEnvironment());
+
 	it("orders names dependency-first using the workspace dependency graph", async () => {
 		// dep depends on nothing; a and b each depend on dep.
 		const layer = makeDiscoveryLayer([
@@ -51,7 +59,10 @@ describe("sortReleasesTopologically", () => {
 
 		// Caller passes them in detection (alphabetical) order.
 		const result = await Effect.runPromise(
-			sortReleasesTopologically(["@scope/a", "@scope/b", "@scope/dep"]).pipe(Effect.provide(layer)),
+			sortReleasesTopologically(["@scope/a", "@scope/b", "@scope/dep"]).pipe(
+				Effect.provide(layer),
+				Effect.provide(Logger.layer([])),
+			),
 		);
 
 		expect(result).toEqual(["@scope/dep", "@scope/a", "@scope/b"]);
@@ -67,7 +78,10 @@ describe("sortReleasesTopologically", () => {
 		]);
 
 		const result = await Effect.runPromise(
-			sortReleasesTopologically(["@scope/a", "@scope/dep"]).pipe(Effect.provide(layer)),
+			sortReleasesTopologically(["@scope/a", "@scope/dep"]).pipe(
+				Effect.provide(layer),
+				Effect.provide(Logger.layer([])),
+			),
 		);
 
 		expect(result).toEqual(["@scope/dep", "@scope/a"]);
@@ -79,7 +93,10 @@ describe("sortReleasesTopologically", () => {
 		const layer = makeDiscoveryLayer([pkg("@scope/a", ["@scope/b"]), pkg("@scope/b", ["@scope/a"]), pkg("@scope/dep")]);
 
 		const result = await Effect.runPromise(
-			sortReleasesTopologically(["@scope/a", "@scope/b", "@scope/dep"]).pipe(Effect.provide(layer)),
+			sortReleasesTopologically(["@scope/a", "@scope/b", "@scope/dep"]).pipe(
+				Effect.provide(layer),
+				Effect.provide(Logger.layer([])),
+			),
 		);
 
 		expect(result).toEqual(["@scope/a", "@scope/b", "@scope/dep"]);

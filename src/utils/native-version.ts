@@ -152,8 +152,13 @@ export const runNativeVersion = (
 		// `Run.text` (not `Run.collect`) because a non-zero exit must FAIL here,
 		// matching the `CommandRunner.exec` it replaces: a reset that silently did
 		// nothing would hand the retry the same dirty tree.
-		yield* Run.text(ChildProcess.make("git", ["checkout", "--", "."]));
-		yield* Run.text(ChildProcess.make("git", ["clean", "-fd"]));
+		//
+		// Both are pinned to `cwd` — the SAME directory `requireValidConfig` and
+		// `planner.apply` operate on. Without it they run in the ambient process
+		// CWD, so when `cwd !== process.cwd()` the reset cleans the wrong tree and
+		// the retry then re-applies onto a still half-applied release tree.
+		yield* Run.text(ChildProcess.make("git", ["checkout", "--", "."], { cwd }));
+		yield* Run.text(ChildProcess.make("git", ["clean", "-fd"], { cwd }));
 		yield* Effect.sleep(Duration.seconds(1));
 		return yield* applyOnce();
 	});

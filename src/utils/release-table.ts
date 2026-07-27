@@ -169,10 +169,25 @@ export const toValidatedReleaseRows = (packages: ReadonlyArray<ValidatedPackage>
  * reports `patch`: the column describes severity, and overstating it would be
  * worse than understating it.
  */
+/**
+ * The numeric `major.minor.patch` core of a SemVer string, as numbers.
+ *
+ * @remarks
+ * Splitting the raw string on `.` breaks on any prerelease or build suffix:
+ * `"2.0.0-rc.1"` yields `["2", "0", "0-rc", "1"]`, whose third element is
+ * `NaN`, which sent {@link deriveBump}'s guard down the `patch` path and
+ * rendered a major transition as `🟢 patch`. Trimming at the first `-` or `+`
+ * first keeps the severity honest for prereleases.
+ */
+const semverCore = (version: string): ReadonlyArray<number> => {
+	const core = version.split("-")[0]?.split("+")[0] ?? "";
+	return core.split(".").map(Number);
+};
+
 const deriveBump = (baseVersion: string | null, version: string): "major" | "minor" | "patch" => {
 	if (baseVersion === null) return "patch";
-	const before = baseVersion.split(".").map(Number);
-	const after = version.split(".").map(Number);
+	const before = semverCore(baseVersion);
+	const after = semverCore(version);
 	if (before.length < 3 || after.length < 3 || [...before, ...after].some(Number.isNaN)) return "patch";
 	if ((after[0] ?? 0) > (before[0] ?? 0)) return "major";
 	if (after[0] === before[0] && (after[1] ?? 0) > (before[1] ?? 0)) return "minor";

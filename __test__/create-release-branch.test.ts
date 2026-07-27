@@ -48,10 +48,11 @@ import { ActionEnvironment, ActionInput, ActionOutputs, ActionState, ActionState
 import { PublishabilityDetector, WorkspaceDiscovery } from "@effected/workspaces";
 import { Changesets } from "@savvy-web/silk-effects";
 import { Effect, FileSystem, Layer, Logger, Option } from "effect";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ChangesetConfig } from "../src/release/changeset-config.js";
 import type { CreateReleaseBranchResult } from "../src/utils/create-release-branch.js";
 import { createReleaseBranch } from "../src/utils/create-release-branch.js";
+import { cleanupTestEnvironment, setupTestEnvironment } from "./utils/github-mocks.js";
 
 const RELEASE_BRANCH = "changeset-release/main";
 const TARGET_BRANCH = "main";
@@ -314,7 +315,6 @@ const runStage = async (
 	const inputs = ActionInput.layer({
 		"INPUT_RELEASE-BRANCH": RELEASE_BRANCH,
 		"INPUT_TARGET-BRANCH": TARGET_BRANCH,
-		"INPUT_PR-TITLE-PREFIX": "chore: release",
 		"INPUT_DRY-RUN": "false",
 	});
 	const result = await Effect.runPromise(
@@ -326,6 +326,11 @@ const runStage = async (
 const argvOf = (spawns: ReadonlyArray<SpawnRecord>): string[] => spawns.map((s) => [s.command, ...s.args].join(" "));
 
 describe("createReleaseBranch", () => {
+	// Shared harness: clears mocks and silences stdout/stderr so a log line
+	// added to the module under test cannot start leaking into the reporter.
+	beforeEach(() => setupTestEnvironment({ suppressOutput: true }));
+	afterEach(() => cleanupTestEnvironment());
+
 	it("creates the release branch and PR, and applies automated/release labels", async () => {
 		const f = makeFixtures();
 
@@ -420,8 +425,14 @@ describe("createReleaseBranch", () => {
 		const f = makeFixtures();
 		// Planner test layer with no apply fixture → apply fails with ReleasePlanError.
 		const failingPlanner = Changesets.makeReleasePlannerTest({});
+		// The tagged error specifically, by `_tag` rather than by message. The old
+		// `/ReleasePlanError|not provided/` also matched a missing-service error, so
+		// the test stayed green if `plannerLayer` stopped being wired at all rather
+		// than failing inside `apply`. Matching on the rendered message would not
+		// fix that either — `ReleasePlanError.message` reads "Release plan error
+		// (apply): …" and never contains its own tag.
 		await expect(
 			runStage(f, { porcelain: PORCELAIN_CHANGED, porcelainZ: "M  package.json\0" }, failingPlanner),
-		).rejects.toThrow(/ReleasePlanError|not provided/);
+		).rejects.toMatchObject({ _tag: "ReleasePlanError", phase: "apply" });
 	});
 });

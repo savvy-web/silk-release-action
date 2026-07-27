@@ -118,6 +118,12 @@ describe("runNativeVersion", () => {
 		}
 	});
 
+	// NOTE: this case spends a real second in `runNativeVersion`'s retry backoff.
+	// `vi.useFakeTimers()` does not help — `Effect.sleep` goes through Effect's
+	// `Clock` service, not a bare `setTimeout`. The `TestClock` alternative needs
+	// the forked effect to have reached the sleep before the clock is advanced,
+	// and the filesystem and spawn work ahead of it makes that ordering racy. One
+	// second per run is the cheaper trade until the backoff is injectable.
 	it("resets the working tree and retries once on a transient network failure", async () => {
 		let calls = 0;
 		const planner = Layer.succeed(Changesets.ReleasePlanner, {
@@ -144,6 +150,36 @@ describe("runNativeVersion", () => {
 		// Both halves of the reset, in order. `@effected/git` ships neither, and
 		// its `checkout` refuses `--`, so these are raw commands by necessity.
 		expect(spawner.spawns.map((s) => [s.command, ...s.args].join(" "))).toEqual(["git checkout -- .", "git clean -fd"]);
+	});
+
+	it("runs the reset commands in the directory it was given, not the process cwd", async () => {
+		// `git clean -fd` DELETES untracked files. Run in the ambient process CWD
+		// instead of the directory under release, it cleans the wrong tree — and
+		// the retry then re-applies onto a still half-applied one. The repo root is
+		// a plausible ambient CWD here, so a regression is genuinely destructive.
+		let calls = 0;
+		const planner = Layer.succeed(Changesets.ReleasePlanner, {
+			plan: () => Effect.die("unused"),
+			preview: () => Effect.die("unused"),
+			apply: () => {
+				calls += 1;
+				return calls === 1
+					? Effect.fail(
+							new Changesets.ReleasePlanError({ phase: "apply", reason: "request to api failed: ECONNRESET" }),
+						)
+					: Effect.succeed(applied);
+			},
+		});
+		const spawner = ScriptedSpawner.make(() => ({ exit: 0, stdout: "", stderr: "" }));
+		const layer = Layer.mergeAll(planner, inspectorValid, fsWithConfig, spawner.layer);
+
+		const exit = await run(runNativeVersion("/somewhere/else").pipe(Effect.provide(layer)));
+
+		expect(Exit.isSuccess(exit)).toBe(true);
+		expect(spawner.spawns).toHaveLength(2);
+		for (const spawn of spawner.spawns) {
+			expect(spawn.options?.cwd).toBe("/somewhere/else");
+		}
 	});
 
 	it("fails without retry on a non-transient ReleasePlanError", async () => {

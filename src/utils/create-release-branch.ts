@@ -344,9 +344,30 @@ export const createReleaseBranch = (): Effect.Effect<
 			yield* Effect.logInfo(`  Head: ${releaseBranch}`);
 			yield* Effect.logInfo(`  Title: ${prTitle}`);
 
-			const created = yield* pr.create({ title: prTitle, head: releaseBranch, base: targetBranch, body: prBody }).pipe(
-				Effect.tapError((error) => Effect.logWarning(`PR creation failed, retrying: ${error.reason}`)),
-				Effect.retry({ times: 1, schedule: undefined }),
+			// `pr.create` is a NON-IDEMPOTENT write, so the retry cannot simply call
+			// it again: if the first attempt reached GitHub and only the response
+			// was lost, a blind retry either opens a duplicate release PR or is
+			// rejected with 422 — turning a transient blip into a hard failure of
+			// the whole stage.
+			//
+			// So the retry re-lists open PRs on this head first and adopts one if it
+			// is there. Only a genuinely absent PR is created again.
+			const createOnce = pr.create({ title: prTitle, head: releaseBranch, base: targetBranch, body: prBody });
+			const created = yield* createOnce.pipe(
+				Effect.catch((error) =>
+					Effect.gen(function* () {
+						yield* Effect.logWarning(`PR creation failed, retrying: ${error.reason}`);
+						const existing = yield* pr
+							.list({ state: "open", head: releaseBranch })
+							.pipe(Effect.catch(() => Effect.succeed([])));
+						const adopted = existing[0];
+						if (adopted !== undefined) {
+							yield* Effect.logInfo(`✓ First attempt had in fact created PR #${adopted.number}; adopting it`);
+							return adopted;
+						}
+						return yield* createOnce;
+					}),
+				),
 			);
 
 			prNumber = created.number;
@@ -355,7 +376,10 @@ export const createReleaseBranch = (): Effect.Effect<
 
 			yield* Effect.logInfo(`Adding labels to PR #${prNumber}...`);
 			yield* pr.addLabels(prNumber, ["automated", "release"]);
-			yield* applyAutoMerge(created, false);
+			// `dryRun`, not a literal `false`. This sits inside the `!dryRun` arm so
+			// the two agree today, but the literal would defeat `applyAutoMerge`'s
+			// own dry-run guard if this block were ever restructured.
+			yield* applyAutoMerge(created, dryRun);
 			yield* Effect.logInfo(`✓ Created PR #${prNumber}: ${prUrl}`);
 		} else {
 			yield* Effect.logInfo(`[DRY RUN] Would create PR with title: ${prTitle}`);

@@ -45,11 +45,12 @@ import { ActionEnvironment, ActionInput, ActionOutputs, ActionState, ActionState
 import { PublishabilityDetector, WorkspaceDiscovery } from "@effected/workspaces";
 import { Changesets } from "@savvy-web/silk-effects";
 import { DateTime, Effect, FileSystem, Layer, Logger, Option } from "effect";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ChangesetConfig } from "../src/release/changeset-config.js";
 import { MANAGED_END, MANAGED_START } from "../src/utils/pr-body.js";
 import type { LinkedIssue, UpdateReleaseBranchResult } from "../src/utils/update-release-branch.js";
 import { updateReleaseBranch } from "../src/utils/update-release-branch.js";
+import { cleanupTestEnvironment, setupTestEnvironment } from "./utils/github-mocks.js";
 
 const RELEASE_BRANCH = "changeset-release/main";
 const TARGET_BRANCH = "main";
@@ -232,8 +233,16 @@ interface GitOptions {
 const gitScript = (options: GitOptions) => (command: string, args: ReadonlyArray<string>) => {
 	if (command !== "git") return ScriptedSpawner.notFound(command);
 	const argv = args.join(" ");
-	if (argv === "status --porcelain")
-		return { exit: options.porcelainExit ?? 0, stdout: options.porcelain ?? "", stderr: "fatal: not a git repository" };
+	if (argv === "status --porcelain") {
+		const exit = options.porcelainExit ?? 0;
+		// Only the failure case carries the fatal stderr. Emitting it on exit 0 too
+		// is contradictory and misleads the next reader debugging a failure.
+		return {
+			exit,
+			stdout: options.porcelain ?? "",
+			stderr: exit === 0 ? "" : "fatal: not a git repository",
+		};
+	}
 	if (argv === "status --porcelain -z") return { exit: 0, stdout: options.porcelainZ ?? "", stderr: "" };
 	if (args[0] === "log") {
 		const path = args[args.length - 1];
@@ -434,6 +443,11 @@ const withCommit: GitOptions = { porcelain: PORCELAIN_CHANGED, porcelainZ: "M  p
 const noVersionChange: GitOptions = { porcelain: "" };
 
 describe("updateReleaseBranch", () => {
+	// Shared harness: clears mocks and silences stdout/stderr so a log line
+	// added to the module under test cannot start leaking into the reporter.
+	beforeEach(() => setupTestEnvironment({ suppressOutput: true }));
+	afterEach(() => cleanupTestEnvironment());
+
 	it("creates a release PR when none exists and applies the automated/release labels", async () => {
 		const f = makeFixtures();
 

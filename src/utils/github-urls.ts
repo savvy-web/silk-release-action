@@ -74,12 +74,39 @@ export const workflowRunUrl = (serverUrl: string, owner: string, repo: string, r
 	`${serverUrl}/${owner}/${repo}/actions/runs/${runId}`;
 
 /**
+ * Percent-encode a tag for use in a URL path, per path segment.
+ *
+ * @remarks
+ * Deliberately NOT `encodeURIComponent(tag)`. Monorepo tags are scoped —
+ * `@scope/pkg@1.0.0` — and GitHub's own canonical `html_url` for such a release
+ * encodes the `@` but leaves the `/` as a **real path separator**:
+ *
+ * ```text
+ * @changesets/cli@2.31.1
+ *   → /releases/tag/%40changesets/cli%402.31.1
+ * ```
+ *
+ * (Verified against the Releases API for `changesets/changesets` and
+ * `chakra-ui/chakra-ui`.) Encoding the whole tag would emit `%2F` instead and
+ * no longer match the URL GitHub itself publishes; leaving it raw emits a bare
+ * `@`, which resolves but is not the canonical form. Encoding each segment
+ * gives exactly what GitHub gives.
+ */
+const encodeTagPath = (tag: string): string => tag.split("/").map(encodeURIComponent).join("/");
+
+/**
  * A link to a release, by tag.
+ *
+ * @param serverUrl - The GitHub server origin, e.g. `https://github.com`.
+ * @param owner - The repository owner.
+ * @param repo - The repository name.
+ * @param tag - The release tag; scoped monorepo tags are encoded per segment.
+ * @returns The canonical release URL.
  *
  * @public
  */
 export const releaseTagUrl = (serverUrl: string, owner: string, repo: string, tag: string): string =>
-	`${serverUrl}/${owner}/${repo}/releases/tag/${tag}`;
+	`${serverUrl}/${owner}/${repo}/releases/tag/${encodeTagPath(tag)}`;
 
 /**
  * A link to an organisation's npm package page on GitHub Packages.

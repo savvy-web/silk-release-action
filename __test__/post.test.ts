@@ -18,15 +18,26 @@
 import type { GitHubAppShape } from "@effected/github";
 import { GitHubApp, InstallationToken } from "@effected/github";
 import { ActionInput, ActionState } from "@effected/github-actions";
-import { DateTime, Effect, Layer, Option, Redacted } from "effect";
-import { describe, expect, it } from "vitest";
+import { DateTime, Effect, Layer, Logger, Option, Redacted } from "effect";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { post } from "../src/post.js";
+import { cleanupTestEnvironment, setupTestEnvironment } from "./utils/github-mocks.js";
 
 interface Recorder {
 	readonly revoked: Array<string>;
 }
 
 const TOKEN = "ghs_test_token_123";
+
+/**
+ * The key `GitHubToken.dispose` reads the saved envelope from.
+ *
+ * @remarks
+ * The kit's own `DEFAULT_KEY`. Spelled literally so the fixture answers exactly
+ * the two keys `post` reads and `Option.none()` for everything else — see the
+ * note on `getOptional` below.
+ */
+const TOKEN_STATE_KEY = "githubToken";
 
 /**
  * The token envelope as `ActionState.getOptional` hands it back.
@@ -58,13 +69,22 @@ const makeLayer = (
 ): Layer.Layer<ActionState | GitHubApp> =>
 	Layer.mergeAll(
 		ActionState.layerTest({
+			// Branches on the two keys `post` actually reads and answers
+			// `Option.none()` for anything else. A catch-all `else` returning the
+			// token envelope would defeat this file's die-loudly posture: a second
+			// optional state read added to `post` would silently receive an
+			// `InstallationToken`, the resulting throw would be swallowed by the
+			// defect handling, and these tests would stay green while revocation
+			// quietly changed.
 			getOptional: ((key: string) =>
 				Effect.succeed(
 					key === "startTime"
 						? options.startedAt === undefined
 							? Option.none()
 							: Option.some({ startedAt: options.startedAt })
-						: Option.some(savedTokenEnvelope),
+						: key === TOKEN_STATE_KEY
+							? Option.some(savedTokenEnvelope)
+							: Option.none(),
 				)) as ActionState["Service"]["getOptional"],
 		}),
 		GitHubApp.layerTest({
@@ -79,9 +99,19 @@ const runPost = (
 	inputs: Record<string, string> = {},
 	options: StateOptions = {},
 	appOverrides: Partial<GitHubAppShape> = {},
-): Promise<void> => post.pipe(Effect.provide(makeLayer(recorder, inputs, options, appOverrides)), Effect.runPromise);
+): Promise<void> =>
+	post.pipe(
+		Effect.provide(makeLayer(recorder, inputs, options, appOverrides)),
+		Effect.provide(Logger.layer([])),
+		Effect.runPromise,
+	);
 
 describe("post", () => {
+	// Revocation logs through `ActionLogger` (stdout); suppress it so the suite
+	// does not leak 5 log lines into the reporter.
+	beforeEach(() => setupTestEnvironment({ suppressOutput: true }));
+	afterEach(() => cleanupTestEnvironment());
+
 	it("should revoke the installation token when no skip is requested", async () => {
 		const recorder: Recorder = { revoked: [] };
 

@@ -24,9 +24,10 @@ import type { CheckRunOutput } from "@effected/github";
 import { CheckRun, CheckRunRef, Repo, RepoRef } from "@effected/github";
 import { ActionEnvironment, ActionInput, ActionOutputs } from "@effected/github-actions";
 import { Effect, Layer, Logger } from "effect";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BuildValidationResult } from "../src/utils/validate-builds.js";
 import { validateBuilds } from "../src/utils/validate-builds.js";
+import { cleanupTestEnvironment, setupTestEnvironment } from "./utils/github-mocks.js";
 
 interface CompletedCheck {
 	conclusion: string;
@@ -121,6 +122,11 @@ const outputOf = (f: Fixtures): CheckRunOutput => {
 };
 
 describe("validateBuilds", () => {
+	// Shared harness: clears mocks and silences stdout/stderr so a log line
+	// added to the module under test cannot start leaking into the reporter.
+	beforeEach(() => setupTestEnvironment({ suppressOutput: true }));
+	afterEach(() => cleanupTestEnvironment());
+
 	it("records a success check run when the build command succeeds", async () => {
 		const f = makeFixtures();
 
@@ -216,13 +222,11 @@ describe("validateBuilds", () => {
 			(_, i) => `src/f${i}.ts:${i + 1}:1 - error TS2322: bad thing number ${i}.`,
 		).join("\n");
 
-		const origWrite = process.stderr.write.bind(process.stderr);
-		(process.stderr.write as unknown) = () => true;
-		try {
-			await runStage(f, { script: () => ({ exit: 0, stdout: "", stderr: `${many}\n` }) });
-		} finally {
-			process.stderr.write = origWrite;
-		}
+		// `vi.spyOn` rather than a hand-rolled save/replace/restore: it is
+		// self-restoring via the suite's `cleanupTestEnvironment`, so a throw before
+		// a `finally` cannot leak the patch into every later test in the run.
+		vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+		await runStage(f, { script: () => ({ exit: 0, stdout: "", stderr: `${many}\n` }) });
 
 		// Slicing here would be redundant — the kit slices in `wireOutput`.
 		expect((outputOf(f).annotations ?? []).length).toBe(60);
@@ -243,13 +247,8 @@ describe("validateBuilds", () => {
 
 		// `validateBuilds` echoes the build's stderr straight to the real stream;
 		// swallow it here so the fixture does not dump 90KB into the test report.
-		const origWrite = process.stderr.write.bind(process.stderr);
-		(process.stderr.write as unknown) = () => true;
-		try {
-			await runStage(f, { script: () => ({ exit: 1, stdout: "", stderr: huge }) });
-		} finally {
-			process.stderr.write = origWrite;
-		}
+		vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+		await runStage(f, { script: () => ({ exit: 1, stdout: "", stderr: huge }) });
 
 		const summary = outputOf(f).summary;
 		expect(Buffer.byteLength(summary, "utf8")).toBeGreaterThan(65_535);

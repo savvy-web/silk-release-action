@@ -234,6 +234,26 @@ describe("buildPublishSummary", () => {
 		expect(markdown).toContain("2/2 targets ready");
 	});
 
+	it("counts only ready targets in the Totals, matching the release table", () => {
+		// `toValidatedReleaseRows` in `src/utils/release-table.ts` counts
+		// `status === "ready"`. This used to count every non-`failed` target, so a
+		// `skipped` one was reported as ready here and not there — the same release
+		// showing two different `n/m ready` figures in two adjacent sections of the
+		// same comment.
+		const mixed = pkg({
+			name: "@org/mixed",
+			builds: [
+				build({
+					targets: [npmTarget(), npmTarget({ status: "skipped" }), npmTarget({ status: "failed" })],
+				}),
+			],
+		});
+
+		const markdown = buildReleaseTotals(publishOf([mixed]));
+
+		expect(markdown).toContain("1/3 targets ready");
+	});
+
 	it("omits an absent size from the Totals sum", () => {
 		const partial = pkg({
 			name: "@org/partial-sizes",

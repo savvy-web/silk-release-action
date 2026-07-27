@@ -351,7 +351,12 @@ export function buildReleaseTotals(publish: ValidationPublish): string {
 			if (build.fileCount !== null) files += build.fileCount;
 			for (const t of build.targets) {
 				targets++;
-				if (t.status !== "failed") ready++;
+				// `=== "ready"`, matching `toValidatedReleaseRows` in
+				// `src/utils/release-table.ts`. Counting every non-`failed` target
+				// here made `skipped` targets count as ready, so the same release
+				// reported two different `n/m ready` figures in two adjacent sections
+				// of the same comment.
+				if (t.status === "ready") ready++;
 			}
 		}
 	}
