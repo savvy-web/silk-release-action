@@ -7,10 +7,9 @@
 // versioning services (`Changesets.ReleasePlanner` / `Changesets.ConfigInspector`).
 
 import { Workspaces } from "@effected/workspaces";
-import { ChangesetConfigReaderLive, Changesets } from "@savvy-web/silk-effects";
+import { ChangesetConfigReader, Changesets, SilkPublishability } from "@savvy-web/silk-effects";
 import { Layer } from "effect";
 import { ChangesetConfigLive } from "./changeset-config.js";
-import { PublishabilityDetectorAdaptiveLive } from "./publishability.js";
 
 /**
  * The workspace graph (`WorkspaceDiscovery`, `PublishabilityDetector`, and the
@@ -35,9 +34,9 @@ const WorkspacesLive = Workspaces.layerWithGit();
  * self-contained above WorkspaceDiscovery/FileSystem (the platform
  * FileSystem/Path layers are provided in main.ts).
  */
-const NativeVersioningLive = Changesets.ReleasePlannerLive.pipe(
-	Layer.provideMerge(Changesets.ConfigInspectorLive),
-	Layer.provide(ChangesetConfigReaderLive),
+const NativeVersioningLive = Changesets.ReleasePlanner.layer.pipe(
+	Layer.provideMerge(Changesets.ConfigInspector.layer),
+	Layer.provide(ChangesetConfigReader.layer),
 	Layer.provide(WorkspacesLive),
 );
 
@@ -48,11 +47,11 @@ const NativeVersioningLive = Changesets.ReleasePlannerLive.pipe(
  * native-versioning services from `NativeVersioningLive`.
  */
 // ChangesetConfigLive is listed twice: directly (for Phase-2/3 consumers that
-// yield* ChangesetConfig) and as the provider for PublishabilityDetectorAdaptiveLive.
+// yield* ChangesetConfig) and as the provider for SilkPublishability.layerAdaptive.
 // Effect memoizes identical layer references — one instantiation serves both slots.
 export const ReleaseLive = Layer.mergeAll(
 	WorkspacesLive,
 	ChangesetConfigLive,
-	PublishabilityDetectorAdaptiveLive.pipe(Layer.provide(ChangesetConfigLive)),
+	SilkPublishability.layerAdaptive.pipe(Layer.provide(ChangesetConfigLive)),
 	NativeVersioningLive,
 );
