@@ -1,5 +1,34 @@
 # @savvy-web/silk-release-action
 
+## 4.0.3
+
+### Refactoring
+
+* Adopted `@savvy-web/silk-effects` 5.2.0's service-owned layer statics, replacing the removed standalone `*Live` exports with `static readonly layer` on each service class (`ChangesetConfig.layer`, `ChangesetConfigReader.layer`, `Changesets.ReleasePlanner.layer`, `Changesets.ConfigInspector.layer`, `SilkPublishability.layer` / `.layerAdaptive`). Layer composition, provided services, and runtime behavior are unchanged.
+* Adapted to `@changesets/types` 7.0.0-next.8's discriminated `ComprehensiveRelease` union, where the `"none"` arm's `oldVersion`/`newVersion` are optional. The internal release-plan projection now models bumped and unbumped packages as distinct shapes; the reported release plan output is unchanged. [#199][#199]
+
+### Dependencies
+
+* | Dependency                | Type       | Action  | From          | To           |                                                                       |
+  | ------------------------- | ---------- | ------- | ------------- | ------------ | --------------------------------------------------------------------- |
+  | @changesets/changelog-git | dependency | updated | ^1.0.0-next.6 | 1.0.0-next.8 |                                                                       |
+  | @effected/github          | dependency | updated | 0.2.0         | 0.2.1        |                                                                       |
+  | @effected/github-actions  | dependency | updated | 0.2.0         | 0.4.0        |                                                                       |
+  | @effected/markdown        | dependency | updated | 0.4.0         | 0.4.1        |                                                                       |
+  | @effected/npm             | dependency | updated | 0.6.0         | 0.8.0        |                                                                       |
+  | @effected/package-json    | dependency | updated | \~0.6.1       | \~0.7.1      |                                                                       |
+  | @effected/sbom            | dependency | updated | 0.2.0         | 0.2.1        |                                                                       |
+  | @effected/semver          | dependency | updated | 0.2.1         | 0.3.0        |                                                                       |
+  | @effected/workspaces      | dependency | updated | ^0.9.1        | ^0.9.3       |                                                                       |
+  | @effected/yaml            | dependency | updated | \~0.6.0       | ^0.6.0       |                                                                       |
+  | @savvy-web/silk-effects   | dependency | updated | ^5.1.1        | ^5.2.0       | [#199][#199] Thanks [@spencerbeggs](https://github.com/spencerbeggs)! |
+
+### Patch Changes
+
+Thanks to [@spencerbeggs](https://github.com/spencerbeggs) for their contributions!
+
+[#199]: https://github.com/savvy-web/silk-release-action/pull/199
+
 ## 4.0.2
 
 ### Dependencies
