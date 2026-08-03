@@ -20,6 +20,7 @@
 		"ci:build": "CI=\"true\" turbo run build:prod --log-order=grouped --output-logs=full",
 		"ci:test": "CI=\"true\" vitest run --coverage",
 		"ci:version": "savvy changeset version && biome format --write .",
+		"claude": "claude --plugin-dir=../../spencerbeggs/effected/plugin",
 		"generate-schema": "tsx lib/scripts/generate-schema.ts",
 		"lint": "biome check --max-diagnostics=none",
 		"lint:fix": "biome check --write --max-diagnostics=none",
@@ -35,39 +36,39 @@
 		"validate": "github-action-builder validate"
 	},
 	"dependencies": {
-		"@changesets/changelog-git": "^1.0.0-next.6",
+		"@changesets/changelog-git": "1.0.0-next.8",
 		"@effect/platform-node": "catalog:effect",
-		"@effected/commands": "0.2.0",
-		"@effected/git": "0.5.1",
-		"@effected/github": "0.2.0",
-		"@effected/github-actions": "0.2.0",
+		"@effected/commands": "^0.2.0",
+		"@effected/git": "^0.5.1",
+		"@effected/github": "^0.2.1",
+		"@effected/github-actions": "^0.4.0",
 		"@effected/jsonc": "^0.5.1",
-		"@effected/markdown": "0.4.0",
-		"@effected/npm": "0.6.0",
-		"@effected/package-json": "~0.6.1",
-		"@effected/sbom": "0.2.0",
-		"@effected/semver": "0.2.1",
-		"@effected/workspaces": "^0.9.1",
-		"@effected/yaml": "~0.6.0",
-		"@savvy-web/silk-effects": "^5.1.1",
+		"@effected/markdown": "^0.4.1",
+		"@effected/npm": "^0.8.0",
+		"@effected/package-json": "^0.7.1",
+		"@effected/sbom": "^0.2.1",
+		"@effected/semver": "^0.3.0",
+		"@effected/workspaces": "^0.9.3",
+		"@effected/yaml": "^0.6.0",
+		"@savvy-web/silk-effects": "^5.2.0",
 		"ajv": "^8.20.0",
 		"effect": "catalog:effect",
 		"ts-markdown": "^1.3.0"
 	},
 	"devDependencies": {
-		"@savvy-web/github-action-builder": "^2.1.0",
-		"@savvy-web/silk": "^3.2.9",
-		"@vitest-agent/plugin": "^2.0.10",
+		"@savvy-web/github-action-builder": "^2.2.0",
+		"@savvy-web/silk": "^3.3.0",
+		"@vitest-agent/plugin": "^2.0.11",
 		"tsx": "catalog:silk"
 	},
-	"packageManager": "pnpm@11.17.0+sha512.cca3cea332ad254bb84145f966d19f4879615210346fc92c79a047f23a0d7b3cca3c3792f0076ba1f1831d277efbcf0a9119b31a9a60eca7fb3d6231f331ef72",
+	"packageManager": "pnpm@11.19.0+sha512.7881f3ed590d472c4a955e2b88b2121791116066dcc88cbca3849ec9b60f1bbaa6d2ccb221fa91da4e1c65bef2bcbe379365aea7ac539c7bf86dedc3a1b22dce",
 	"engines": {
 		"node": ">=24.11.0"
 	},
 	"devEngines": {
 		"packageManager": {
 			"name": "pnpm",
-			"version": "11.17.0+sha512.cca3cea332ad254bb84145f966d19f4879615210346fc92c79a047f23a0d7b3cca3c3792f0076ba1f1831d277efbcf0a9119b31a9a60eca7fb3d6231f331ef72",
+			"version": "11.19.0+sha512.7881f3ed590d472c4a955e2b88b2121791116066dcc88cbca3849ec9b60f1bbaa6d2ccb221fa91da4e1c65bef2bcbe379365aea7ac539c7bf86dedc3a1b22dce",
 			"onFail": "ignore"
 		},
 		"runtime": [

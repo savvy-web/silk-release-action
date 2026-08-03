@@ -19,17 +19,35 @@
  */
 export interface PlanLike {
 	/** One entry per package the release will version. */
-	readonly releases: ReadonlyArray<{
-		readonly name: string;
-		/** `"none"` is a package the plan touched without bumping — see the remarks. */
-		readonly type: "major" | "minor" | "patch" | "none";
-		readonly oldVersion: string;
-		readonly newVersion: string;
-		/** The changeset files naming this package; empty for a dependency-driven release. */
-		readonly changesets: ReadonlyArray<string>;
-	}>;
+	readonly releases: ReadonlyArray<BumpedRelease | NoneRelease>;
 	/** One entry per `.changeset/*.md` file. */
 	readonly changesets: ReadonlyArray<{ readonly id: string }>;
+}
+
+/** A package the plan will actually version. */
+export interface BumpedRelease {
+	readonly name: string;
+	readonly type: "major" | "minor" | "patch";
+	readonly oldVersion: string;
+	readonly newVersion: string;
+	/** The changeset files naming this package; empty for a dependency-driven release. */
+	readonly changesets: ReadonlyArray<string>;
+}
+
+/**
+ * A package the plan touched without bumping — see {@link toReleasePlanReport}'s remarks.
+ *
+ * @remarks
+ * Versions are optional on this arm and only on this arm: a package considered
+ * and not versioned has no old or new version to report, which is why the plan
+ * cannot be modelled as one flat shape.
+ */
+export interface NoneRelease {
+	readonly name: string;
+	readonly type: "none";
+	readonly oldVersion: string | undefined;
+	readonly newVersion: string | undefined;
+	readonly changesets: ReadonlyArray<string>;
 }
 
 /** One package in the reported plan. */
@@ -79,9 +97,7 @@ export const toReleasePlanReport = (plan: PlanLike): ReleasePlanReport => ({
 	// it would put a package in "what will be released" that gets no new version
 	// and no changelog entry, and there is no honest bump level to show for it.
 	packages: plan.releases
-		.filter(
-			(release): release is typeof release & { readonly type: "major" | "minor" | "patch" } => release.type !== "none",
-		)
+		.filter((release): release is BumpedRelease => release.type !== "none")
 		.map((release) => ({
 			name: release.name,
 			bumpType: release.type,

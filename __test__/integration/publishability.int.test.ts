@@ -2,7 +2,7 @@
  * Publishability fixture harness.
  *
  * Runs the composed publish-target resolution path
- * (`SilkPublishabilityDetectorLive` + the private-build filter in
+ * (`SilkPublishability.layer` + the private-build filter in
  * `resolvePublishableTargets`) against the hand-authored fixture-workspaces
  * under `fixtures/`, asserting each fixture's resolved
  * `{ publishTargets, versionable }` disposition.
@@ -27,13 +27,10 @@
 import { fileURLToPath } from "node:url";
 import { NodeServices } from "@effect/platform-node";
 import { WorkspacePackage } from "@effected/workspaces";
+import { SilkPublishability } from "@savvy-web/silk-effects";
 import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 import { ChangesetConfig, ChangesetConfigLive } from "../../src/release/changeset-config.js";
-import {
-	PublishabilityDetectorAdaptiveLive,
-	SilkPublishabilityDetectorLive,
-} from "../../src/release/publishability.js";
 import { resolvePublishableTargets } from "../../src/release/resolve-targets.js";
 
 /**
@@ -61,7 +58,7 @@ const resolveFixture = (name: string) =>
 		return { publishTargets, versionable: publishTargets.length > 0 || versionPrivate };
 	}).pipe(
 		Effect.provide(
-			Layer.mergeAll(SilkPublishabilityDetectorLive, ChangesetConfigLive).pipe(Layer.provideMerge(NodeServices.layer)),
+			Layer.mergeAll(SilkPublishability.layer, ChangesetConfigLive).pipe(Layer.provideMerge(NodeServices.layer)),
 		),
 	);
 
@@ -205,7 +202,7 @@ const resolveWorkspacePackage = (workspace: string, subPath: string, name: strin
 	}).pipe(
 		Effect.provide(
 			Layer.mergeAll(
-				PublishabilityDetectorAdaptiveLive.pipe(Layer.provide(ChangesetConfigLive)),
+				SilkPublishability.layerAdaptive.pipe(Layer.provide(ChangesetConfigLive)),
 				ChangesetConfigLive,
 			).pipe(Layer.provideMerge(NodeServices.layer)),
 		),
