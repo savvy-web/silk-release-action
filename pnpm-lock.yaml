@@ -9,22 +9,22 @@ importers:
         specifier: 0.3.1
         version: 0.3.1
       '@savvy-web/pnpm-plugin-silk':
-        specifier: 0.25.1
-        version: 0.25.1
+        specifier: 0.26.0
+        version: 0.26.0
 
 packages:
 
   '@effected/pnpm-plugin-effect@0.3.1':
     resolution: {integrity: sha512-e3HjGx6AQ4dGCLu8ApbFMm49NYmJ/fiC2sptSyeQRsw94VjdfCYWF73i1pa2SlFqRmeHcrYCK7KsWYZlXX9m1A==}
 
-  '@savvy-web/pnpm-plugin-silk@0.25.1':
-    resolution: {integrity: sha512-i2NzPYoJVnULYxJJ2srwuS7FBpo/9m34T6UIYq8oeaqnZXwLPFmoi+rehuyDqE4C0tqQNrT9MXYbh7m6MYSJYw==}
+  '@savvy-web/pnpm-plugin-silk@0.26.0':
+    resolution: {integrity: sha512-gZI90mPS/NS+a5URwM6PvGO7mUXxfPucE2UvMd88qgwUSRhmaVPVxrLFeblYpnDjFZH8Zjl3TybekT/O8UiJJA==}
 
 snapshots:
 
   '@effected/pnpm-plugin-effect@0.3.1': {}
 
-  '@savvy-web/pnpm-plugin-silk@0.25.1': {}
+  '@savvy-web/pnpm-plugin-silk@0.26.0': {}
 
 ---
 lockfileVersion: '9.0'
@@ -43,13 +43,13 @@ catalogs:
       version: 4.0.0-beta.101
   silk:
     tsx:
-      specifier: ^4.23.1
+      specifier: ^4.23.4
       version: 4.23.4
 
 overrides:
   '@microsoft/api-extractor>typescript': ^6.0.3
 
-pnpmfileChecksum: sha256-t5GAlxhlj90Jjwcb1d8yHeUceKIaqwarTPc8Xt/B34c=
+pnpmfileChecksum: sha256-IlKst3Knr1UuEyIbnxGF0H2Lby3oFfQhWmKBzTLtLjE=
 
 importers:
 
@@ -111,11 +111,11 @@ importers:
         version: 1.3.0
     devDependencies:
       '@savvy-web/github-action-builder':
-        specifier: ^2.2.0
-        version: 2.2.0(@types/node@26.1.2)(ioredis@5.11.1(supports-color@7.2.0))(typescript@7.0.2)
+        specifier: ^2.2.1
+        version: 2.2.1(@types/node@26.1.2)(ioredis@5.11.1(supports-color@7.2.0))(typescript@7.0.2)
       '@savvy-web/silk':
-        specifier: ^3.3.0
-        version: 3.3.0(@changesets/cli@3.0.0-next.10)(@commitlint/cli@21.2.1(@types/node@26.1.2)(conventional-commits-parser@7.1.2)(typescript@7.0.2))(@commitlint/config-conventional@21.2.0)(@effected/jsonc@0.5.1(effect@4.0.0-beta.101))(@types/bun@1.3.14)(@types/node@26.1.2)(@vitest/coverage-istanbul@4.1.10)(@vitest/coverage-v8@4.1.10)(husky@9.1.7)(ioredis@5.11.1(supports-color@7.2.0))(lint-staged@17.3.0)(markdownlint-cli2-formatter-codequality@0.0.7(markdownlint-cli2@0.23.2(supports-color@7.2.0)))(markdownlint-cli2@0.23.2(supports-color@7.2.0))(supports-color@7.2.0)(tsx@4.23.4)(turbo@2.10.8)(typescript@7.0.2)(vitest@4.1.10)
+        specifier: ^3.3.1
+        version: 3.3.1(@changesets/cli@3.0.0-next.10)(@commitlint/cli@21.2.1(@types/node@26.1.2)(conventional-commits-parser@7.1.2)(typescript@7.0.2))(@commitlint/config-conventional@21.2.0)(@effected/jsonc@0.5.1(effect@4.0.0-beta.101))(@types/bun@1.3.14)(@types/node@26.1.2)(@vitest/coverage-istanbul@4.1.10)(@vitest/coverage-v8@4.1.10)(husky@9.1.7)(ioredis@5.11.1(supports-color@7.2.0))(lint-staged@17.3.0)(markdownlint-cli2-formatter-codequality@0.0.7(markdownlint-cli2@0.23.2(supports-color@7.2.0)))(markdownlint-cli2@0.23.2(supports-color@7.2.0))(supports-color@7.2.0)(tsx@4.23.4)(turbo@2.10.8)(typescript@7.0.2)(vitest@4.1.10)
       '@vitest-agent/plugin':
         specifier: ^2.0.11
         version: 2.0.11(@effected/glob@0.2.1(effect@4.0.0-beta.101))(@effected/jsonc@0.5.1(effect@4.0.0-beta.101))(@vitest/coverage-istanbul@4.1.10)(@vitest/coverage-v8@4.1.10)(ioredis@5.11.1(supports-color@7.2.0))(supports-color@7.2.0)(typescript@7.0.2)(vitest@4.1.10)
@@ -885,8 +885,8 @@ packages:
     resolution: {integrity: sha512-DcB0M3KFgr9ECI328lhBMVsyFT2DnmNucSBTqEN3exyNKUzkkpUSCHmTRcunF41Eou2TIQKW4seewri8ON9bSA==}
     engines: {node: '>= 20'}
 
-  '@octokit/endpoint@11.0.3':
-    resolution: {integrity: sha512-FWFlNxghg4HrXkD3ifYbS/IdL/mDHjh9QcsNyhQjN8dplUoZbejsdpmuqdA76nxj2xoWPs7p8uX2SNr9rYu0Ag==}
+  '@octokit/endpoint@11.0.4':
+    resolution: {integrity: sha512-f1cOWoHPmxryJFknxbtDdjODWfV8A9tc8Aae6ermXPNgHFZ/x91AtHIz4gicEjL8hkJiip+u21QHJORfBv/qiA==}
     engines: {node: '>= 20'}
 
   '@octokit/graphql@9.0.4':
@@ -1144,8 +1144,8 @@ packages:
     resolution: {integrity: sha512-O7ZlmPYeX3AtK3qtpKDf6jQ7cB9LBzF3t+oLGwWnco6DwzJBH+eEUqq4EB/nyS9YEl48gcCHhtCvWbdrharQ0g==}
     hasBin: true
 
-  '@savvy-web/github-action-builder@2.2.0':
-    resolution: {integrity: sha512-79V8mesJ54Cg9xln45EpM380IlakfRJw90LCkCIOgKDbeNUiZmy0McoO07L7jjDYXpmQedPwewAhd0581fvlVQ==}
+  '@savvy-web/github-action-builder@2.2.1':
+    resolution: {integrity: sha512-gYBq07yuH4tKfNmS/dVxGtPHXnJU75hhmBTvgmuZnNznXDyLceTcZRGXURH5kmhBkZoyY0q2LPyI+fKf7Tjy/Q==}
     hasBin: true
     peerDependencies:
       '@types/node': ^26.1.0
@@ -1160,23 +1160,23 @@ packages:
     peerDependencies:
       effect: 4.0.0-beta.101
 
-  '@savvy-web/silk@3.3.0':
-    resolution: {integrity: sha512-WOhGCu7bEmX4iTXfroyZAlyuLNYzOuqJg/hQfH0IPNktY6lGcRjH2amvTNwMQsBQzPmUg3zcyIE446m50Pg5ow==}
+  '@savvy-web/silk@3.3.1':
+    resolution: {integrity: sha512-jv01S13BESL0+t5m6ux9SUYw+kZfOfuOO8MEWVjSUi9DrbZgBLW8zQgIxYNy6B3mxWF8TEOb1uPcLKY9QOm5nw==}
     peerDependencies:
-      '@biomejs/biome': ~2.5.0
+      '@biomejs/biome': 2.5.0
       '@changesets/cli': ^3.0.0-next.10
       '@commitlint/cli': ^21.2.1
       '@commitlint/config-conventional': ^21.2.0
       '@types/bun': ^1.3.14
-      '@types/node': ^26.1.1
+      '@types/node': ^26.1.2
       '@vitest/coverage-istanbul': ^4.1.10
       '@vitest/coverage-v8': ^4.1.10
       husky: ^9.1.7
-      lint-staged: ^17.2.0
-      markdownlint-cli2: ^0.23.1
+      lint-staged: ^17.3.0
+      markdownlint-cli2: ^0.23.2
       markdownlint-cli2-formatter-codequality: ^0.0.7
-      tsx: ^4.23.1
-      turbo: ^2.10.7
+      tsx: ^4.23.4
+      turbo: ^2.10.8
       typescript: ^7.0.2
       vitest: ^4.1.10
     peerDependenciesMeta:
@@ -4235,9 +4235,9 @@ snapshots:
       before-after-hook: 4.0.0
       universal-user-agent: 7.0.3
 
-  '@octokit/endpoint@11.0.3':
+  '@octokit/endpoint@11.0.4':
     dependencies:
-      '@octokit/types': 16.0.0
+      '@octokit/types': 17.0.0
       universal-user-agent: 7.0.3
 
   '@octokit/graphql@9.0.4':
@@ -4261,7 +4261,7 @@ snapshots:
 
   '@octokit/request@10.0.13':
     dependencies:
-      '@octokit/endpoint': 11.0.3
+      '@octokit/endpoint': 11.0.4
       '@octokit/request-error': 7.1.1
       '@octokit/types': 17.0.0
       content-type: 2.0.0
@@ -4440,7 +4440,7 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@savvy-web/github-action-builder@2.2.0(@types/node@26.1.2)(ioredis@5.11.1(supports-color@7.2.0))(typescript@7.0.2)':
+  '@savvy-web/github-action-builder@2.2.1(@types/node@26.1.2)(ioredis@5.11.1(supports-color@7.2.0))(typescript@7.0.2)':
     dependencies:
       '@effect/platform-node': 4.0.0-beta.101(effect@4.0.0-beta.101)(ioredis@5.11.1(supports-color@7.2.0))
       '@effected/yaml': 0.6.0(effect@4.0.0-beta.101)
@@ -4505,7 +4505,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@savvy-web/silk@3.3.0(@changesets/cli@3.0.0-next.10)(@commitlint/cli@21.2.1(@types/node@26.1.2)(conventional-commits-parser@7.1.2)(typescript@7.0.2))(@commitlint/config-conventional@21.2.0)(@effected/jsonc@0.5.1(effect@4.0.0-beta.101))(@types/bun@1.3.14)(@types/node@26.1.2)(@vitest/coverage-istanbul@4.1.10)(@vitest/coverage-v8@4.1.10)(husky@9.1.7)(ioredis@5.11.1(supports-color@7.2.0))(lint-staged@17.3.0)(markdownlint-cli2-formatter-codequality@0.0.7(markdownlint-cli2@0.23.2(supports-color@7.2.0)))(markdownlint-cli2@0.23.2(supports-color@7.2.0))(supports-color@7.2.0)(tsx@4.23.4)(turbo@2.10.8)(typescript@7.0.2)(vitest@4.1.10)':
+  '@savvy-web/silk@3.3.1(@changesets/cli@3.0.0-next.10)(@commitlint/cli@21.2.1(@types/node@26.1.2)(conventional-commits-parser@7.1.2)(typescript@7.0.2))(@commitlint/config-conventional@21.2.0)(@effected/jsonc@0.5.1(effect@4.0.0-beta.101))(@types/bun@1.3.14)(@types/node@26.1.2)(@vitest/coverage-istanbul@4.1.10)(@vitest/coverage-v8@4.1.10)(husky@9.1.7)(ioredis@5.11.1(supports-color@7.2.0))(lint-staged@17.3.0)(markdownlint-cli2-formatter-codequality@0.0.7(markdownlint-cli2@0.23.2(supports-color@7.2.0)))(markdownlint-cli2@0.23.2(supports-color@7.2.0))(supports-color@7.2.0)(tsx@4.23.4)(turbo@2.10.8)(typescript@7.0.2)(vitest@4.1.10)':
     dependencies:
       '@changesets/cli': 3.0.0-next.10
       '@commitlint/cli': 21.2.1(@types/node@26.1.2)(conventional-commits-parser@7.1.2)(typescript@7.0.2)
