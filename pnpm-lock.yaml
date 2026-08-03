@@ -56,46 +56,46 @@ importers:
   .:
     dependencies:
       '@changesets/changelog-git':
-        specifier: ^1.0.0-next.6
+        specifier: 1.0.0-next.8
         version: 1.0.0-next.8
       '@effect/platform-node':
         specifier: catalog:effect
         version: 4.0.0-beta.101(effect@4.0.0-beta.101)(ioredis@5.11.1(supports-color@7.2.0))
       '@effected/commands':
-        specifier: 0.2.0
+        specifier: ^0.2.0
         version: 0.2.0(effect@4.0.0-beta.101)
       '@effected/git':
-        specifier: 0.5.1
+        specifier: ^0.5.1
         version: 0.5.1(effect@4.0.0-beta.101)
       '@effected/github':
-        specifier: 0.2.1
+        specifier: ^0.2.1
         version: 0.2.1(effect@4.0.0-beta.101)
       '@effected/github-actions':
-        specifier: 0.4.0
+        specifier: ^0.4.0
         version: 0.4.0(@effect/platform-node@4.0.0-beta.101(effect@4.0.0-beta.101)(ioredis@5.11.1(supports-color@7.2.0)))(@effected/jsonc@0.5.1(effect@4.0.0-beta.101))(@effected/semver@0.3.0(effect@4.0.0-beta.101))(@effected/toml@0.3.1(effect@4.0.0-beta.101))(@effected/yaml@0.6.0(effect@4.0.0-beta.101))(effect@4.0.0-beta.101)(supports-color@7.2.0)
       '@effected/jsonc':
         specifier: ^0.5.1
         version: 0.5.1(effect@4.0.0-beta.101)
       '@effected/markdown':
-        specifier: 0.4.1
+        specifier: ^0.4.1
         version: 0.4.1(@effected/jsonc@0.5.1(effect@4.0.0-beta.101))(@effected/toml@0.3.1(effect@4.0.0-beta.101))(@effected/yaml@0.6.0(effect@4.0.0-beta.101))(effect@4.0.0-beta.101)
       '@effected/npm':
-        specifier: 0.8.0
+        specifier: ^0.8.0
         version: 0.8.0(@effected/semver@0.3.0(effect@4.0.0-beta.101))(effect@4.0.0-beta.101)
       '@effected/package-json':
-        specifier: ~0.7.1
+        specifier: ^0.7.1
         version: 0.7.1(effect@4.0.0-beta.101)
       '@effected/sbom':
-        specifier: 0.2.1
+        specifier: ^0.2.1
         version: 0.2.1(effect@4.0.0-beta.101)(supports-color@7.2.0)
       '@effected/semver':
-        specifier: 0.3.0
+        specifier: ^0.3.0
         version: 0.3.0(effect@4.0.0-beta.101)
       '@effected/workspaces':
         specifier: ^0.9.3
         version: 0.9.3(@effected/jsonc@0.5.1(effect@4.0.0-beta.101))(effect@4.0.0-beta.101)
       '@effected/yaml':
-        specifier: ~0.6.0
+        specifier: ^0.6.0
         version: 0.6.0(effect@4.0.0-beta.101)
       '@savvy-web/silk-effects':
         specifier: ^5.2.0
