@@ -25,6 +25,23 @@ If the repository root contains `biome.json` or `biome.jsonc`, the action runs `
 
 The release PR title and the release-branch commit subject are derived from the packages that will release. A single releasable package or a group locked to one shared version gets `release: <version>`. An independent multi-package repo lists each release as `release: name@version, …`, omitting the npm scope shared by every package and collapsing to `release: <count> packages` once the title would exceed 100 characters. Packages excluded by changeset config are left out. The commit body is a bullet list of the releasing packages with their full scoped names. When no releasable package or version can be determined, the title falls back to the literal `release: pending` — a state in which Phase 1 closes the PR and deletes the branch anyway, so the fallback is a guard rail rather than a title anyone should see.
 
+### Release PR description
+
+The action generates the release PR description between `<!-- silk-release:start -->` and `<!-- silk-release:end -->` markers, and regenerates that block every time it updates the release branch. Anything written outside the markers is left untouched.
+
+Inside the block are a proposed squash-commit message in a fenced code block, a region reserved for an AI summary that a separate action writes and a closing-reference region holding the bare `Closes #N` lines GitHub's linker reads:
+
+```markdown
+<!-- silk-release:references:start owned="41,42" -->
+Closes #41
+Closes #42
+<!-- silk-release:references:end -->
+```
+
+The reference region is always emitted, even when the release linked no issues, so there is always somewhere to write. A `Closes #N` line you add inside it for an issue the release never detected survives the next regeneration. The `owned` attribute records the ids the action itself emitted, which is how the next run tells your additions from its own and carries only yours through.
+
+Issues the action does know about stay its decision: one it linked from a commit message is emitted while the issue is open and dropped once it closes, and adding the line back by hand will not keep it — that would re-link, and on merge auto-close, an issue the release deliberately dropped.
+
 ### Release plan comment
 
 Phase 1 comments a "what will be released" table on the release PR as soon as the release plan is known: every package the release will version, its current and next version, its bump and how many changeset files named it. A package that releases only because a dependency moved appears with an em dash in the changesets column — it is versioned and gets a CHANGELOG entry without a changeset of its own.

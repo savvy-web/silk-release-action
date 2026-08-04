@@ -16,12 +16,16 @@ import type { LinkedIssueRef } from "../src/utils/pr-body.js";
 import {
 	MANAGED_END,
 	MANAGED_START,
+	REFERENCES_END,
+	REFERENCES_START,
+	REFERENCES_START_PREFIX,
 	SQUASH_FENCE_LANGUAGE,
 	SUMMARY_END,
 	SUMMARY_START,
 	buildClosingReferences,
 	buildManagedPrBody,
 	buildSquashClosingReferences,
+	extractReferences,
 	extractSummary,
 	upsertManagedRegion,
 } from "../src/utils/pr-body.js";
@@ -222,6 +226,177 @@ describe("the AI summary region", () => {
 
 	it("reads back nothing from an empty region", () => {
 		expect(extractSummary(body([openIssue(170)]))).toBe("");
+	});
+});
+
+describe("the closing-reference region", () => {
+	it("delimits the bare references with markers, keeping them outside the fence", () => {
+		const rendered = body([openIssue(168)]);
+
+		// The action emits the attributed opening form, not the plain constant.
+		expect(rendered).toContain(REFERENCES_START_PREFIX);
+		expect(rendered).toContain(REFERENCES_END);
+		// The markers must not push the references inside a fence — that would
+		// make them inert to GitHub's linker, which is the whole point of them.
+		expect(
+			outsideFences(rendered)
+				.split("\n")
+				.map((l) => l.trim()),
+		).toContain("Closes #168");
+	});
+
+	it("reserves the region even when nothing is linked", () => {
+		// An empty region is still an addressable one. A release with nothing
+		// linked is exactly when an agent most wants somewhere to write.
+		const rendered = body([]);
+		expect(rendered).toContain(REFERENCES_START_PREFIX);
+		expect(rendered).toContain(REFERENCES_END);
+		expect(extractReferences(rendered)).toBe("");
+	});
+
+	it("reads back its own references", () => {
+		expect(extractReferences(body([openIssue(1), openIssue(2)]))).toBe("Closes #1\nCloses #2");
+	});
+
+	it("reads back nothing from a body that has no region", () => {
+		expect(extractReferences("just some prose")).toBe("");
+	});
+
+	it("carries through a reference for an issue this run does not know about", () => {
+		// The destructive case the markers exist to prevent: an agent links an
+		// issue the release never detected, and the next push rebuilds the region
+		// from `linkedIssues` alone and deletes it silently.
+		const withAgentEdit = buildManagedPrBody({
+			subject: "release: 2.0.0",
+			linkedIssues: [openIssue(170)],
+			signoff: SIGNOFF,
+			summary: "",
+			priorBody: `${REFERENCES_START}\nCloses #999\n${REFERENCES_END}`,
+		});
+
+		const plain = outsideFences(withAgentEdit)
+			.split("\n")
+			.map((l) => l.trim());
+		expect(plain).toContain("Closes #170");
+		expect(plain).toContain("Closes #999");
+	});
+
+	it("does not resurrect an issue this run deliberately dropped as closed", () => {
+		// The action decides every issue it knows about. A stale carried line
+		// must not re-link an issue that has since been closed.
+		const rendered = buildManagedPrBody({
+			subject: "release: 2.0.0",
+			linkedIssues: [openIssue(10), closedIssue(11)],
+			signoff: SIGNOFF,
+			summary: "",
+			priorBody: `<!-- silk-release:references:start owned="10,11" -->\nCloses #10\nCloses #11\n${REFERENCES_END}`,
+		});
+
+		expect(rendered).not.toContain("#11");
+	});
+
+	it("does not duplicate a carried reference it already emits", () => {
+		const rendered = buildManagedPrBody({
+			subject: "release: 2.0.0",
+			linkedIssues: [openIssue(170)],
+			signoff: SIGNOFF,
+			summary: "",
+			priorBody: `${REFERENCES_START}\nCloses #170\nCloses #170\n${REFERENCES_END}`,
+		});
+
+		// Scoped to the region: the squash block legitimately carries its own
+		// copy, so counting across the whole body proves nothing.
+		expect(extractReferences(rendered).match(/Closes #170/g)).toHaveLength(1);
+	});
+
+	it("ignores a number that no closing keyword governs", () => {
+		const rendered = buildManagedPrBody({
+			subject: "release: 2.0.0",
+			linkedIssues: [],
+			signoff: SIGNOFF,
+			summary: "",
+			priorBody: `${REFERENCES_START}\nSee also #500\nRelated to #501\n${REFERENCES_END}`,
+		});
+
+		expect(rendered).not.toContain("#500");
+		expect(rendered).not.toContain("#501");
+	});
+
+	it("recognises every closing keyword GitHub accepts, not just the one it emits", () => {
+		// A keyword this parser fails to match is a reference it deletes on the
+		// next run — the exact destruction the region exists to prevent.
+		const rendered = buildManagedPrBody({
+			subject: "release: 2.0.0",
+			linkedIssues: [],
+			signoff: SIGNOFF,
+			summary: "",
+			priorBody: `${REFERENCES_START}\nFixes: #601\nClosed #602\nresolve #603\nFIX #604\n${REFERENCES_END}`,
+		});
+
+		const carried = extractReferences(rendered);
+		expect(carried).toContain("Closes #601");
+		expect(carried).toContain("Closes #602");
+		expect(carried).toContain("Closes #603");
+		expect(carried).toContain("Closes #604");
+	});
+
+	it("does not let a lookalike attribute claim an agent's reference as its own", () => {
+		// An unanchored `owned="…"` match also finds `data-owned="…"`, which would
+		// mark #700 as previously-emitted and drop it.
+		const rendered = buildManagedPrBody({
+			subject: "release: 2.0.0",
+			linkedIssues: [],
+			signoff: SIGNOFF,
+			summary: "",
+			priorBody: `<!-- silk-release:references:start data-owned="700" -->\nCloses #700\n${REFERENCES_END}`,
+		});
+
+		expect(extractReferences(rendered)).toContain("Closes #700");
+	});
+
+	it("emits one reference per issue when the same issue is linked twice", () => {
+		const rendered = buildManagedPrBody({
+			subject: "release: 2.0.0",
+			linkedIssues: [openIssue(170), openIssue(170)],
+			signoff: SIGNOFF,
+			summary: "",
+		});
+
+		expect(extractReferences(rendered).match(/Closes #170/g)).toHaveLength(1);
+		expect(rendered).toContain('owned="170"');
+	});
+
+	it("survives a full regeneration round-trip through the managed region", () => {
+		const first = upsertManagedRegion(
+			"",
+			buildManagedPrBody({
+				subject: "release: 1.0.0",
+				linkedIssues: [openIssue(170)],
+				signoff: SIGNOFF,
+				summary: "",
+				priorBody: `${REFERENCES_START}\nCloses #999\n${REFERENCES_END}`,
+			}),
+		);
+
+		const second = upsertManagedRegion(
+			first,
+			buildManagedPrBody({
+				subject: "release: 2.0.0",
+				linkedIssues: [openIssue(171)],
+				signoff: SIGNOFF,
+				summary: extractSummary(first),
+				priorBody: first,
+			}),
+		);
+
+		const plain = outsideFences(second)
+			.split("\n")
+			.map((l) => l.trim());
+		// This run's own reference, and the agent's addition still standing.
+		expect(plain).toContain("Closes #171");
+		expect(plain).toContain("Closes #999");
+		// #170 belonged to the previous run and is no longer linked.
+		expect(plain).not.toContain("Closes #170");
 	});
 });
 

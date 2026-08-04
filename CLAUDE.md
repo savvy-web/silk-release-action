@@ -15,7 +15,7 @@ Private repository for **shared GitHub Actions, reusable workflows, and GitHub p
 
 Load design docs when working on the relevant subsystem:
 
-- `@./.claude/design/release-action/architecture.md` - Three-phase workflow, native versioning (zero-install Phase 1), module dependency graph, entry points, shared infrastructure
+- `@./.claude/design/release-action/architecture.md` - Three-phase workflow, native versioning (zero-install Phase 1), the managed release-PR body region, module dependency graph, entry points, shared infrastructure
 - `@./.claude/design/release-action/integration.md` - Multi-registry publishing, OIDC auth, native versioning/changelog module map, token plumbing, SBOM/NTIA compliance, publish summaries
 - `@./.claude/design/release-action/testing.md` - Test strategy, test-layer patterns, silk-effects test factories, coverage map, specialized testing patterns
 

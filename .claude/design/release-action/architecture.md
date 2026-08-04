@@ -4,8 +4,8 @@ category: architecture
 status: current
 completeness: 95
 created: 2026-02-07
-updated: 2026-07-17
-last-synced: 2026-07-17
+updated: 2026-08-04
+last-synced: 2026-08-04
 module: release-action
 related:
   - integration.md
@@ -21,6 +21,8 @@ dependencies: []
   - [Phase Detection](#phase-detection)
   - [Phase 1: Release Branch Management](#phase-1-release-branch-management)
     - [Native versioning (zero-install)](#native-versioning-zero-install)
+    - [Release PR and commit titles](#release-pr-and-commit-titles)
+    - [Release PR body (managed region)](#release-pr-body-managed-region)
   - [Phase 2: Release Validation](#phase-2-release-validation)
   - [Phase 3: Release Publishing](#phase-3-release-publishing)
     - [Per-byte-group prod layout](#per-byte-group-prod-layout)
@@ -120,6 +122,16 @@ The title format keys off versioning topology rather than how many packages rele
 
 The commit subject matches the PR title; the commit body is a bullet list of full (scoped) `name@version` from `formatReleasePackageList`, so the commit is an unambiguous record even when the title omits a shared scope. See `src/utils/release-summary-helpers.ts` for the resolution logic.
 
+#### Release PR body (managed region)
+
+`src/utils/pr-body.ts` builds the slice of the release PR description this action owns, delimited by `<!-- silk-release:start -->` / `<!-- silk-release:end -->` so `upsertManagedRegion` can regenerate it without disturbing prose a human wrote around it. Both branch-management flows call `buildManagedPrBody`; only `update-release-branch.ts` has a prior description to feed back in, via the optional `priorBody` argument.
+
+Three properties of the body are load-bearing:
+
+- **Two spellings of the closing references, deliberately not deduplicated.** GitHub's linker only counts a bare `Closes #N` alone on a line and outside any fence; commitlint reads a single comma-joined `Closes #1, #2` trailer. The proposed-squash-commit fence therefore carries its own copy of the references and the plain lines are emitted separately. Empirically verified against `savvy-web/silk-integration` PR #243, after first release PRs shipped with an empty body and linked nothing (#242, #232).
+- **Nested regions are reserved, never written by this action.** The summary region (`silk-release:summary:*`) is held open for an AI summariser that runs elsewhere, and the reference region (`silk-release:references:*`) is emitted whether or not there is anything to put in it — an empty region is still an addressable target. Because the managed region is rebuilt on every push to the release branch, content inside a nested region must be read out of the prior body and re-emitted or it is silently destroyed; `extractSummary` and `extractReferences` do that reading.
+- **An `owned` attribute on the reference marker decides the merge.** This action decides every issue in `linkedIssues` — emitted when open, dropped when closed — and records the ids it emitted on the opening marker (`owned="1,2,3"`). The next run subtracts them, so what carries through is exactly what this action never wrote. Without the attribute an id absent from `linkedIssues` is ambiguous between an agent's addition and a reference this action emitted before it stopped tracking that issue, and preserving both would re-link — and on merge auto-close — an issue the release deliberately dropped. A malformed or absent attribute degrades to "none owned", preserving rather than deleting.
+
 ### Phase 2: Release Validation
 
 Triggers on push to the release branch. Creates all validation Check Runs upfront for immediate visibility. Phase 2 now routes through `src/release/validation.ts` (`runValidation`) — a pure Effect program — rather than a chain of imperative utility modules.
@@ -214,6 +226,7 @@ main.ts
   |       +-- create-api-commit.ts
   |       +-- parse-changesets.ts
   |       +-- release-summary-helpers.ts (listPublishablePackages, getReleasingPackages)
+  |       +-- pr-body.ts (buildManagedPrBody — no prior body on create)
   |       +-- determine-tag-strategy.ts (isMonorepoForTagging)
   |         +-- release/publishability.ts (PublishabilityDetectorAdaptiveLive)
   |         +-- release/changeset-config.ts (ChangesetConfig service)
@@ -224,6 +237,7 @@ main.ts
   |       +-- parse-changesets.ts
   |       +-- detect-repo-type.ts
   |       +-- release-summary-helpers.ts (listPublishablePackages, getReleasingPackages)
+  |       +-- pr-body.ts (extractSummary + priorBody merge, upsertManagedRegion)
   |       +-- determine-tag-strategy.ts (isMonorepoForTagging)
   |
   +-- Phase 2 chain:
@@ -481,6 +495,7 @@ When `dry-run: true` is set, the action executes a parallel path that validates 
 | `src/utils/native-version.ts` | runNativeVersion — bundled ReleasePlanner.apply with CHANGELOG_MODULES id map, token scoping and reset-then-retry |
 | `src/utils/normalize-package-manager.ts` | Narrow the packageManager input to the four-value enum for npm dispatch (shared by publish.ts + validation.ts) |
 | `src/utils/parse-changesets.ts` | Changeset YAML frontmatter parsing |
+| `src/utils/pr-body.ts` | buildManagedPrBody, upsertManagedRegion, extractSummary, extractReferences — the marker-delimited managed release-PR description |
 | `src/utils/registry-label.ts` | registryShortLabel / registryHost — ⬆ row labels in the publish and validation log trees (shared by publish.ts + validation.ts) |
 | `src/utils/release-summary-helpers.ts` | listPublishablePackages (Effect over the single detector), getReleasingPackages, resolveReleasePrTitle, formatReleasePackageList |
 | `src/utils/sort-releases-topologically.ts` | sortReleasesTopologically — shared dependency-first ordering (closure-filtered, cyclic-graph fallback) for Phase-3 source ordering, runPublishTargets and Phase-2 validation |

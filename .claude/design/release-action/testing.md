@@ -4,8 +4,8 @@ category: testing
 status: current
 completeness: 90
 created: 2026-02-07
-updated: 2026-07-17
-last-synced: 2026-07-17
+updated: 2026-08-04
+last-synced: 2026-08-04
 module: release-action
 related:
   - architecture.md
@@ -301,6 +301,7 @@ Co-located tests live in `src/release/*.test.ts`. Integration tests live in `__t
 | `__test__/link-issues-from-commits.test.ts` | `link-issues-from-commits.ts` | Phase 2 |
 | `__test__/load-release-config.test.ts` | `load-release-config.ts` | Infra |
 | `__test__/parse-changesets.test.ts` | `parse-changesets.ts` | Infra |
+| `__test__/pr-body.test.ts` | `src/utils/pr-body.ts` (managed-region round trip, `owned` merge rule) | Phase 1 |
 | `__test__/projections.test.ts` | `src/schema/projections.ts` | Schema |
 | `__test__/release-output.test.ts` | `src/schema/release-output.ts` | Schema |
 | `__test__/summary-writer.test.ts` | `summary-writer.ts` | Infra |
