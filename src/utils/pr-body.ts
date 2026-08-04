@@ -102,6 +102,98 @@ export const buildSquashClosingReferences = (linkedIssues: ReadonlyArray<LinkedI
 };
 
 /**
+ * Opening marker of the closing-reference region.
+ *
+ * @remarks
+ * Emitted with an `owned` attribute listing the ids THIS action put there —
+ * see {@link buildReferencesRegion} for why merely knowing the region's
+ * contents is not enough to merge it safely.
+ */
+export const REFERENCES_START = "<!-- silk-release:references:start -->";
+/** Closing marker of the closing-reference region. */
+export const REFERENCES_END = "<!-- silk-release:references:end -->";
+
+/**
+ * The opening marker up to its attributes, for locating a region whose
+ * `owned` list is unknown.
+ *
+ * @remarks
+ * {@link REFERENCES_START} is the plain form an author writes by hand; this
+ * action emits an attributed one. Match on this prefix, never on the plain
+ * constant, or a region this action wrote will not be found.
+ *
+ * @public
+ */
+export const REFERENCES_START_PREFIX = "<!-- silk-release:references:start";
+
+/**
+ * The reference region's current content, or `""` when it is empty or absent.
+ *
+ * @remarks
+ * Symmetric to {@link extractSummary}, and for the same reason: the managed
+ * region is regenerated on every run, so anything an agent added here would be
+ * deleted the moment a commit landed on the release branch — destructive and
+ * silent, with no signal back to whoever wrote it.
+ *
+ * @param existing - The current PR description.
+ * @returns The reference region's content, trimmed.
+ *
+ * @public
+ */
+export const extractReferences = (existing: string): string => {
+	const from = existing.indexOf(REFERENCES_START_PREFIX);
+	const to = existing.indexOf(REFERENCES_END);
+	if (from === -1 || to === -1 || to < from) return "";
+	// Past the end of the opening marker, whatever attributes it carries.
+	const openEnd = existing.indexOf("-->", from);
+	if (openEnd === -1 || openEnd > to) return "";
+	return existing.slice(openEnd + "-->".length, to).trim();
+};
+
+/**
+ * The ids the previous run's opening marker claims as its own.
+ *
+ * @remarks
+ * An absent or malformed attribute reads as "none", which degrades to treating
+ * every reference in the region as agent-authored. That preserves too much
+ * rather than deleting someone's work — the safe direction to fail.
+ *
+ * @internal
+ */
+const extractOwnedIds = (existing: string): ReadonlySet<number> => {
+	const from = existing.indexOf(REFERENCES_START_PREFIX);
+	if (from === -1) return new Set();
+	const openEnd = existing.indexOf("-->", from);
+	if (openEnd === -1) return new Set();
+	const attributes = existing.slice(from + REFERENCES_START_PREFIX.length, openEnd);
+	const owned = /owned="([\d,\s]*)"/.exec(attributes)?.[1];
+	if (owned === undefined) return new Set();
+	return new Set(
+		owned
+			.split(",")
+			.map((part) => part.trim())
+			.filter((part) => part !== "")
+			.map(Number),
+	);
+};
+
+/**
+ * Issue ids carried by a reference region's bare closing lines.
+ *
+ * @remarks
+ * Anchored per line so a number mentioned in passing is not mistaken for a
+ * closing reference — matching what GitHub itself links on.
+ *
+ * @internal
+ */
+const parseReferenceIds = (region: string): ReadonlyArray<number> =>
+	region
+		.split("\n")
+		.map((line) => /^(?:closes|fixes|resolves)\s+#(\d+)$/i.exec(line.trim())?.[1])
+		.filter((id): id is string => id !== undefined)
+		.map(Number);
+
+/**
  * The bare `Closes #N` lines GitHub's linker reads.
  *
  * @remarks
@@ -125,6 +217,46 @@ export const buildClosingReferences = (linkedIssues: ReadonlyArray<LinkedIssueRe
 		.filter(isOpen)
 		.map((issue) => `Closes #${issue.number}`)
 		.join("\n");
+
+/**
+ * The marker-delimited reference region, merging this run's references with
+ * any an agent added.
+ *
+ * @remarks
+ * The region is always emitted, empty or not, so an agent always has a target
+ * to write into — the same reservation {@link SUMMARY_START} makes.
+ *
+ * **Who wins, and why.** This action decides every issue it knows about: an
+ * issue in `linkedIssues` is emitted when open and dropped when closed, and a
+ * carried line cannot resurrect one it deliberately dropped.
+ *
+ * **Why the `owned` attribute exists.** "Not in `linkedIssues`" is NOT enough
+ * to identify an agent's addition. A reference this action emitted last run
+ * also disappears from `linkedIssues` when the release stops tracking that
+ * issue, and treating it as agent-authored would preserve it forever —
+ * re-linking, and on merge auto-closing, an issue the release deliberately
+ * dropped. Recording the ids each run emitted lets the next one subtract them,
+ * so what carries through is exactly what this action never wrote.
+ *
+ * @internal
+ */
+const buildReferencesRegion = (args: {
+	readonly linkedIssues: ReadonlyArray<LinkedIssueRef>;
+	readonly carriedReferences: string;
+	readonly previouslyOwned: ReadonlySet<number>;
+}): string => {
+	const known = new Set(args.linkedIssues.map((issue) => issue.number));
+	const ownedNow = args.linkedIssues.filter(isOpen).map((issue) => issue.number);
+
+	const agentAdded = [...new Set(parseReferenceIds(args.carriedReferences))]
+		.filter((id) => !args.previouslyOwned.has(id) && !known.has(id))
+		.sort((a, b) => a - b);
+
+	const lines = [...ownedNow, ...agentAdded].map((id) => `Closes #${id}`).join("\n");
+	const open = `<!-- silk-release:references:start owned="${ownedNow.join(",")}" -->`;
+
+	return `${open}\n${lines === "" ? "" : `${lines}\n`}${REFERENCES_END}`;
+};
 
 /**
  * The proposed squash-commit message, fenced for an AI integration to rewrite.
@@ -167,6 +299,23 @@ export const buildManagedPrBody = (args: {
 	 * arguments. `""` reserves an empty region.
 	 */
 	readonly summary: string;
+	/**
+	 * The reference region's current content, from {@link extractReferences}.
+	 *
+	 * @remarks
+	 * The PR's previous description, verbatim.
+	 *
+	 * @remarks
+	 * The WHOLE prior body rather than an extracted region: merging references
+	 * needs both the region's lines and the `owned` attribute on its opening
+	 * marker, and two separate parameters would eventually be passed
+	 * inconsistently. Optional because a PR being created has no prior body.
+	 *
+	 * Note this is only read for references — `summary` stays an explicit
+	 * parameter, because its owner decides what it says and this function must
+	 * not quietly overrule a caller that passed one.
+	 */
+	readonly priorBody?: string;
 }): string => {
 	const parts: Array<string> = [];
 
@@ -193,8 +342,18 @@ export const buildManagedPrBody = (args: {
 	// The bare references, OUTSIDE the fence and one per line. This is what
 	// GitHub links on — the comma-joined form inside the fence is for
 	// commitlint, and neither consumer accepts the other's spelling.
-	const closing = buildClosingReferences(args.linkedIssues);
-	if (closing !== "") parts.push(closing);
+	//
+	// Emitted unconditionally now that markers delimit it: an empty region is
+	// still an addressable one, and a release with nothing linked is exactly
+	// when an agent is most likely to want to add a reference.
+	const priorBody = args.priorBody ?? "";
+	parts.push(
+		buildReferencesRegion({
+			linkedIssues: args.linkedIssues,
+			carriedReferences: extractReferences(priorBody),
+			previouslyOwned: extractOwnedIds(priorBody),
+		}),
+	);
 
 	return `${MANAGED_START}\n${parts.join("\n\n")}\n${MANAGED_END}`;
 };

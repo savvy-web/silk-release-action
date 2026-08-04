@@ -501,6 +501,11 @@ export const updateReleaseBranch = (): Effect.Effect<
 					// each run, so re-emitting an empty summary region would delete
 					// whatever the summariser wrote as soon as any commit landed.
 					summary: extractSummary(existingBody),
+					// Same hazard, same fix: an agent may link an issue this release
+					// never detected, and rebuilding from `linkedIssues` alone would
+					// drop it silently. References for issues this run DOES know
+					// about are still decided there, not carried.
+					priorBody: existingBody,
 				});
 				const newBody = upsertManagedRegion(existingBody, managed);
 
