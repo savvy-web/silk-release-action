@@ -322,6 +322,50 @@ describe("the closing-reference region", () => {
 		expect(rendered).not.toContain("#501");
 	});
 
+	it("recognises every closing keyword GitHub accepts, not just the one it emits", () => {
+		// A keyword this parser fails to match is a reference it deletes on the
+		// next run — the exact destruction the region exists to prevent.
+		const rendered = buildManagedPrBody({
+			subject: "release: 2.0.0",
+			linkedIssues: [],
+			signoff: SIGNOFF,
+			summary: "",
+			priorBody: `${REFERENCES_START}\nFixes: #601\nClosed #602\nresolve #603\nFIX #604\n${REFERENCES_END}`,
+		});
+
+		const carried = extractReferences(rendered);
+		expect(carried).toContain("Closes #601");
+		expect(carried).toContain("Closes #602");
+		expect(carried).toContain("Closes #603");
+		expect(carried).toContain("Closes #604");
+	});
+
+	it("does not let a lookalike attribute claim an agent's reference as its own", () => {
+		// An unanchored `owned="…"` match also finds `data-owned="…"`, which would
+		// mark #700 as previously-emitted and drop it.
+		const rendered = buildManagedPrBody({
+			subject: "release: 2.0.0",
+			linkedIssues: [],
+			signoff: SIGNOFF,
+			summary: "",
+			priorBody: `<!-- silk-release:references:start data-owned="700" -->\nCloses #700\n${REFERENCES_END}`,
+		});
+
+		expect(extractReferences(rendered)).toContain("Closes #700");
+	});
+
+	it("emits one reference per issue when the same issue is linked twice", () => {
+		const rendered = buildManagedPrBody({
+			subject: "release: 2.0.0",
+			linkedIssues: [openIssue(170), openIssue(170)],
+			signoff: SIGNOFF,
+			summary: "",
+		});
+
+		expect(extractReferences(rendered).match(/Closes #170/g)).toHaveLength(1);
+		expect(rendered).toContain('owned="170"');
+	});
+
 	it("survives a full regeneration round-trip through the managed region", () => {
 		const first = upsertManagedRegion(
 			"",

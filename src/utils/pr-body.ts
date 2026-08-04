@@ -166,7 +166,10 @@ const extractOwnedIds = (existing: string): ReadonlySet<number> => {
 	const openEnd = existing.indexOf("-->", from);
 	if (openEnd === -1) return new Set();
 	const attributes = existing.slice(from + REFERENCES_START_PREFIX.length, openEnd);
-	const owned = /owned="([\d,\s]*)"/.exec(attributes)?.[1];
+	// Anchored to an attribute boundary: an unanchored match also finds
+	// `data-owned="…"` and `unowned="…"`, which would let an unrelated attribute
+	// claim an agent's reference as ours and get it dropped on the next run.
+	const owned = /(?:^|\s)owned="([\d,\s]*)"/.exec(attributes)?.[1];
 	if (owned === undefined) return new Set();
 	return new Set(
 		owned
@@ -184,12 +187,17 @@ const extractOwnedIds = (existing: string): ReadonlySet<number> => {
  * Anchored per line so a number mentioned in passing is not mistaken for a
  * closing reference — matching what GitHub itself links on.
  *
+ * Every keyword GitHub accepts is matched, not just the present-tense plural
+ * this action happens to emit: `close`/`closed`, `fix`/`fixed`,
+ * `resolve`/`resolved` and an optional colon are all valid, and a reference
+ * this parser fails to recognise is one it silently deletes on the next run.
+ *
  * @internal
  */
 const parseReferenceIds = (region: string): ReadonlyArray<number> =>
 	region
 		.split("\n")
-		.map((line) => /^(?:closes|fixes|resolves)\s+#(\d+)$/i.exec(line.trim())?.[1])
+		.map((line) => /^(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+#(\d+)$/i.exec(line.trim())?.[1])
 		.filter((id): id is string => id !== undefined)
 		.map(Number);
 
@@ -246,7 +254,9 @@ const buildReferencesRegion = (args: {
 	readonly previouslyOwned: ReadonlySet<number>;
 }): string => {
 	const known = new Set(args.linkedIssues.map((issue) => issue.number));
-	const ownedNow = args.linkedIssues.filter(isOpen).map((issue) => issue.number);
+	// Deduplicated: two refs for one issue would otherwise render the reference
+	// twice and emit `owned="170,170"`.
+	const ownedNow = [...new Set(args.linkedIssues.filter(isOpen).map((issue) => issue.number))];
 
 	const agentAdded = [...new Set(parseReferenceIds(args.carriedReferences))]
 		.filter((id) => !args.previouslyOwned.has(id) && !known.has(id))
