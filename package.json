@@ -51,8 +51,7 @@
 		"@effected/workspaces": "^0.10.2",
 		"@effected/yaml": "^0.6.1",
 		"@savvy-web/silk-effects": "^5.5.0",
-		"effect": "catalog:effect",
-		"ts-markdown": "^1.3.0"
+		"effect": "catalog:effect"
 	},
 	"devDependencies": {
 		"@effect/vitest": "catalog:effect",

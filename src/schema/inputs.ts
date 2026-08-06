@@ -104,7 +104,25 @@ export interface Inputs extends BranchRefs {
 	readonly appClientId: string;
 	/** GitHub App private key (PEM). Required; absence fails the decode. */
 	readonly appPrivateKey: Redacted.Redacted<string>;
-	/** The workflow's own `GITHUB_TOKEN`, for GitHub Packages. Empty when omitted. */
+	/**
+	 * The workflow's own `GITHUB_TOKEN`, for GitHub Packages. Empty when omitted.
+	 *
+	 * @remarks
+	 * **Decoded here and read by nothing in this process, deliberately.** The
+	 * consumer runs in the `pre` process, which cannot be handed `main`'s
+	 * record: `pre.ts` reads the input itself and persists it to
+	 * `GithubPackagesTokenState`, and `release/publish.ts` takes it from there.
+	 *
+	 * The field cannot simply be dropped. `action.yml` declares the input, so
+	 * the manifest leg of the sync test puts it in {@link INPUT_NAMES}, and the
+	 * second leg asserts `readInputs` reads *exactly* that set — removing the
+	 * decode fails `should be exactly the set readInputs reads`. Verified by
+	 * doing it: one test goes red.
+	 *
+	 * So this is a mirror of the manifest rather than dead weight, which is the
+	 * distinction between it and the `build-command` read this action removed —
+	 * that one was declared nowhere and could never be set by any workflow.
+	 */
 	readonly githubToken: string;
 	/** Auto-merge method, or `None` when disabled. */
 	readonly autoMerge: Option.Option<AutoMergeMethod>;

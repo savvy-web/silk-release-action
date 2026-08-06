@@ -27,14 +27,20 @@ describe("summary-writer", () => {
 				],
 			);
 
-			// ts-markdown pads columns for alignment
-			expect(result).toBe("| Name | Value |\n" + "| ---- | ----- |\n" + "| foo  | bar   |\n" + "| baz  | qux   |");
+			// GitHubMarkdown does not pad cells for alignment; GFM renders identically
+			expect(result).toBe("| Name | Value |\n" + "| --- | --- |\n" + "| foo | bar |\n" + "| baz | qux |");
 		});
 
 		it("should handle empty rows", () => {
 			const result = summaryWriter.table(["A", "B"], []);
 
-			expect(result).toBe("| A   | B   |\n" + "| --- | --- |");
+			expect(result).toBe("| A | B |\n" + "| --- | --- |");
+		});
+
+		it("should escape a pipe in a cell instead of shifting the columns", () => {
+			const result = summaryWriter.table(["Range", "Note"], [[">=1 || <2", "ok"]]);
+
+			expect(result).toBe("| Range | Note |\n" + "| --- | --- |\n" + "| >=1 \\|\\| <2 | ok |");
 		});
 	});
 
@@ -45,16 +51,14 @@ describe("summary-writer", () => {
 				{ key: "Count", value: "5" },
 			]);
 
-			// ts-markdown pads columns for alignment
-			expect(result).toBe(
-				"| Property | Value   |\n" + "| -------- | ------- |\n" + "| Status   | Success |\n" + "| Count    | 5       |",
-			);
+			// GitHubMarkdown does not pad cells for alignment; GFM renders identically
+			expect(result).toBe("| Property | Value |\n" + "| --- | --- |\n" + "| Status | Success |\n" + "| Count | 5 |");
 		});
 
 		it("should handle empty entries", () => {
 			const result = summaryWriter.keyValueTable([]);
 
-			expect(result).toBe("| Property | Value |\n" + "| -------- | ----- |");
+			expect(result).toBe("| Property | Value |\n" + "| --- | --- |");
 		});
 	});
 

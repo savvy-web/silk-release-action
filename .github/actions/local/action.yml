@@ -125,6 +125,11 @@ inputs:
     description: |
       Custom registries with authentication (one per line).
 
+      NOT WIRED UP. The value is parsed and then ignored -- no custom registry
+      is authenticated or published to. Non-functional since v0.2.3; tracked at
+      https://github.com/savvy-web/silk-release-action/issues/215. The format
+      below is what the input still accepts.
+
       Format (one registry per line):
         https://registry.example.com/_authToken=<token>
         https://registry.example.com/_auth=<base64-credentials>
