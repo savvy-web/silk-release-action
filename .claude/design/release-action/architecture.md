@@ -154,7 +154,7 @@ Two rules are enforced by that test:
 - The `@effected/github` resource layers, provided over that client. GraphQL is a member of `GitHubClient`; there is no separate service to wire.
 - `NpmRegistry.layer` over `FetchHttpClient.layer` — registry reads are HTTP, not `npm view` subprocesses.
 - `PackagePublish.layer` over `NodeServices.layer`.
-- `OidcTokenIssuer.layer` and `SigstoreSigner.layer` (over `IdentityTokenFromOidc`).
+- `OidcTokenIssuer.layer` and `SigstoreSigner.layer` (over `ActionsIdentityToken.layer`).
 - `DryRun.layerFrom(dryRun)`.
 
 **`LocalExec`, `Git` and `PackageManagerDetector` are required here, not built here.** They come from `release/layers.ts`, and `MainLive` satisfies the requirement with `Layer.provideMerge(releaseLive)`. Building them in the app layer minted a *second* `WorkspaceDiscovery` — two filesystem scans and two answers that can disagree between the publish path and the release path — and `Layer.mergeAll`'s later-wins then shadowed the duplicates, which merely hid the second graph rather than preventing it.
@@ -367,7 +367,7 @@ main.ts  (guard + Action.run only)
   |     MainLive = mergeAll(makeAppLayer(dryRun), toolDiscovery)
   |                  .pipe(provideMerge(ReleaseLive))
   |     makeAppLayer requires LocalExec | Git | PackageManagerDetector
-  |     layers/identity-token.ts (IdentityTokenFromOidc → SigstoreSigner)
+  |     ActionsIdentityToken.layer (kit) → SigstoreSigner
   |
   +-- program.ts
         schema/inputs.ts (readInputs — the ONE decode point)
@@ -632,7 +632,6 @@ Registry reads go through `NpmRegistry` over `FetchHttpClient` (HTTP, not `npm v
 | `src/post.ts` | Post-action: duration reporting, token revocation |
 | `src/state.ts` | `Schema.Class` state bundles shared across pre/main/post |
 | `src/layers/app.ts` | `MainLive`, `makeAppLayer(dryRun)`, `toolDiscovery` |
-| `src/layers/identity-token.ts` | `IdentityTokenFromOidc` — OIDC identity for `SigstoreSigner` |
 
 ### Phase steps
 

@@ -29,14 +29,13 @@ import {
 	PullRequestComment,
 	Repo,
 } from "@effected/github";
-import { DryRun, GitHubToken, OidcTokenIssuer } from "@effected/github-actions";
+import { ActionsIdentityToken, DryRun, GitHubToken, OidcTokenIssuer } from "@effected/github-actions";
 import { NpmRegistry, PackagePublish } from "@effected/npm";
 import { SigstoreSigner } from "@effected/sbom";
 import { Effect, Layer } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
 import { ReleaseLive } from "../release/layers.js";
 import { readInputs } from "../schema/inputs.js";
-import { IdentityTokenFromOidc } from "./identity-token.js";
 
 /* v8 ignore start -- pure Layer wiring, exercised indirectly by the modules that consume it */
 
@@ -114,7 +113,7 @@ export const makeAppLayer = (dryRun: boolean) => {
 	// `isShallow` and `fetchUnshallow`.
 
 	const oidc = OidcTokenIssuer.layer;
-	const sigstore = SigstoreSigner.layer.pipe(Layer.provide(IdentityTokenFromOidc.pipe(Layer.provide(oidc))));
+	const sigstore = SigstoreSigner.layer.pipe(Layer.provide(ActionsIdentityToken.layer.pipe(Layer.provide(oidc))));
 
 	return Layer.mergeAll(
 		githubClient,

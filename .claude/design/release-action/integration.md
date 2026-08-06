@@ -123,7 +123,7 @@ Phase 1 (branch management) runs zero-install: the shared workflow passes `insta
 
 - **App installation token** — provisioned by `pre.ts` via `GitHubToken.provision()` and stored in `ActionState` under the kit's internal key. `layers/app.ts` builds the client from it with `GitHubToken.clientLayer()`. Anything needing the raw token calls `GitHubToken.read()` itself — `utils/native-version.ts` does, for the changelog worker's ambient `GITHUB_TOKEN` read.
 - **Workflow packages token** — the `github-token` action input (`secrets.GITHUB_TOKEN` with `permissions: packages: write`), persisted by `pre.ts` to `GithubPackagesTokenState` and masked with `setSecret`. `runPublishTargets` reads it back from `ActionState` and `pickToken` hands it to every `github-packages` target. It is **required** for GitHub Packages rather than merely preferred: the App installation token cannot publish there at all (see [Authentication and publishing](#authentication-and-publishing)). Omitting it fails every GitHub Packages target and aborts before any GitHub release is created.
-- **OIDC tokens** — short-lived JWTs fetched on demand by `OidcTokenIssuer` (`@effected/github-actions`) for Sigstore/Fulcio signing and for npm/JSR trusted publishing. Not stored in state; fetched fresh per attestation run. `src/layers/identity-token.ts` adapts the issuer into the `IdentityToken` that `SigstoreSigner` requires.
+- **OIDC tokens** — short-lived JWTs fetched on demand by `OidcTokenIssuer` (`@effected/github-actions`) for Sigstore/Fulcio signing and for npm/JSR trusted publishing. Not stored in state; fetched fresh per attestation run. `ActionsIdentityToken.layer` adapts the issuer into the `IdentityToken` that `SigstoreSigner` requires. A local shim did this until `@effected/github-actions` shipped the adapter (effected#184, now closed).
 
 **Two process-environment bridges are deleted, not moved.** `STATE_token` existed so the removed `utils/tokens.ts` could hand the raw token to `native-version.ts`; that module now calls `GitHubToken.read()` itself and sets `GITHUB_TOKEN` only for the duration of the apply, so the credential no longer sits in the environment of every subsequent in-process operation as a second plaintext copy. `STATE_githubToken` wrote the workflow token into the environment as **plaintext** — no `Secret` member anywhere on that path — to serve `tokens.packagesToken()`, whose only production caller (`registry-auth.setupRegistryAuth`) was deleted at #90; its own test file was the last thing importing it. `utils/tokens.ts` is gone entirely, along with `utils/section-queue.ts` (191 lines, unimported since #191).
 
@@ -253,7 +253,6 @@ Packing once ensures every registry receives identical content with the same SHA
 | `src/utils/npm-cache.ts` | ensureNpmCacheEnv — runner-writable npm cache, set before any npm command |
 | `src/release/layers.ts` | WorkspacesLive / LocalExecLive / NativeVersioningLive / ReleaseLive composition |
 | `src/layers/app.ts` | MainLive; requires LocalExec, Git and PackageManagerDetector rather than rebuilding them |
-| `src/layers/identity-token.ts` | IdentityTokenFromOidc — the OIDC identity SigstoreSigner requires |
 | `src/release/types.ts` | TargetPublishResult, ValidationFinding, ValidationPackageResult, etc. |
 
 ### Native Versioning (Phase 1)
