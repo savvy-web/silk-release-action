@@ -6,8 +6,53 @@
  * Failure posture: **fail-the-job**. A failed build/SBOM gate or a partial
  * publish raises {@link PublishError} rather than returning — `setFailed`
  * only annotates, and returning here is what once let a 4-of-8-target publish
- * report a green run. The follow-on close-linked-issues work degrades to a
- * warning: it is housekeeping after a successful release.
+ * report a green run. A failure inside {@link runReleases} (tags, GitHub
+ * releases, assets) raises {@link ReleasesError}, but only **after** the
+ * follow-on work and the output emission have run — see below. Linked issues
+ * that could not be closed fail the phase the same way
+ * (`reason: "linked-issues"`); that work is housekeeping, but housekeeping
+ * that silently did not happen is what a re-run exists to fix, and it can only
+ * be re-run if the job goes red.
+ *
+ * ## Deferred failure, and why the order is the design
+ *
+ * When `runReleases` fails, this step does **not** abort at the failure site.
+ * It catches, keeps going, and fails at the very end. Three reasons, each of
+ * which an early `Effect.fail` would break:
+ *
+ * 1. **Outputs must reflect what actually published.** Failing early skips
+ *    `emitPublishing`, so a consumer reading the `result` output could not tell
+ *    which packages made it to a registry. The packages that published are a
+ *    fact regardless of whether the tag/release housekeeping then failed.
+ * 2. **The packages are already on the registry.** By the time Step 5 runs,
+ *    Step 4 has succeeded. The failure is about the *release/tag/issue*
+ *    housekeeping, not the publish, and nothing is gained by abandoning the
+ *    remaining housekeeping.
+ * 3. **The close-linked-issues follow-on is independent** of whether a GitHub
+ *    release object was created, so it still runs.
+ *
+ * ## The re-run contract
+ *
+ * Failing loudly here is only correct because **re-running the job is safe and
+ * resumes where it stopped**. Every Phase-3 operation before this point is
+ * idempotent on a second pass:
+ *
+ * - **Publishing** compares the registry's integrity digest against the packed
+ *   tarball and records `skipped-identical (recovery)` for a version already
+ *   published with identical bytes (`release/publish.ts`).
+ * - **Git tags** are created with `GitTag.create`, never `upsert`; a tag already
+ *   at the head SHA is an idempotent recovery, and a divergent tag is reported
+ *   and left alone rather than force-moved (`release/releases.ts`).
+ * - **GitHub releases** fall back to `getByTag` on `kind: "alreadyExists"`.
+ * - **Release assets** are pre-fetched by name; an asset already attached is
+ *   skipped and its existing URL reused.
+ * - **Linked issues** already closed are skipped without a second comment, and
+ *   the close precedes the comment so a failed close leaves nothing to
+ *   duplicate (`utils/close-linked-issues.ts`).
+ *
+ * So the operator's recovery loop is: read the failure, fix the cause, re-run
+ * the job. That sentence is the whole reason a red job is the right signal here
+ * rather than an obstruction.
  *
  * @module steps/publishing
  */
@@ -15,7 +60,7 @@
 import { Git } from "@effected/git";
 import { ActionLogger, ActionOutputs, DryRun } from "@effected/github-actions";
 import { Effect } from "effect";
-import { PublishError } from "../release/errors.js";
+import { PublishError, ReleasesError } from "../release/errors.js";
 import type { DetectedRelease } from "../release/publish.js";
 import { detectReleases, runBuildAndSbom, runPublishTargets } from "../release/publish.js";
 import { runReleases } from "../release/releases.js";
@@ -30,6 +75,21 @@ import { determineTagStrategy, isMonorepoForTagging } from "../utils/determine-t
 import { ensureFullHistory } from "../utils/ensure-full-history.js";
 import { grouped } from "../utils/grouped.js";
 import { sortReleasesTopologically } from "../utils/sort-releases-topologically.js";
+
+/**
+ * The recovery instruction appended to every deferred Phase-3 failure message.
+ *
+ * @remarks
+ * Carried in the failure text rather than left to the module docs because the
+ * person who needs it is reading a red job's annotation, not this file. See
+ * "The re-run contract" in the module docs for what backs each claim.
+ *
+ * @internal
+ */
+const RERUN_CONTRACT =
+	"Re-running this job is safe: already-published packages are skipped by integrity digest, " +
+	"existing tags and releases are reused, already-uploaded assets are not re-uploaded, and " +
+	"already-closed issues are not commented on again, so the re-run resumes from where it failed.";
 
 /**
  * Phase 3 publishing orchestrator. Delegates to the Effect-based
@@ -183,6 +243,10 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 				packageManager,
 				dryRun,
 			}).pipe(
+				// Catch, do NOT abort. The phase still has to emit outputs describing
+				// what published and still has to close linked issues; failing here
+				// would skip both. The failure is re-raised at the end of the step —
+				// see "Deferred failure" in the module docs.
 				Effect.catch((e) =>
 					Effect.gen(function* () {
 						yield* Effect.logWarning(`runReleases failed: ${String(e)}`);
@@ -197,20 +261,20 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 			);
 
 			// ── Follow-on: close linked issues ─────────────────────────────────────
-			if (mergedReleasePRNumber !== undefined) {
-				const closeResult = yield* logger.group(
-					"Close linked issues",
-					closeLinkedIssues(mergedReleasePRNumber, dryRun).pipe(
-						Effect.catch((e) =>
-							Effect.gen(function* () {
-								yield* Effect.logWarning(`closeLinkedIssues failed: ${String(e)}`);
-								return null;
-							}),
-						),
-					),
-				);
+			// No `Effect.catch` here. `closeLinkedIssues` declares its error channel
+			// as `never` — it collapses every service failure into an empty result
+			// itself — so a catch could not fire, and the `null` branch it guarded
+			// was unreachable code that read as coverage. The live failure signal is
+			// `failedCount`, consumed by the deferred failure below.
+			const closeResult =
+				mergedReleasePRNumber !== undefined
+					? yield* logger.group("Close linked issues", closeLinkedIssues(mergedReleasePRNumber, dryRun))
+					: null;
+			if (closeResult !== null) {
 				yield* Effect.logInfo(
-					closeResult === null ? "❌ Close linked issues — failed" : `✅ ${closeResult.closedCount} issue(s) closed`,
+					closeResult.failedCount > 0
+						? `❌ ${closeResult.closedCount} issue(s) closed — ${closeResult.failedCount} failed`
+						: `✅ ${closeResult.closedCount} issue(s) closed`,
 				);
 			}
 
@@ -226,6 +290,42 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 				tagShas[tag.name] = rev._tag === "Success" ? rev.success : "";
 			}
 			yield* emitPublishing(publishResult, tagStrategy.tags, releasesResult.releases, tagShas);
+
+			// ── Deferred failure ───────────────────────────────────────────────────
+			// Everything above has run: the follow-on close-linked-issues work, the
+			// tag-SHA collection and the output emission. Only now is it safe to
+			// fail, because `result` already describes the packages that DID publish.
+			//
+			// This is `ReleasesError`, not `PublishError`: the publish succeeded
+			// (Step 4 gates Step 5), and `PublishError`'s reason union has no member
+			// that honestly names tag/release/asset work.
+			// Each failing surface contributes one clause naming itself and its
+			// count, so the annotation says WHICH housekeeping failed and by how
+			// much — a phase that fails for two reasons must not report only one.
+			const failures: string[] = [];
+			if (!releasesResult.success) {
+				const detail = releasesResult.errors.length > 0 ? `: ${releasesResult.errors.join("; ")}` : "";
+				failures.push(
+					`GitHub releases — created ${releasesResult.releases.length} of ${tagStrategy.tags.length} release(s), ` +
+						`${releasesResult.errors.length} error(s)${detail}`,
+				);
+			}
+			if (closeResult !== null && closeResult.failedCount > 0) {
+				failures.push(
+					`Close linked issues — ${closeResult.failedCount} of ${closeResult.issues.length} issue(s) failed to close`,
+				);
+			}
+
+			if (failures.length > 0) {
+				// `reason` names the surface that actually failed. When only the
+				// follow-on failed, calling it "release" would tell an operator the
+				// GitHub release failed when it did not.
+				const reason = !releasesResult.success ? "release" : "linked-issues";
+				const message = `${failures.join(" | ")}. ${RERUN_CONTRACT}`;
+				yield* Effect.logError(`Release publishing: ❌ ${message}`);
+				yield* outputs.setFailed(message);
+				return yield* Effect.fail(new ReleasesError({ reason, message }));
+			}
 
 			yield* Effect.logInfo(
 				`Release publishing: ✅ ${publishResult.successfulPackages} package(s), ${releasesResult.releases.length} release(s)`,

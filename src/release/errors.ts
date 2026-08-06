@@ -31,9 +31,19 @@ export class PublishError extends Data.TaggedError("PublishError")<{
 	readonly cause?: unknown;
 }> {}
 
-/** Error from Phase-3 tag / GitHub-release creation. */
+/**
+ * Error from Phase-3 tag / GitHub-release creation, and from the
+ * close-linked-issues follow-on that runs alongside it.
+ *
+ * @remarks
+ * `linked-issues` names the follow-on because no other member honestly does.
+ * Phase 3 fails when linked issues could not be closed, and reporting that as
+ * `reason: "release"` would tell an operator the GitHub release failed when it
+ * did not — the same reason this is `ReleasesError` and not `PublishError`
+ * (the packages published; only the housekeeping failed).
+ */
 export class ReleasesError extends Data.TaggedError("ReleasesError")<{
-	readonly reason: "tag" | "release" | "asset" | "storage-record";
+	readonly reason: "tag" | "release" | "asset" | "storage-record" | "linked-issues";
 	readonly message: string;
 	readonly cause?: unknown;
 }> {}
