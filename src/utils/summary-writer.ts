@@ -1,23 +1,23 @@
-import { appendFileSync } from "node:fs";
 import type { MarkdownEntryOrPrimitive } from "ts-markdown";
 import { codeblock, h2, h3, h4, table, tsMarkdown, ul } from "ts-markdown";
 
 /**
- * Utility for writing job summaries using markdown.
- * Uses ts-markdown for type-safe markdown generation.
+ * Builders for job-summary markdown.
+ *
+ * @remarks
+ * This module BUILDS summary markdown; it does not write it. Emission goes
+ * through `ActionOutputs.summary`, which owns the `EFFECTED_EOF` delimiter
+ * discipline — every caller here already does that
+ * (`outputs.summary(summaryWriter.build(...))`).
+ *
+ * A `write` member used to live here, reading `process.env.GITHUB_STEP_SUMMARY`
+ * and `appendFileSync`-ing to it directly. It had no production caller — only
+ * its own test — and it violated two kit invariants: nothing reads `process.env`
+ * outside `ActionEnvironment`, and the job summary goes through `ActionOutputs`.
+ * Removed 2026-08-05. If a write seam is ever needed here again, it is
+ * `ActionOutputs.summary`, not a second path to the same file.
  */
 export const summaryWriter = {
-	/**
-	 * Write a markdown summary to the job summary file.
-	 * Appends trailing newlines to separate from subsequent summaries.
-	 */
-	async write(markdown: string): Promise<void> {
-		const path = process.env.GITHUB_STEP_SUMMARY;
-		if (path !== undefined && path !== "") {
-			appendFileSync(path, `${markdown}\n\n`);
-		}
-	},
-
 	/**
 	 * Build a markdown table from rows.
 	 * First row is treated as headers.

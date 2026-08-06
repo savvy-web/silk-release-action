@@ -4,33 +4,26 @@
  * `pnpm generate-schema` and commit the regenerated files.
  */
 
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { basename } from "node:path";
+import { NodeServices } from "@effect/platform-node";
+import { DocumentDiff, SchemaFile, SchemaPipeline, SchemaValidator } from "@effected/schemastore";
+import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
-import { buildActionJsonSchema } from "../lib/scripts/generate-schema.js";
-import { ReleaseOutput, SCHEMA_URL } from "../src/schema/release-output.js";
-import { INPUT_SCHEMA_URL, SilkReleaseConfig } from "../src/schema/silk-release-config.js";
+import { targets } from "../lib/scripts/generate-schema.js";
 
-const REPO_ROOT = resolve(fileURLToPath(new URL("..", import.meta.url)));
-
-interface SchemaCase {
-	readonly file: string;
-	readonly schema: Parameters<typeof buildActionJsonSchema>[0];
-	readonly $id: string;
-}
-
-const cases: ReadonlyArray<SchemaCase> = [
-	{ file: "silk-release-action.output.schema.json", schema: ReleaseOutput, $id: SCHEMA_URL },
-	{ file: "silk-release-action.input.schema.json", schema: SilkReleaseConfig, $id: INPUT_SCHEMA_URL },
-];
+const TestLayer = Layer.mergeAll(SchemaFile.layer, SchemaValidator.layer).pipe(Layer.provide(NodeServices.layer));
 
 describe("generated action JSON Schemas", () => {
-	for (const c of cases) {
-		it(`${c.file} matches its Effect Schema source`, () => {
-			const generated = buildActionJsonSchema(c.schema, c.$id);
-			const committed = JSON.parse(readFileSync(resolve(REPO_ROOT, c.file), "utf8"));
-			expect(committed).toEqual(generated);
+	for (const target of targets) {
+		it(`${basename(target.path)} matches its Effect Schema source`, async () => {
+			// The generator's own walk with no writes. `check` reports rather than
+			// enforcing, so both halves have to be asserted: `blocked` catches a
+			// document that could never have been written, and `change` catches
+			// drift. Comparing content rather than text keeps the guard immune to
+			// whatever formatted the committed file.
+			const result = await Effect.runPromise(SchemaPipeline.checkOne(target).pipe(Effect.provide(TestLayer)));
+			expect(result.blocked, `gate blocked: ${result.findings.map((f) => f.label).join(", ")}`).toBe(false);
+			expect(DocumentDiff.isClean(result.change), `expected no drift, got "${result.change}"`).toBe(true);
 		});
 	}
 });

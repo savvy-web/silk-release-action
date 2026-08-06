@@ -28,6 +28,7 @@
 
 import type { SpawnRecord } from "@effected/commands";
 import { ScriptedSpawner, ToolDiscovery } from "@effected/commands";
+import { Git } from "@effected/git";
 import type { CheckRunOutput, FileChange, PullRequestInfo } from "@effected/github";
 import {
 	CheckRun,
@@ -44,7 +45,7 @@ import {
 	Repo,
 	RepoRef,
 } from "@effected/github";
-import { ActionEnvironment, ActionInput, ActionOutputs, ActionState, ActionStateError } from "@effected/github-actions";
+import { ActionEnvironment, ActionOutputs, DryRun } from "@effected/github-actions";
 import { PublishabilityDetector, WorkspaceDiscovery } from "@effected/workspaces";
 import { Changesets } from "@savvy-web/silk-effects";
 import { Effect, FileSystem, Layer, Logger, Option } from "effect";
@@ -52,7 +53,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ChangesetConfig } from "../src/release/changeset-config.js";
 import type { CreateReleaseBranchResult } from "../src/utils/create-release-branch.js";
 import { createReleaseBranch } from "../src/utils/create-release-branch.js";
-import { cleanupTestEnvironment, setupTestEnvironment } from "./utils/github-mocks.js";
+import { actionStateWithAppToken, cleanupTestEnvironment, setupTestEnvironment } from "./utils/github-mocks.js";
 
 const RELEASE_BRANCH = "changeset-release/main";
 const TARGET_BRANCH = "main";
@@ -133,6 +134,8 @@ interface Fixtures {
 	linkedIssues: Map<number, KitLinkedIssue[]>;
 	completed: Array<{ conclusion: string; output: CheckRunOutput | undefined }>;
 	summaries: string[];
+	/** Every value masked with the runner via `setSecret`. */
+	masked: string[];
 	nextPrNumber: number;
 }
 
@@ -165,29 +168,51 @@ const makeFixtures = (
 		linkedIssues,
 		completed: [],
 		summaries: [],
+		masked: [],
 		nextPrNumber: 42,
 	};
 };
 
 // --- git script ----------------------------------------------------------
 
-/** `git status --porcelain` stdout that drives the version-change branch. */
-const PORCELAIN_CHANGED = "M package.json\nM CHANGELOG.md";
+/**
+ * The `git status` stdout that drives the version-change branch.
+ *
+ * @remarks
+ * NUL-terminated: every status read in the stage now goes through `Git.status`,
+ * which runs `--porcelain -z` and parses it. The human `-z`-less form would be
+ * read as ONE entry whose path is the tail of the first line.
+ */
+const PORCELAIN_CHANGED = "M  package.json\0M  CHANGELOG.md\0";
 
 interface GitOptions {
-	/** `git status --porcelain` stdout. Empty drives the no-change cleanup path. */
+	/**
+	 * The FIRST `git status` read — the change probe. Empty drives the no-change
+	 * cleanup path.
+	 */
 	readonly porcelain?: string;
-	/** `git status --porcelain -z` stdout, which becomes the commit's file list. */
+	/**
+	 * The SECOND `git status` read, which becomes the commit's file list.
+	 *
+	 * @remarks
+	 * Both reads are now the same command (`Git.status` runs `--porcelain -z`
+	 * for each), so the script answers them by call order rather than by argv.
+	 */
 	readonly porcelainZ?: string;
 }
 
-const gitScript = (options: GitOptions) => (command: string, args: ReadonlyArray<string>) => {
-	if (command !== "git") return ScriptedSpawner.notFound(command);
-	const argv = args.join(" ");
-	if (argv === "status --porcelain") return { exit: 0, stdout: options.porcelain ?? "", stderr: "" };
-	if (argv === "status --porcelain -z") return { exit: 0, stdout: options.porcelainZ ?? "", stderr: "" };
-	// checkout -b, checkout <target>, branch -D
-	return { exit: 0, stdout: "", stderr: "" };
+const gitScript = (options: GitOptions) => {
+	let statusReads = 0;
+	return (command: string, args: ReadonlyArray<string>) => {
+		if (command !== "git") return ScriptedSpawner.notFound(command);
+		const argv = args.join(" ");
+		if (argv === "status --porcelain -z") {
+			statusReads += 1;
+			return { exit: 0, stdout: (statusReads === 1 ? options.porcelain : options.porcelainZ) ?? "", stderr: "" };
+		}
+		// checkout -b, checkout <target>, branch -D
+		return { exit: 0, stdout: "", stderr: "" };
+	};
 };
 
 // --- runner --------------------------------------------------------------
@@ -218,16 +243,32 @@ const runStage = async (
 				Effect.sync(() => {
 					f.summaries.push(content);
 				}),
+			// `runNativeVersion` declassifies the App token through
+			// `Secret.forSigning`, which masks it with the runner. The double dies
+			// loudly on an unstubbed member, so this records the masks instead —
+			// which is also what proves the token reaches the log filter before it
+			// reaches `process.env.GITHUB_TOKEN`.
+			setSecret: (value) =>
+				Effect.sync(() => {
+					f.masked.push(value);
+				}),
 		}),
-		// No token persisted, so the sign-off takes its `github-actions[bot]` fallback.
-		ActionState.layerTest({
-			get: ((key: string) =>
-				Effect.fail(new ActionStateError({ reason: "missing", key }))) as ActionState["Service"]["get"],
-		}),
+		// The App token `pre` persisted. `runNativeVersion` reads it with
+		// `GitHubToken.read()` now that the `process.env.STATE_token` bridge is
+		// gone, so a state double that answers "missing" would fail the stage. The
+		// token carries no `appSlug`, so the sign-off still resolves to the
+		// `github-actions[bot]` identity these fixtures expect.
+		actionStateWithAppToken(),
 		// `exists` answers false, so `formatWorkspaceWithBiome` returns before
 		// probing — an unstubbed `isAvailable` would die if it did not.
 		ToolDiscovery.layerTest(),
 		spawner.layer,
+		// The REAL `Git`, over the scripted spawner — not a `makeTest` double.
+		// The stage's git work is now split between kit members and the raw
+		// commands the kit cannot express, and driving both through one spawner
+		// is what keeps `spawner.spawns` a complete record of the argv this stage
+		// runs (which two tests below assert on directly).
+		Git.layer.pipe(Layer.provide(spawner.layer)),
 		CheckRun.layerTest({
 			create: (name) =>
 				Effect.succeed(
@@ -303,22 +344,19 @@ const runStage = async (
 		plannerLayer,
 		configInspectorStub,
 	);
-	// Runner-shaped input names (`INPUT_<MANGLED>`), through `ActionInput.layer`.
-	// The bare-name provider this replaces was keyed by names the runner never
-	// writes, so the reads under test were resolving through a path production
-	// does not take.
-	//
-	// NOTE: every value here equals its production default, so a mis-named input
-	// still resolves to the same string — these four reads are exercised but not
-	// yet *discriminated*. Making them so needs non-default fixture values, which
-	// ripples into the assertions; recorded as follow-up rather than done here.
-	const inputs = ActionInput.layer({
-		"INPUT_RELEASE-BRANCH": RELEASE_BRANCH,
-		"INPUT_TARGET-BRANCH": TARGET_BRANCH,
-		"INPUT_DRY-RUN": "false",
-	});
+	// Branch names are now ARGUMENTS, not inputs this module reads for itself,
+	// so the old `ActionInput.layer` arrangement is gone. That also retires the
+	// note that used to sit here: the fixture values equalled their production
+	// defaults, so a mis-named input still resolved to the right string and the
+	// reads were exercised but never discriminated. Passed as values, the wrong
+	// branch name can no longer coincide with the right one.
+	const refs = { releaseBranch: RELEASE_BRANCH, targetBranch: TARGET_BRANCH };
 	const result = await Effect.runPromise(
-		createReleaseBranch().pipe(Effect.provide(layer), Effect.provide(Logger.layer([])), Effect.provide(inputs)),
+		createReleaseBranch(refs).pipe(
+			Effect.provide(layer),
+			Effect.provide(Logger.layer([])),
+			Effect.provide(DryRun.layerFrom(false)),
+		),
 	);
 	return { result, spawns: spawner.spawns };
 };
@@ -402,7 +440,7 @@ describe("createReleaseBranch", () => {
 		expect(f.commits).toHaveLength(0);
 		expect(argvOf(spawns)).toEqual([
 			`git checkout -b ${RELEASE_BRANCH} origin/${TARGET_BRANCH}`,
-			"git status --porcelain",
+			"git status --porcelain -z",
 			`git checkout ${TARGET_BRANCH}`,
 			`git branch -D ${RELEASE_BRANCH}`,
 		]);

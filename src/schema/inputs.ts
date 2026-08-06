@@ -1,0 +1,188 @@
+// The single decode point for every `action.yml` input.
+//
+// `action.yml` is the source of truth for input NAMES and DEFAULTS; this
+// module mirrors both, and `__test__/schema-inputs.test.ts` asserts the two
+// never drift. The check has three legs — the manifest, the `INPUT_NAMES`
+// tuple, and what the code actually reads — because any two agreeing while
+// the third drifts is exactly how a dead read (`build-command`) and an
+// unimplemented input (`custom-registries`) both survived for months.
+//
+// WIRED. `main` decodes once here and hands the record down; the phase bodies
+// and the branch-flow modules take what they need as values. `release-branch`
+// went from six call sites each restating `"changeset-release/main"` to one.
+//
+// Two rules keep it that way, both enforced by `__test__/schema-inputs.test.ts`:
+// an input is read here and nowhere else (bar a short allowlist with stated
+// reasons — `pre` is a separate process, `auto-merge.ts` is a definition site),
+// and `dry-run` is decoded here ONLY to build `DryRun`, which every consumer
+// then asks instead of re-reading the input.
+
+import { ActionInput } from "@effected/github-actions";
+import type { Redacted } from "effect";
+import { Config, Effect, Option, Schema } from "effect";
+import type { AutoMergeMethod } from "../utils/auto-merge.js";
+import { autoMergeMethodConfig } from "../utils/auto-merge.js";
+import type { WorkflowPhase } from "../utils/detect-workflow-phase.js";
+
+/**
+ * The `action.yml` input names, verbatim, as a const tuple.
+ *
+ * @remarks
+ * Names-as-data: this tuple is what makes "the code and `action.yml` declare
+ * the same inputs" a test rather than a convention. Listed in manifest
+ * declaration order; the sync test compares as sets, so order is presentation
+ * only.
+ *
+ * @public
+ */
+export const INPUT_NAMES = [
+	"app-client-id",
+	"app-private-key",
+	"github-token",
+	"release-branch",
+	"target-branch",
+	"auto-merge",
+	"dry-run",
+	"phase",
+	"npm-token",
+	"strict-warnings",
+	"sbom-config",
+	"custom-registries",
+] as const;
+
+/**
+ * A single `action.yml` input name.
+ *
+ * @public
+ */
+export type InputName = (typeof INPUT_NAMES)[number];
+
+/**
+ * The accepted `phase` values.
+ *
+ * @remarks
+ * Decoded rather than cast. `main.ts` currently does
+ * `explicitInput as WorkflowPhase`, which accepts any string the workflow
+ * writes and routes a typo to the default no-op arm — a silent skip of the
+ * whole run. Decoding fails typed instead, naming the accepted set.
+ */
+const WorkflowPhaseSchema = Schema.Literals([
+	"branch-management",
+	"validation",
+	"publishing",
+	"close-issues",
+	"none",
+]) satisfies Schema.Codec<WorkflowPhase, string>;
+
+/**
+ * The two branch names a release flow works between.
+ *
+ * @remarks
+ * A structural subset of {@link Inputs}, so a phase that already holds the
+ * decoded record passes it straight through — no destructure-and-rebuild at
+ * every call site, and no way for the two names to be reordered into each
+ * other, which two bare `string` parameters invite.
+ *
+ * The point is that a module taking this **cannot** read the inputs itself:
+ * its branch names arrive from the one decode in {@link readInputs}, which is
+ * what stops a second copy of `"changeset-release/main"` appearing here.
+ *
+ * @public
+ */
+export interface BranchRefs {
+	readonly releaseBranch: string;
+	readonly targetBranch: string;
+}
+
+/**
+ * The fully decoded, typed shape of all `action.yml` inputs.
+ *
+ * @public
+ */
+export interface Inputs extends BranchRefs {
+	/** GitHub App client id. Required; absence fails the decode. */
+	readonly appClientId: string;
+	/** GitHub App private key (PEM). Required; absence fails the decode. */
+	readonly appPrivateKey: Redacted.Redacted<string>;
+	/** The workflow's own `GITHUB_TOKEN`, for GitHub Packages. Empty when omitted. */
+	readonly githubToken: string;
+	/** Auto-merge method, or `None` when disabled. */
+	readonly autoMerge: Option.Option<AutoMergeMethod>;
+	/** Rehearse without mutating. */
+	readonly dryRun: boolean;
+	/** Explicit phase override, or `None` for auto-detection. */
+	readonly phase: Option.Option<WorkflowPhase>;
+	/** npm access token, for a first publish or an OIDC fallback. Empty when omitted. */
+	readonly npmToken: string;
+	/** Escalate warning-severity findings to check-run failures. */
+	readonly strictWarnings: boolean;
+	/** SBOM metadata JSON. Empty when omitted. */
+	readonly sbomConfig: string;
+	/**
+	 * Custom registry auth lines.
+	 *
+	 * @remarks
+	 * Decoded here and, as of this change, consumed by nothing — the auth
+	 * implementation was lost in the publish-chain migration (#90) while the
+	 * manifest and README kept advertising it. Decoding it keeps the manifest
+	 * honest and puts the value one wiring step from working; see the module
+	 * note in `__test__/schema-inputs.test.ts`.
+	 */
+	readonly customRegistries: ReadonlyArray<string>;
+}
+
+/**
+ * The raw decode of every input.
+ *
+ * @remarks
+ * Through `ActionInput` accessors so the `INPUT_` mangling and the
+ * empty-string-is-absent rule stay owned by `@effected/github-actions` rather
+ * than reimplemented here. Every default mirrors `action.yml` — that file is
+ * the single source of truth, and the sync test keeps this mirror honest.
+ *
+ * `app-client-id` and `app-private-key` carry NO default: they are
+ * `required: true` in the manifest, and a missing credential must fail the job
+ * rather than proceed toward an unauthenticated API call.
+ */
+const loadInputs: Config.Config<Inputs> = Config.all({
+	appClientId: ActionInput.string("app-client-id"),
+	appPrivateKey: ActionInput.redacted("app-private-key"),
+	githubToken: ActionInput.string("github-token").pipe(Config.withDefault("")),
+	releaseBranch: ActionInput.string("release-branch").pipe(Config.withDefault("changeset-release/main")),
+	targetBranch: ActionInput.string("target-branch").pipe(Config.withDefault("main")),
+	autoMerge: autoMergeMethodConfig,
+	dryRun: ActionInput.boolean("dry-run").pipe(Config.withDefault(false)),
+	phase: ActionInput.string("phase").pipe(
+		Config.withDefault(""),
+		Config.mapOrFail((raw) => {
+			const value = raw.trim();
+			if (value === "") return Effect.succeedNone;
+			return Schema.decodeUnknownEffect(WorkflowPhaseSchema)(value).pipe(
+				Effect.map(Option.some),
+				Effect.mapError((error) => new Config.ConfigError(error)),
+			);
+		}),
+	),
+	npmToken: ActionInput.string("npm-token").pipe(Config.withDefault("")),
+	strictWarnings: ActionInput.boolean("strict-warnings").pipe(Config.withDefault(false)),
+	sbomConfig: ActionInput.string("sbom-config").pipe(Config.withDefault("")),
+	customRegistries: ActionInput.lines("custom-registries").pipe(Config.withDefault([])),
+});
+
+/**
+ * Decodes every input, exactly once, at the top of a phase.
+ *
+ * @remarks
+ * There is deliberately **no `InputError`**. Every failure this can raise is a
+ * `ConfigError` already — a missing required credential, a malformed boolean,
+ * an unrecognised `auto-merge` method or `phase` value — and the kit's rule is
+ * that an error channel with no constructor site does not go in the signature.
+ * Add one here only alongside a cross-field rule that can actually fire, with
+ * a test that fires it.
+ *
+ * A malformed boolean fails rather than silently defaulting: `Config.withDefault`
+ * applies when an input is ABSENT, not when it is present-but-malformed.
+ *
+ * @public
+ */
+export const readInputs: Effect.Effect<Inputs, Config.ConfigError> = loadInputs;

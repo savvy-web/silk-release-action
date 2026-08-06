@@ -17,7 +17,6 @@ import {
 	pullRequestUrl,
 	releaseTagUrl,
 	resolveServerUrl,
-	workflowRunUrl,
 } from "../src/utils/github-urls.js";
 
 const GHES = "https://github.example.com";
@@ -53,7 +52,6 @@ describe("url builders", () => {
 			issueUrl(GHES, "acme", "widgets", 7),
 			commitUrl(GHES, "acme", "widgets", "abc1234"),
 			pullRequestUrl(GHES, "acme", "widgets", 42),
-			workflowRunUrl(GHES, "acme", "widgets", "99"),
 			releaseTagUrl(GHES, "acme", "widgets", "v1.2.3"),
 			orgPackagePageUrl(GHES, "acme", "@acme/widget"),
 			packageArtifactUrl(GHES, "acme", "widget"),
@@ -75,7 +73,6 @@ describe("url builders", () => {
 		expect(issueUrl(GHES, "acme", "widgets", 7)).toBe(`${GHES}/acme/widgets/issues/7`);
 		expect(commitUrl(GHES, "acme", "widgets", "abc1234")).toBe(`${GHES}/acme/widgets/commit/abc1234`);
 		expect(pullRequestUrl(GHES, "acme", "widgets", 42)).toBe(`${GHES}/acme/widgets/pull/42`);
-		expect(workflowRunUrl(GHES, "acme", "widgets", "99")).toBe(`${GHES}/acme/widgets/actions/runs/99`);
 		expect(releaseTagUrl(GHES, "acme", "widgets", "v1.2.3")).toBe(`${GHES}/acme/widgets/releases/tag/v1.2.3`);
 		expect(packageArtifactUrl(GHES, "acme", "widget")).toBe(`${GHES}/acme/pkgs/npm/widget`);
 	});

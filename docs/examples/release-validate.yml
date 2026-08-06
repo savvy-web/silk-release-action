@@ -44,6 +44,7 @@ jobs:
         with:
           app-client-id: ${{ vars.APP_CLIENT_ID }}
           app-private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          # Custom registries for dry-run validation
+          # Custom registries: accepted but NOT wired up -- the value is ignored.
+          # Non-functional since v0.2.3; tracked at issue #215.
           # custom-registries: |
           #   https://registry.savvyweb.dev/${{ secrets.SAVVYWEB_NPM_AUTH_TOKEN }}

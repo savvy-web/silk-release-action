@@ -97,6 +97,8 @@ You can also set the phase explicitly:
     phase: branch-management
 ```
 
+The value must be one of `branch-management`, `validation`, `publishing`, `close-issues` or `none`. Anything else fails the run and names the accepted set. Earlier versions routed an unrecognised value to a no-op, so a typo skipped the entire release while the job stayed green.
+
 ### Token permission diagnostics
 
 The action logs token permissions in the pre-action phase. Check the workflow logs for:
@@ -109,7 +111,7 @@ These logs help diagnose authentication issues across different registries.
 
 ### Build validation fails
 
-Phase 2 runs `pnpm build` (or your configured package manager's build command). If validation fails:
+Phase 2 runs the `ci:build` script with your detected package manager — `pnpm ci:build`, `npm run ci:build`, `bun run ci:build`. The script name is fixed and cannot be configured, so every validated workspace must expose a `ci:build` script. If validation fails:
 
 1. Check the workflow logs for the specific build error
 2. Fix the issue on the release branch or on `main` (the action will rebase on next push)

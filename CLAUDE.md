@@ -4,12 +4,7 @@ Guidance for Claude Code when working in this repository.
 
 ## Repository Overview
 
-Private repository for **shared GitHub Actions, reusable workflows, and GitHub project management automation** (`@savvy-web/silk-release-action`).
-
-1. **Shared GitHub Actions** - Reusable composite actions for CI/CD
-2. **Reusable Workflows** - Standardized templates for PR validation, releases
-3. **GitHub Project Management** - Automation for GitHub Projects, issues, routing
-4. **Internal Tooling** - Scripts and utilities for GitHub operations
+Private repository (`@savvy-web/silk-release-action`) holding the release action itself plus shared composite actions, reusable workflows, GitHub Projects automation, and internal GitHub tooling.
 
 ## Design Documentation
 
@@ -17,19 +12,28 @@ Load design docs when working on the relevant subsystem:
 
 - `@./.claude/design/release-action/architecture.md` - Three-phase workflow, native versioning (zero-install Phase 1), the managed release-PR body region, module dependency graph, entry points, shared infrastructure
 - `@./.claude/design/release-action/integration.md` - Multi-registry publishing, OIDC auth, native versioning/changelog module map, token plumbing, SBOM/NTIA compliance, publish summaries
-- `@./.claude/design/release-action/testing.md` - Test strategy, test-layer patterns, silk-effects test factories, coverage map, specialized testing patterns
+- `@./.claude/design/release-action/testing.md` - Test strategy, test-layer patterns, silk-effects test factories, coverage map, specialized testing patterns, the 18 `CHARACTERIZATION` tests
+
+**Known live defect — read before touching Phase-2 degradation.** Six of the seven Phase-2 degradation paths report a green release verdict for work that never ran ([issue #216](https://github.com/savvy-web/silk-release-action/issues/216)), pinned by 18 `CHARACTERIZATION` tests that are written to fail when the fix lands. Load *Degradation semantics (issue #216)* in `architecture.md` and its companion in `testing.md` before changing a `steps/*` failure posture, or you will "fix" a test that is deliberately pinning the bug.
 
 ### Vendored reference repos (`.repos/`)
 
-`.repos/effect-smol` is a read-only submodule pinned to `effect@4.0.0-beta.98` (sparse: `packages/effect`, `migration`, `MIGRATION.md`, `LLMS.md`) — the authority on what Effect v4 actually exports plus the v3→v4 migration notes. Managed via `savvy repos` (config in `.repos/config.json`, submodule wiring in `.gitmodules`). Consult it before assuming a v4 API shape; do not edit it.
+Two read-only submodules, managed via `savvy repos` (config in `.repos/config.json`, wiring in `.gitmodules`). Consult them before assuming an API shape; do not edit them. `node_modules` wins on any disagreement.
+
+- `.repos/effect` — `Effect-TS/effect` pinned to `effect@4.0.0-beta.101` (sparse: `packages/effect`, `packages/vitest`, `migration`, `ai-docs`, `LLMS.md`, `MIGRATION.md`). The authority on what v4 exports, the v3→v4 migration notes, and the `@effect/vitest` reference. Services/tags live in `Context.ts` — there is no `ServiceMap.ts`.
+- `.repos/effected` — `spencerbeggs/effected` pinned to `@effected/github-actions@0.5.1` (sparse: `packages`, `design`, `CLAUDE.md`). The authority on the `@effected/*` kit's export surface and the canonical action patterns this repo follows. Tags are per-package, not monorepo-wide.
+
+(`.repos/effect-smol` is gone — v4 development moved back to the main Effect monorepo.)
 
 ## Silk Release Action
 
-TypeScript-based GitHub Action for automated release management with changesets. Entry points: `pre.ts`, `main.ts`, `post.ts`. Source layout: `src/release/` (phase orchestration, publishability, reporting), `src/schema/` (output schema and projections), `src/utils/` (utility modules), `src/types/` (shared types). JSON Schema artifacts at `silk-release-action.input.schema.json` and `silk-release-action.output.schema.json`.
+TypeScript-based GitHub Action for automated release management with changesets. Entry points: `pre.ts`, `main.ts`, `post.ts`.
+
+**Source layout.** `main.ts` is a 19-line entry guard only; composition lives in `src/program.ts` (read inputs → detect phase → five-arm switch) and the layer graph in `src/layers/`. Phase bodies are one module each under `src/steps/`. Also: `src/release/` (publish, releases, validation, reporting, publishability), `src/schema/` (`inputs.ts` and `outputs.ts` are the single decode/declare points, plus the output schema and projections), `src/utils/`, `src/types/`, `src/changelog/` (bundled changelog workers). JSON Schema artifacts at `silk-release-action.input.schema.json` and `silk-release-action.output.schema.json`.
 
 **Three-phase workflow:**
 
-1. **Phase 1 (Branch Management)** - Push to `main` triggers changeset detection, creates/updates `changeset-release/main` branch and release PR. Versioning runs in-process (zero-install) via the bundled silk-effects v4 `ReleasePlanner` — no consumer `ci:version` script, no `version-command` input
+1. **Phase 1 (Branch Management)** - Push to `main` triggers changeset detection, creates/updates `changeset-release/main` branch and release PR. Versioning runs in-process (zero-install) via the bundled silk-effects `ReleasePlanner` — no consumer `ci:version` script, no `version-command` input
 2. **Phase 2 (Validation)** - Push to release branch triggers build validation, publish dry-runs, release notes preview, and sticky comment updates
 3. **Phase 3 (Publishing)** - Merge of release PR triggers multi-registry publishing, GitHub releases, and SBOM/attestation generation
 
@@ -41,6 +45,7 @@ For full architecture, module dependency graph, and per-module documentation: `@
 | ----- | -------- | ------- | ----------- |
 | `app-client-id` | Yes | - | GitHub App client ID |
 | `app-private-key` | Yes | - | GitHub App private key (PEM) |
+| `github-token` | No | `""` | `secrets.GITHUB_TOKEN`; **required for GitHub Packages** (see below) |
 | `release-branch` | No | `changeset-release/main` | Release branch name |
 | `target-branch` | No | `main` | Target branch for release PR |
 | `auto-merge` | No | `""` | Enable auto-merge on the release PR: `merge`, `squash`, `rebase`, or empty to disable |
@@ -57,10 +62,12 @@ For full architecture, module dependency graph, and per-module documentation: `@
 | -------- | ------ | ----- |
 | **npm** | OIDC | Trusted publishing; use `npm-token` for first publish or OIDC fallback |
 | **JSR** | OIDC | Trusted publishing, no token needed |
-| **GitHub Packages** | App installation token | The App carries `packages: write`; nothing to pass |
+| **GitHub Packages** | `github-token` input | **Required.** Pass `secrets.GITHUB_TOKEN` with `permissions: packages: write` |
 | **Custom registries** | `custom-registries` input | Format: `https://registry.example.com/_authToken=<TOKEN>` |
 
-**Removed inputs.** `github-token` (GitHub Packages now authenticates as the App, which carries `packages: write`; the input only shadowed a working credential), `skip-token-revoke` (an opt-out of cleaning up a live secret, buying nothing the one-hour expiry did not), and `pr-title-prefix` (never reached a real title — every branch that names packages or a version builds its own `release: …` string).
+**Never drop `github-token`.** A GitHub App installation token — including the one this action provisions — cannot access GitHub Packages at all; the sole exception is the default Actions token, which is what `github-token` carries. Omit the input and every Packages publish fails. `custom-registries` is not a substitute. `pre.ts` persists it to `GithubPackagesTokenState` and masks it.
+
+**Removed inputs.** `skip-token-revoke` (an opt-out of cleaning up a live secret, buying nothing the one-hour expiry did not) and `pr-title-prefix` (never reached a real title — every branch that names packages or a version builds its own `release: …` string).
 
 For full integration details and token plumbing: `@./.claude/design/release-action/integration.md`
 
@@ -76,50 +83,12 @@ Use `savvy-web/silk-integration` to test from feature branches:
 
 ### Dogfooding First-Party Dependencies
 
-We author every dependency in the table below, so a bug or missing API in one can be fixed **in its own repo** and dogfooded through this action before publishing. The action is a **bundled** artifact — `pnpm build` inlines every dependency into `dist/{main,pre,post}.js` — so once a local library build is linked and this repo is rebuilt, the change is baked into the committed `dist`. The integration repo runs that committed `dist`, **not** `node_modules`.
+We author nearly every runtime dependency, so a bug or missing API can be fixed in its own repo and dogfooded here before publishing — the action is a **bundled** artifact, so a linked local build is baked into the committed `dist` the integration repo runs.
 
-| Package | Repo | Local checkout |
-| ------- | ---- | -------------- |
-| `@savvy-web/github-action-effects` | `savvy-web/systems` (monorepo) | `../systems/packages/github-action-effects` |
-| `@savvy-web/github-action-builder` | `savvy-web/systems` (monorepo) | `../systems/packages/github-action-builder` |
-| `@savvy-web/silk-effects` | `savvy-web/systems` (monorepo) | `../systems/packages/silk-effects` |
-| `@effected/workspaces` | `spencerbeggs/effected` (monorepo) | `../../spencerbeggs/effected/packages/workspaces` |
-| `@effected/jsonc` | `spencerbeggs/effected` (monorepo) | `../../spencerbeggs/effected/packages/jsonc` |
+**For the link/override mechanisms, the full procedure, and the installed dependency line:**
+→ `@./CLAUDE.dogfooding.md`
 
-`@savvy-web/silk-effects` itself depends on `@effected/workspaces` (which in turn pulls in `@effected/jsonc`), so both resolve **directly and transitively** — which decides the linking mechanism below.
-
-**Two ways to link a local library build:**
-
-- **Direct-only dependency → `pnpm link`.** e.g. `pnpm link ../systems/packages/github-action-effects` symlinks `node_modules/@savvy-web/github-action-effects` to the local build. Verify the linked `package.json` via `node:fs` (NOT `require(...package.json)` — the `exports` map does not expose `./package.json`), or `pnpm why <pkg>`.
-- **Also a transitive dependency → `pnpm-workspace.yaml` override.** A bare `pnpm link` redirects only the direct import, leaving the transitive copy (e.g. `@effected/workspaces` pulled in by `silk-effects`) on the registry version and bundling **two** copies. A `link:` override forces every resolution to one local copy:
-
-  ```yaml
-  # pnpm-workspace.yaml
-  overrides:
-    "@effected/workspaces": "link:../../spencerbeggs/effected/packages/workspaces/dist/dev/pkg"
-  ```
-
-  then `pnpm install`. `dist/dev/pkg` is the builder link target (`publishConfig.directory` + `linkDirectory: true`; `pnpm link` ignores `publishConfig.directory`, so target it explicitly). Effect resolves services by the tag's string id, so the one provided layer is shared even across duplicate copies — but the override keeps the bundle to a single copy. Verify every resolution points at the link: `find node_modules -name '@effected+workspaces*'`.
-
-**Procedure (either mechanism):**
-
-1. **Build the library:** in its repo run `pnpm ci:build` (produces `dist/dev` link target plus `dist/npm` / `dist/github`).
-2. **Link it** (link or override) and `pnpm install`.
-3. **Keep the declared range correct** in this repo's `package.json` for the eventual unlinked install — the link/override overrides resolution only while in place.
-4. **Iterate:** edit library source → `pnpm ci:build` there → `pnpm typecheck` + `pnpm test` here → `pnpm build` here (bundles the linked lib into `dist/`) → commit the full state (`src` + `dist` + changeset + the `pnpm-workspace.yaml` override + `pnpm-lock.yaml`) → push `dev`.
-5. **Library edits ship separately:** they land on the library's own branch and release with its next published version — call them out.
-6. **Run the integration repo:** the `dev` action is consumed by `savvy-web/silk-integration` (pins `@dev`). Spencer triggers release runs there; follow with `gh run list --repo savvy-web/silk-integration` / `gh run watch`, diagnose, fix, rebuild, re-push.
-7. **Final step, only AFTER the dogfooded version publishes:** remove the link/override, pin the published range, `pnpm install`.
-
-**Committing while a link/override is active:** commit the **full dogfood state** to `dev` — `src` + rebuilt `dist` + changeset **and** the `pnpm-workspace.yaml` override + `pnpm-lock.yaml`. The override holds a machine-specific link path, so `dev` only installs cleanly with the sibling repos checked out at the paths in the table above; that is the accepted dogfooding trade-off, and the cleanup in step 7 reverts it. No CI runs on a plain `dev` push, so the committed `dev` source may reference an unpublished library API until it publishes — expected during dogfooding. Commits must be GPG-signed with the GitHub-verified key for `C. Spencer Beggs <spencer@savvyweb.systems>` or the signature ruleset rejects them.
-
-**Currently active:** no dogfood link or override is active. All dependencies are pinned to published registry versions: `@savvy-web/silk-effects ^4.0.1`, `@savvy-web/github-action-effects ^3.0.1`, `@savvy-web/github-action-builder ^2.0.2` (dev), `@savvy-web/silk ^3.0.2` (dev), `@effected/workspaces ^0.3.1`, and `@effected/jsonc ^0.2.0`; `effect` and `@effect/platform-node` resolve via `catalog:effect` (`4.0.0-beta.98`, catalog injected by the `@effected/pnpm-plugin-effect` config dependency in `pnpm-workspace.yaml`). The Effect v4 + `@effected` line is actively consumed, not a passive bump:
-
-- **v4 Schema** (`Schema.Literals([…])`, `Schema.Union([…])`, `.annotate`) drives `src/schema/*`; schema generation now uses effect core `effect/JsonSchema` (`Schema.toJsonSchemaDocument` → `JsonSchema.toDocumentDraft07`) — `json-schema-effect` is gone (`ajv` retained for strict validation).
-- **`NodeServices.layer`** (from `@effect/platform-node`) replaces the old `NodeContext`/`NodeFileSystem`/`NodePath` stack and `@effect/platform` (dissolved into core `effect` in v4); it backs `ActionStateLive`/`ReleaseLive`/`ActionOutputsLive` in `main.ts` (`R` resolves to `never`).
-- **`@effected/workspaces`** provides `Workspaces.layer()` (`WorkspaceDiscovery` + `PublishabilityDetector`) and `DependencyGraph` (`DependencyGraph.make({ packages }).sortSubset(...)`, replacing the removed `TopologicalSorter`) for Phase-1 topological release ordering; `@effected/jsonc` `Jsonc.parse` (Effect-returning) parses release config in `src/utils/load-release-config.ts`.
-- **silk-effects v4** still exports `Changesets.ReleasePlanner`/`ConfigInspector` (Phase-1 native versioning, `changelogModules` seam) and `PublishTargetBindingError`, which Phase-2 validation catches to fail the check when a resolved publish directory is not bound by `dist/prod/targets.json`.
-- **github-action-builder 2** `build.nativeDynamicImports` keeps the `@changesets/apply-release-plan` / `@effected/workspaces` runtime dynamic imports native in the bundle; the bundled **github-action-effects 3** exposes class-based `Context.Service` services (import the exported `*Shape` interfaces, e.g. `ActionOutputsShape`), pins the dlx-fetched npm to `npm@11`, and reads npm 12's `pack --json` object shape.
+Load before linking a local library build, when a duplicate copy shows up in the bundle, or to check which dependency version a behaviour comes from. **Currently no link or override is active.** `@savvy-web/github-action-effects` is **dead** — replaced wholesale by the `@effected/*` kit in [#191](https://github.com/savvy-web/silk-release-action/pull/191).
 
 ## Development & Release Cycle
 
@@ -139,12 +108,7 @@ The shared release workflow at `savvy-web/.github/.github/workflows/release.yml`
 
 ### `release-sync.yml` — post-release housekeeping
 
-Triggered by `release: [published]` (and `workflow_dispatch` with a `tag` input + `dry-run` for rehearsal). Runs as the GitHub App bot so its pushes can bypass protection and won't recurse (no workflow triggers on tag/`dev` pushes). On a **stable SemVer 2.0.0 release `>= 1.0.0`** (bare `MAJOR.MINOR.PATCH` — no leading `v`, no `-prerelease`, no `+build`) it:
-
-1. Moves (or creates) the **`v<major>`** alias tag (e.g. `v1`) at the released commit.
-2. **Hard-resets `dev` to `main` HEAD** — a genuine clobber, so any `dev` commit not yet in `main` is discarded. This is safe by design: `dev` work always lands in `main` before a release.
-
-Each push is guarded: if the remote `v<major>` tag or `dev` already points at its target commit, that push is skipped, so no ref-update events fire for listeners when there is nothing to change. Sub-`1.0.0`, prerelease, build-metadata, and non-SemVer tags are ignored (no-op).
+Triggered by `release: [published]` (plus `workflow_dispatch` with `tag` + `dry-run`). Runs as the App bot so pushes bypass protection and don't recurse. On a **stable SemVer release `>= 1.0.0`** (bare `MAJOR.MINOR.PATCH`) it moves the **`v<major>`** alias tag to the released commit and **hard-resets `dev` to `main` HEAD** — a genuine clobber, safe only because `dev` work always lands in `main` first. Each push is skipped when the ref already points at its target. Prerelease, build-metadata, sub-`1.0.0` and non-SemVer tags are no-ops.
 
 ## Common Commands
 
@@ -231,51 +195,15 @@ Conventional Commits format enforced via commitlint (`@commitlint/config-convent
 - `.jsonc` for JSON with comments
 - `.ts` for source, `.test.ts` for tests
 
-## Shared GitHub Actions
+## Shared Actions and Workflows
 
-Reusable composite actions live in `.github/actions/`:
+Composite actions in `.github/actions/`: **release** (release environment setup/orchestration) and **local** (local variant for this repo).
 
-| Action | Description |
-| ------ | ----------- |
-| **release** | Release environment setup and orchestration |
-| **local** | Local action variant for this repository |
-
-## Reusable Workflows
-
-Workflows live in `.github/workflows/`:
-
-| Workflow | File | Purpose |
-| -------- | ---- | ------- |
-| **Claude Code** | `claude.yml` | Enables @claude mentions in issues/PRs |
-| **Project Listener** | `project-listener.yml` | Reusable workflow for adding items to GitHub Projects |
-| **Release** | `release.yml` | Release workflow for this repository |
-| **Release Sync** | `release-sync.yml` | On a published stable release (`>= 1.0.0`): moves the `v<major>` alias tag and hard-resets `dev` to `main` |
-
-This repository uses the **simple release workflow** (private repo, no NPM packages).
+Workflows in `.github/workflows/`: `claude.yml` (@claude mentions), `project-listener.yml` (reusable, adds items to GitHub Projects), `release.yml` (this repo's release), `release-sync.yml` (post-release housekeeping, above). This repository uses the **simple release workflow** (private repo, no NPM packages).
 
 ## Project Structure
 
-```text
-.
-├── .changeset/              # Changeset configuration
-├── .claude/                 # Claude Code configuration
-│   ├── commands/            # Custom slash commands
-│   └── design/              # Design documentation
-├── .github/                 # GitHub workflows and actions
-│   ├── actions/             # Reusable composite actions
-│   ├── ISSUE_TEMPLATE/      # Issue templates
-│   └── workflows/           # CI/CD workflows
-├── .husky/                  # Git hooks
-├── src/                     # Main action source code
-│   ├── release/             # Phase orchestration, publishability, reporting (co-located tests)
-│   ├── schema/              # ReleaseOutput schema, projections, SilkReleaseConfig
-│   ├── types/               # Type definitions
-│   └── utils/               # Utility modules
-├── __test__/                # Test files and utilities (singular)
-├── biome.jsonc              # Biome configuration
-├── tsconfig.json            # TypeScript configuration
-└── turbo.json               # Turborepo configuration
-```
+`src/` (see [Source layout](#silk-release-action) above and `src/CLAUDE.md`), `__test__/` (all tests — singular, see `__test__/CLAUDE.md`), `.claude/{commands,design}/`, `.github/{actions,workflows,ISSUE_TEMPLATE}/`, `.changeset/`, `.husky/`, and root configs (`biome.jsonc`, `tsconfig.json`, `turbo.json`, `action.yml`, `action.config.ts`).
 
 ## Adding New Workflows/Actions
 
@@ -304,17 +232,7 @@ Strict environment mode in Turbo. Declare new env vars in `turbo.json` under `gl
 
 ## Custom Claude Commands
 
-Available in `.claude/commands/`:
-
-- `/lint` - Fix linting errors
-- `/typecheck` - Fix TypeScript errors
-- `/tsdoc` - Add/update TSDoc documentation
-- `/fix-issue` - Find issue, create branch, fix, test
-- `/pr-review` - Review bot comments on PR
-- `/build-fix` - Fix build errors
-- `/test-fix` - Fix failing tests
-- `/turbo-check` - Check Turbo configuration
-- `/package-setup` - Set up new workspace package
+In `.claude/commands/`: `/lint`, `/typecheck`, `/tsdoc`, `/fix-issue`, `/pr-review`, `/build-fix`, `/test-fix`, `/turbo-check`, `/package-setup`.
 
 ## GitHub App Configuration
 

@@ -161,7 +161,7 @@ describe("closeLinkedIssues", () => {
 		const result = await run(recorder, { issues: [] });
 
 		expect(result.closedCount).toBe(0);
-		expect(recorder.outputs).toContainEqual({ name: "closed_issues_count", value: "0" });
+		expect(recorder.outputs).toContainEqual({ name: "closed-issues-count", value: "0" });
 	});
 
 	it("should emit the closed-issue outputs", async () => {
@@ -169,8 +169,8 @@ describe("closeLinkedIssues", () => {
 
 		await run(recorder, { issues: [{ number: 7, title: "seven" }] });
 
-		expect(recorder.outputs).toContainEqual({ name: "closed_issues_count", value: "1" });
-		const payload = recorder.outputs.find((o) => o.name === "closed_issues")?.value ?? "[]";
+		expect(recorder.outputs).toContainEqual({ name: "closed-issues-count", value: "1" });
+		const payload = recorder.outputs.find((o) => o.name === "closed-issues")?.value ?? "[]";
 		expect(JSON.parse(payload)).toEqual([{ number: 7, title: "seven", closed: true }]);
 	});
 

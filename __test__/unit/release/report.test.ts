@@ -1,6 +1,5 @@
 import { Contact, SbomMetadata, Supplier } from "@effected/sbom";
 import { describe, expect, it } from "vitest";
-import type { ValidationOutput } from "../schema/release-output.js";
 import {
 	buildChecksTable,
 	buildFindingsTable,
@@ -11,7 +10,8 @@ import {
 	buildSbomPreviewSummary,
 	buildValidationComment,
 	getPackagePageUrl,
-} from "./report.js";
+} from "../../../src/release/report.js";
+import type { ValidationOutput } from "../../../src/schema/release-output.js";
 
 // ─── Type aliases for the build-centric ValidationOutput sub-structs ──────────
 

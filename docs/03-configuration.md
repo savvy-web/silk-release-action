@@ -11,11 +11,11 @@
 | `target-branch` | No | `main` | Target branch for the release PR |
 | `auto-merge` | No | `""` | Enable auto-merge on the release PR: `merge`, `squash`, `rebase` or empty to disable. Requires branch protection with required status checks (see [Auto-merge](#auto-merge)) |
 | `dry-run` | No | `"false"` | Run in dry-run mode (preview only, no actual changes) |
-| `phase` | No | `""` | Explicitly set the workflow phase, skipping automatic detection. Values: `branch-management`, `validation`, `publishing`, `close-issues`, `none` |
+| `phase` | No | `""` | Explicitly set the workflow phase, skipping automatic detection. Values: `branch-management`, `validation`, `publishing`, `close-issues`, `none`. Any other value fails the run, naming the accepted set |
 | `npm-token` | No | `""` | NPM access token for publishing to npmjs.org. Only needed for first-time publish or when OIDC is not configured |
 | `strict-warnings` | No | `"false"` | When `"true"`, warning-severity validation findings escalate the per-step and unified check-run conclusions from `neutral` to `failure`, blocking anything that gates on check status — a branch-protection required check, and the auto-merge the `auto-merge` input enables. Errors always fail regardless of this setting |
 | `sbom-config` | No | `""` | SBOM metadata configuration (JSON string) for NTIA-compliant SBOM generation. Must conform to the `SilkReleaseConfig` schema |
-| `custom-registries` | No | `""` | Custom registries with authentication (one per line). Format: `https://registry.example.com/_authToken=<token>` |
+| `custom-registries` | No | `""` | Custom registries with authentication (one per line). Format: `https://registry.example.com/_authToken=<token>`. **Currently a no-op** — see [Custom registry format](#custom-registry-format) |
 
 ## Outputs
 
@@ -25,11 +25,14 @@
 | `installation-id` | GitHub App installation ID |
 | `app-slug` | GitHub App slug (URL-friendly name) |
 | `result` | Structured JSON describing the run — see below |
-| `phase` | Phase that ran: `branch-management`, `validation`, `publishing` |
+| `phase` | Phase that ran: `branch-management`, `validation`, `publishing`, `close-issues`, `none` |
 | `status` | Run status: `no-op`, `success`, `partial`, `failed` |
 | `succeeded` | Whether all intended work completed |
 | `package-count` | Number of packages the phase touched |
 | `release-pr-number` | Release PR number, when one is involved (empty otherwise) |
+| `closed-issues-count` | Number of linked issues closed by the close-issues phase (`"0"` in every other phase) |
+| `failed-issues-count` | Number of linked issues the close-issues phase failed to close (`"0"` in every other phase) |
+| `closed-issues` | JSON array describing each linked issue the close-issues phase handled — number, title, whether it closed, and the error when it did not (`"[]"` in every other phase) |
 
 The `result` output is a phase-discriminated JSON object validated by `https://raw.githubusercontent.com/savvy-web/silk-release-action/main/silk-release-action.output.schema.json`. It carries the machine-readable contract: the three orthogonal flags (`noop`, `succeeded`, `hasFailures`), a `dryRun` marker and exactly one phase payload block. Read fields with the `fromJSON()` expression function — `${{ fromJSON(steps.release.outputs.result).status }}` — and branch on `schemaVersion` for forward compatibility.
 
@@ -91,7 +94,7 @@ The action uses a tiered approach for multi-registry publishing:
 | npm | OIDC trusted publishing, with token-auth fallback | No token needed once trusted publishing is configured. Provide `npm-token` for first-time publishes or as a fallback |
 | JSR | OIDC trusted publishing | No configuration needed |
 | GitHub Packages | Token auth | Requires the `github-token` input, set to the workflow's `secrets.GITHUB_TOKEN`, with `packages: write` on the job |
-| Custom registries | `custom-registries` input | Format: `https://registry.example.com/_authToken=<token>` |
+| Custom registries | `custom-registries` input | **Not wired up** — the input is accepted and validated, but nothing publishes to these registries. See [Custom registry format](#custom-registry-format) |
 
 ### npm trusted publishing and token fallback
 
@@ -119,6 +122,8 @@ The GitHub App installation token the action provisions is not an alternative an
 Omitting the input fails every GitHub Packages target immediately, naming the missing input, and aborts before any GitHub release is created. Granting the App a `Packages` permission to work around it accomplishes nothing.
 
 ### Custom registry format
+
+**This input does nothing today.** Its implementation was removed in [#90](https://github.com/savvy-web/silk-release-action/pull/90) and has not been replaced, so since v0.2.3 the value is parsed and then ignored — no custom registry is ever authenticated or published to, and the run stays green while silently skipping them. Do not rely on it to ship a package. Rewiring is tracked at [#215](https://github.com/savvy-web/silk-release-action/issues/215); the shape below is what the input still accepts and is what a future implementation will consume.
 
 Pass one registry per line in the `custom-registries` input:
 

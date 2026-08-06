@@ -12,7 +12,7 @@
 // where a non-runtime service needs it.
 
 import { NodeServices } from "@effect/platform-node";
-import { LocalExec } from "@effected/commands";
+import { LocalExec, ToolDiscovery } from "@effected/commands";
 import {
 	ArtifactMetadata,
 	Attestation,
@@ -32,8 +32,10 @@ import {
 import { DryRun, GitHubToken, OidcTokenIssuer } from "@effected/github-actions";
 import { NpmRegistry, PackagePublish } from "@effected/npm";
 import { SigstoreSigner } from "@effected/sbom";
-import { Layer } from "effect";
+import { Effect, Layer } from "effect";
 import { FetchHttpClient } from "effect/unstable/http";
+import { ReleaseLive } from "../release/layers.js";
+import { readInputs } from "../schema/inputs.js";
 import { IdentityTokenFromOidc } from "./identity-token.js";
 
 /* v8 ignore start -- pure Layer wiring, exercised indirectly by the modules that consume it */
@@ -85,16 +87,31 @@ export const makeAppLayer = (dryRun: boolean) => {
 	const npmRegistry = NpmRegistry.layer.pipe(Layer.provide(FetchHttpClient.layer));
 
 	// `PackagePublish` dispatches npm through `LocalExec`: `NpmExecutor.dlx`
-	// resolves to `pnpm dlx npm@11` through this launcher. A dlx executor with no
+	// resolves to `pnpm dlx npm@11` through that launcher. A dlx executor with no
 	// launcher fails typed rather than silently falling back to the runner's
 	// bundled npm 10.x, which cannot do OIDC trusted publishing.
 	//
-	// `LocalExec.layerFor` is the static launcher form. `@effected/workspaces`
-	// ships a workspace-aware implementation (`Workspaces.localExecLayer`) that
-	// detects the package manager from the workspace root; it is the better
-	// choice once the workspace layers land in a later phase.
-	const localExec = LocalExec.layerFor("pnpm", { directory: process.cwd() });
-	const packagePublish = PackagePublish.layer.pipe(Layer.provide(Layer.mergeAll(localExec, NodeServices.layer)));
+	// `LocalExec` is REQUIRED here, not built here. It comes from
+	// `Workspaces.localExecLayer()` in `release/layers.ts`, bound against the one
+	// `WorkspacesLive` const — a `LocalExec.layerFor("pnpm", …)` minted here would
+	// both hardcode pnpm and, if it were made workspace-aware in place, mint a
+	// second workspace graph (layers memoize by reference, and `main.ts` re-pipes
+	// `ReleaseLive`, so even exporting the const would not be enough). Requiring
+	// it is what keeps the publish path and the release path reading one graph.
+	const packagePublish = PackagePublish.layer.pipe(Layer.provide(NodeServices.layer));
+
+	// `PackageManagerDetector` and `Git` are likewise REQUIRED rather than built:
+	// `Workspaces.layerWithGit()` already provides both from the same graph.
+	// Building a second `PackageManagerDetector.layer` / `Git.layer` here only
+	// produced instances that `Layer.mergeAll` then shadowed with the release
+	// layer's.
+	//
+	// Every git operation this action performs is now a kit member — the raw
+	// `ChildProcess` commands that used to sit at the call sites (`clean`,
+	// `branch -D`, `checkout -b <new> <start>`, `checkout -- .`, `rev-parse
+	// --is-shallow-repository`, `fetch --unshallow`) are gone, answered by
+	// `@effected/git` 0.6's `clean`, `branchDelete`, `branchCreate`, `restore`,
+	// `isShallow` and `fetchUnshallow`.
 
 	const oidc = OidcTokenIssuer.layer;
 	const sigstore = SigstoreSigner.layer.pipe(Layer.provide(IdentityTokenFromOidc.pipe(Layer.provide(oidc))));
@@ -107,12 +124,73 @@ export const makeAppLayer = (dryRun: boolean) => {
 		packagePublish,
 		oidc,
 		sigstore,
-		localExec,
 		// The subprocess seam `Run` needs, plus FileSystem/Path for later phases.
 		NodeServices.layer,
 		FetchHttpClient.layer,
 		DryRun.layerFrom(dryRun),
 	);
 };
+
+/**
+ * `formatWorkspaceWithBiome` probes for the standalone Biome binary through
+ * `ToolDiscovery`. `LocalExec.layerNone` is the documented wiring for a GitHub
+ * Action — every tool resolves globally on PATH, with no project-local
+ * launcher. Deliberately NOT the workspace-aware launcher `makeAppLayer` gives
+ * `PackagePublish`: that one exists so `NpmExecutor.dlx` can fetch a pinned
+ * npm, which is a different question from "is biome installed".
+ *
+ * Self-contained on purpose — it provides its own `LocalExec` internally and
+ * exports none, so composing it beside `makeAppLayer` cannot shadow the
+ * workspace-aware launcher the publish path needs.
+ */
+const toolDiscovery = ToolDiscovery.layer.pipe(Layer.provide(Layer.merge(NodeServices.layer, LocalExec.layerNone)));
+
+/**
+ * The release-domain layer, platform-provided and fatal-on-construction-error.
+ *
+ * @remarks
+ * `ReleaseLive` is piped exactly ONCE, here. A differently-piped value is a
+ * different layer reference and would build a second workspace graph — which is
+ * why `LocalExec` is constructed inside `release/layers.ts` against the same
+ * const rather than derived from this pipe.
+ */
+const releaseLive = ReleaseLive.pipe(Layer.provide(NodeServices.layer), Layer.orDie);
+
+/**
+ * The main action's domain layer.
+ *
+ * @remarks
+ * `ActionRuntime` — injected by `Action.run` — provides `ActionEnvironment`,
+ * `ActionLogger`, `ActionOutputs`, `ActionState`, `NodeServices` and an
+ * `HttpClient`. Because `ActionRunOptions.layer` is
+ * `Layer<R, never, ActionServices>`, this layer may **require** any of them
+ * rather than rebuild them.
+ *
+ * `Layer.provideMerge` rather than a flat `Layer.mergeAll`: `makeAppLayer` now
+ * REQUIRES `LocalExec` (plus `Git` and `PackageManagerDetector` for its
+ * consumers downstream), and `releaseLive` is what satisfies it. Merging keeps
+ * the release-domain services on the output side, exactly as the flat merge
+ * did — but with one workspace graph feeding both halves instead of two graphs
+ * sitting side by side and shadowing each other.
+ *
+ * `dry-run` reaches `makeAppLayer` as a VALUE, decoded by `readInputs` at layer
+ * construction — the layer itself stays free of config reads, so a test can
+ * drive both branches without a `ConfigProvider`. Decoding through `readInputs`
+ * rather than a second `ActionInput.boolean("dry-run")` here is what leaves the
+ * entry point with zero direct input reads and `dry-run`'s default stated once,
+ * in `action.yml` and its mirror. A malformed `dry-run` still fails rather than
+ * silently defaulting to a REAL run, and `Layer.orDie` surfaces it at the
+ * boundary.
+ *
+ * Everything downstream asks the `DryRun` SERVICE built from this value, never
+ * the input again — one decode, one decision.
+ *
+ * @public
+ */
+export const MainLive = Layer.unwrap(
+	Effect.map(readInputs, (inputs) =>
+		Layer.mergeAll(makeAppLayer(inputs.dryRun), toolDiscovery).pipe(Layer.provideMerge(releaseLive)),
+	),
+).pipe(Layer.orDie);
 
 /* v8 ignore stop */

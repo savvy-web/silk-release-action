@@ -61,7 +61,7 @@ An unrecognized value fails the run rather than quietly disabling. A workflow th
 When the release branch is updated (from Phase 1 or manual commits), the action validates the release:
 
 1. Extracts issue references from commit messages and links them to the release
-2. Runs `pnpm build` (or the configured package manager) to verify all packages compile
+2. Runs the `ci:build` script with the detected package manager (`pnpm ci:build`, `npm run ci:build`, `bun run ci:build`) to verify all packages compile
 3. Performs a dry-run publish to each configured registry (npm, JSR, GitHub Packages, custom), rejecting any package whose built manifest still carries `catalog:` or `workspace:` specifiers, whose tarball would be empty or whose resolved publish directory is not one bound by its production build
 4. Generates a Release Notes Preview check on the PR showing the CHANGELOG entries each package will publish
 5. Creates a unified check run on the PR showing all validation results
@@ -84,7 +84,7 @@ By default, warnings appear in the findings table but do not fail the check run 
 When the release PR is merged, the action detects the merge and publishes:
 
 1. Identifies which packages had version bumps by analyzing the PR diff
-2. Publishes each package to all configured registries using the appropriate authentication — OIDC for npm and JSR, the `github-token` input for GitHub Packages, per-registry tokens for custom registries
+2. Publishes each package to all configured registries using the appropriate authentication — OIDC for npm and JSR, the `github-token` input for GitHub Packages. Custom registries are not published to at all — the `custom-registries` input is accepted but unwired ([#215](https://github.com/savvy-web/silk-release-action/issues/215))
 3. Creates artifact attestations for published packages (provenance)
 4. Determines the tag strategy — single tag for single-package repos, per-package tags for monorepos
 5. Creates GitHub releases with auto-generated release notes from CHANGELOGs

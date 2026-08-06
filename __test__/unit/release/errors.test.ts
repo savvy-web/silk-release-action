@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PublishError, ReleasesError, ValidationError } from "./errors.js";
+import { PublishError, ReleasesError, ValidationError } from "../../../src/release/errors.js";
 
 describe("release errors", () => {
 	it("ValidationError carries a reason discriminator", () => {

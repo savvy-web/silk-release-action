@@ -1,8 +1,12 @@
 import { ScriptedSpawner } from "@effected/commands";
+import { Git } from "@effected/git";
+import { ActionOutputs, ActionState, ActionStateError } from "@effected/github-actions";
 import { Changesets } from "@savvy-web/silk-effects";
 import { Effect, Exit, FileSystem, Layer, Logger } from "effect";
+import type { ChildProcessSpawner } from "effect/unstable/process";
 import { describe, expect, it } from "vitest";
 import { CHANGELOG_MODULES, runNativeVersion } from "../src/utils/native-version.js";
+import { actionStateWithAppToken } from "./utils/github-mocks.js";
 
 const applied: Changesets.AppliedRelease = {
 	dryRun: false,
@@ -34,8 +38,67 @@ const fsWithConfig = FileSystem.layerNoop({
  */
 const noSpawns = (): ScriptedSpawner => ScriptedSpawner.make((command) => ScriptedSpawner.notFound(command));
 
-const run = <A, E>(effect: Effect.Effect<A, E, never>) =>
-	Effect.runPromiseExit(effect.pipe(Effect.provide(Logger.layer([]))));
+/**
+ * The REAL `Git` service over a scripted spawner.
+ *
+ * @remarks
+ * `runNativeVersion` now resets the tree through `@effected/git`'s `restore`
+ * and `clean` members rather than raw `ChildProcess` commands. Providing the
+ * real `Git.layer` on top of the same `ScriptedSpawner` keeps these tests
+ * asserting on the ACTUAL argv the kit emits — a `Git.layerTest` double would
+ * assert only that a method was called, and would not catch the kit changing
+ * what it spawns.
+ */
+const gitOver = (spawner: Layer.Layer<ChildProcessSpawner.ChildProcessSpawner>): Layer.Layer<Git> =>
+	Git.layer.pipe(Layer.provide(spawner));
+
+/**
+ * Records every `setSecret` the run performs.
+ *
+ * @remarks
+ * `withGithubTokenEnv` declassifies the App token through `Secret.forSigning`,
+ * which masks it with the runner on the way out. Capturing the masks lets the
+ * suite assert that the token written into `process.env.GITHUB_TOKEN` was
+ * registered with the log filter first — the property the bare `Redacted.value`
+ * this replaced did not have.
+ */
+const maskRecorder = (): { masked: Array<string>; layer: Layer.Layer<ActionOutputs> } => {
+	const masked: Array<string> = [];
+	return {
+		masked,
+		layer: ActionOutputs.layerTest({
+			setSecret: (value: string) =>
+				Effect.sync(() => {
+					masked.push(value);
+				}),
+		}),
+	};
+};
+
+/**
+ * `ActionState` holding the App token `pre` persisted.
+ *
+ * @remarks
+ * `native-version.ts` reads it with `GitHubToken.read()` — the same kit member
+ * `main.ts` uses. It used to read `process.env.STATE_token`, a plaintext bridge
+ * `main.ts` wrote, and these tests set that variable directly: exactly the
+ * env-snapshot hazard where a value left behind by one test silently turns an
+ * expected-to-fail case in another green. The token is a service now.
+ */
+const stateWithToken = actionStateWithAppToken;
+
+/** An `ActionState` with nothing persisted — `pre` never ran, or its state was lost. */
+const stateWithoutToken: Layer.Layer<ActionState> = ActionState.layerTest({
+	get: ((key: string) =>
+		Effect.fail(new ActionStateError({ reason: "missing", key }))) as ActionState["Service"]["get"],
+});
+
+const run = <A, E>(
+	effect: Effect.Effect<A, E, ActionOutputs | ActionState>,
+	outputs = maskRecorder().layer,
+	state = stateWithToken("app-token-value"),
+) =>
+	Effect.runPromiseExit(effect.pipe(Effect.provide(outputs), Effect.provide(state), Effect.provide(Logger.layer([]))));
 
 describe("CHANGELOG_MODULES", () => {
 	it("maps all four known ids onto the two bundled modules", () => {
@@ -56,7 +119,7 @@ describe("runNativeVersion", () => {
 			Changesets.makeReleasePlannerTest({ apply: applied }),
 			inspectorValid,
 			fsWithConfig,
-			noSpawns().layer,
+			gitOver(noSpawns().layer),
 		);
 		const exit = await run(runNativeVersion("/repo").pipe(Effect.provide(layer)));
 		expect(Exit.isSuccess(exit)).toBe(true);
@@ -64,9 +127,7 @@ describe("runNativeVersion", () => {
 	});
 
 	it("sets GITHUB_TOKEN from the app token for the apply call and restores it after", async () => {
-		const previousState = process.env.STATE_token;
 		const previousToken = process.env.GITHUB_TOKEN;
-		process.env.STATE_token = "app-token-value";
 		delete process.env.GITHUB_TOKEN;
 		let seenDuringApply: string | undefined;
 		const planner = Layer.succeed(Changesets.ReleasePlanner, {
@@ -79,21 +140,23 @@ describe("runNativeVersion", () => {
 				}),
 		});
 		try {
-			const layer = Layer.mergeAll(planner, inspectorValid, fsWithConfig, noSpawns().layer);
-			await run(runNativeVersion("/repo").pipe(Effect.provide(layer)));
+			const layer = Layer.mergeAll(planner, inspectorValid, fsWithConfig, gitOver(noSpawns().layer));
+			const recorder = maskRecorder();
+			await run(runNativeVersion("/repo").pipe(Effect.provide(layer)), recorder.layer);
 			expect(seenDuringApply).toBe("app-token-value");
 			expect(process.env.GITHUB_TOKEN).toBeUndefined();
+			// The property the bare `Redacted.value` did NOT have: the token is
+			// registered with the runner's log filter before it is written into
+			// the environment, so a later leak through a stack trace or a debug
+			// dump of the child's env comes out redacted.
+			expect(recorder.masked).toContain("app-token-value");
 		} finally {
-			if (previousState === undefined) delete process.env.STATE_token;
-			else process.env.STATE_token = previousState;
 			if (previousToken !== undefined) process.env.GITHUB_TOKEN = previousToken;
 		}
 	});
 
 	it("sets GITHUB_TOKEN from the app token even when an ambient GITHUB_TOKEN is already set, and restores the ambient value after", async () => {
-		const previousState = process.env.STATE_token;
 		const previousToken = process.env.GITHUB_TOKEN;
-		process.env.STATE_token = "app-token-value";
 		process.env.GITHUB_TOKEN = "ambient-value";
 		let seenDuringApply: string | undefined;
 		const planner = Layer.succeed(Changesets.ReleasePlanner, {
@@ -106,16 +169,41 @@ describe("runNativeVersion", () => {
 				}),
 		});
 		try {
-			const layer = Layer.mergeAll(planner, inspectorValid, fsWithConfig, noSpawns().layer);
+			const layer = Layer.mergeAll(planner, inspectorValid, fsWithConfig, gitOver(noSpawns().layer));
 			await run(runNativeVersion("/repo").pipe(Effect.provide(layer)));
 			expect(seenDuringApply).toBe("app-token-value");
 			expect(process.env.GITHUB_TOKEN).toBe("ambient-value");
 		} finally {
-			if (previousState === undefined) delete process.env.STATE_token;
-			else process.env.STATE_token = previousState;
 			if (previousToken === undefined) delete process.env.GITHUB_TOKEN;
 			else process.env.GITHUB_TOKEN = previousToken;
 		}
+	});
+
+	it("FAILS when no App token was persisted, rather than applying unauthenticated", async () => {
+		// The bridge this replaces answered a missing token with `""`, and the
+		// apply then ran with no `GITHUB_TOKEN` at all: `@changesets/get-github-info`
+		// degrades quietly, so the changelog lost its GitHub info on a GREEN run.
+		// `GitHubToken.read()` fails typed instead.
+		let applied_ = 0;
+		const planner = Layer.succeed(Changesets.ReleasePlanner, {
+			plan: () => Effect.die("unused"),
+			preview: () => Effect.die("unused"),
+			// Counted INSIDE the effect. Incrementing in the thunk would count the
+			// effect being *constructed* — which `withGithubTokenEnv`'s
+			// `acquireUseRelease` does before the acquire runs, so the assertion
+			// would fire on a run that never applied anything.
+			apply: () =>
+				Effect.sync(() => {
+					applied_ += 1;
+					return applied;
+				}),
+		});
+		const layer = Layer.mergeAll(planner, inspectorValid, fsWithConfig, gitOver(noSpawns().layer));
+
+		const exit = await run(runNativeVersion("/repo").pipe(Effect.provide(layer)), undefined, stateWithoutToken);
+
+		expect(Exit.isFailure(exit)).toBe(true);
+		expect(applied_).toBe(0);
 	});
 
 	// NOTE: this case spends a real second in `runNativeVersion`'s retry backoff.
@@ -143,13 +231,18 @@ describe("runNativeVersion", () => {
 		// `apply` deletes the changesets it consumes, so retrying on a half-applied
 		// tree would corrupt the release.
 		const spawner = ScriptedSpawner.make(() => ({ exit: 0, stdout: "", stderr: "" }));
-		const layer = Layer.mergeAll(planner, inspectorValid, fsWithConfig, spawner.layer);
+		const layer = Layer.mergeAll(planner, inspectorValid, fsWithConfig, gitOver(spawner.layer));
 		const exit = await run(runNativeVersion("/repo").pipe(Effect.provide(layer)));
 		expect(Exit.isSuccess(exit)).toBe(true);
 		expect(calls).toBe(2);
-		// Both halves of the reset, in order. `@effected/git` ships neither, and
-		// its `checkout` refuses `--`, so these are raw commands by necessity.
-		expect(spawner.spawns.map((s) => [s.command, ...s.args].join(" "))).toEqual(["git checkout -- .", "git clean -fd"]);
+		// Both halves of the reset, in order, as the ACTUAL argv `@effected/git`
+		// emits — `restore` puts its paths behind a literal `--` (which is why it
+		// is a separate member from `checkout`, whose option-injection guard
+		// refuses `--`), and `clean` spells `--force` in full.
+		expect(spawner.spawns.map((s) => [s.command, ...s.args].join(" "))).toEqual([
+			"git restore -- .",
+			"git clean --force -d",
+		]);
 	});
 
 	it("runs the reset commands in the directory it was given, not the process cwd", async () => {
@@ -171,7 +264,7 @@ describe("runNativeVersion", () => {
 			},
 		});
 		const spawner = ScriptedSpawner.make(() => ({ exit: 0, stdout: "", stderr: "" }));
-		const layer = Layer.mergeAll(planner, inspectorValid, fsWithConfig, spawner.layer);
+		const layer = Layer.mergeAll(planner, inspectorValid, fsWithConfig, gitOver(spawner.layer));
 
 		const exit = await run(runNativeVersion("/somewhere/else").pipe(Effect.provide(layer)));
 
@@ -194,7 +287,7 @@ describe("runNativeVersion", () => {
 				);
 			},
 		});
-		const layer = Layer.mergeAll(planner, inspectorValid, fsWithConfig, noSpawns().layer);
+		const layer = Layer.mergeAll(planner, inspectorValid, fsWithConfig, gitOver(noSpawns().layer));
 		const exit = await run(runNativeVersion("/repo").pipe(Effect.provide(layer)));
 		expect(Exit.isFailure(exit)).toBe(true);
 		expect(calls).toBe(1);
@@ -210,7 +303,7 @@ describe("runNativeVersion", () => {
 			Changesets.makeReleasePlannerTest({ apply: applied }),
 			inspectorUnused,
 			fsNoConfig,
-			noSpawns().layer,
+			gitOver(noSpawns().layer),
 		);
 		const exit = await run(runNativeVersion("/repo").pipe(Effect.provide(layer)));
 		expect(Exit.isSuccess(exit)).toBe(true);

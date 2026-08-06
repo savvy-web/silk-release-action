@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getGroupId, insertGroupToken } from "./group-id.js";
+import { getGroupId, insertGroupToken } from "../../../src/utils/group-id.js";
 
 describe("getGroupId", () => {
 	it("returns the segment before /pkg for a prod build directory", () => {

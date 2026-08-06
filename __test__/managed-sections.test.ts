@@ -5,8 +5,8 @@
 // work (rule 1), blank instead of retaining (rule 2), drop the monotonic guard
 // (rule 5).
 
+import { describe, expect, it } from "@effect/vitest";
 import { Effect } from "effect";
-import { describe, expect, it } from "vitest";
 import type { Section, SectionStamp } from "../src/utils/managed-sections.js";
 import {
 	isAtLeastAsRecent,
@@ -139,13 +139,13 @@ describe("rules 1 and 2 — `running` is written BEFORE the work, and the prior 
 	let tick = 0;
 	const now = () => `2026-07-26T12:00:0${tick++}.000Z`;
 
-	it("publishes `running` before the work runs, and `complete` after", async () => {
-		tick = 0;
-		const { writes, publish } = capture();
-		const order: string[] = [];
+	it.effect("publishes `running` before the work runs, and `complete` after", () =>
+		Effect.gen(function* () {
+			tick = 0;
+			const { writes, publish } = capture();
+			const order: string[] = [];
 
-		await Effect.runPromise(
-			withSection(
+			yield* withSection(
 				{
 					key: "build-validation",
 					title: "Build Validation",
@@ -163,21 +163,21 @@ describe("rules 1 and 2 — `running` is written BEFORE the work, and the prior 
 					order.push("work");
 					return "NEW RESULT";
 				}),
-			),
-		);
+			);
 
-		// THE load-bearing assertion. If the `running` write moves to after the
-		// work, the stale window survives and the feature is decorative.
-		expect(order).toEqual(["publish:running", "work", "publish:complete"]);
-		expect(writes.map((w) => w.state)).toEqual(["running", "complete"]);
-	});
+			// THE load-bearing assertion. If the `running` write moves to after the
+			// work, the stale window survives and the feature is decorative.
+			expect(order).toEqual(["publish:running", "work", "publish:complete"]);
+			expect(writes.map((w) => w.state)).toEqual(["running", "complete"]);
+		}),
+	);
 
-	it("retains the PREVIOUS result while running — it does not blank", async () => {
-		tick = 0;
-		const { writes, publish } = capture();
+	it.effect("retains the PREVIOUS result while running — it does not blank", () =>
+		Effect.gen(function* () {
+			tick = 0;
+			const { writes, publish } = capture();
 
-		await Effect.runPromise(
-			withSection(
+			yield* withSection(
 				{
 					key: "build-validation",
 					title: "Build Validation",
@@ -189,35 +189,36 @@ describe("rules 1 and 2 — `running` is written BEFORE the work, and the prior 
 					publish,
 				},
 				Effect.succeed("NEW RESULT"),
-			),
-		);
+			);
 
-		expect(writes[0]?.state).toBe("running");
-		expect(writes[0]?.body).toBe("PREVIOUS RESULT");
-		expect(writes[0]?.body).not.toBe("");
-		expect(writes[1]?.body).toBe("NEW RESULT");
-	});
+			expect(writes[0]?.state).toBe("running");
+			expect(writes[0]?.body).toBe("PREVIOUS RESULT");
+			expect(writes[0]?.body).not.toBe("");
+			expect(writes[1]?.body).toBe("NEW RESULT");
+		}),
+	);
 
-	const runWith = async <A, E>(work: Effect.Effect<A, E>) => {
-		tick = 0;
-		const { writes, publish } = capture();
-		const exit = await Effect.runPromiseExit(
-			withSection(
-				{
-					key: "build-validation",
-					title: "Build Validation",
-					sha: HEAD,
-					runId: "100",
-					now,
-					previousBody: "PREVIOUS RESULT",
-					render: (v: unknown) => String(v),
-					publish,
-				},
-				work,
-			),
-		);
-		return { writes, exit };
-	};
+	const runWith = <A, E>(work: Effect.Effect<A, E>) =>
+		Effect.gen(function* () {
+			tick = 0;
+			const { writes, publish } = capture();
+			const exit = yield* Effect.exit(
+				withSection(
+					{
+						key: "build-validation",
+						title: "Build Validation",
+						sha: HEAD,
+						runId: "100",
+						now,
+						previousBody: "PREVIOUS RESULT",
+						render: (v: unknown) => String(v),
+						publish,
+					},
+					work,
+				),
+			);
+			return { writes, exit };
+		});
 
 	// ─── the exit paths ────────────────────────────────────────────────────
 	// A `tap`/`tapError` pair fires on success and typed failure ONLY. These
@@ -225,33 +226,39 @@ describe("rules 1 and 2 — `running` is written BEFORE the work, and the prior 
 	// `running` reads as "in progress" forever, which is the most misleading
 	// state of the six.
 
-	it("TYPED FAILURE → the section reads `failed`, never `running`", async () => {
-		const { writes, exit } = await runWith(Effect.fail("boom" as const));
+	it.effect("TYPED FAILURE → the section reads `failed`, never `running`", () =>
+		Effect.gen(function* () {
+			const { writes, exit } = yield* runWith(Effect.fail("boom" as const));
 
-		expect(exit._tag).toBe("Failure");
-		expect(writes.map((w) => w.state)).toEqual(["running", "failed"]);
-		expect(writes[1]?.body).toBe("PREVIOUS RESULT");
-	});
+			expect(exit._tag).toBe("Failure");
+			expect(writes.map((w) => w.state)).toEqual(["running", "failed"]);
+			expect(writes[1]?.body).toBe("PREVIOUS RESULT");
+		}),
+	);
 
-	it("DEFECT → the section reads `failed`, never `running`", async () => {
-		// A `tapError` never sees this.
-		const { writes, exit } = await runWith(Effect.die(new Error("unexpected")));
+	it.effect("DEFECT → the section reads `failed`, never `running`", () =>
+		Effect.gen(function* () {
+			// A `tapError` never sees this.
+			const { writes, exit } = yield* runWith(Effect.die(new Error("unexpected")));
 
-		expect(exit._tag).toBe("Failure");
-		expect(writes.map((w) => w.state)).toEqual(["running", "failed"]);
-		expect(writes[1]?.body).toBe("PREVIOUS RESULT");
-	});
+			expect(exit._tag).toBe("Failure");
+			expect(writes.map((w) => w.state)).toEqual(["running", "failed"]);
+			expect(writes[1]?.body).toBe("PREVIOUS RESULT");
+		}),
+	);
 
-	it("INTERRUPT → the section reads `cancelled`, never `running`", async () => {
-		// THE mutation target. Neither `tap` nor `tapError` fires here, so a
-		// `tap`/`tapError` implementation leaves the section at `running` and this
-		// test dies — which is the whole point of the bracket.
-		const { writes, exit } = await runWith(Effect.interrupt);
+	it.effect("INTERRUPT → the section reads `cancelled`, never `running`", () =>
+		Effect.gen(function* () {
+			// THE mutation target. Neither `tap` nor `tapError` fires here, so a
+			// `tap`/`tapError` implementation leaves the section at `running` and this
+			// test dies — which is the whole point of the bracket.
+			const { writes, exit } = yield* runWith(Effect.interrupt);
 
-		expect(exit._tag).toBe("Failure");
-		expect(writes.map((w) => w.state)).toEqual(["running", "cancelled"]);
-		expect(writes[1]?.body).toBe("PREVIOUS RESULT");
-	});
+			expect(exit._tag).toBe("Failure");
+			expect(writes.map((w) => w.state)).toEqual(["running", "cancelled"]);
+			expect(writes[1]?.body).toBe("PREVIOUS RESULT");
+		}),
+	);
 
 	it("renders `cancelled` distinctly from `failed`", () => {
 		const cancelled = renderBanner(stamp({ state: "cancelled" }), HEAD);

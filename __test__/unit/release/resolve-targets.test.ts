@@ -15,7 +15,7 @@
  */
 
 import { afterEach, describe, expect, it } from "vitest";
-import { pickToken } from "./resolve-targets.js";
+import { pickToken } from "../../../src/release/resolve-targets.js";
 
 const NPM_TOKEN = "npm-token";
 const GH_TOKEN = "gh-token";

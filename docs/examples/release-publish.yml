@@ -85,6 +85,7 @@ jobs:
           app-private-key: ${{ secrets.APP_PRIVATE_KEY }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           dry-run: ${{ inputs.dry_run || 'false' }}
-          # Custom registries for publishing
+          # Custom registries: accepted but NOT wired up -- the value is ignored.
+          # Non-functional since v0.2.3; tracked at issue #215.
           # custom-registries: |
           #   https://registry.savvyweb.dev/${{ secrets.SAVVYWEB_NPM_AUTH_TOKEN }}

@@ -1,4 +1,39 @@
+import { InstallationToken } from "@effected/github";
+import { ActionState } from "@effected/github-actions";
+import type { Layer } from "effect";
+import { DateTime, Effect, Redacted } from "effect";
 import { vi } from "vitest";
+
+/**
+ * An `ActionState` holding the App installation token `pre` persisted.
+ *
+ * @remarks
+ * Anything that reaches `GitHubToken.read()` needs this — `runNativeVersion`
+ * now does, because the `process.env.STATE_token` bridge it used to read is
+ * gone. Injecting the token as a service rather than as an environment variable
+ * is the point: a stale `process.env` value silently survives between tests and
+ * turns an expected-to-fail case green.
+ *
+ * The token carries **no `appSlug`**, so `InstallationToken.botIdentity()`
+ * returns `BotIdentity.githubActions` — the same identity the no-token fallback
+ * produced, which keeps the DCO trailer these fixtures assert on unchanged.
+ *
+ * @param token - The raw token the double hands back.
+ * @returns A `Layer` providing `ActionState` whose `get` answers with the token.
+ */
+export const actionStateWithAppToken = (token = "app-token-value"): Layer.Layer<ActionState> =>
+	ActionState.layerTest({
+		get: (() =>
+			Effect.succeed(
+				InstallationToken.make({
+					token: Redacted.make(token),
+					// An hour out, so `GitHubToken.read`'s expiry check passes.
+					expiresAt: DateTime.addDuration(DateTime.nowUnsafe(), "1 hour"),
+					installationId: 1,
+					permissions: { contents: "write" },
+				}),
+			)) as ActionState["Service"]["get"],
+	});
 
 /**
  * Suppresses console output during tests.

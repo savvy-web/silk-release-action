@@ -181,34 +181,3 @@ export function determineTagStrategy(
 		isFixedVersioning,
 	};
 }
-
-/**
- * Determine the release type based on version changes
- *
- * @remarks
- * Analyzes the version changes to determine if this is a major, minor, or patch release.
- * For multiple packages with different bump types, returns the highest (major > minor > patch).
- *
- * @param publishResults - Results from publishing packages
- * @param bumpTypes - Map of package name to bump type
- * @returns Release type: 'major', 'minor', or 'patch'
- */
-export function determineReleaseType(
-	publishResults: PackagePublishResult[],
-	bumpTypes: Map<string, string>,
-): "major" | "minor" | "patch" {
-	// Include version-only packages (empty targets) in release type determination
-	const successfulPackages = publishResults.filter(
-		(pkg) => pkg.targets.length === 0 || pkg.targets.some((t) => t.success),
-	);
-
-	// Get bump types for successful packages
-	const bumps = successfulPackages
-		.map((pkg) => bumpTypes.get(pkg.name))
-		.filter((bump): bump is string => bump !== undefined);
-
-	// Return highest bump type
-	if (bumps.includes("major")) return "major";
-	if (bumps.includes("minor")) return "minor";
-	return "patch";
-}

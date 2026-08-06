@@ -30,6 +30,32 @@ import { ChangesetConfigLive } from "./changeset-config.js";
 const WorkspacesLive = Workspaces.layerWithGit();
 
 /**
+ * The project-local command launcher, derived from the SAME workspace graph.
+ *
+ * @remarks
+ * `Workspaces.localExecLayer()` requires `PackageManagerDetector | WorkspaceRoot`
+ * and asks the detected manager what its run-a-local-tool argv looks like, so
+ * `NpmExecutor.dlx` resolves to (e.g.) `pnpm dlx npm@11` in a pnpm workspace and
+ * to the npm equivalent in an npm one. It replaces the static
+ * `LocalExec.layerFor("pnpm", { directory: process.cwd() })` that
+ * `layers/app.ts` used to mint, which asserted pnpm regardless of what the
+ * workspace actually is.
+ *
+ * **It is built HERE, beside {@link WorkspacesLive}, and deliberately not in
+ * `layers/app.ts`.** Layers memoize by reference, and `layerWithGit` is a
+ * parameterized factory: a second call — or the same const re-piped, which
+ * `main.ts` does to `ReleaseLive` — mints a fresh reference and therefore a
+ * SECOND workspace graph. Two `WorkspaceDiscovery` instances mean two
+ * filesystem scans and two answers that can disagree between the publish path
+ * and the release path. Constructing `LocalExec` against this const is what
+ * keeps there being exactly one.
+ *
+ * `layers/app.ts` consequently *requires* `LocalExec` rather than providing it,
+ * and `MainLive` satisfies that requirement from this layer.
+ */
+const LocalExecLive = Workspaces.localExecLayer().pipe(Layer.provide(WorkspacesLive));
+
+/**
  * Native-versioning layer: silk-effects ReleasePlanner + ConfigInspector,
  * self-contained above WorkspaceDiscovery/FileSystem (the platform
  * FileSystem/Path layers are provided in main.ts).
@@ -51,6 +77,7 @@ const NativeVersioningLive = Changesets.ReleasePlanner.layer.pipe(
 // Effect memoizes identical layer references — one instantiation serves both slots.
 export const ReleaseLive = Layer.mergeAll(
 	WorkspacesLive,
+	LocalExecLive,
 	ChangesetConfigLive,
 	SilkPublishability.layerAdaptive.pipe(Layer.provide(ChangesetConfigLive)),
 	NativeVersioningLive,

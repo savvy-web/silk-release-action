@@ -1,7 +1,7 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ensureNpmCacheEnv, npmCacheDir } from "./npm-cache.js";
+import { ensureNpmCacheEnv, npmCacheDir } from "../../../src/utils/npm-cache.js";
 
 describe("npmCacheDir", () => {
 	it("should return a silk-npm-cache path under RUNNER_TEMP when RUNNER_TEMP is set", () => {

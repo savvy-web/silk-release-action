@@ -114,9 +114,9 @@ export const closeLinkedIssues = (
 					summary: `PR #${prNumber} had no linked issues.`,
 				}),
 			);
-			yield* outputs.set("closed_issues_count", "0");
-			yield* outputs.set("failed_issues_count", "0");
-			yield* outputs.set("closed_issues", JSON.stringify([]));
+			yield* outputs.set("closed-issues-count", "0");
+			yield* outputs.set("failed-issues-count", "0");
+			yield* outputs.set("closed-issues", JSON.stringify([]));
 			return { closedCount: 0, failedCount: 0, issues: [] } satisfies CloseLinkedIssuesResult;
 		}
 
@@ -157,9 +157,9 @@ export const closeLinkedIssues = (
 		);
 
 		yield* outputs.summary(summary);
-		yield* outputs.set("closed_issues_count", String(closedCount));
-		yield* outputs.set("failed_issues_count", String(failedCount));
-		yield* outputs.set("closed_issues", JSON.stringify(issueResults));
+		yield* outputs.set("closed-issues-count", String(closedCount));
+		yield* outputs.set("failed-issues-count", String(failedCount));
+		yield* outputs.set("closed-issues", JSON.stringify(issueResults));
 
 		return { closedCount, failedCount, issues: issueResults } satisfies CloseLinkedIssuesResult;
 	}).pipe(

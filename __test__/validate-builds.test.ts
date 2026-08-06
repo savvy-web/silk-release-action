@@ -22,7 +22,7 @@ import type { ScriptResult } from "@effected/commands";
 import { ScriptedSpawner } from "@effected/commands";
 import type { CheckRunOutput } from "@effected/github";
 import { CheckRun, CheckRunRef, Repo, RepoRef } from "@effected/github";
-import { ActionEnvironment, ActionInput, ActionOutputs } from "@effected/github-actions";
+import { ActionEnvironment, ActionOutputs, DryRun } from "@effected/github-actions";
 import { Effect, Layer, Logger } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BuildValidationResult } from "../src/utils/validate-builds.js";
@@ -101,15 +101,14 @@ const runStage = async (
 	// `Config.string("dry-run")` happened to resolve, and `ActionInput` does not.
 	// That is the whole point: the test was configuring the code by a name
 	// production never uses.
-	const inputs = ActionInput.layer({
-		"INPUT_BUILD-COMMAND": "",
-		"INPUT_DRY-RUN": opts.dryRun === true ? "true" : "false",
-	});
+	// No `ActionInput` arrangement left: `build-command` was a read no workflow
+	// could set (undeclared in `action.yml`, now removed), and `dry-run` comes
+	// from the `DryRun` service rather than being re-read here.
 	const result = await Effect.runPromise(
 		validateBuilds("pnpm").pipe(
 			Effect.provide(Layer.mergeAll(githubLayers(f), spawner.layer, NodeFileSystem.layer)),
 			Effect.provide(Logger.layer([])),
-			Effect.provide(inputs),
+			Effect.provide(DryRun.layerFrom(opts.dryRun === true)),
 		),
 	);
 	return { result, spawner };
