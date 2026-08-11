@@ -16,11 +16,11 @@
  *    the real input.
  */
 
+import { describe, expect, it } from "@effect/vitest";
 import type { PullRequestInfo } from "@effected/github";
 import { GitHubGraphQLError, PullRequest, Repo, RepoRef } from "@effected/github";
 import { ActionInput } from "@effected/github-actions";
 import { Effect, Layer, Logger, Option } from "effect";
-import { describe, expect, it } from "vitest";
 import { applyAutoMerge, autoMergeMethodConfig } from "../src/utils/auto-merge.js";
 
 const OWNER = "owner";
@@ -88,13 +88,13 @@ const pullRequestLayer = (calls: Calls, fail: boolean): Layer.Layer<PullRequest 
 
 const run = (input: string | undefined, options: { fail?: boolean; dryRun?: boolean } = {}) => {
 	const calls: Calls = { setAutoMerge: [] };
-	return Effect.runPromise(
-		applyAutoMerge(pullRequest(42), options.dryRun ?? false).pipe(
+	return applyAutoMerge(pullRequest(42), options.dryRun ?? false)
+		.pipe(
 			Effect.provide(pullRequestLayer(calls, options.fail ?? false)),
 			Effect.provide(Logger.layer([])),
 			Effect.provide(withInput(input)),
-		),
-	).then(() => calls);
+		)
+		.pipe(Effect.map(() => calls));
 };
 
 /** The config read as an effect — `Config` is yieldable, not itself an `Effect`. */
@@ -104,26 +104,38 @@ const readMethod = (input: string | undefined) =>
 	}).pipe(Effect.provide(withInput(input)));
 
 describe("autoMergeMethodConfig", () => {
-	it.each(["merge", "squash", "rebase"])("accepts %s", async (method) => {
-		const result = await Effect.runPromise(readMethod(method));
-		expect(result).toStrictEqual(Option.some(method));
-	});
+	it.effect.each(["merge", "squash", "rebase"])("accepts %s", (method) =>
+		Effect.gen(function* () {
+			const result = yield* readMethod(method);
+			expect(result).toStrictEqual(Option.some(method));
+		}),
+	);
 
-	it("treats an absent input as disabled", async () => {
-		const result = await Effect.runPromise(readMethod(undefined));
-		expect(result).toStrictEqual(Option.none());
-	});
+	it.effect("treats an absent input as disabled", () =>
+		Effect.gen(function* () {
+			const result = yield* readMethod(undefined);
+			expect(result).toStrictEqual(Option.none());
+		}),
+	);
 
-	it("treats an empty input as disabled", async () => {
-		const result = await Effect.runPromise(readMethod(""));
-		expect(result).toStrictEqual(Option.none());
-	});
+	it.effect("treats an empty input as disabled", () =>
+		Effect.gen(function* () {
+			const result = yield* readMethod("");
+			expect(result).toStrictEqual(Option.none());
+		}),
+	);
 
-	it("tolerates surrounding whitespace from a YAML block scalar", async () => {
-		const result = await Effect.runPromise(readMethod("  squash\n"));
-		expect(result).toStrictEqual(Option.some("squash"));
-	});
+	it.effect("tolerates surrounding whitespace from a YAML block scalar", () =>
+		Effect.gen(function* () {
+			const result = yield* readMethod("  squash\n");
+			expect(result).toStrictEqual(Option.some("squash"));
+		}),
+	);
 
+	// These two stay on plain `it()`: `expect(...).rejects.toThrow()` asserts
+	// only that the promise rejected. The `it.effect` equivalent would have to
+	// narrow an `Exit`/`Result`, which changes what is asserted rather than how
+	// it is run.
 	it("fails on a misspelled method rather than silently disabling", async () => {
 		// The whole point. `sqush` means the workflow wanted auto-merge; reading
 		// it as "off" leaves the release PR open and looks like our bug.
@@ -136,25 +148,33 @@ describe("autoMergeMethodConfig", () => {
 });
 
 describe("applyAutoMerge", () => {
-	it("enables auto-merge with the requested method", async () => {
-		const calls = await run("squash");
-		expect(calls.setAutoMerge).toEqual([{ number: 42, method: "squash" }]);
-	});
+	it.effect("enables auto-merge with the requested method", () =>
+		Effect.gen(function* () {
+			const calls = yield* run("squash");
+			expect(calls.setAutoMerge).toEqual([{ number: 42, method: "squash" }]);
+		}),
+	);
 
-	it("does nothing when the input is absent", async () => {
-		const calls = await run(undefined);
-		expect(calls.setAutoMerge).toEqual([]);
-	});
+	it.effect("does nothing when the input is absent", () =>
+		Effect.gen(function* () {
+			const calls = yield* run(undefined);
+			expect(calls.setAutoMerge).toEqual([]);
+		}),
+	);
 
-	it("changes nothing in dry-run", async () => {
-		const calls = await run("merge", { dryRun: true });
-		expect(calls.setAutoMerge).toEqual([]);
-	});
+	it.effect("changes nothing in dry-run", () =>
+		Effect.gen(function* () {
+			const calls = yield* run("merge", { dryRun: true });
+			expect(calls.setAutoMerge).toEqual([]);
+		}),
+	);
 
-	it("warns rather than failing when the repository rejects auto-merge", async () => {
-		// A release that published packages must not be reported as failed
-		// because a repository setting is off.
-		const calls = await run("rebase", { fail: true });
-		expect(calls.setAutoMerge).toEqual([]);
-	});
+	it.effect("warns rather than failing when the repository rejects auto-merge", () =>
+		Effect.gen(function* () {
+			// A release that published packages must not be reported as failed
+			// because a repository setting is off.
+			const calls = yield* run("rebase", { fail: true });
+			expect(calls.setAutoMerge).toEqual([]);
+		}),
+	);
 });

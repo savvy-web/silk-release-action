@@ -1,67 +1,10 @@
-import { Html, Markdown, Root, Table, TableCell, TableRow } from "@effected/markdown";
+import { GitHubMarkdown } from "@effected/github-actions";
 import { classifyRegistry } from "@effected/npm";
 import type { SbomMetadata } from "@effected/sbom";
-import { Result } from "effect";
 import type { ValidationOutput } from "../schema/release-output.js";
 import { DEFAULT_SERVER_URL, orgPackagePageUrl } from "../utils/github-urls.js";
 import type { ConfigSource } from "../utils/load-release-config.js";
 import { registryDisplayName } from "../utils/registry-label.js";
-
-// ─── Markdown builders ────────────────────────────────────────────────────────
-
-/**
- * The GFM builders this module needs, replacing the predecessor's
- * `GithubMarkdown` namespace.
- *
- * @remarks
- * A deliberately thin shim, not a tree-native rewrite. Every renderer here
- * composes markdown as strings and every public signature returns a string, so
- * rebuilding them as mdast trees would be an ~800-line change for no output
- * difference.
- *
- * The one place a tree earns its keep is {@link md.table}. The predecessor
- * built tables by `join(" | ")` and **never escaped cell content**, so a single
- * `|` anywhere in a cell — an npm error message, a semver range like
- * `>=1 || <2` — silently shifted every column after it. Serializing a real
- * `Table` node fixes that, and it escapes pipes inside pre-rendered markdown
- * cells too (verified: `` `a | b` `` emits as `` `a \| b` ``), which is what
- * makes {@link md.code} and {@link md.link} safe to keep as plain strings.
- */
-const md = {
-	/**
-	 * A GFM table. Cells are treated as **pre-rendered markdown** and passed
-	 * through verbatim, with pipes escaped by the serializer.
-	 */
-	table: (headers: ReadonlyArray<string>, rows: ReadonlyArray<ReadonlyArray<string>>): string => {
-		const cell = (value: string): TableCell => TableCell.make({ children: [Html.make({ value })] });
-		const row = (values: ReadonlyArray<string>): TableRow => TableRow.make({ children: values.map(cell) });
-		const table = Table.make({ children: [row(headers), ...rows.map(row)] });
-		const out = Markdown.stringifyResult(Root.make({ children: [table] }));
-		// Stringify is total over parser-produced trees; the only failure is a
-		// hardening-guard trip on a tree nesting past the depth cap, which a
-		// two-level table cannot reach. Falling back to the unescaped join keeps
-		// this total rather than introducing an error channel for a case the
-		// shape of the input rules out.
-		return Result.isSuccess(out)
-			? out.success.trimEnd()
-			: [
-					`| ${headers.join(" | ")} |`,
-					`| ${headers.map(() => "---").join(" | ")} |`,
-					...rows.map((r) => `| ${r.join(" | ")} |`),
-				].join("\n");
-	},
-	/** A markdown heading; level defaults to 2. */
-	heading: (text: string, level = 2): string => `${"#".repeat(level)} ${text}`,
-	/** A collapsible `<details>` block. */
-	details: (summary: string, content: string): string =>
-		`<details>\n<summary>${summary}</summary>\n\n${content}\n\n</details>`,
-	/** A markdown link. */
-	link: (text: string, url: string): string => `[${text}](${url})`,
-	/** Inline code. */
-	code: (text: string): string => `\`${text}\``,
-	/** A fenced code block. */
-	codeBlock: (content: string, lang = ""): string => `\`\`\`${lang}\n${content}\n\`\`\``,
-} as const;
 
 /**
  * The `validation` payload of a {@link ValidationOutput} — the single
@@ -271,7 +214,7 @@ function getTargetDetailStatus(target: ValidationBuildTarget): string {
  * directory (e.g. `dist/npm`) the build-centric `ValidationOutput` carries.
  */
 function renderBuildHeadline(build: ValidationBuild): string {
-	const directory = md.code(build.directory);
+	const directory = GitHubMarkdown.code(build.directory);
 	const packed = build.packedBytes === null ? "—" : humanizeSize(build.packedBytes);
 	const unpacked = build.unpackedBytes === null ? "—" : humanizeSize(build.unpackedBytes);
 	const files = build.fileCount === null ? "—" : String(build.fileCount);
@@ -301,7 +244,7 @@ function renderBuildTargetsTable(build: ValidationBuild): string {
 		const provenance = t.provenance ? "✅" : "\u{1F6AB}"; // 🚫
 		return [getTargetDetailStatus(t), `${icon} ${registry}`, t.access, provenance];
 	});
-	return md.table([" ", "Registry", "Access", "Provenance"], rows);
+	return GitHubMarkdown.table([" ", "Registry", "Access", "Provenance"], rows);
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -387,7 +330,7 @@ export function buildPublishSummary(publish: ValidationPublish): string {
 				.map((build) => `${renderBuildHeadline(build)}\n\n${renderBuildTargetsTable(build)}`)
 				.join("\n\n");
 
-			return md.details(summary, buildSections);
+			return GitHubMarkdown.details(summary, buildSections);
 		})
 		.join("\n");
 
@@ -451,7 +394,7 @@ export const VALIDATION_CHECK_NAMES: ReadonlyArray<string> = [
  * @public
  */
 export function buildPendingChecksTable(): string {
-	return md.table(
+	return GitHubMarkdown.table(
 		[" ", "Check", "Outcome"],
 		VALIDATION_CHECK_NAMES.map((name) => ["⏳", name, "pending"]),
 	);
@@ -461,10 +404,10 @@ export function buildChecksTable(checks: ReadonlyArray<ValidationCheck>): string
 	const statusIcon = (status: ValidationCheck["status"]): "✅" | "⚠️" | "❌" =>
 		status === "error" ? "❌" : status === "warning" ? "⚠️" : "✅";
 	const tableRows: ReadonlyArray<ReadonlyArray<string>> = checks.map((check) => {
-		const checkCell = check.url !== null ? md.link(check.name, check.url) : check.name;
+		const checkCell = check.url !== null ? GitHubMarkdown.link(check.name, check.url) : check.name;
 		return [statusIcon(check.status), checkCell, check.outcome];
 	});
-	return md.table([" ", "Check", "Outcome"], tableRows);
+	return GitHubMarkdown.table([" ", "Check", "Outcome"], tableRows);
 }
 
 /**
@@ -509,7 +452,7 @@ export function buildFindingsTable(findings: ReadonlyArray<ValidationFinding>): 
 					: `${f.scope.package} · ${f.scope.directory}`;
 		return [icon, f.check, scopeCell, f.message];
 	});
-	const table = md.table([" ", "Check", "Package", "Detail"], tableRows);
+	const table = GitHubMarkdown.table([" ", "Check", "Package", "Detail"], tableRows);
 
 	return `${heading}\n\n${table}`;
 }
@@ -644,7 +587,9 @@ export function buildValidationDetails(validation: ValidationPayload, options?: 
 	const now = options?.now ?? new Date();
 	const summaryUrl = options?.releaseNotesUrl;
 	const link =
-		summaryUrl !== undefined && summaryUrl !== "" ? `${md.link("Full validation summary →", summaryUrl)} · ` : "";
+		summaryUrl !== undefined && summaryUrl !== ""
+			? `${GitHubMarkdown.link("Full validation summary →", summaryUrl)} · `
+			: "";
 	parts.push(`---\n\n${link}<sub>Updated at ${now.toISOString()}</sub>`);
 
 	return parts.join("\n\n");
@@ -811,7 +756,7 @@ export function buildReleaseNotesPreviewSummary(validation: ValidationPayload): 
 		const changesets = pkg.changesetCount === null ? "—" : String(pkg.changesetCount);
 		return [pkg.name, renderVersionTransition(pkg), renderBumpCell(pkg), changesets, notesIcon(pkg.releaseNotes)];
 	});
-	const table = md.table(["Package", "Current → Next", "Bump", "Changesets", "Notes"], tableRows);
+	const table = GitHubMarkdown.table(["Package", "Current → Next", "Bump", "Changesets", "Notes"], tableRows);
 
 	const intro = `**${packages.length} package(s) ready for release on merge.**`;
 
@@ -927,7 +872,7 @@ export function buildSbomPreviewSummary(
 		}
 
 		for (const buildEntry of pkg.builds) {
-			const buildHeader = `**${md.code(buildEntry.directory)}**`;
+			const buildHeader = `**${GitHubMarkdown.code(buildEntry.directory)}**`;
 			sections.push(buildHeader);
 
 			if (buildEntry.sbom === null) {
@@ -946,7 +891,7 @@ export function buildSbomPreviewSummary(
 			const resolved = resolvedSbomConfig !== null ? resolvedSbomConfig.get(key) : undefined;
 			if (resolved !== undefined) {
 				sections.push("_Resolved `sbom-config` metadata used:_");
-				sections.push(md.codeBlock(JSON.stringify(resolved, null, 2), "json"));
+				sections.push(GitHubMarkdown.codeBlock(JSON.stringify(resolved, null, 2), "json"));
 			} else if (resolvedSbomConfig !== null) {
 				// Map exists but no entry for this build — keep the per-build
 				// rendering honest.

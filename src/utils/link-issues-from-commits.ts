@@ -20,8 +20,9 @@
 import type { GitHubError, Repo } from "@effected/github";
 import { CheckRun, CheckRunOutput, GitHubCommit, GitHubIssue, PullRequest } from "@effected/github";
 import type { ActionEnvironmentError, ActionOutputError } from "@effected/github-actions";
-import { ActionEnvironment, ActionInput, ActionOutputs } from "@effected/github-actions";
-import { Config, Effect, Option } from "effect";
+import { ActionEnvironment, ActionOutputs, DryRun } from "@effected/github-actions";
+import { Effect, Option } from "effect";
+import type { BranchRefs } from "../schema/inputs.js";
 import { commitUrl, resolveServerUrl } from "./github-urls.js";
 import { summaryWriter } from "./summary-writer.js";
 
@@ -491,63 +492,66 @@ const linkIssuesToPR = (
  *
  * @public
  */
-export const linkIssuesFromCommits: Effect.Effect<
+export const linkIssuesFromCommits = (
+	refs: BranchRefs,
+): Effect.Effect<
 	LinkIssuesResult,
-	ActionEnvironmentError | ActionOutputError | Config.ConfigError | GitHubError,
-	ActionEnvironment | ActionOutputs | CheckRun | GitHubCommit | GitHubIssue | PullRequest | Repo
-> = Effect.gen(function* () {
-	const serverUrl = yield* resolveServerUrl();
-	const env = yield* ActionEnvironment;
-	const outputs = yield* ActionOutputs;
-	const checks = yield* CheckRun;
+	ActionEnvironmentError | ActionOutputError | GitHubError,
+	ActionEnvironment | ActionOutputs | CheckRun | DryRun | GitHubCommit | GitHubIssue | PullRequest | Repo
+> =>
+	Effect.gen(function* () {
+		const serverUrl = yield* resolveServerUrl();
+		const env = yield* ActionEnvironment;
+		const outputs = yield* ActionOutputs;
+		const checks = yield* CheckRun;
 
-	const targetBranch = yield* ActionInput.string("target-branch").pipe(Config.withDefault("main"));
-	const releaseBranch = yield* ActionInput.string("release-branch").pipe(Config.withDefault("changeset-release/main"));
-	const dryRun = yield* ActionInput.boolean("dry-run").pipe(Config.withDefault(false));
+		// Branch names from the one decode in `readInputs`; rehearsal from `DryRun`.
+		const { releaseBranch, targetBranch } = refs;
+		const dryRun = yield* (yield* DryRun).isDryRun;
 
-	const { sha, repository } = yield* env.github;
-	const [owner, repo] = repository.split("/");
+		const { sha, repository } = yield* env.github;
+		const [owner, repo] = repository.split("/");
 
-	yield* Effect.logInfo("Linking issues from commits");
-	const { linkedIssues, commits } = yield* getLinkedIssuesFromCommits(targetBranch, releaseBranch);
+		yield* Effect.logInfo("Linking issues from commits");
+		const { linkedIssues, commits } = yield* getLinkedIssuesFromCommits(targetBranch, releaseBranch);
 
-	const checkTitle = dryRun ? "🧪 Link Issues from Commits (Dry Run)" : "Link Issues from Commits";
-	const checkSummary =
-		linkedIssues.length > 0
-			? `Found ${linkedIssues.length} linked issue(s) from ${commits.length} commit(s)`
-			: `No issue references found in ${commits.length} commit(s)`;
+		const checkTitle = dryRun ? "🧪 Link Issues from Commits (Dry Run)" : "Link Issues from Commits";
+		const checkSummary =
+			linkedIssues.length > 0
+				? `Found ${linkedIssues.length} linked issue(s) from ${commits.length} commit(s)`
+				: `No issue references found in ${commits.length} commit(s)`;
 
-	const issuesContent =
-		linkedIssues.length > 0
-			? linkedIssues
-					.map((issue) => `- ${issue.state === "open" ? "🟢" : "🟣"} #${issue.number} — ${issue.title}`)
-					.join("\n")
-			: "_No issue references found in commits_";
+		const issuesContent =
+			linkedIssues.length > 0
+				? linkedIssues
+						.map((issue) => `- ${issue.state === "open" ? "🟢" : "🟣"} #${issue.number} — ${issue.title}`)
+						.join("\n")
+				: "_No issue references found in commits_";
 
-	const commitsContent =
-		commits.length > 0
-			? commits
-					.map((commit) => {
-						const shortSha = commit.sha.slice(0, 7);
-						const commitLink = commitUrl(serverUrl, owner, repo, commit.sha);
-						const firstLine = commit.message.split("\n")[0];
-						return `[\`${shortSha}\`](${commitLink})\n> ${firstLine}`;
-					})
-					.join("\n\n")
-			: "_No commits found_";
+		const commitsContent =
+			commits.length > 0
+				? commits
+						.map((commit) => {
+							const shortSha = commit.sha.slice(0, 7);
+							const commitLink = commitUrl(serverUrl, owner, repo, commit.sha);
+							const firstLine = commit.message.split("\n")[0];
+							return `[\`${shortSha}\`](${commitLink})\n> ${firstLine}`;
+						})
+						.join("\n\n")
+				: "_No commits found_";
 
-	const checkDetails = summaryWriter.build([
-		{ heading: "🔗 Linked Issues", level: 3, content: issuesContent },
-		{ heading: "📝 Commits Analyzed", level: 3, content: commitsContent },
-	]);
+		const checkDetails = summaryWriter.build([
+			{ heading: "🔗 Linked Issues", level: 3, content: issuesContent },
+			{ heading: "📝 Commits Analyzed", level: 3, content: commitsContent },
+		]);
 
-	const { id: checkId, url: htmlUrl } = yield* checks.create(checkTitle, sha);
-	yield* checks.complete(checkId, "success", CheckRunOutput.make({ title: checkSummary, summary: checkDetails }));
-	yield* outputs.summary(checkDetails);
+		const { id: checkId, url: htmlUrl } = yield* checks.create(checkTitle, sha);
+		yield* checks.complete(checkId, "success", CheckRunOutput.make({ title: checkSummary, summary: checkDetails }));
+		yield* outputs.summary(checkDetails);
 
-	if (linkedIssues.length > 0 && !dryRun) {
-		yield* linkIssuesToPR(linkedIssues);
-	}
+		if (linkedIssues.length > 0 && !dryRun) {
+			yield* linkIssuesToPR(linkedIssues);
+		}
 
-	return { linkedIssues, commits, checkId, htmlUrl } satisfies LinkIssuesResult;
-});
+		return { linkedIssues, commits, checkId, htmlUrl } satisfies LinkIssuesResult;
+	});

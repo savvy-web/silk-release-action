@@ -24,6 +24,7 @@
 
 import type { SpawnRecord } from "@effected/commands";
 import { ScriptedSpawner, ToolDiscovery } from "@effected/commands";
+import { Git } from "@effected/git";
 import type { CheckRunOutput, FileChange, IssueInfo, PullRequestInfo } from "@effected/github";
 import {
 	CheckRun,
@@ -41,7 +42,7 @@ import {
 	Repo,
 	RepoRef,
 } from "@effected/github";
-import { ActionEnvironment, ActionInput, ActionOutputs, ActionState, ActionStateError } from "@effected/github-actions";
+import { ActionEnvironment, ActionOutputs, DryRun } from "@effected/github-actions";
 import { PublishabilityDetector, WorkspaceDiscovery } from "@effected/workspaces";
 import { Changesets } from "@savvy-web/silk-effects";
 import { DateTime, Effect, FileSystem, Layer, Logger, Option } from "effect";
@@ -50,7 +51,7 @@ import { ChangesetConfig } from "../src/release/changeset-config.js";
 import { MANAGED_END, MANAGED_START } from "../src/utils/pr-body.js";
 import type { LinkedIssue, UpdateReleaseBranchResult } from "../src/utils/update-release-branch.js";
 import { updateReleaseBranch } from "../src/utils/update-release-branch.js";
-import { cleanupTestEnvironment, setupTestEnvironment } from "./utils/github-mocks.js";
+import { actionStateWithAppToken, cleanupTestEnvironment, setupTestEnvironment } from "./utils/github-mocks.js";
 
 const RELEASE_BRANCH = "changeset-release/main";
 const TARGET_BRANCH = "main";
@@ -132,6 +133,8 @@ interface Fixtures {
 	deleted: string[];
 	completed: Array<{ conclusion: string; output: CheckRunOutput | undefined }>;
 	summaries: string[];
+	/** Every value masked with the runner via `setSecret`. */
+	masked: string[];
 	nextPrNumber: number;
 	/** When set, closes that PR the moment the branch ref moves. */
 	closeOnRefMove?: number;
@@ -206,6 +209,7 @@ const makeFixtures = (
 		deleted: [],
 		completed: [],
 		summaries: [],
+		masked: [],
 		nextPrNumber: Math.max(0, ...prs.map((p) => p.number)) + 1,
 	};
 };
@@ -216,40 +220,63 @@ const makeFixtures = (
 const branchCommit = (sha: string, message: string): CommitSummary =>
 	CommitSummary.make({ sha, message, author: "Test Author", url: `https://x/commit/${sha}`, parents: [] });
 
-/** `git status --porcelain` stdout that drives the version-change branch. */
-const PORCELAIN_CHANGED = "M package.json\nM CHANGELOG.md";
+/**
+ * The `git status` stdout that drives the version-change branch.
+ *
+ * @remarks
+ * NUL-terminated: every status read in the stage now goes through `Git.status`,
+ * which runs `--porcelain -z` and parses it. The human `-z`-less form would be
+ * read as ONE entry whose path is the tail of the first line.
+ */
+const PORCELAIN_CHANGED = "M  package.json\0M  CHANGELOG.md\0";
 
 interface GitOptions {
-	/** `git status --porcelain` stdout. Empty drives the no-change cleanup path. */
+	/**
+	 * The FIRST `git status` read — the change probe. Empty drives the
+	 * close-the-PR-and-delete-the-branch path.
+	 */
 	readonly porcelain?: string;
-	/** `git status --porcelain` exit code. Non-zero must FAIL the stage, not read as "no changes". */
+	/** That read's exit code. Non-zero must FAIL the stage, not read as "no changes". */
 	readonly porcelainExit?: number;
-	/** `git status --porcelain -z` stdout, which becomes the commit's file list. */
+	/**
+	 * The SECOND `git status` read, taken after `git add`, which becomes the
+	 * commit's file list.
+	 *
+	 * @remarks
+	 * Both reads are now the same command (`Git.status` runs `--porcelain -z`
+	 * for each), so the script answers them by call order rather than by argv.
+	 */
 	readonly porcelainZ?: string;
 	/** `git log` stdout, keyed by the changeset file path it targets. */
 	readonly logs?: Record<string, string>;
 }
 
-const gitScript = (options: GitOptions) => (command: string, args: ReadonlyArray<string>) => {
-	if (command !== "git") return ScriptedSpawner.notFound(command);
-	const argv = args.join(" ");
-	if (argv === "status --porcelain") {
-		const exit = options.porcelainExit ?? 0;
-		// Only the failure case carries the fatal stderr. Emitting it on exit 0 too
-		// is contradictory and misleads the next reader debugging a failure.
-		return {
-			exit,
-			stdout: options.porcelain ?? "",
-			stderr: exit === 0 ? "" : "fatal: not a git repository",
-		};
-	}
-	if (argv === "status --porcelain -z") return { exit: 0, stdout: options.porcelainZ ?? "", stderr: "" };
-	if (args[0] === "log") {
-		const path = args[args.length - 1];
-		return { exit: 0, stdout: options.logs?.[path] ?? "", stderr: "" };
-	}
-	// branch -D, checkout -b, add ., fetch …
-	return { exit: 0, stdout: "", stderr: "" };
+const gitScript = (options: GitOptions) => {
+	let statusReads = 0;
+	return (command: string, args: ReadonlyArray<string>) => {
+		if (command !== "git") return ScriptedSpawner.notFound(command);
+		const argv = args.join(" ");
+		if (argv === "status --porcelain -z") {
+			statusReads += 1;
+			if (statusReads === 1) {
+				const exit = options.porcelainExit ?? 0;
+				// Only the failure case carries the fatal stderr. Emitting it on exit 0
+				// too is contradictory and misleads the next reader debugging a failure.
+				return {
+					exit,
+					stdout: options.porcelain ?? "",
+					stderr: exit === 0 ? "" : "fatal: not a git repository",
+				};
+			}
+			return { exit: 0, stdout: options.porcelainZ ?? "", stderr: "" };
+		}
+		if (args[0] === "log") {
+			const path = args[args.length - 1];
+			return { exit: 0, stdout: options.logs?.[path] ?? "", stderr: "" };
+		}
+		// checkout -B, add -- ., rev-parse --verify HEAD, fetch …
+		return { exit: 0, stdout: "", stderr: "" };
+	};
 };
 
 // --- runner --------------------------------------------------------------
@@ -284,16 +311,34 @@ const runStage = async (
 				Effect.sync(() => {
 					f.summaries.push(content);
 				}),
+			// `runNativeVersion` declassifies the App token through
+			// `Secret.forSigning`, which masks it with the runner. The double dies
+			// loudly on an unstubbed member, so this records the masks instead —
+			// which is also what proves the token reaches the log filter before it
+			// reaches `process.env.GITHUB_TOKEN`.
+			setSecret: (value) =>
+				Effect.sync(() => {
+					f.masked.push(value);
+				}),
 		}),
-		// No token persisted, so the sign-off takes its `github-actions[bot]` fallback.
-		ActionState.layerTest({
-			get: ((key: string) =>
-				Effect.fail(new ActionStateError({ reason: "missing", key }))) as ActionState["Service"]["get"],
-		}),
+		// The App token `pre` persisted. `runNativeVersion` reads it with
+		// `GitHubToken.read()` now that the `process.env.STATE_token` bridge is
+		// gone, so a state double that answers "missing" would fail the stage. The
+		// token carries no `appSlug`, so the sign-off still resolves to the
+		// `github-actions[bot]` identity these fixtures expect.
+		actionStateWithAppToken(),
 		// `exists` answers false, so `formatWorkspaceWithBiome` returns before
 		// probing — an unstubbed `isAvailable` would die if it did not.
 		ToolDiscovery.layerTest(),
 		spawner.layer,
+		// The REAL `Git`, over the scripted spawner — not a `makeTest` double.
+		// Every one of the stage's git operations is a kit member now (`status`,
+		// `revParse`, `add`, `branchCreate`), and driving them through one spawner
+		// keeps `spawner.spawns` a complete record of the argv this stage runs —
+		// which is what the force-push regression test asserts on. A `makeTest`
+		// double would assert that a method was called and would NOT catch the
+		// kit changing what it spawns.
+		Git.layer.pipe(Layer.provide(spawner.layer)),
 		CheckRun.layerTest({
 			create: (name) =>
 				Effect.succeed(
@@ -425,13 +470,13 @@ const runStage = async (
 	// still resolves to the same string — these reads are exercised but not yet
 	// *discriminated*. Making them so needs non-default fixture values, which
 	// ripples into the assertions; recorded as follow-up rather than done here.
-	const inputs = ActionInput.layer({
-		"INPUT_RELEASE-BRANCH": RELEASE_BRANCH,
-		"INPUT_TARGET-BRANCH": TARGET_BRANCH,
-		"INPUT_DRY-RUN": "false",
-	});
+	const refs = { releaseBranch: RELEASE_BRANCH, targetBranch: TARGET_BRANCH };
 	const result = await Effect.runPromise(
-		updateReleaseBranch().pipe(Effect.provide(layer), Effect.provide(Logger.layer([])), Effect.provide(inputs)),
+		updateReleaseBranch(refs).pipe(
+			Effect.provide(layer),
+			Effect.provide(Logger.layer([])),
+			Effect.provide(DryRun.layerFrom(false)),
+		),
 	);
 	return { result, spawns: spawner.spawns };
 };
@@ -618,7 +663,33 @@ describe("updateReleaseBranch", () => {
 
 		const checkout = spawns.find((sp) => sp.command === "git" && sp.args[0] === "checkout");
 		expect(checkout).toBeDefined();
-		expect(checkout?.args).toEqual(["checkout", "-b", RELEASE_BRANCH, `origin/${TARGET_BRANCH}`]);
+		// `-B`, not `-b`: `GitBranch.branchCreate(..., { force: true })` collapses
+		// the old swallowed `branch -D` + `checkout -b` pair into ONE invocation.
+		// That also fixes a real edge the pair had — `git branch -D` refuses to
+		// delete the currently checked-out branch, so on a runner already sitting
+		// on the release branch the delete failed silently and the `-b` then
+		// failed for real.
+		expect(checkout?.args).toEqual(["checkout", "-B", RELEASE_BRANCH, `origin/${TARGET_BRANCH}`]);
+
+		// And the delete is GONE, not merely reordered — one invocation now.
+		expect(spawns.filter((sp) => sp.command === "git" && sp.args[0] === "branch")).toHaveLength(0);
+	});
+
+	it("stages the working tree BEFORE reading the status that becomes the commit", async () => {
+		// `git add` moves every change into the index, which is what makes the
+		// second status read report `M ` rather than ` M`. Dropping the staging —
+		// or running it after the read — leaves the commit's file list computed
+		// from a different tree state than the one being committed. Nothing else
+		// in this suite spawns it, so this is the only guard on the migrated
+		// `Git.add` call.
+		const f = makeFixtures();
+
+		const { spawns } = await runStage(f, withCommit);
+
+		const argv = spawns.map((sp) => [sp.command, ...sp.args].join(" "));
+		const addIndex = argv.indexOf("git add -- .");
+		expect(addIndex).toBeGreaterThanOrEqual(0);
+		expect(argv.lastIndexOf("git status --porcelain -z")).toBeGreaterThan(addIndex);
 	});
 
 	it("NEVER points the release branch at the target head — the zero-diff window", async () => {

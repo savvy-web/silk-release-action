@@ -22,7 +22,6 @@ import {
 	SQUASH_FENCE_LANGUAGE,
 	SUMMARY_END,
 	SUMMARY_START,
-	buildClosingReferences,
 	buildManagedPrBody,
 	buildSquashClosingReferences,
 	extractReferences,
@@ -97,7 +96,6 @@ describe("buildManagedPrBody — the linking contract", () => {
 	});
 
 	it("produces no closing references when nothing is linked", () => {
-		expect(buildClosingReferences([])).toBe("");
 		expect(outsideFences(body([]))).not.toContain("Closes #");
 	});
 });

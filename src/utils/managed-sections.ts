@@ -22,13 +22,49 @@
 //  5. Writes are monotonic. A slower OLDER run finishing last must not
 //     overwrite a newer run's result.
 //
-// A marker-delimited managed-section construct is being built upstream. It has
-// NOT landed in the installed kit — checked, not assumed: `@effected/github`'s
-// `CommentMarker` is namespace+key for finding a WHOLE sticky comment
-// (`html`/`matches`, and `PullRequestComment.upsert` replaces the entire body),
-// and `@effected/markdown`'s `DocumentSection`/`firstSection` are heading-based
-// READ queries. Neither is a create-or-update region. This is shaped to be
-// swapped for the upstream construct when it exists.
+// UPSTREAM STATUS (re-checked 2026-08-05 against the installed
+// `@effected/github-actions@0.5.1`, superseding the "has NOT landed" note this
+// comment used to carry):
+//
+// The construct HAS landed, as `ManagedDocument` and `CheckDocument`. A review
+// against the five rules above concluded a PARTIAL swap is right, and not yet.
+//
+//  - Rule 4 is native to `ManagedDocument.withRegionsResult`, and the
+//    `@effected/templates` engine under it is better tested than this module
+//    (idempotence, CRLF, BOM and marker-injection, with a recorded surviving-
+//    mutant history). The ~80 lines here that scan and splice regions
+//    (`regionStart`/`regionEnd`/`readRegion`/`stripRegion` and the splice in
+//    `upsertSection`) are the part that should eventually go.
+//  - Rules 1, 2 and 3 are THIN LAYERS over it, not deletions: `CheckReport` is
+//    `state | title | outcome | detail | url` with no sha, run id or timestamp
+//    and no extension point, so the stamp must live in region content, and
+//    `CheckState` has no `pending` and (deliberately) no `cancelled` — both of
+//    which this module renders distinctly and pins in tests.
+//  - Rule 5 is NOT EXPRESSIBLE on `CheckDocument`, which is why the swap is
+//    partial. Its reconciler compares against a `writtenRef` seeded once at
+//    layer construction and thereafter only from its own writes; it never
+//    re-reads the sink. An older slow run therefore republishes from its own
+//    stale base and clobbers a newer run's regions — including ones it never
+//    owned. Here the rule is enforced by `isAtLeastAsRecent`, called from
+//    `upsertSection` below, which drops a write whose stamp is older than the
+//    one already in the region. Adopting `CheckDocument` would trade that for a
+//    silent clobber on the exact concurrency pattern release PRs generate.
+//
+//    (An earlier draft of this note credited `section-queue.ts` with enforcing
+//    rule 5 by re-reading on every batch. It does re-read — but that module has
+//    never been imported by any source file since it was added in #191, so it
+//    guards nothing. `upsertSection` is where the rule actually lives.)
+//
+// Blocking the partial swap: the wire formats are incompatible. The kit marker
+// is `<!-- --- BEGIN <ns>.<key>.<region> MANAGED REGION --- -->`; ours is
+// `<!-- silk-release:section:<key>:start -->`, which the kit scanner does not
+// see at all and preserves as prose. Swapping without a one-shot strip of the
+// old markers leaves every open release PR and sticky comment with orphan
+// regions the new engine never updates, plus a fresh set appended below.
+//
+// Tracking: spencerbeggs/effected — `CheckDocument` staleness guard, and
+// region-level metadata on `ManagedDocument` (this module's `owned="…"`
+// attribute has no slot in the kit's marker grammar).
 
 import { Effect, Exit } from "effect";
 

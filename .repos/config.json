@@ -23,6 +23,29 @@
 				"startHere": "packages/effect/src settles what v4 actually exports (evidence-ladder rung 2); migration/*.md settles v3→v4 renames (rung 1). Before trusting an answer, check the pin matches the installed effect version — node_modules wins on disagreement."
 			},
 			"notes": []
+		},
+		"effected": {
+			"url": "https://github.com/spencerbeggs/effected.git",
+			"ref": "@effected/github-actions@0.5.1",
+			"purpose": "Read-only source for the @effected package kit, pinned to the release tag matching the installed @effected/github-actions — the authority on what the kit actually exports and the canonical action patterns this repo is being aligned to.",
+			"sparse": [
+				"packages",
+				"design",
+				"CLAUDE.md",
+				"README.md"
+			],
+			"orientation": {
+				"layout": "pnpm monorepo, one directory per published package under packages/<name>/ with src/, test files co-located, and its own CLAUDE.md. design/ holds the kit's internal design docs. The website/, lib/, plugin/ and lockfile trees are excluded from the sparse checkout.",
+				"keyPaths": {
+					"packages": "packages",
+					"actions-runtime": "packages/github-actions/src",
+					"github-api": "packages/github/src",
+					"subprocesses": "packages/commands/src",
+					"design-docs": "design"
+				},
+				"startHere": "packages/<name>/src/index.ts for a package's real export surface; packages/<name>/CLAUDE.md for the intended usage. Release tags in this repo are PER-PACKAGE (`@effected/<name>@<version>`), not monorepo-wide — the pin names the `@effected/github-actions` tag, and at that commit every other @effected package this repo installs happens to sit at its installed version too. Re-verify that alignment when re-pinning; node_modules still wins on any disagreement."
+			},
+			"notes": []
 		}
 	}
 }

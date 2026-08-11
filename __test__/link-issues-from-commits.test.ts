@@ -38,7 +38,7 @@ import {
 	Repo,
 	RepoRef,
 } from "@effected/github";
-import { ActionEnvironment, ActionInput, ActionOutputs } from "@effected/github-actions";
+import { ActionEnvironment, ActionOutputs, DryRun } from "@effected/github-actions";
 import { Effect, Layer, Logger, Option } from "effect";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { LinkIssuesResult } from "../src/utils/link-issues-from-commits.js";
@@ -307,12 +307,17 @@ const runStage = (f: Fixtures, dryRun = false): Promise<LinkIssuesResult> => {
 	// Runner-shaped input names. The bare-name provider this replaces only
 	// worked because `Config.string` read the plain key; `target-branch` was
 	// equally mis-keyed and stayed invisible because its default is also "main".
-	const inputs = ActionInput.layer({
-		"INPUT_TARGET-BRANCH": TARGET_BRANCH,
-		"INPUT_DRY-RUN": String(dryRun),
-	});
+	// Branch names are arguments now; `dry-run` comes from the `DryRun` service.
+	// The old arrangement set only `INPUT_TARGET-BRANCH`, leaving `releaseBranch`
+	// to fall through to its default — so the release-branch value the stage used
+	// was never actually stated by the test. It is explicit here.
+	const refs = { releaseBranch: RELEASE_BRANCH, targetBranch: TARGET_BRANCH };
 	return Effect.runPromise(
-		linkIssuesFromCommits.pipe(Effect.provide(layer), Effect.provide(Logger.layer([])), Effect.provide(inputs)),
+		linkIssuesFromCommits(refs).pipe(
+			Effect.provide(layer),
+			Effect.provide(Logger.layer([])),
+			Effect.provide(DryRun.layerFrom(dryRun)),
+		),
 	);
 };
 

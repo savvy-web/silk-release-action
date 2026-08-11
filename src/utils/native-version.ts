@@ -7,21 +7,22 @@
  * @remarks
  * The changelog generator's GitHub-info fetch (upstream
  * `@changesets/get-github-info`) reads `process.env.GITHUB_TOKEN` directly.
- * The action deliberately never sets that variable (see `tokens.ts`), so it
- * is set from the App token only for the duration of the apply call and
+ * The action deliberately never sets that variable, so it is set from the App
+ * token — read from `ActionState` through `GitHubToken.read()`, the same kit
+ * member `main.ts` uses — only for the duration of the apply call, and
  * restored afterward. `apply` is not idempotent (it deletes consumed
  * changesets), so the transient-failure retry resets the working tree first.
  */
 
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { CommandFailedError, CommandOutputError } from "@effected/commands";
-import { Retry, Run } from "@effected/commands";
+import { Retry } from "@effected/commands";
+import type { GitCommandError, NotARepositoryError, UnknownRefError } from "@effected/git";
+import { Git } from "@effected/git";
+import type { ActionOutputs, ActionState, ActionStateError, GitHubTokenError } from "@effected/github-actions";
+import { GitHubToken, Secret } from "@effected/github-actions";
 import { Changesets } from "@savvy-web/silk-effects";
-import { Duration, Effect, FileSystem, Redacted } from "effect";
-import type { ChildProcessSpawner } from "effect/unstable/process";
-import { ChildProcess } from "effect/unstable/process";
-import { appToken } from "./tokens.js";
+import { Duration, Effect, FileSystem } from "effect";
 
 /** At runtime `import.meta.url` is `dist/main.js`, so this resolves into `dist/`. */
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -90,14 +91,40 @@ const requireValidConfig = (
  * strictly sequentially — do not invoke concurrent applies while this is in
  * effect.
  */
-const withGithubTokenEnv = <A, E, R>(use: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+const withGithubTokenEnv = <A, E, R>(
+	use: Effect.Effect<A, E, R>,
+): Effect.Effect<A, E | ActionStateError | GitHubTokenError, R | ActionOutputs | ActionState> =>
 	Effect.acquireUseRelease(
-		Effect.sync(() => {
+		Effect.gen(function* () {
 			const previous = process.env.GITHUB_TOKEN;
-			const token = Redacted.value(appToken());
-			if (token !== "") {
-				process.env.GITHUB_TOKEN = token;
-			}
+			// `Secret.forSigning`, NOT a bare `Redacted.value`. Declassification
+			// lives in one kit module, and this is its documented "in-process use
+			// that needs the raw value" member — it additionally MASKS the token
+			// with the runner, so if it ever surfaces in a stack trace, a serialized
+			// error or a debug log of outgoing headers, it comes out redacted. The
+			// bare unwrap this replaces registered nothing.
+			//
+			// `ActionEnvironment.withEnv` is deliberately NOT used here, and cannot
+			// be: it is fiber-local and "`process.env` is never mutated"
+			// (ActionEnvironment.ts). `@changesets/get-github-info` reads
+			// `process.env.GITHUB_TOKEN` off the real ambient environment, so a
+			// fiber-local override is invisible to it.
+			//
+			// The kit anticipates exactly this case and rules on it, under
+			// `Secret.forSigning`: "A third-party SDK that reads only the ambient
+			// environment is the hard case: this package never mutates
+			// `process.env` … so if a consumer chooses that bridge, the mutation —
+			// and its restore discipline — lives in consumer code as the consumer's
+			// own tradeoff." Hence the real mutation below, and the restore arm.
+			//
+			// The SOURCE is `GitHubToken.read()` — the persisted App token, straight
+			// from `ActionState`. It used to arrive through a `process.env.STATE_token`
+			// bridge that `main.ts` wrote and `utils/tokens.ts` read back: a second
+			// plaintext copy of the credential, living for the whole process, to
+			// hand one function a value the kit already serves. `read()` also fails
+			// typed when the token is spent, which the bridge answered as `""`.
+			const installation = yield* GitHubToken.read();
+			process.env.GITHUB_TOKEN = yield* Secret.forSigning(installation.token);
 			return previous;
 		}),
 		() => use,
@@ -118,14 +145,18 @@ export const runNativeVersion = (
 	cwd: string,
 ): Effect.Effect<
 	Changesets.AppliedRelease,
-	Changesets.ReleasePlanError | Changesets.ConfigurationError | CommandFailedError | CommandOutputError,
-	| Changesets.ReleasePlanner
-	| Changesets.ConfigInspector
-	| ChildProcessSpawner.ChildProcessSpawner
-	| FileSystem.FileSystem
+	| ActionStateError
+	| Changesets.ReleasePlanError
+	| Changesets.ConfigurationError
+	| GitCommandError
+	| NotARepositoryError
+	| UnknownRefError
+	| GitHubTokenError,
+	ActionOutputs | ActionState | Changesets.ReleasePlanner | Changesets.ConfigInspector | Git | FileSystem.FileSystem
 > =>
 	Effect.gen(function* () {
 		yield* requireValidConfig(cwd);
+		const git = yield* Git;
 		const planner = yield* Changesets.ReleasePlanner;
 
 		// A thunk, not a constructed Effect: `planner.apply` must be invoked fresh
@@ -141,24 +172,20 @@ export const runNativeVersion = (
 		yield* Effect.logWarning(
 			`Native version failed transiently (${first.failure.reason}); resetting and retrying once`,
 		);
-		// RAW `Run`, not `@effected/git`, and not a bare `Effect.retry`.
+		// Not a bare `Effect.retry`: `apply` is NOT idempotent — it deletes the
+		// changesets it consumes — so a retry on a half-applied tree would corrupt
+		// the release. The tree must be reset first.
 		//
-		// `apply` is NOT idempotent — it deletes the changesets it consumes — so a
-		// retry on a half-applied tree would corrupt the release. The tree must be
-		// reset first, and both halves of that reset have to be raw commands:
-		// `@effected/git` ships neither `reset` nor `clean`, and its `checkout`
-		// runs `rejectOptionLikeRefs`, which refuses `--` by design.
-		//
-		// `Run.text` (not `Run.collect`) because a non-zero exit must FAIL here,
-		// matching the `CommandRunner.exec` it replaces: a reset that silently did
-		// nothing would hand the retry the same dirty tree.
+		// Both members FAIL LOUDLY on a non-zero exit (a typed `GitCommandError`),
+		// matching the `Run.text` they replace: a reset that silently did nothing
+		// would hand the retry the same dirty tree.
 		//
 		// Both are pinned to `cwd` — the SAME directory `requireValidConfig` and
 		// `planner.apply` operate on. Without it they run in the ambient process
 		// CWD, so when `cwd !== process.cwd()` the reset cleans the wrong tree and
 		// the retry then re-applies onto a still half-applied release tree.
-		yield* Run.text(ChildProcess.make("git", ["checkout", "--", "."], { cwd }));
-		yield* Run.text(ChildProcess.make("git", ["clean", "-fd"], { cwd }));
+		yield* git.restore(cwd, ["."]);
+		yield* git.clean(cwd, { directories: true });
 		yield* Effect.sleep(Duration.seconds(1));
 		return yield* applyOnce();
 	});

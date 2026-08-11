@@ -17,6 +17,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeServices } from "@effect/platform-node";
+import { describe, expect, it, vi } from "@effect/vitest";
 import { ScriptedSpawner } from "@effected/commands";
 import type { AttestationShape } from "@effected/github";
 import {
@@ -45,13 +46,11 @@ import { NpmRegistry, PackagePublish, PackedTarball, PublishError } from "@effec
 import { SIGSTORE_BUNDLE_V0_3_MEDIA_TYPE, SigstoreBundle, SigstoreSigner } from "@effected/sbom";
 import { PublishTarget, PublishabilityDetector, WorkspaceDiscovery, WorkspacePackage } from "@effected/workspaces";
 import { ConfigProvider, Effect, Layer, Option, Redacted } from "effect";
-import { describe, expect, it, vi } from "vitest";
-
-import { matchesIgnorePattern } from "../utils/detect-repo-type.js";
-import { ChangesetConfig } from "./changeset-config.js";
-import type { BuildSbomResult, DetectedRelease, PublishInputArgs } from "./publish.js";
-import { detectReleases, runBuildAndSbom, runPublishTargets, userNpmrcPath } from "./publish.js";
-import type { PublishPackagesResult } from "./types.js";
+import { ChangesetConfig } from "../../../src/release/changeset-config.js";
+import type { BuildSbomResult, DetectedRelease, PublishInputArgs } from "../../../src/release/publish.js";
+import { detectReleases, runBuildAndSbom, runPublishTargets, userNpmrcPath } from "../../../src/release/publish.js";
+import type { PublishPackagesResult } from "../../../src/release/types.js";
+import { matchesIgnorePattern } from "../../../src/utils/detect-repo-type.js";
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
 
@@ -649,115 +648,115 @@ describe("runBuildAndSbom", () => {
 		).layer;
 
 	describe("build step", () => {
-		it("returns buildError and ok: false when ci:build fails", async () => {
-			const pkg = makeWsPkg("@test/build-fail", "1.0.0");
-			const detected: DetectedRelease[] = [makeDetected("@test/build-fail", "1.0.0", pkg.path)];
+		it.effect("returns buildError and ok: false when ci:build fails", () =>
+			Effect.gen(function* () {
+				const pkg = makeWsPkg("@test/build-fail", "1.0.0");
+				const detected: DetectedRelease[] = [makeDetected("@test/build-fail", "1.0.0", pkg.path)];
 
-			// `NodeServices.layer` provides `FileSystem` for `Sbom.write` — and ALSO
-			// a real `ChildProcessSpawner`. The scripted spawner is merged LAST so
-			// it wins; merged first, the suite silently shells out to a real
-			// `pnpm ci:build` (3.5s per test, and a green that proves nothing).
-			const layers = Layer.mergeAll(
-				loggerLayer,
-				NodeServices.layer,
-				makeWorkspaceDiscoveryLayer([pkg]),
-				buildSpawner(1, "Build failed: compile error"),
-			);
+				// `NodeServices.layer` provides `FileSystem` for `Sbom.write` — and ALSO
+				// a real `ChildProcessSpawner`. The scripted spawner is merged LAST so
+				// it wins; merged first, the suite silently shells out to a real
+				// `pnpm ci:build` (3.5s per test, and a green that proves nothing).
+				const layers = Layer.mergeAll(
+					loggerLayer,
+					NodeServices.layer,
+					makeWorkspaceDiscoveryLayer([pkg]),
+					buildSpawner(1, "Build failed: compile error"),
+				);
 
-			const result: BuildSbomResult = await Effect.runPromise(
-				runBuildAndSbom(detected, buildArgs).pipe(Effect.provide(layers)),
-			);
+				const result: BuildSbomResult = yield* runBuildAndSbom(detected, buildArgs).pipe(Effect.provide(layers));
 
-			expect(result.ok).toBe(false);
-			expect(result.buildError).toMatch(/Build failed/);
-			expect(result.sbomFailures).toHaveLength(0);
-			expect(result.packageCount).toBe(1);
-		});
+				expect(result.ok).toBe(false);
+				expect(result.buildError).toMatch(/Build failed/);
+				expect(result.sbomFailures).toHaveLength(0);
+				expect(result.packageCount).toBe(1);
+			}),
+		);
 	});
 
 	describe("happy path", () => {
-		it("returns ok: true with no SBOM failures when build and every SBOM write succeed", async () => {
-			// Real temp dirs so `Sbom.write` succeeds and `sbomPaths` populates.
-			const tmpRoot = join(tmpdir(), `silk-sbom-save-test-${Date.now()}`);
-			const pkgAPath = join(tmpRoot, "sbom-a");
-			const pkgBPath = join(tmpRoot, "sbom-b");
-			mkdirSync(pkgAPath, { recursive: true });
-			mkdirSync(pkgBPath, { recursive: true });
+		it.effect("returns ok: true with no SBOM failures when build and every SBOM write succeed", () =>
+			Effect.gen(function* () {
+				// Real temp dirs so `Sbom.write` succeeds and `sbomPaths` populates.
+				const tmpRoot = join(tmpdir(), `silk-sbom-save-test-${Date.now()}`);
+				const pkgAPath = join(tmpRoot, "sbom-a");
+				const pkgBPath = join(tmpRoot, "sbom-b");
+				mkdirSync(pkgAPath, { recursive: true });
+				mkdirSync(pkgBPath, { recursive: true });
 
-			const pkgA = makeWsPkg("@test/sbom-a", "1.0.0", pkgAPath);
-			const pkgB = makeWsPkg("@test/sbom-b", "2.0.0", pkgBPath);
-			const detected: DetectedRelease[] = [
-				makeDetected("@test/sbom-a", "1.0.0", pkgA.path),
-				makeDetected("@test/sbom-b", "2.0.0", pkgB.path),
-			];
+				const pkgA = makeWsPkg("@test/sbom-a", "1.0.0", pkgAPath);
+				const pkgB = makeWsPkg("@test/sbom-b", "2.0.0", pkgBPath);
+				const detected: DetectedRelease[] = [
+					makeDetected("@test/sbom-a", "1.0.0", pkgA.path),
+					makeDetected("@test/sbom-b", "2.0.0", pkgB.path),
+				];
 
-			const layers = Layer.mergeAll(
-				loggerLayer,
-				NodeServices.layer,
-				makeWorkspaceDiscoveryLayer([pkgA, pkgB]),
-				buildSpawner(0),
-			);
+				const layers = Layer.mergeAll(
+					loggerLayer,
+					NodeServices.layer,
+					makeWorkspaceDiscoveryLayer([pkgA, pkgB]),
+					buildSpawner(0),
+				);
 
-			const result: BuildSbomResult = await Effect.runPromise(
-				runBuildAndSbom(detected, buildArgs).pipe(Effect.provide(layers)),
-			);
+				const result: BuildSbomResult = yield* runBuildAndSbom(detected, buildArgs).pipe(Effect.provide(layers));
 
-			expect(result.ok).toBe(true);
-			expect(result.sbomFailures).toHaveLength(0);
-			expect(result.buildError).toBeUndefined();
-			expect(result.packageCount).toBe(detected.length);
-			expect(result.sbomPaths.get("@test/sbom-a")).toBe(join(pkgAPath, "sbom-a.sbom.json"));
-			expect(result.sbomPaths.get("@test/sbom-b")).toBe(join(pkgBPath, "sbom-b.sbom.json"));
-		});
+				expect(result.ok).toBe(true);
+				expect(result.sbomFailures).toHaveLength(0);
+				expect(result.buildError).toBeUndefined();
+				expect(result.packageCount).toBe(detected.length);
+				expect(result.sbomPaths.get("@test/sbom-a")).toBe(join(pkgAPath, "sbom-a.sbom.json"));
+				expect(result.sbomPaths.get("@test/sbom-b")).toBe(join(pkgBPath, "sbom-b.sbom.json"));
+			}),
+		);
 
-		it("keeps ok: true and only lists the package when the SBOM WRITE fails", async () => {
-			// The predecessor's test failed `Sbom.generate`. That is no longer
-			// expressible: `Sbom.generate` and `Sbom.toJson` are **total**, and
-			// `SbomError` does not exist. `Sbom.write` is the one fallible member —
-			// it does not create parent directories, so a package whose path does
-			// not exist is the genuine remaining failure mode, and this proves it
-			// reaches `sbomFailures`.
-			const tmpRoot = join(tmpdir(), `silk-sbom-write-fail-${Date.now()}`);
-			const goodPath = join(tmpRoot, "sbom-good");
-			mkdirSync(goodPath, { recursive: true });
-			const badPath = join(tmpRoot, "does", "not", "exist");
+		it.effect("keeps ok: true and only lists the package when the SBOM WRITE fails", () =>
+			Effect.gen(function* () {
+				// The predecessor's test failed `Sbom.generate`. That is no longer
+				// expressible: `Sbom.generate` and `Sbom.toJson` are **total**, and
+				// `SbomError` does not exist. `Sbom.write` is the one fallible member —
+				// it does not create parent directories, so a package whose path does
+				// not exist is the genuine remaining failure mode, and this proves it
+				// reaches `sbomFailures`.
+				const tmpRoot = join(tmpdir(), `silk-sbom-write-fail-${Date.now()}`);
+				const goodPath = join(tmpRoot, "sbom-good");
+				mkdirSync(goodPath, { recursive: true });
+				const badPath = join(tmpRoot, "does", "not", "exist");
 
-			const pkgGood = makeWsPkg("@test/sbom-good", "1.0.0", goodPath);
-			const pkgBad = makeWsPkg("@test/sbom-bad", "1.0.0", badPath);
-			const detected: DetectedRelease[] = [
-				makeDetected("@test/sbom-good", "1.0.0", pkgGood.path),
-				makeDetected("@test/sbom-bad", "1.0.0", pkgBad.path),
-			];
+				const pkgGood = makeWsPkg("@test/sbom-good", "1.0.0", goodPath);
+				const pkgBad = makeWsPkg("@test/sbom-bad", "1.0.0", badPath);
+				const detected: DetectedRelease[] = [
+					makeDetected("@test/sbom-good", "1.0.0", pkgGood.path),
+					makeDetected("@test/sbom-bad", "1.0.0", pkgBad.path),
+				];
 
-			const layers = Layer.mergeAll(
-				loggerLayer,
-				NodeServices.layer,
-				makeWorkspaceDiscoveryLayer([pkgGood, pkgBad]),
-				buildSpawner(0),
-			);
+				const layers = Layer.mergeAll(
+					loggerLayer,
+					NodeServices.layer,
+					makeWorkspaceDiscoveryLayer([pkgGood, pkgBad]),
+					buildSpawner(0),
+				);
 
-			const result: BuildSbomResult = await Effect.runPromise(
-				runBuildAndSbom(detected, buildArgs).pipe(Effect.provide(layers)),
-			);
+				const result: BuildSbomResult = yield* runBuildAndSbom(detected, buildArgs).pipe(Effect.provide(layers));
 
-			// `ok` stays TRUE. This is the load-bearing half of the assertion:
-			// `runPublishing` treats `!ok` as a fail-fast gate that aborts Phase 3
-			// and fails the workflow with `PublishError`. Folding an SBOM write
-			// failure into `ok` meant an unwritable package directory blocked a
-			// release whose build had succeeded — contradicting both this function's
-			// own remark ("stays non-fatal") and its warning ("release asset will be
-			// skipped"). The write failure costs the release its SBOM asset, nothing
-			// more.
-			expect(result.ok).toBe(true);
-			expect(result.sbomFailures).toEqual(["@test/sbom-bad"]);
-			expect(result.buildError).toBeUndefined();
-			expect(result.packageCount).toBe(detected.length);
-			// The good package still wrote its SBOM — one failure does not abort.
-			expect(result.sbomPaths.get("@test/sbom-good")).toBe(join(goodPath, "sbom-good.sbom.json"));
-			// ...and the failing package has no asset path, which is how the release
-			// step knows to skip it.
-			expect(result.sbomPaths.has("@test/sbom-bad")).toBe(false);
-		});
+				// `ok` stays TRUE. This is the load-bearing half of the assertion:
+				// `runPublishing` treats `!ok` as a fail-fast gate that aborts Phase 3
+				// and fails the workflow with `PublishError`. Folding an SBOM write
+				// failure into `ok` meant an unwritable package directory blocked a
+				// release whose build had succeeded — contradicting both this function's
+				// own remark ("stays non-fatal") and its warning ("release asset will be
+				// skipped"). The write failure costs the release its SBOM asset, nothing
+				// more.
+				expect(result.ok).toBe(true);
+				expect(result.sbomFailures).toEqual(["@test/sbom-bad"]);
+				expect(result.buildError).toBeUndefined();
+				expect(result.packageCount).toBe(detected.length);
+				// The good package still wrote its SBOM — one failure does not abort.
+				expect(result.sbomPaths.get("@test/sbom-good")).toBe(join(goodPath, "sbom-good.sbom.json"));
+				// ...and the failing package has no asset path, which is how the release
+				// step knows to skip it.
+				expect(result.sbomPaths.has("@test/sbom-bad")).toBe(false);
+			}),
+		);
 	});
 });
 
@@ -765,52 +764,56 @@ describe("runBuildAndSbom", () => {
 
 describe("runPublishTargets", () => {
 	describe("first-publish path (version absent from registry)", () => {
-		it("packs once, probes the target registry, and publishes the tarball to it", async () => {
-			const pub = makePackagePublishLayer();
-			const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, `/tmp/test/${PACK_NAME}`);
-			const target = makeNpmTarget(PACK_NAME, `/tmp/test/${PACK_NAME}`);
-			const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
+		it.effect("packs once, probes the target registry, and publishes the tarball to it", () =>
+			Effect.gen(function* () {
+				const pub = makePackagePublishLayer();
+				const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, `/tmp/test/${PACK_NAME}`);
+				const target = makeNpmTarget(PACK_NAME, `/tmp/test/${PACK_NAME}`);
+				const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
 
-			const result: PublishPackagesResult = await Effect.runPromise(
-				runPublishTargets(detected).pipe(
+				const result: PublishPackagesResult = yield* runPublishTargets(detected).pipe(
 					Effect.provide(makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [target])),
-				),
-			);
+				);
 
-			expect(result.success).toBe(true);
-			expect(result.packages).toHaveLength(1);
-			expect(pub.packCalls).toHaveLength(1);
-			expect(pub.publishTarballCalls).toHaveLength(1);
+				expect(result.success).toBe(true);
+				expect(result.packages).toHaveLength(1);
+				expect(pub.packCalls).toHaveLength(1);
+				expect(pub.publishTarballCalls).toHaveLength(1);
 
-			// The published-to registry matches the target's registry (not the default).
-			expect(pub.publishTarballCalls[0]?.options.registry).toBe(target.registry);
+				// The published-to registry matches the target's registry (not the default).
+				expect(pub.publishTarballCalls[0]?.options.registry).toBe(target.registry);
 
-			const targetResult = result.packages[0]?.targets[0];
-			expect(targetResult?.status).toBe("published");
-			expect(targetResult?.success).toBe(true);
-			expect(targetResult?.skipReason).toBeUndefined();
-			expect(targetResult?.recovery).toBeUndefined();
-		});
+				const targetResult = result.packages[0]?.targets[0];
+				expect(targetResult?.status).toBe("published");
+				expect(targetResult?.success).toBe(true);
+				expect(targetResult?.skipReason).toBeUndefined();
+				expect(targetResult?.recovery).toBeUndefined();
+			}),
+		);
 
-		it("packs and publishes through the pinned npm@11 dlx executor, never the ambient npm", async () => {
-			// The pin is what makes OIDC trusted publishing possible at all: runners
-			// ship npm 10.x, which cannot do it, and npm 12's publish is broken.
-			const pub = makePackagePublishLayer();
-			const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, `/tmp/test/${PACK_NAME}`);
-			const target = makeNpmTarget(PACK_NAME, `/tmp/test/${PACK_NAME}`);
-			const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
+		it.effect("packs and publishes through the pinned npm@11 dlx executor, never the ambient npm", () =>
+			Effect.gen(function* () {
+				// The pin is what makes OIDC trusted publishing possible at all: runners
+				// ship npm 10.x, which cannot do it, and npm 12's publish is broken.
+				const pub = makePackagePublishLayer();
+				const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, `/tmp/test/${PACK_NAME}`);
+				const target = makeNpmTarget(PACK_NAME, `/tmp/test/${PACK_NAME}`);
+				const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
 
-			await Effect.runPromise(
-				runPublishTargets(detected).pipe(
+				yield* runPublishTargets(detected).pipe(
 					Effect.provide(makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [target])),
-				),
-			);
+				);
 
-			const executor = pub.publishTarballCalls[0]?.options.executor;
-			expect(executor).toBeDefined();
-			expect(JSON.stringify(executor)).toContain("npm@11");
-		});
+				const executor = pub.publishTarballCalls[0]?.options.executor;
+				expect(executor).toBeDefined();
+				expect(JSON.stringify(executor)).toContain("npm@11");
+			}),
+		);
 
+		// NOT `it.effect`: this test spies on the real `console.log` to assert on
+		// `ActionLogger`'s rendered publish tree. `it.effect` installs
+		// `TestConsole`, which intercepts the same `ConsoleRef` the logger writes
+		// through, so the spy captures nothing and the render assertions go red.
 		it("renders the rich publish tree (icons, registry rows, npm-native provenance) and threads the URL onto the result", async () => {
 			const provUrl = "https://search.sigstore.dev/?logIndex=1822519034";
 			const pub = makePackagePublishLayer({ provenanceUrl: provUrl });
@@ -866,136 +869,142 @@ describe("runPublishTargets", () => {
 	});
 
 	describe("skipped-identical recovery", () => {
-		it("records skipReason: 'already-published-identical' and never publishes when the registry has matching integrity", async () => {
-			const pub = makePackagePublishLayer();
-			const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, `/tmp/test/${PACK_NAME}`);
-			const target = makeNpmTarget(PACK_NAME, `/tmp/test/${PACK_NAME}`);
-			const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
+		it.effect(
+			"records skipReason: 'already-published-identical' and never publishes when the registry has matching integrity",
+			() =>
+				Effect.gen(function* () {
+					const pub = makePackagePublishLayer();
+					const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, `/tmp/test/${PACK_NAME}`);
+					const target = makeNpmTarget(PACK_NAME, `/tmp/test/${PACK_NAME}`);
+					const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
 
-			const result: PublishPackagesResult = await Effect.runPromise(
-				runPublishTargets(detected).pipe(
-					Effect.provide(makeBaseLayers(pub.layer, makeRegistryLayer({ integrity: PACK_INTEGRITY }), wsPkg, [target])),
-				),
-			);
+					const result: PublishPackagesResult = yield* runPublishTargets(detected).pipe(
+						Effect.provide(
+							makeBaseLayers(pub.layer, makeRegistryLayer({ integrity: PACK_INTEGRITY }), wsPkg, [target]),
+						),
+					);
 
-			expect(result.success).toBe(true);
-			expect(pub.packCalls).toHaveLength(1);
-			expect(pub.publishTarballCalls).toHaveLength(0);
+					expect(result.success).toBe(true);
+					expect(pub.packCalls).toHaveLength(1);
+					expect(pub.publishTarballCalls).toHaveLength(0);
 
-			const targetResult = result.packages[0]?.targets[0];
-			expect(targetResult?.status).toBe("skipped");
-			expect(targetResult?.success).toBe(true);
-			expect(targetResult?.skipReason).toBe("already-published-identical");
-			expect(targetResult?.recovery).toEqual({ localDigest: PACK_INTEGRITY, remoteDigest: PACK_INTEGRITY });
-		});
+					const targetResult = result.packages[0]?.targets[0];
+					expect(targetResult?.status).toBe("skipped");
+					expect(targetResult?.success).toBe(true);
+					expect(targetResult?.skipReason).toBe("already-published-identical");
+					expect(targetResult?.recovery).toEqual({ localDigest: PACK_INTEGRITY, remoteDigest: PACK_INTEGRITY });
+				}),
+		);
 	});
 
 	describe("failed-mismatch", () => {
-		it("records status: 'failed' with a recovery digest pair and a 'mismatch' message when integrity differs", async () => {
-			const REMOTE_INTEGRITY = "sha512-BBBB";
-			const pub = makePackagePublishLayer();
-			const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, `/tmp/test/${PACK_NAME}`);
-			const target = makeNpmTarget(PACK_NAME, `/tmp/test/${PACK_NAME}`);
-			const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
+		it.effect(
+			"records status: 'failed' with a recovery digest pair and a 'mismatch' message when integrity differs",
+			() =>
+				Effect.gen(function* () {
+					const REMOTE_INTEGRITY = "sha512-BBBB";
+					const pub = makePackagePublishLayer();
+					const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, `/tmp/test/${PACK_NAME}`);
+					const target = makeNpmTarget(PACK_NAME, `/tmp/test/${PACK_NAME}`);
+					const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
 
-			const result: PublishPackagesResult = await Effect.runPromise(
-				runPublishTargets(detected).pipe(
-					Effect.provide(
-						makeBaseLayers(pub.layer, makeRegistryLayer({ integrity: REMOTE_INTEGRITY }), wsPkg, [target]),
-					),
-				),
-			);
+					const result: PublishPackagesResult = yield* runPublishTargets(detected).pipe(
+						Effect.provide(
+							makeBaseLayers(pub.layer, makeRegistryLayer({ integrity: REMOTE_INTEGRITY }), wsPkg, [target]),
+						),
+					);
 
-			expect(result.success).toBe(false);
-			expect(pub.packCalls).toHaveLength(1);
-			expect(pub.publishTarballCalls).toHaveLength(0);
+					expect(result.success).toBe(false);
+					expect(pub.packCalls).toHaveLength(1);
+					expect(pub.publishTarballCalls).toHaveLength(0);
 
-			const targetResult = result.packages[0]?.targets[0];
-			expect(targetResult?.status).toBe("failed");
-			expect(targetResult?.success).toBe(false);
-			expect(targetResult?.recovery).toEqual({ localDigest: PACK_INTEGRITY, remoteDigest: REMOTE_INTEGRITY });
-			expect(targetResult?.error).toMatch(/mismatch/i);
-			expect(targetResult?.error).toContain(PACK_INTEGRITY);
-			expect(targetResult?.error).toContain(REMOTE_INTEGRITY);
-		});
+					const targetResult = result.packages[0]?.targets[0];
+					expect(targetResult?.status).toBe("failed");
+					expect(targetResult?.success).toBe(false);
+					expect(targetResult?.recovery).toEqual({ localDigest: PACK_INTEGRITY, remoteDigest: REMOTE_INTEGRITY });
+					expect(targetResult?.error).toMatch(/mismatch/i);
+					expect(targetResult?.error).toContain(PACK_INTEGRITY);
+					expect(targetResult?.error).toContain(REMOTE_INTEGRITY);
+				}),
+		);
 
-		it("fails rather than claiming 'identical' when the registry reports no integrity", async () => {
-			// A branch the predecessor could not have: `PublishedVersion.integrity`
-			// is an optional key, so "the version is there but we cannot prove the
-			// bytes match" is now representable. Calling it identical without proof
-			// would be a lie; publishing over it would fail anyway.
-			const pub = makePackagePublishLayer();
-			const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, `/tmp/test/${PACK_NAME}`);
-			const target = makeNpmTarget(PACK_NAME, `/tmp/test/${PACK_NAME}`);
-			const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
+		it.effect("fails rather than claiming 'identical' when the registry reports no integrity", () =>
+			Effect.gen(function* () {
+				// A branch the predecessor could not have: `PublishedVersion.integrity`
+				// is an optional key, so "the version is there but we cannot prove the
+				// bytes match" is now representable. Calling it identical without proof
+				// would be a lie; publishing over it would fail anyway.
+				const pub = makePackagePublishLayer();
+				const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, `/tmp/test/${PACK_NAME}`);
+				const target = makeNpmTarget(PACK_NAME, `/tmp/test/${PACK_NAME}`);
+				const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
 
-			const result: PublishPackagesResult = await Effect.runPromise(
-				runPublishTargets(detected).pipe(
+				const result: PublishPackagesResult = yield* runPublishTargets(detected).pipe(
 					Effect.provide(makeBaseLayers(pub.layer, makeRegistryLayer({}), wsPkg, [target])),
-				),
-			);
+				);
 
-			expect(result.success).toBe(false);
-			expect(pub.publishTarballCalls).toHaveLength(0);
-			const targetResult = result.packages[0]?.targets[0];
-			expect(targetResult?.status).toBe("failed");
-			expect(targetResult?.error).toContain("not reported by the registry");
-		});
+				expect(result.success).toBe(false);
+				expect(pub.publishTarballCalls).toHaveLength(0);
+				const targetResult = result.packages[0]?.targets[0];
+				expect(targetResult?.status).toBe("failed");
+				expect(targetResult?.error).toContain("not reported by the registry");
+			}),
+		);
 	});
 
 	describe("pack-once per directory", () => {
-		it("calls pack exactly once when two targets share the same build directory", async () => {
-			const SHARED_DIR = `/tmp/test/${PACK_NAME}`;
-			const pub = makePackagePublishLayer();
-			const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, SHARED_DIR);
-			const targetA = new PublishTarget({
-				name: PACK_NAME,
-				registry: "https://registry.npmjs.org/",
-				directory: SHARED_DIR,
-				access: "public",
-				provenance: false,
-			});
-			const targetB = new PublishTarget({
-				name: PACK_NAME,
-				registry: "https://npm.pkg.github.com/",
-				directory: SHARED_DIR,
-				access: "public",
-				provenance: false,
-			});
-			const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
+		it.effect("calls pack exactly once when two targets share the same build directory", () =>
+			Effect.gen(function* () {
+				const SHARED_DIR = `/tmp/test/${PACK_NAME}`;
+				const pub = makePackagePublishLayer();
+				const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, SHARED_DIR);
+				const targetA = new PublishTarget({
+					name: PACK_NAME,
+					registry: "https://registry.npmjs.org/",
+					directory: SHARED_DIR,
+					access: "public",
+					provenance: false,
+				});
+				const targetB = new PublishTarget({
+					name: PACK_NAME,
+					registry: "https://npm.pkg.github.com/",
+					directory: SHARED_DIR,
+					access: "public",
+					provenance: false,
+				});
+				const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
 
-			const result: PublishPackagesResult = await Effect.runPromise(
-				runPublishTargets(detected).pipe(
+				const result: PublishPackagesResult = yield* runPublishTargets(detected).pipe(
 					Effect.provide(makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [targetA, targetB])),
-				),
-			);
+				);
 
-			expect(pub.packCalls).toHaveLength(1);
-			expect(pub.publishTarballCalls).toHaveLength(2);
-			expect(result.packages[0]?.targets).toHaveLength(2);
-		});
+				expect(pub.packCalls).toHaveLength(1);
+				expect(pub.publishTarballCalls).toHaveLength(2);
+				expect(result.packages[0]?.targets).toHaveLength(2);
+			}),
+		);
 
-		it("names the missing github-token rather than letting it surface as a 403", async () => {
-			// The production failure this guard replaces: savvy-web/systems run
-			// 30228332922 emitted four identical "integrity probe failed — status
-			// 403" lines, which read as a packages-permission problem rather than a
-			// missing input. The App installation token is not a substitute for
-			// GitHub Packages, so an absent token can only mean the input is absent.
-			const pub = makePackagePublishLayer();
-			const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, `/tmp/test/${PACK_NAME}`);
-			const target = new PublishTarget({
-				name: PACK_NAME,
-				registry: "https://npm.pkg.github.com/",
-				directory: `/tmp/test/${PACK_NAME}`,
-				access: "public",
-				provenance: false,
-			});
-			const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
+		it.effect("names the missing github-token rather than letting it surface as a 403", () =>
+			Effect.gen(function* () {
+				// The production failure this guard replaces: savvy-web/systems run
+				// 30228332922 emitted four identical "integrity probe failed — status
+				// 403" lines, which read as a packages-permission problem rather than a
+				// missing input. The App installation token is not a substitute for
+				// GitHub Packages, so an absent token can only mean the input is absent.
+				const pub = makePackagePublishLayer();
+				const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, `/tmp/test/${PACK_NAME}`);
+				const target = new PublishTarget({
+					name: PACK_NAME,
+					registry: "https://npm.pkg.github.com/",
+					directory: `/tmp/test/${PACK_NAME}`,
+					access: "public",
+					provenance: false,
+				});
+				const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
 
-			const noToken = ActionState.layerTest({ getOptional: () => Effect.succeed(Option.none()) });
+				const noToken = ActionState.layerTest({ getOptional: () => Effect.succeed(Option.none()) });
 
-			const result: PublishPackagesResult = await Effect.runPromise(
-				runPublishTargets(detected).pipe(
+				const result: PublishPackagesResult = yield* runPublishTargets(detected).pipe(
 					Effect.provide(
 						Layer.mergeAll(
 							makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [target]),
@@ -1003,35 +1012,35 @@ describe("runPublishTargets", () => {
 							noToken,
 						),
 					),
-				),
-			);
+				);
 
-			expect(result.success).toBe(false);
-			expect(result.packages[0]?.targets[0]?.error).toContain("no github-token input");
-			// It must not have tried: no auth setup, no publish.
-			expect(pub.setupAuthCalls).toHaveLength(0);
-			expect(pub.publishTarballCalls).toHaveLength(0);
-		});
+				expect(result.success).toBe(false);
+				expect(result.packages[0]?.targets[0]?.error).toContain("no github-token input");
+				// It must not have tried: no auth setup, no publish.
+				expect(pub.setupAuthCalls).toHaveLength(0);
+				expect(pub.publishTarballCalls).toHaveLength(0);
+			}),
+		);
 
-		it("writes each registry's token to the resolved npmrc before publishing", async () => {
-			// GitHub Packages requires token auth; the npmrc is the file npm reads.
-			const pub = makePackagePublishLayer();
-			const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, `/tmp/test/${PACK_NAME}`);
-			const target = new PublishTarget({
-				name: PACK_NAME,
-				registry: "https://npm.pkg.github.com/",
-				directory: `/tmp/test/${PACK_NAME}`,
-				access: "public",
-				provenance: false,
-			});
-			const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
+		it.effect("writes each registry's token to the resolved npmrc before publishing", () =>
+			Effect.gen(function* () {
+				// GitHub Packages requires token auth; the npmrc is the file npm reads.
+				const pub = makePackagePublishLayer();
+				const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, `/tmp/test/${PACK_NAME}`);
+				const target = new PublishTarget({
+					name: PACK_NAME,
+					registry: "https://npm.pkg.github.com/",
+					directory: `/tmp/test/${PACK_NAME}`,
+					access: "public",
+					provenance: false,
+				});
+				const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
 
-			const withToken = ActionState.layerTest({
-				getOptional: () => Effect.succeed(Option.some({ token: "ghp-test-token" })) as never,
-			});
+				const withToken = ActionState.layerTest({
+					getOptional: () => Effect.succeed(Option.some({ token: "ghp-test-token" })) as never,
+				});
 
-			await Effect.runPromise(
-				runPublishTargets(detected).pipe(
+				yield* runPublishTargets(detected).pipe(
 					Effect.provide(
 						Layer.mergeAll(
 							makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [target]),
@@ -1039,110 +1048,110 @@ describe("runPublishTargets", () => {
 							withToken,
 						),
 					),
-				),
-			);
+				);
 
-			expect(pub.setupAuthCalls).toHaveLength(1);
-			expect(pub.setupAuthCalls[0]?.registry).toBe("https://npm.pkg.github.com/");
-			expect(pub.setupAuthCalls[0]?.token).toBe("ghp-test-token");
-			expect(pub.setupAuthCalls[0]?.npmrcPath).toBe(userNpmrcPath());
-		});
+				expect(pub.setupAuthCalls).toHaveLength(1);
+				expect(pub.setupAuthCalls[0]?.registry).toBe("https://npm.pkg.github.com/");
+				expect(pub.setupAuthCalls[0]?.token).toBe("ghp-test-token");
+				expect(pub.setupAuthCalls[0]?.npmrcPath).toBe(userNpmrcPath());
+			}),
+		);
 	});
 
 	describe("attestation hoisted out of the per-target loop", () => {
-		it("fires attestation exactly ONCE per build directory and shares the URL across both targets", async () => {
-			const SHARED_DIR = `/tmp/test/${PACK_NAME}`;
-			const pub = makePackagePublishLayer();
-			const attestation = makeAttestationLayer();
+		it.effect("fires attestation exactly ONCE per build directory and shares the URL across both targets", () =>
+			Effect.gen(function* () {
+				const SHARED_DIR = `/tmp/test/${PACK_NAME}`;
+				const pub = makePackagePublishLayer();
+				const attestation = makeAttestationLayer();
 
-			const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, SHARED_DIR);
-			const targetA = new PublishTarget({
-				name: PACK_NAME,
-				registry: "https://registry.npmjs.org/",
-				directory: SHARED_DIR,
-				access: "public",
-				provenance: true,
-			});
-			const targetB = new PublishTarget({
-				name: PACK_NAME,
-				registry: "https://npm.pkg.github.com/",
-				directory: SHARED_DIR,
-				access: "public",
-				provenance: true,
-			});
-			const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
+				const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, SHARED_DIR);
+				const targetA = new PublishTarget({
+					name: PACK_NAME,
+					registry: "https://registry.npmjs.org/",
+					directory: SHARED_DIR,
+					access: "public",
+					provenance: true,
+				});
+				const targetB = new PublishTarget({
+					name: PACK_NAME,
+					registry: "https://npm.pkg.github.com/",
+					directory: SHARED_DIR,
+					access: "public",
+					provenance: true,
+				});
+				const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
 
-			const result: PublishPackagesResult = await Effect.runPromise(
-				runPublishTargets(detected).pipe(
+				const result: PublishPackagesResult = yield* runPublishTargets(detected).pipe(
 					Effect.provide(makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [targetA, targetB], attestation.layer)),
-				),
-			);
+				);
 
-			// Exactly ONE upload regardless of two targets. The provenance half is
-			// skipped because `claims` fails here, so this counts the SBOM
-			// attestation — which is the measurement that proves the helper ran
-			// once per build rather than once per target.
-			expect(attestation.uploads).toHaveLength(1);
+				// Exactly ONE upload regardless of two targets. The provenance half is
+				// skipped because `claims` fails here, so this counts the SBOM
+				// attestation — which is the measurement that proves the helper ran
+				// once per build rather than once per target.
+				expect(attestation.uploads).toHaveLength(1);
 
-			const targets = result.packages[0]?.targets ?? [];
-			expect(targets).toHaveLength(2);
-			expect(targets[0]?.success).toBe(true);
-			expect(targets[1]?.success).toBe(true);
-			expect(targets[0]?.sbomAttestationUrl).toBe(targets[1]?.sbomAttestationUrl);
-			expect(targets[0]?.sbomAttestationUrl).toBeDefined();
-		});
+				const targets = result.packages[0]?.targets ?? [];
+				expect(targets).toHaveLength(2);
+				expect(targets[0]?.success).toBe(true);
+				expect(targets[1]?.success).toBe(true);
+				expect(targets[0]?.sbomAttestationUrl).toBe(targets[1]?.sbomAttestationUrl);
+				expect(targets[0]?.sbomAttestationUrl).toBeDefined();
+			}),
+		);
 
-		it("does NOT attest when every target in the group has provenance: false", async () => {
-			const SHARED_DIR = `/tmp/test/${PACK_NAME}`;
-			const pub = makePackagePublishLayer();
-			const attestation = makeAttestationLayer();
+		it.effect("does NOT attest when every target in the group has provenance: false", () =>
+			Effect.gen(function* () {
+				const SHARED_DIR = `/tmp/test/${PACK_NAME}`;
+				const pub = makePackagePublishLayer();
+				const attestation = makeAttestationLayer();
 
-			const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, SHARED_DIR);
-			const targetA = new PublishTarget({
-				name: PACK_NAME,
-				registry: "https://registry.npmjs.org/",
-				directory: SHARED_DIR,
-				access: "public",
-				provenance: false,
-			});
-			const targetB = new PublishTarget({
-				name: PACK_NAME,
-				registry: "https://npm.pkg.github.com/",
-				directory: SHARED_DIR,
-				access: "public",
-				provenance: false,
-			});
-			const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
+				const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, SHARED_DIR);
+				const targetA = new PublishTarget({
+					name: PACK_NAME,
+					registry: "https://registry.npmjs.org/",
+					directory: SHARED_DIR,
+					access: "public",
+					provenance: false,
+				});
+				const targetB = new PublishTarget({
+					name: PACK_NAME,
+					registry: "https://npm.pkg.github.com/",
+					directory: SHARED_DIR,
+					access: "public",
+					provenance: false,
+				});
+				const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
 
-			await Effect.runPromise(
-				runPublishTargets(detected).pipe(
+				yield* runPublishTargets(detected).pipe(
 					Effect.provide(makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [targetA, targetB], attestation.layer)),
-				),
-			);
+				);
 
-			expect(attestation.uploads).toHaveLength(0);
-			expect(attestation.listed).toHaveLength(0);
-		});
+				expect(attestation.uploads).toHaveLength(0);
+				expect(attestation.listed).toHaveLength(0);
+			}),
+		);
 
-		it("stamps the per-package sbomPath onto every successful target's result", async () => {
-			const pub = makePackagePublishLayer();
-			const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, `/tmp/test/${PACK_NAME}`);
-			const target = makeNpmTarget(PACK_NAME, `/tmp/test/${PACK_NAME}`);
-			const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
+		it.effect("stamps the per-package sbomPath onto every successful target's result", () =>
+			Effect.gen(function* () {
+				const pub = makePackagePublishLayer();
+				const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, `/tmp/test/${PACK_NAME}`);
+				const target = makeNpmTarget(PACK_NAME, `/tmp/test/${PACK_NAME}`);
+				const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
 
-			const SBOM_PATH = `/tmp/test/${PACK_NAME}/pkg.sbom.json`;
-			const sbomPaths = new Map<string, string>([[PACK_NAME, SBOM_PATH]]);
+				const SBOM_PATH = `/tmp/test/${PACK_NAME}/pkg.sbom.json`;
+				const sbomPaths = new Map<string, string>([[PACK_NAME, SBOM_PATH]]);
 
-			const result: PublishPackagesResult = await Effect.runPromise(
-				runPublishTargets(detected, sbomPaths).pipe(
+				const result: PublishPackagesResult = yield* runPublishTargets(detected, sbomPaths).pipe(
 					Effect.provide(makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [target])),
-				),
-			);
+				);
 
-			const targetResult = result.packages[0]?.targets[0];
-			expect(targetResult?.success).toBe(true);
-			expect(targetResult?.sbomPath).toBe(SBOM_PATH);
-		});
+				const targetResult = result.packages[0]?.targets[0];
+				expect(targetResult?.success).toBe(true);
+				expect(targetResult?.sbomPath).toBe(SBOM_PATH);
+			}),
+		);
 	});
 
 	describe("attestation idempotency — skip when already attested", () => {
@@ -1158,206 +1167,206 @@ describe("runPublishTargets", () => {
 				provenance: true,
 			});
 
-		it("reuses existing provenance + SBOM attestations and writes neither", async () => {
-			const dir = `/tmp/test/${PACK_NAME}`;
-			const pub = makePackagePublishLayer();
-			const attestation = makeAttestationLayer([
-				{ predicateType: SLSA_PROVENANCE_V1, url: "https://github.com/existing/provenance" },
-				{ predicateType: CYCLONEDX_BOM, url: "https://github.com/existing/sbom" },
-			]);
+		it.effect("reuses existing provenance + SBOM attestations and writes neither", () =>
+			Effect.gen(function* () {
+				const dir = `/tmp/test/${PACK_NAME}`;
+				const pub = makePackagePublishLayer();
+				const attestation = makeAttestationLayer([
+					{ predicateType: SLSA_PROVENANCE_V1, url: "https://github.com/existing/provenance" },
+					{ predicateType: CYCLONEDX_BOM, url: "https://github.com/existing/sbom" },
+				]);
 
-			const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, dir);
-			const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
+				const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, dir);
+				const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
 
-			const result: PublishPackagesResult = await Effect.runPromise(
-				runPublishTargets(detected).pipe(
+				const result: PublishPackagesResult = yield* runPublishTargets(detected).pipe(
 					Effect.provide(
 						makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [provenanceTarget(dir)], attestation.layer),
 					),
-				),
-			);
+				);
 
-			// Both probes ran under the tarball's sha256 hex, and nothing was written.
-			expect(attestation.listed.map((l) => l.predicateType)).toEqual([SLSA_PROVENANCE_V1, CYCLONEDX_BOM]);
-			expect(attestation.listed.every((l) => l.sha256 === SUBJECT_SHA)).toBe(true);
-			expect(attestation.uploads).toHaveLength(0);
+				// Both probes ran under the tarball's sha256 hex, and nothing was written.
+				expect(attestation.listed.map((l) => l.predicateType)).toEqual([SLSA_PROVENANCE_V1, CYCLONEDX_BOM]);
+				expect(attestation.listed.every((l) => l.sha256 === SUBJECT_SHA)).toBe(true);
+				expect(attestation.uploads).toHaveLength(0);
 
-			const targetResult = result.packages[0]?.targets[0];
-			expect(targetResult?.attestationUrl).toBe("https://github.com/existing/provenance");
-			expect(targetResult?.sbomAttestationUrl).toBe("https://github.com/existing/sbom");
-			expect(targetResult?.recovered).toEqual({ provenance: true, sbom: true });
-		});
+				const targetResult = result.packages[0]?.targets[0];
+				expect(targetResult?.attestationUrl).toBe("https://github.com/existing/provenance");
+				expect(targetResult?.sbomAttestationUrl).toBe("https://github.com/existing/sbom");
+				expect(targetResult?.recovered).toEqual({ provenance: true, sbom: true });
+			}),
+		);
 
-		it("writes a fresh SBOM attestation when no existing attestation matches", async () => {
-			const dir = `/tmp/test/${PACK_NAME}`;
-			const pub = makePackagePublishLayer();
-			const attestation = makeAttestationLayer();
+		it.effect("writes a fresh SBOM attestation when no existing attestation matches", () =>
+			Effect.gen(function* () {
+				const dir = `/tmp/test/${PACK_NAME}`;
+				const pub = makePackagePublishLayer();
+				const attestation = makeAttestationLayer();
 
-			const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, dir);
-			const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
+				const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, dir);
+				const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
 
-			const result: PublishPackagesResult = await Effect.runPromise(
-				runPublishTargets(detected).pipe(
+				const result: PublishPackagesResult = yield* runPublishTargets(detected).pipe(
 					Effect.provide(
 						makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [provenanceTarget(dir)], attestation.layer),
 					),
-				),
-			);
+				);
 
-			expect(attestation.uploads).toHaveLength(1);
-			const targetResult = result.packages[0]?.targets[0];
-			expect(targetResult?.sbomAttestationUrl).toBe("https://github.com/test-owner/test-repo/attestations/1");
-			// Provenance was skipped (no OIDC claims), so it is neither reused nor written.
-			expect(targetResult?.attestationUrl).toBeUndefined();
-			expect(targetResult?.recovered).toEqual({ provenance: false, sbom: false });
-		});
+				expect(attestation.uploads).toHaveLength(1);
+				const targetResult = result.packages[0]?.targets[0];
+				expect(targetResult?.sbomAttestationUrl).toBe("https://github.com/test-owner/test-repo/attestations/1");
+				// Provenance was skipped (no OIDC claims), so it is neither reused nor written.
+				expect(targetResult?.attestationUrl).toBeUndefined();
+				expect(targetResult?.recovered).toEqual({ provenance: false, sbom: false });
+			}),
+		);
 
-		it("mixed: SBOM exists, provenance does not — reuses the SBOM and writes nothing", async () => {
-			const dir = `/tmp/test/${PACK_NAME}`;
-			const pub = makePackagePublishLayer();
-			const attestation = makeAttestationLayer([
-				{ predicateType: CYCLONEDX_BOM, url: "https://github.com/existing/sbom-only" },
-			]);
+		it.effect("mixed: SBOM exists, provenance does not — reuses the SBOM and writes nothing", () =>
+			Effect.gen(function* () {
+				const dir = `/tmp/test/${PACK_NAME}`;
+				const pub = makePackagePublishLayer();
+				const attestation = makeAttestationLayer([
+					{ predicateType: CYCLONEDX_BOM, url: "https://github.com/existing/sbom-only" },
+				]);
 
-			const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, dir);
-			const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
+				const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, dir);
+				const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
 
-			const result: PublishPackagesResult = await Effect.runPromise(
-				runPublishTargets(detected).pipe(
+				const result: PublishPackagesResult = yield* runPublishTargets(detected).pipe(
 					Effect.provide(
 						makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [provenanceTarget(dir)], attestation.layer),
 					),
-				),
-			);
+				);
 
-			expect(attestation.uploads).toHaveLength(0);
-			const targetResult = result.packages[0]?.targets[0];
-			expect(targetResult?.sbomAttestationUrl).toBe("https://github.com/existing/sbom-only");
-			expect(targetResult?.recovered).toEqual({ provenance: false, sbom: true });
-		});
+				expect(attestation.uploads).toHaveLength(0);
+				const targetResult = result.packages[0]?.targets[0];
+				expect(targetResult?.sbomAttestationUrl).toBe("https://github.com/existing/sbom-only");
+				expect(targetResult?.recovered).toEqual({ provenance: false, sbom: true });
+			}),
+		);
 	});
 
 	describe("mixed: one published, one skipped-identical", () => {
-		it("publishes the missing-registry target and recovers the matching one", async () => {
-			const SHARED_DIR = `/tmp/test/${PACK_NAME}`;
-			const pub = makePackagePublishLayer();
-			const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, SHARED_DIR);
+		it.effect("publishes the missing-registry target and recovers the matching one", () =>
+			Effect.gen(function* () {
+				const SHARED_DIR = `/tmp/test/${PACK_NAME}`;
+				const pub = makePackagePublishLayer();
+				const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, SHARED_DIR);
 
-			// npmjs already has it with matching integrity; GitHub Packages does not.
-			const npmLayer = NpmRegistry.layerSeeded({
-				registries: {
-					"https://registry.npmjs.org/": {
-						[PACK_NAME]: { [PACK_VERSION]: { integrity: PACK_INTEGRITY } },
+				// npmjs already has it with matching integrity; GitHub Packages does not.
+				const npmLayer = NpmRegistry.layerSeeded({
+					registries: {
+						"https://registry.npmjs.org/": {
+							[PACK_NAME]: { [PACK_VERSION]: { integrity: PACK_INTEGRITY } },
+						},
 					},
-				},
-			});
+				});
 
-			const targetA = new PublishTarget({
-				name: PACK_NAME,
-				registry: "https://registry.npmjs.org/",
-				directory: SHARED_DIR,
-				access: "public",
-				provenance: false,
-			});
-			const targetB = new PublishTarget({
-				name: PACK_NAME,
-				registry: "https://npm.pkg.github.com/",
-				directory: SHARED_DIR,
-				access: "public",
-				provenance: false,
-			});
-			const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
+				const targetA = new PublishTarget({
+					name: PACK_NAME,
+					registry: "https://registry.npmjs.org/",
+					directory: SHARED_DIR,
+					access: "public",
+					provenance: false,
+				});
+				const targetB = new PublishTarget({
+					name: PACK_NAME,
+					registry: "https://npm.pkg.github.com/",
+					directory: SHARED_DIR,
+					access: "public",
+					provenance: false,
+				});
+				const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
 
-			const result: PublishPackagesResult = await Effect.runPromise(
-				runPublishTargets(detected).pipe(
+				const result: PublishPackagesResult = yield* runPublishTargets(detected).pipe(
 					Effect.provide(makeBaseLayers(pub.layer, npmLayer, wsPkg, [targetA, targetB])),
-				),
-			);
+				);
 
-			expect(result.success).toBe(true);
-			expect(pub.packCalls).toHaveLength(1);
-			expect(pub.publishTarballCalls).toHaveLength(1);
-			expect(pub.publishTarballCalls[0]?.options.registry).toBe("https://npm.pkg.github.com/");
+				expect(result.success).toBe(true);
+				expect(pub.packCalls).toHaveLength(1);
+				expect(pub.publishTarballCalls).toHaveLength(1);
+				expect(pub.publishTarballCalls[0]?.options.registry).toBe("https://npm.pkg.github.com/");
 
-			const targets = result.packages[0]?.targets ?? [];
-			expect(targets.filter((t) => t.status === "skipped")).toHaveLength(1);
-			expect(targets.filter((t) => t.status === "published")).toHaveLength(1);
-			expect(result.successfulTargets).toBe(2);
-		});
+				const targets = result.packages[0]?.targets ?? [];
+				expect(targets.filter((t) => t.status === "skipped")).toHaveLength(1);
+				expect(targets.filter((t) => t.status === "published")).toHaveLength(1);
+				expect(result.successfulTargets).toBe(2);
+			}),
+		);
 	});
 
 	describe("JSR target skipping", () => {
-		it("skips JSR targets with a warning and does not call npm publish/pack for them", async () => {
-			const pub = makePackagePublishLayer();
-			const wsPkg = makeWsPkg("@test/jsr-pkg", "1.0.0", "/tmp/test/jsr-pkg");
-			const jsrTarget = new PublishTarget({
-				name: "@test/jsr-pkg",
-				registry: "https://jsr.io/",
-				directory: "/tmp/test/jsr-pkg",
-				access: "public",
-				provenance: false,
-			});
-			const detected: DetectedRelease[] = [makeDetected("@test/jsr-pkg", "1.0.0", wsPkg.path)];
+		it.effect("skips JSR targets with a warning and does not call npm publish/pack for them", () =>
+			Effect.gen(function* () {
+				const pub = makePackagePublishLayer();
+				const wsPkg = makeWsPkg("@test/jsr-pkg", "1.0.0", "/tmp/test/jsr-pkg");
+				const jsrTarget = new PublishTarget({
+					name: "@test/jsr-pkg",
+					registry: "https://jsr.io/",
+					directory: "/tmp/test/jsr-pkg",
+					access: "public",
+					provenance: false,
+				});
+				const detected: DetectedRelease[] = [makeDetected("@test/jsr-pkg", "1.0.0", wsPkg.path)];
 
-			const result: PublishPackagesResult = await Effect.runPromise(
-				runPublishTargets(detected).pipe(
+				const result: PublishPackagesResult = yield* runPublishTargets(detected).pipe(
 					Effect.provide(makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [jsrTarget])),
-				),
-			);
+				);
 
-			// The JSR target is filtered out during target resolution, so the
-			// package ends up with no targets at all — and nothing is packed.
-			expect(pub.packCalls).toHaveLength(0);
-			expect(pub.publishTarballCalls).toHaveLength(0);
-			expect(result.packages[0]?.targets).toHaveLength(0);
-		});
+				// The JSR target is filtered out during target resolution, so the
+				// package ends up with no targets at all — and nothing is packed.
+				expect(pub.packCalls).toHaveLength(0);
+				expect(pub.publishTarballCalls).toHaveLength(0);
+				expect(result.packages[0]?.targets).toHaveLength(0);
+			}),
+		);
 	});
 
 	describe("batch error resilience", () => {
-		it("does not abort the batch when one package fails to pack", async () => {
-			const failingPub = makePackagePublishLayer({ packFails: "simulated pack failure" });
+		it.effect("does not abort the batch when one package fails to pack", () =>
+			Effect.gen(function* () {
+				const failingPub = makePackagePublishLayer({ packFails: "simulated pack failure" });
 
-			const pkgA = makeWsPkg("@test/fail-pkg", "2.0.0", "/tmp/test/fail-pkg");
-			const pkgB = makeWsPkg("@test/ok-pkg", "1.0.0", "/tmp/test/ok-pkg");
-			const targetA = makeNpmTarget("@test/fail-pkg", "/tmp/test/fail-pkg");
-			const targetB = makeNpmTarget("@test/ok-pkg", "/tmp/test/ok-pkg");
-			const detected: DetectedRelease[] = [
-				makeDetected("@test/fail-pkg", "2.0.0", pkgA.path),
-				makeDetected("@test/ok-pkg", "1.0.0", pkgB.path),
-			];
+				const pkgA = makeWsPkg("@test/fail-pkg", "2.0.0", "/tmp/test/fail-pkg");
+				const pkgB = makeWsPkg("@test/ok-pkg", "1.0.0", "/tmp/test/ok-pkg");
+				const targetA = makeNpmTarget("@test/fail-pkg", "/tmp/test/fail-pkg");
+				const targetB = makeNpmTarget("@test/ok-pkg", "/tmp/test/ok-pkg");
+				const detected: DetectedRelease[] = [
+					makeDetected("@test/fail-pkg", "2.0.0", pkgA.path),
+					makeDetected("@test/ok-pkg", "1.0.0", pkgB.path),
+				];
 
-			const layers = Layer.mergeAll(
-				loggerLayer,
-				actionStateLayer,
-				configProviderLayer,
-				environmentLayer,
-				outputsLayer,
-				repoLayer,
-				failingPub.layer,
-				makeRegistryLayer(),
-				makeAttestationLayer().layer,
-				oidcUnavailableLayer,
-				sigstoreLayer,
-				makeWorkspaceDiscoveryLayer([pkgA, pkgB]),
-				makePublishabilityLayer(
-					new Map([
-						["@test/fail-pkg", [targetA]],
-						["@test/ok-pkg", [targetB]],
-					]),
-				),
-			);
+				const layers = Layer.mergeAll(
+					loggerLayer,
+					actionStateLayer,
+					configProviderLayer,
+					environmentLayer,
+					outputsLayer,
+					repoLayer,
+					failingPub.layer,
+					makeRegistryLayer(),
+					makeAttestationLayer().layer,
+					oidcUnavailableLayer,
+					sigstoreLayer,
+					makeWorkspaceDiscoveryLayer([pkgA, pkgB]),
+					makePublishabilityLayer(
+						new Map([
+							["@test/fail-pkg", [targetA]],
+							["@test/ok-pkg", [targetB]],
+						]),
+					),
+				);
 
-			const result: PublishPackagesResult = await Effect.runPromise(
-				runPublishTargets(detected).pipe(Effect.provide(layers)),
-			);
+				const result: PublishPackagesResult = yield* runPublishTargets(detected).pipe(Effect.provide(layers));
 
-			// Both packages are reported; the pack failure is a per-target `failed`
-			// result rather than an aborted batch.
-			expect(result.packages).toHaveLength(2);
-			expect(result.success).toBe(false);
-			const failPkg = result.packages.find((p) => p.name === "@test/fail-pkg");
-			expect(failPkg?.targets[0]?.status).toBe("failed");
-			expect(failPkg?.targets[0]?.error).toContain("pack");
-		});
+				// Both packages are reported; the pack failure is a per-target `failed`
+				// result rather than an aborted batch.
+				expect(result.packages).toHaveLength(2);
+				expect(result.success).toBe(false);
+				const failPkg = result.packages.find((p) => p.name === "@test/fail-pkg");
+				expect(failPkg?.targets[0]?.status).toBe("failed");
+				expect(failPkg?.targets[0]?.error).toContain("pack");
+			}),
+		);
 	});
 });

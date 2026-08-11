@@ -10,10 +10,10 @@
  * literally below rather than derived.
  */
 
+import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
 import type { CommentMarker } from "@effected/github";
 import { CommentRecord, PullRequestComment, Repo, RepoRef } from "@effected/github";
 import { Effect, Layer, Logger, Option } from "effect";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readStickyComment, updateStickyComment } from "../src/utils/update-sticky-comment.js";
 import { cleanupTestEnvironment, setupTestEnvironment } from "./utils/github-mocks.js";
 
@@ -23,12 +23,7 @@ interface Upserted {
 	readonly body: string;
 }
 
-const run = (
-	recorder: Array<Upserted>,
-	prNumber = 42,
-	body = "## report",
-	key = "release-validation",
-): Promise<{ commentId: number }> =>
+const run = (recorder: Array<Upserted>, prNumber = 42, body = "## report", key = "release-validation") =>
 	updateStickyComment(prNumber, body, key).pipe(
 		Effect.provide(
 			Layer.mergeAll(
@@ -47,7 +42,6 @@ const run = (
 		// via `console.log` — not `process.stdout.write`, so `suppressOutput`
 		// cannot catch it — and leak into the reporter.
 		Effect.provide(Logger.layer([])),
-		Effect.runPromise,
 	);
 
 describe("updateStickyComment", () => {
@@ -56,86 +50,102 @@ describe("updateStickyComment", () => {
 	beforeEach(() => setupTestEnvironment({ suppressOutput: true }));
 	afterEach(() => cleanupTestEnvironment());
 
-	it("should render the marker as <!-- savvy-web:<key> --> byte for byte", async () => {
-		const recorder: Array<Upserted> = [];
-		await run(recorder);
+	it.effect("should render the marker as <!-- savvy-web:<key> --> byte for byte", () =>
+		Effect.gen(function* () {
+			const recorder: Array<Upserted> = [];
+			yield* run(recorder);
 
-		// The exact string the predecessor emitted. Do not "improve" it.
-		expect(recorder[0]?.marker.html).toBe("<!-- savvy-web:release-validation -->");
-	});
+			// The exact string the predecessor emitted. Do not "improve" it.
+			expect(recorder[0]?.marker.html).toBe("<!-- savvy-web:release-validation -->");
+		}),
+	);
 
-	it("should carry the namespace and key separately on the marker", async () => {
-		const recorder: Array<Upserted> = [];
-		await run(recorder);
+	it.effect("should carry the namespace and key separately on the marker", () =>
+		Effect.gen(function* () {
+			const recorder: Array<Upserted> = [];
+			yield* run(recorder);
 
-		expect(recorder[0]?.marker.namespace).toBe("savvy-web");
-		expect(recorder[0]?.marker.key).toBe("release-validation");
-	});
+			expect(recorder[0]?.marker.namespace).toBe("savvy-web");
+			expect(recorder[0]?.marker.key).toBe("release-validation");
+		}),
+	);
 
-	it("should namespace an arbitrary key the same way", async () => {
-		const recorder: Array<Upserted> = [];
-		await run(recorder, 7, "body", "some-other-key");
+	it.effect("should namespace an arbitrary key the same way", () =>
+		Effect.gen(function* () {
+			const recorder: Array<Upserted> = [];
+			yield* run(recorder, 7, "body", "some-other-key");
 
-		expect(recorder[0]?.marker.html).toBe("<!-- savvy-web:some-other-key -->");
-	});
+			expect(recorder[0]?.marker.html).toBe("<!-- savvy-web:some-other-key -->");
+		}),
+	);
 
-	it("should upsert against the given PR with the given body", async () => {
-		const recorder: Array<Upserted> = [];
-		await run(recorder, 99, "## the body");
+	it.effect("should upsert against the given PR with the given body", () =>
+		Effect.gen(function* () {
+			const recorder: Array<Upserted> = [];
+			yield* run(recorder, 99, "## the body");
 
-		expect(recorder[0]?.issueNumber).toBe(99);
-		expect(recorder[0]?.body).toBe("## the body");
-	});
+			expect(recorder[0]?.issueNumber).toBe(99);
+			expect(recorder[0]?.body).toBe("## the body");
+		}),
+	);
 
-	it("should return the comment id from the record", async () => {
-		// The kit returns a `CommentRecord`; the predecessor returned a bare id.
-		const result = await run([]);
+	it.effect("should return the comment id from the record", () =>
+		Effect.gen(function* () {
+			// The kit returns a `CommentRecord`; the predecessor returned a bare id.
+			const result = yield* run([]);
 
-		expect(result).toEqual({ commentId: 1234 });
-	});
+			expect(result).toEqual({ commentId: 1234 });
+		}),
+	);
 
-	it("should strip a pre-existing marker when the body already carries one", async () => {
-		// The accumulating-marker bug: `upsert` APPENDS the marker, so a
-		// read-modify-write caller hands back a body that already has one and gets
-		// a second. Four copies were observed on silk-integration PR #248.
-		//
-		// Without the strip at update-sticky-comment.ts:61 the recorded body still
-		// contains the marker, so this assertion is what holds that line in place.
-		const recorder: Array<Upserted> = [];
-		await run(recorder, 42, "## report\n\n<!-- savvy-web:release-validation -->");
+	it.effect("should strip a pre-existing marker when the body already carries one", () =>
+		Effect.gen(function* () {
+			// The accumulating-marker bug: `upsert` APPENDS the marker, so a
+			// read-modify-write caller hands back a body that already has one and gets
+			// a second. Four copies were observed on silk-integration PR #248.
+			//
+			// Without the strip at update-sticky-comment.ts:61 the recorded body still
+			// contains the marker, so this assertion is what holds that line in place.
+			const recorder: Array<Upserted> = [];
+			yield* run(recorder, 42, "## report\n\n<!-- savvy-web:release-validation -->");
 
-		expect(recorder[0]?.body).toBe("## report");
-		expect(recorder[0]?.body).not.toContain("<!-- savvy-web:release-validation -->");
-	});
+			expect(recorder[0]?.body).toBe("## report");
+			expect(recorder[0]?.body).not.toContain("<!-- savvy-web:release-validation -->");
+		}),
+	);
 
-	it("should strip every copy when the body carries the marker more than once", async () => {
-		// `split(...).join("")` removes ALL copies, which is what recovers a comment
-		// that already accumulated several before the fix landed.
-		const recorder: Array<Upserted> = [];
-		await run(
-			recorder,
-			42,
-			"<!-- savvy-web:release-validation -->## report<!-- savvy-web:release-validation --><!-- savvy-web:release-validation -->",
-		);
+	it.effect("should strip every copy when the body carries the marker more than once", () =>
+		Effect.gen(function* () {
+			// `split(...).join("")` removes ALL copies, which is what recovers a comment
+			// that already accumulated several before the fix landed.
+			const recorder: Array<Upserted> = [];
+			yield* run(
+				recorder,
+				42,
+				"<!-- savvy-web:release-validation -->## report<!-- savvy-web:release-validation --><!-- savvy-web:release-validation -->",
+			);
 
-		expect(recorder[0]?.body).toBe("## report");
-	});
+			expect(recorder[0]?.body).toBe("## report");
+		}),
+	);
 
-	it("should leave a different key's marker in place when stripping", async () => {
-		// Only this comment's own marker is the caller's to remove; another
-		// section's marker is content.
-		const recorder: Array<Upserted> = [];
-		await run(recorder, 42, "## report\n\n<!-- savvy-web:other-key -->", "release-validation");
+	it.effect("should leave a different key's marker in place when stripping", () =>
+		Effect.gen(function* () {
+			// Only this comment's own marker is the caller's to remove; another
+			// section's marker is content.
+			const recorder: Array<Upserted> = [];
+			yield* run(recorder, 42, "## report\n\n<!-- savvy-web:other-key -->", "release-validation");
 
-		expect(recorder[0]?.body).toBe("## report\n\n<!-- savvy-web:other-key -->");
-	});
+			expect(recorder[0]?.body).toBe("## report\n\n<!-- savvy-web:other-key -->");
+		}),
+	);
 });
 
 describe("readStickyComment", () => {
 	beforeEach(() => setupTestEnvironment({ suppressOutput: true }));
 	afterEach(() => cleanupTestEnvironment());
 
-	const runRead = (found: Option.Option<CommentRecord>, prNumber = 42, key = "release-validation"): Promise<string> =>
+	const runRead = (found: Option.Option<CommentRecord>, prNumber = 42, key = "release-validation") =>
 		readStickyComment(prNumber, key).pipe(
 			Effect.provide(
 				Layer.mergeAll(
@@ -144,46 +154,50 @@ describe("readStickyComment", () => {
 				),
 			),
 			Effect.provide(Logger.layer([])),
-			Effect.runPromise,
 		);
 
-	it("should return the existing body when the comment is found", async () => {
-		const body = await runRead(
-			Option.some(CommentRecord.make({ id: 1234, body: "## existing", url: "https://x.test/c/1234" })),
-		);
+	it.effect("should return the existing body when the comment is found", () =>
+		Effect.gen(function* () {
+			const body = yield* runRead(
+				Option.some(CommentRecord.make({ id: 1234, body: "## existing", url: "https://x.test/c/1234" })),
+			);
 
-		expect(body).toBe("## existing");
-	});
+			expect(body).toBe("## existing");
+		}),
+	);
 
-	it("should return an empty string when no such comment exists", async () => {
-		// A missing comment is `""`, not a failure: the first write of a run
-		// legitimately has nothing to preserve.
-		const body = await runRead(Option.none());
+	it.effect("should return an empty string when no such comment exists", () =>
+		Effect.gen(function* () {
+			// A missing comment is `""`, not a failure: the first write of a run
+			// legitimately has nothing to preserve.
+			const body = yield* runRead(Option.none());
 
-		expect(body).toBe("");
-	});
+			expect(body).toBe("");
+		}),
+	);
 
-	it("should look the comment up by the same namespaced marker it writes", async () => {
-		// The read and write halves must agree on the marker or a read-modify-write
-		// silently starts from `""` and discards every other section.
-		const markers: Array<CommentMarker> = [];
-		await readStickyComment(7, "some-other-key").pipe(
-			Effect.provide(
-				Layer.mergeAll(
-					PullRequestComment.layerTest({
-						find: (_issueNumber, marker) =>
-							Effect.sync(() => {
-								markers.push(marker);
-								return Option.none();
-							}),
-					}),
-					Layer.succeed(Repo, RepoRef.make({ owner: "savvy-web", repo: "silk-release-action" })),
+	it.effect("should look the comment up by the same namespaced marker it writes", () =>
+		Effect.gen(function* () {
+			// The read and write halves must agree on the marker or a read-modify-write
+			// silently starts from `""` and discards every other section.
+			const markers: Array<CommentMarker> = [];
+			yield* readStickyComment(7, "some-other-key").pipe(
+				Effect.provide(
+					Layer.mergeAll(
+						PullRequestComment.layerTest({
+							find: (_issueNumber, marker) =>
+								Effect.sync(() => {
+									markers.push(marker);
+									return Option.none();
+								}),
+						}),
+						Layer.succeed(Repo, RepoRef.make({ owner: "savvy-web", repo: "silk-release-action" })),
+					),
 				),
-			),
-			Effect.provide(Logger.layer([])),
-			Effect.runPromise,
-		);
+				Effect.provide(Logger.layer([])),
+			);
 
-		expect(markers[0]?.html).toBe("<!-- savvy-web:some-other-key -->");
-	});
+			expect(markers[0]?.html).toBe("<!-- savvy-web:some-other-key -->");
+		}),
+	);
 });

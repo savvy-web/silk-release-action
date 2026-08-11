@@ -3,9 +3,14 @@
  *
  * @remarks
  * Uses `GitHubIssue.getLinkedIssues` (closingIssuesReferences) to find
- * issues that should close when the PR merges, then comments and closes
+ * issues that should close when the PR merges, then closes and comments on
  * each one. The whole flow is wrapped in `CheckRun.withCheckRun` for PR
  * feedback.
+ *
+ * **Re-running this stage is safe**: an already-closed issue is skipped
+ * outright, and the close precedes the comment so a failed close leaves no
+ * comment to duplicate. See {@link closeOne} for why that ordering is the
+ * mechanism rather than a detail.
  */
 
 import type { GitHubError, LinkedIssue, Repo } from "@effected/github";
@@ -31,40 +36,90 @@ export interface CloseLinkedIssuesResult {
 }
 
 /**
- * Close a single linked issue (comment + close) and capture per-issue success.
+ * Is this issue already closed, per the state GraphQL reported?
+ *
+ * @remarks
+ * GraphQL's `IssueState` is the upper-case enum `OPEN` / `CLOSED`; the
+ * comparison is case-insensitive so a lower-cased fixture (or a future REST
+ * spelling) reads the same.
+ *
+ * @internal
+ */
+const isAlreadyClosed = (state: string): boolean => state.toUpperCase() === "CLOSED";
+
+/**
+ * Close a single linked issue (close + comment) and capture per-issue success.
+ *
+ * @remarks
+ * **Idempotent across a re-run, by construction.** Two properties make it so,
+ * and both are load-bearing now that a failure here fails Phase 3 and therefore
+ * *invites* a re-run:
+ *
+ * 1. **An already-closed issue is skipped entirely** — no comment, no close
+ *    call. Without this, every re-run posted a second "Closed by release PR #N
+ *    merge." comment on every linked issue, because `linkedIssues` returns an
+ *    issue regardless of its state.
+ * 2. **Close happens BEFORE the comment.** This is the ordering, not an
+ *    accident. Comment-first leaves a window — comment posted, close failed —
+ *    that a re-run cannot detect from `state` alone, so it would comment again;
+ *    and that window is not an edge case, it is precisely the path a re-run
+ *    exists to recover. Closing first collapses it: a failed close posted no
+ *    comment, and a successful close is visible to the next run as `CLOSED`.
+ *
+ * A failed *comment* after a successful close is deliberately **not** an
+ * error — the issue is closed, which is the point; the comment is a courtesy.
+ * Reporting it as a failure would fail the phase over a cosmetic call and, on
+ * the re-run, skip the issue anyway.
+ *
+ * `GitHubIssue.isCrossReferencedBy` is **not** the guard here, despite naming
+ * itself an idempotence guard. It asks whether the issue's timeline carries a
+ * cross-reference from the PR — which is exactly what *creates* the
+ * `closingIssuesReferences` link we found the issue through, so it answers
+ * `true` before the first comment is ever posted. It is the right guard for a
+ * different question.
  *
  * @internal
  */
 const closeOne = (
-	issueNumber: number,
-	title: string,
+	issue: LinkedIssue,
 	prNumber: number,
 	dryRun: boolean,
 ): Effect.Effect<ClosedIssue, never, GitHubIssue | Repo> =>
 	Effect.gen(function* () {
+		const { number: issueNumber, title } = issue;
+
 		if (dryRun) {
 			yield* Effect.logInfo(`[DRY RUN] Would close issue #${issueNumber}: ${title}`);
 			return { number: issueNumber, title, closed: true } satisfies ClosedIssue;
 		}
 
-		const issues = yield* GitHubIssue;
-		const result = yield* Effect.result(
-			issues
-				.comment(issueNumber, `Closed by release PR #${prNumber} merge.\n\n🤖 _Automated by silk-release-action_`)
-				.pipe(Effect.flatMap(() => issues.close(issueNumber, "completed"))),
-		);
-
-		if (result._tag === "Success") {
-			yield* Effect.logInfo(`✓ Closed issue #${issueNumber}: ${title}`);
+		if (isAlreadyClosed(issue.state)) {
+			yield* Effect.logInfo(`✓ Issue #${issueNumber} already closed — idempotent recovery: ${title}`);
 			return { number: issueNumber, title, closed: true } satisfies ClosedIssue;
 		}
 
-		// One `GitHubError` for every REST failure; `reason` is the human-readable
-		// half, `kind` the routing surface (unused here — any failure to close is
-		// reported the same way).
-		const reason = (result.failure as GitHubError).reason ?? String(result.failure);
-		yield* Effect.logWarning(`Failed to close issue #${issueNumber}: ${reason}`);
-		return { number: issueNumber, title, closed: false, error: reason } satisfies ClosedIssue;
+		const issues = yield* GitHubIssue;
+		const closed = yield* Effect.result(issues.close(issueNumber, "completed"));
+
+		if (closed._tag !== "Success") {
+			// One `GitHubError` for every REST failure; `reason` is the human-readable
+			// half, `kind` the routing surface (unused here — any failure to close is
+			// reported the same way). Nothing was commented, so a re-run starts clean.
+			const reason = (closed.failure as GitHubError).reason ?? String(closed.failure);
+			yield* Effect.logWarning(`Failed to close issue #${issueNumber}: ${reason}`);
+			return { number: issueNumber, title, closed: false, error: reason } satisfies ClosedIssue;
+		}
+
+		const commented = yield* Effect.result(
+			issues.comment(issueNumber, `Closed by release PR #${prNumber} merge.\n\n🤖 _Automated by silk-release-action_`),
+		);
+		if (commented._tag !== "Success") {
+			const reason = (commented.failure as GitHubError).reason ?? String(commented.failure);
+			yield* Effect.logWarning(`Closed issue #${issueNumber} but failed to comment on it: ${reason}`);
+		}
+
+		yield* Effect.logInfo(`✓ Closed issue #${issueNumber}: ${title}`);
+		return { number: issueNumber, title, closed: true } satisfies ClosedIssue;
 	});
 
 /**
@@ -114,15 +169,15 @@ export const closeLinkedIssues = (
 					summary: `PR #${prNumber} had no linked issues.`,
 				}),
 			);
-			yield* outputs.set("closed_issues_count", "0");
-			yield* outputs.set("failed_issues_count", "0");
-			yield* outputs.set("closed_issues", JSON.stringify([]));
+			yield* outputs.set("closed-issues-count", "0");
+			yield* outputs.set("failed-issues-count", "0");
+			yield* outputs.set("closed-issues", JSON.stringify([]));
 			return { closedCount: 0, failedCount: 0, issues: [] } satisfies CloseLinkedIssuesResult;
 		}
 
 		const issueResults: ClosedIssue[] = [];
 		for (const linkedIssue of linked) {
-			const result = yield* closeOne(linkedIssue.number, linkedIssue.title, prNumber, dryRun);
+			const result = yield* closeOne(linkedIssue, prNumber, dryRun);
 			issueResults.push(result);
 		}
 
@@ -157,9 +212,9 @@ export const closeLinkedIssues = (
 		);
 
 		yield* outputs.summary(summary);
-		yield* outputs.set("closed_issues_count", String(closedCount));
-		yield* outputs.set("failed_issues_count", String(failedCount));
-		yield* outputs.set("closed_issues", JSON.stringify(issueResults));
+		yield* outputs.set("closed-issues-count", String(closedCount));
+		yield* outputs.set("failed-issues-count", String(failedCount));
+		yield* outputs.set("closed-issues", JSON.stringify(issueResults));
 
 		return { closedCount, failedCount, issues: issueResults } satisfies CloseLinkedIssuesResult;
 	}).pipe(

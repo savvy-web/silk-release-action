@@ -16,7 +16,7 @@ import {
 	readTurboDiagnostics,
 	renderTurboCacheSection,
 	sortEntriesNewestFirst,
-} from "./turbo-summary.js";
+} from "../../../src/utils/turbo-summary.js";
 
 describe("isTurboSummarizeBuild", () => {
 	const noEnv = {} as { TURBO_RUN_SUMMARY?: string };

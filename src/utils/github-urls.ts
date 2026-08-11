@@ -66,14 +66,6 @@ export const pullRequestUrl = (serverUrl: string, owner: string, repo: string, p
 	`${serverUrl}/${owner}/${repo}/pull/${prNumber}`;
 
 /**
- * A link to a workflow run.
- *
- * @public
- */
-export const workflowRunUrl = (serverUrl: string, owner: string, repo: string, runId: string): string =>
-	`${serverUrl}/${owner}/${repo}/actions/runs/${runId}`;
-
-/**
  * Percent-encode a tag for use in a URL path, per path segment.
  *
  * @remarks

@@ -4,6 +4,11 @@ branding:
   icon: package
   color: blue
 inputs:
+  # This file is the single source of truth for input and output NAMES and
+  # DEFAULTS. `src/schema/inputs.ts` and `src/schema/outputs.ts` mirror both,
+  # and `__test__/schema-inputs.test.ts` / `__test__/schema-outputs.test.ts`
+  # assert they never drift: each parses this file, scans what `src/` actually
+  # reads and writes, and holds both against the NAMES tuples.
   app-client-id:
     description: GitHub App client ID for authentication
     required: true
@@ -120,6 +125,11 @@ inputs:
     description: |
       Custom registries with authentication (one per line).
 
+      NOT WIRED UP. The value is parsed and then ignored -- no custom registry
+      is authenticated or published to. Non-functional since v0.2.3; tracked at
+      https://github.com/savvy-web/silk-release-action/issues/215. The format
+      below is what the input still accepts.
+
       Format (one registry per line):
         https://registry.example.com/_authToken=<token>
         https://registry.example.com/_auth=<base64-credentials>
@@ -162,6 +172,15 @@ outputs:
     description: Number of packages the phase touched
   release-pr-number:
     description: Release PR number, when one is involved (empty otherwise)
+  closed-issues-count:
+    description: Number of linked issues closed by the close-issues phase ("0" in every other phase)
+  failed-issues-count:
+    description: Number of linked issues the close-issues phase failed to close ("0" in every other phase)
+  closed-issues:
+    description: |
+      JSON array describing each linked issue the close-issues phase handled
+      (number, title, whether it closed, and the error when it did not).
+      "[]" in every other phase.
 
 runs:
   using: node24

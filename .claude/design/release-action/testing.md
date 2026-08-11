@@ -4,8 +4,8 @@ category: testing
 status: current
 completeness: 90
 created: 2026-02-07
-updated: 2026-08-04
-last-synced: 2026-08-04
+updated: 2026-08-06
+last-synced: 2026-08-06
 module: release-action
 related:
   - architecture.md
@@ -19,160 +19,188 @@ dependencies:
 - [Overview](#overview)
 - [Current State](#current-state)
   - [Test Framework Configuration](#test-framework-configuration)
+  - [Test Layout and the Placement Guard](#test-layout-and-the-placement-guard)
   - [Test Infrastructure](#test-infrastructure)
-  - [Effect Service Test Layers](#effect-service-test-layers)
-  - [Standard Test Patterns for Imperative Code](#standard-test-patterns-for-imperative-code)
+  - [Effect Service Doubles](#effect-service-doubles)
+  - [`@effect/vitest` — `it.effect` vs plain `it()`](#effectvitest--iteffect-vs-plain-it)
+  - [Manifest Sync Guards](#manifest-sync-guards)
+  - [Characterization Tests](#characterization-tests)
   - [Specialized Testing Patterns](#specialized-testing-patterns)
   - [Test Coverage Map](#test-coverage-map)
   - [Coverage Gaps](#coverage-gaps)
   - [Test Best Practices](#test-best-practices)
   - [Test Commands](#test-commands)
 - [Rationale](#rationale)
-  - [Why 85% Coverage Threshold?](#why-85-coverage-threshold)
-  - [Why Effect Test Layers for Phase-3 Code?](#why-effect-test-layers-for-phase-3-code)
-  - [Why Factory Functions Over Direct Mocking?](#why-factory-functions-over-direct-mocking)
-  - [Why 240s Test Timeout?](#why-240s-test-timeout)
-  - [Why Exclude Certain Modules from Coverage?](#why-exclude-certain-modules-from-coverage)
+  - [Why Effect Layers Instead of Mocks?](#why-effect-layers-instead-of-mocks)
+  - [Why Move the Co-located Tests?](#why-move-the-co-located-tests)
+  - [Why Characterization Tests for a Known Bug?](#why-characterization-tests-for-a-known-bug)
+  - [Why Three-Legged Manifest Guards?](#why-three-legged-manifest-guards)
 - [File Reference](#file-reference)
 
 ## Overview
 
-The project uses Vitest 4.0.8 with a comprehensive test suite covering Phase-3 Effect orchestration, the silk publishability rules, and all utility modules. Tests enforce type-safe mocking with zero `any` types and maintain 85%+ coverage per file via the V8 provider. All external dependencies (GitHub API, exec, file system, `@effected/workspaces`) are mocked or replaced with in-memory Effect test layers to ensure tests are fast, reliable, and isolated.
+The project uses Vitest with a suite of **814 tests** covering the phase steps, the Phase-3 Effect orchestration, the check derivation, the silk publishability rules, and the utility modules. Tests enforce type-safe mocking with zero `any` types. All external dependencies (GitHub API, subprocess execution, file system, `@effected/workspaces`) are replaced with in-memory Effect layers or `vi.mock()` so tests are fast, reliable, and isolated.
 
-Phase-3 code (`src/release/`) is tested using Effect service test layers provided by `@savvy-web/github-action-effects/testing`. There are no hand-rolled Octokit factories; the old `createMockOctokit()` / `MockOctokit` patterns from `__test__/utils/test-types.ts` were removed in the migration. For imperative utility modules (Phase 1/2), tests use `vi.mock()` for external dependencies and the environment helpers from `__test__/utils/github-mocks.ts`.
+`@savvy-web/github-action-effects/testing` is gone with the library it belonged to. The `@effected/*` kit exposes no `/testing` entry point; service doubles are built with `Layer.succeed(Service, { … })` or the kit's own `*.makeTest` statics (`ActionEnvironment.makeTest`, `ActionOutputs.makeTest`, `SigstoreSigner.makeTest`). `@savvy-web/silk-effects` ships `Changesets.makeReleasePlannerTest` and `Changesets.makeConfigInspectorTest` for the native-versioning services.
 
 The publishability rules have dedicated integration tests in `__test__/integration/publishability.int.test.ts` backed by the fixture workspaces in `__test__/integration/fixtures/`.
+
+> `__test__/CLAUDE.md` is the operational companion to this document — it carries the runnable commands, the `it.effect` decision rules, and the gotchas. This doc covers strategy and structure.
 
 ## Current State
 
 ### Test Framework Configuration
 
-Vitest is configured via `@savvy-web/vitest`'s `VitestConfig.create()` in `vitest.config.ts`. Key effective values:
+Vitest is configured in `vitest.config.ts` through the **`@vitest-agent/plugin`** (`AgentPlugin`), which discovers projects and tags:
 
-- **Test directory:** `__test__/` (singular — not `__tests__/`) for non-co-located tests; `src/release/*.test.ts` for co-located Phase-3 unit tests
-- **Test timeout:** 240,000ms (4 minutes) to accommodate retry-logic and fake-timer tests
-- **Coverage provider:** V8
-- **Coverage thresholds (per file):** lines 85%, functions 85%, branches 85%, statements 85%
+```typescript
+const { projects, tags } = await AgentPlugin.discover();
+```
 
-Coverage exclusions (documented reasons):
+Key effective values:
 
-| Excluded Module | Reason |
-| --------------- | ------ |
-| `__test__/utils/**/*.ts` | Test utilities themselves |
-| `src/utils/create-api-commit.ts` | Complex fs/exec mocking for GitHub API commits |
+- **Projects:** discovered by the agent plugin, **not** enumerated in the config. A CLI file argument therefore does *not* filter to a single file — use the vitest-agent MCP `run_tests` tool with a `files` array.
+- **Pool:** `forks`
+- **Global setup:** `vitest.setup.ts`
+- **Coverage provider:** V8, always enabled
+- **Coverage thresholds:** `AgentPlugin.COVERAGE_LEVELS.standard.thresholds`; the plugin's `coverageTargets` use the `strict` level
+- **Coverage include:** `src/**/*.ts` with an **empty** exclude list, deliberately — a never-imported source file scores 0% instead of being silently omitted
 
-Test scripts defined in `package.json`:
+There are no per-module coverage exclusions. The old `src/utils/create-api-commit.ts` exclusion went away with the module itself (commits now go through `GitCommit` from `@effected/github`).
+
+Test scripts in `package.json`:
 
 ```bash
-pnpm test          # vitest run --pass-with-no-tests
-pnpm ci:test       # CI="true" vitest run --coverage
+pnpm test            # vitest run --pass-with-no-tests
+pnpm test:coverage   # vitest run --coverage --pass-with-no-tests
+pnpm test:watch      # watch mode
+pnpm ci:test         # CI="true" vitest run --coverage
 ```
+
+### Test Layout and the Placement Guard
+
+```text
+__test__/
+  *.test.ts               flat unit suites (the majority)
+  unit/                   the suites that used to be co-located under src/
+    program.test.ts
+    release/*.test.ts
+    utils/*.test.ts
+  integration/
+    publishability.int.test.ts
+    fixtures/             real minimal workspaces
+  utils/                  HELPERS ONLY — never collected
+    github-mocks.ts
+    manifest.ts
+  CLAUDE.md
+```
+
+**No test is co-located under `src/` any more.** Every `src/**/*.test.ts` moved to `__test__/unit/**`, mirroring its source path.
+
+`__test__/test-placement.test.ts` makes the placement rules executable, because the failure mode is invisible: **`__test__/utils/` is never collected by the vitest-agent project discovery** — a `*.test.ts` dropped there does not run, and nothing reports that it did not. The only signal is the collected count going *down*, which no green run surfaces. The guard walks the repo and asserts:
+
+1. no `*.test.ts` under `src/**`,
+2. no `*.test.ts` under `__test__/utils/**`,
+3. every `*.test.ts` in the repo lives at or below `__test__/`,
+4. the walker itself sees more than 20 files (so a broken walker cannot pass vacuously).
 
 ### Test Infrastructure
 
-`__test__/utils/github-mocks.ts` provides three environment helpers — there are no hand-rolled Octokit or `@actions/*` mock factories:
+`__test__/utils/github-mocks.ts`:
 
-| Function | Purpose |
-| -------- | ------- |
+| Export | Purpose |
+| ------ | ------- |
 | `setupTestEnvironment({ suppressOutput })` | Clear all mocks; optionally silence stdout/stderr. Call in `beforeEach()` |
 | `cleanupTestEnvironment()` | Restore all mocks via `vi.restoreAllMocks()`. Call in `afterEach()` |
-| `suppressConsoleOutput()` | Silence `process.stdout.write` and `process.stderr.write` directly |
+| `suppressConsoleOutput()` | Silence `process.stdout.write` / `process.stderr.write` directly |
+| `actionStateWithAppToken(token?)` | An `ActionState` layer pre-loaded with an installation token |
 
-The `__test__/utils/test-types.ts` file was removed during the migration. There is no `MockOctokit` type; tests that need Octokit-style mocking use `vi.mock()` with explicit return values, or use Effect test layers.
+`__test__/utils/manifest.ts` provides the manifest parsing and source scanning behind the `action.yml` sync guards — see [Manifest Sync Guards](#manifest-sync-guards).
 
-### Effect Service Test Layers
+There is no `MockOctokit` type and no hand-rolled Octokit factory; `__test__/utils/test-types.ts` was removed.
 
-Phase-3 code in `src/release/` depends entirely on Effect service abstractions. Tests provide those services through in-memory layers from `@savvy-web/github-action-effects/testing`. No Octokit, npm, GitHub API, or Sigstore calls happen in unit tests.
+> ⚠️ **Console leaks in Effect suites come from the default logger via `console.log`.** `suppressOutput` cannot catch those; `Effect.provide(Logger.layer([]))` can.
 
-Key test layers:
+### Effect Service Doubles
 
-- **`ActionOutputsTest`** — records `setOutput` calls; inspect via `state.outputs`
-- **`ActionStateTest`** — in-memory `ActionState`; inject pre-loaded state values
-- **`GitHubClientTest`** — records REST API calls; inject canned responses
-- **`GitHubAppTest`** — records App identity calls
-- **`CheckRunTest`** — records check-run create/update calls
-- **`GitBranchTest`** — records branch create/update/delete calls
-- **`PullRequestTest`** — records PR list/update calls; inject canned PR lists
-- **`CommandRunnerTest`** — records exec calls; inject exit codes and stdout/stderr
-- **`PackagePublishTest`** — records pack/publish/setupAuth calls; inject pack results
-- **`NpmRegistryTest`** — records getPublishedIntegrity calls; inject `Option.none()` or `Option.some(digest)`
-- **`AttestTest`** / **`SbomTest`** — record attestation and SBOM generation calls; no cryptographic work
+Every service the action depends on is an Effect service, so tests substitute in-memory implementations rather than mocking transports. Two mechanisms:
 
-**`CommandRunnerTest` default-success nuance:** `CommandRunnerTest.layer(map)` returns a default success (exit 0) for any command key not registered in the map — an unregistered command does NOT fail. To simulate a failing command (e.g. "binary not on PATH" in the `format-workspace` tests), register the exact command string with a non-zero `exitCode`; `execCapture` turns that into a failed `CommandRunnerError`, which is what production `Effect.either` probes observe as a Left. Registering must-not-run commands with non-zero exits is also the way to pin that a code path does not execute them.
-
-**silk-effects test factories:** `@savvy-web/silk-effects` ships `Changesets.makeReleasePlannerTest` and `Changesets.makeConfigInspectorTest`, in-memory factories for the native-versioning services. The `create-release-branch` and `update-release-branch` tests provide these layers for the version step instead of the exec mocks they used when versioning shelled out to `ci:version`; `native-version.test.ts` uses them to exercise the id map, config gate, token scoping and reset-then-retry directly. `runNativeVersion` invokes `planner.apply` through a thunk so a stateful test double actually runs again on the retry.
-
-The canonical test pattern for Phase-3 Effect code:
+**1. `Layer.succeed(Service, { … })`** — the common case. The services most often doubled are `Repo`, `WorkspaceDiscovery`, `ChangesetConfig`, `PublishabilityDetector`, `Changesets.ReleasePlanner` and `Changesets.ConfigInspector`.
 
 ```typescript
 import { Effect, Layer } from "effect";
-import { ActionStateTest, PackagePublishTest, NpmRegistryTest } from "@savvy-web/github-action-effects/testing";
-import { runPublishTargets } from "../../src/release/publish.js";
+import { WorkspaceDiscovery } from "@effected/workspaces";
 
 const testLayer = Layer.mergeAll(
-  ActionStateTest.layer({ /* pre-loaded state */ }),
-  PackagePublishTest.layer({ /* canned responses */ }),
-  NpmRegistryTest.layer({ getPublishedIntegrity: () => Effect.succeed(Option.none()) }),
-  // ... other services
+  Layer.succeed(WorkspaceDiscovery, { listPackages: () => Effect.succeed(packages), /* … */ }),
+  Layer.succeed(ChangesetConfig, changesetConfigDouble),
 );
 
-const result = await Effect.runPromise(
-  runPublishTargets(detected, args).pipe(Effect.provide(testLayer))
-);
+const result = await Effect.runPromise(subject(args).pipe(Effect.provide(testLayer)));
 ```
 
-### Standard Test Patterns for Imperative Code
+Unexercised members are stubbed with `Effect.die(...)` so an accidental call fails loudly rather than returning a plausible default.
 
-Phase-1 and Phase-2 utility modules (still imperative) use `vi.mock()` for external dependencies. The standard setup:
+**2. Kit `*.makeTest` statics** — `ActionEnvironment.makeTest`, `ActionOutputs.makeTest`, `SigstoreSigner.makeTest`, plus silk-effects' `Changesets.makeReleasePlannerTest` / `makeConfigInspectorTest`. `runNativeVersion` invokes `planner.apply` through a thunk so a stateful test double actually runs again on the retry.
 
-```typescript
-import { afterEach, beforeEach, describe, it } from "vitest";
-import { cleanupTestEnvironment, setupTestEnvironment } from "./utils/github-mocks.js";
+**The subprocess seam is a `ChildProcessSpawner`, not a command map.** The predecessor's `CommandRunnerTest` returned a default success (exit 0) for any unregistered command, which meant a code path that shelled out to something the test never anticipated silently passed. Suites that care now provide a spawner that **fails any spawn** (`native-version.test.ts`) or one that asserts on the exact argv (`validate-builds.test.ts`), so "this path must not run a command" and "this path runs *this* command" are both assertable.
 
-describe("module-name", () => {
-  beforeEach(() => setupTestEnvironment({ suppressOutput: true }));
-  afterEach(() => cleanupTestEnvironment());
-});
-```
+### `@effect/vitest` — `it.effect` vs plain `it()`
 
-External dependencies are mocked at the top of each file using `vi.mock()`:
+Part of the suite runs Effects through `it.effect` from `@effect/vitest` (which re-exports all of Vitest, so `describe` / `expect` / `vi` come from the same import). The rest is deliberately still on plain `vitest`. **The split is a rule, not an accident of how far a migration got**; the full rules live in `__test__/CLAUDE.md`. In summary:
 
-```typescript
-vi.mock("@actions/core");
-vi.mock("@actions/exec");
-vi.mock("node:fs");
-```
+**Use `it.effect` + `Effect.gen`** when the test runs an Effect and the translation is one-for-one. `Effect.runPromiseExit(x)` becomes `yield* Effect.exit(x)` — same `Exit`, so `expect(exit._tag).toBe("Failure")` carries over unchanged.
+
+**Keep plain `it()` in four cases**, each of which has bitten this repo:
+
+1. **The test has no Effect in it.** Most of `report.test.ts`, `pr-body.test.ts`, `validation-checks.test.ts` and the other pure-assertion suites. Rewriting them is churn, and churn in a large diff is where a regression hides.
+2. **The test observes the real console.** ⚠️ `it.effect` installs `TestConsole`, which intercepts the same `ConsoleRef` that `ActionLogger` and Effect's default logger write through. A `vi.spyOn(console, "log")` **captures nothing** under `it.effect`. Two tests hit this — `releases.test.ts` ("BOTH SHAs") and `publish.test.ts` ("rich publish tree") — and both are annotated in place.
+3. **The test drives fake timers.** `it.effect`'s virtual `TestClock` already owns time and the two do not compose.
+4. **`vi.mock` is involved at module scope.** `vi.mock` must be imported from `"vitest"`, never through `@effect/vitest` — Vitest hoists it above all imports, so a re-exported binding is not yet initialized and the file dies at load with `Cannot access '__vi_import_1__' before initialization`, naming neither `vi` nor the package.
+
+Ten files are on `@effect/vitest` today: `auto-merge`, `managed-sections`, `post`, `schema-inputs`, `schema-outputs`, `update-sticky-comment`, `unit/release/publish`, `unit/release/releases`, `unit/release/validation`, `unit/utils/sort-releases-topologically`, plus the publishability integration suite.
+
+### Manifest Sync Guards
+
+`__test__/schema-inputs.test.ts` and `__test__/schema-outputs.test.ts` hold `action.yml` and the code to each other. Each guard has **three independent legs**:
+
+1. the manifest — `declaredInputNames` / `declaredOutputNames`,
+2. the `NAMES` tuples in `src/schema/inputs.ts` and `src/schema/outputs.ts`,
+3. what `src/` actually reads and writes — `scanInputReads` / `scanOutputWrites`.
+
+Two legs are not enough: any two agreeing while the third drifts is precisely how this repo shipped a `build-command` read no workflow could set, and a `custom-registries` input nothing implemented.
+
+The input guard additionally enforces that each input is read in exactly one place (bar a short allowlist with stated reasons: `pre.ts` is a separate process, `auto-merge.ts` is a definition site) and that `dry-run` is decoded only to build the `DryRun` service. The output guard asserts that the pre-phase, main-scalar and `result` name sets **partition** `OUTPUT_NAMES` exactly, so `result` cannot go missing by falling between the sets.
+
+### Characterization Tests
+
+18 tests across five files are marked `CHARACTERIZATION`. They pin **what the code does today, not what it should do**; where the two differ the test still pins today's behaviour, says so in a comment, and is written to fail when the fix lands.
+
+They exist because these paths received their **first-ever coverage** in the `main.ts` split. The logic lived inline in a 624-line orchestrator that no test executed — replacing that whole body with `Effect.die` left the suite green. Writing characterization tests first, before changing behaviour, is what makes the eventual fix a reviewable diff rather than an unverifiable rewrite.
+
+The main subject is [issue #216](https://github.com/savvy-web/silk-release-action/issues/216): **six of seven Phase-2 degradation paths report a green release verdict for work that never ran.** See [Degradation semantics](architecture.md#degradation-semantics-issue-216) in the architecture doc for the mechanism and the one-line fix. The tests:
+
+| File | What it pins |
+| ---- | ------------ |
+| `validation-checks.test.ts` | The green-on-crash chain itself: `conclusionFor` → `results` → `rows`, reporting ✅ 5/5 when publish validation crashed; that `strict-warnings` does not rescue it; and the contrasting `buildPassed: false` case that *does* report red |
+| `link-issues-and-build-steps.test.ts` | A degrade-to-warning that is invisible downstream (`LINK_ISSUES_FAILED`), beside build validation's honest degradation |
+| `per-step-checks.test.ts` | A check run that could not be created yielding `""` → a `null` row URL, indistinguishable from "no page yet" |
+| `publish-validation-report.test.ts` | A failed comment write contributing no finding; a failed PR *lookup* reported identically to "there is no release PR" |
+| `publish-validation.test.ts` | `SKIPPED_PUBLISH_VALIDATION`'s `publishOk: true` baseline and both skip paths |
 
 ### Specialized Testing Patterns
 
-#### Effect v4 Log Silencing and Log-Level Wiring
+#### Effect v4 log silencing and log-level wiring
 
-The Effect v3 log-silencing idioms were both removed in v4, so tests were rewired:
+The Effect v3 idioms were removed in v4:
 
-- **Silence logs** — `Logger.replace(Logger.defaultLogger, Logger.none)` → `Effect.provide(Logger.layer([]))`. An empty logger array installs no loggers, so log output is dropped. This is the standard tail on nearly every effect-under-test in `__test__/*.test.ts` (e.g. `.pipe(Effect.provide(layer), Effect.provide(Logger.layer([])))`).
-- **Raise the minimum log level** — `Logger.withMinimumLogLevel(LogLevel.All)` → `Effect.provideService(References.MinimumLogLevel, "All")`. Log levels are plain string literals in v4 (`"All"`, `"Debug"`, …); `releases.test.ts` uses this to assert debug-level output.
+- **Silence logs** — `Logger.replace(Logger.defaultLogger, Logger.none)` → `Effect.provide(Logger.layer([]))`. An empty logger array installs no loggers. This is the standard tail on most effects under test.
+- **Raise the minimum log level** — `Logger.withMinimumLogLevel(LogLevel.All)` → `Effect.provideService(References.MinimumLogLevel, "All")`. Log levels are plain string literals in v4 (`"All"`, `"Debug"`, …); `unit/release/releases.test.ts` uses this to assert debug output.
 - **`SchemaError` bracket notation** — a v4 `SchemaError` renders the failing path in bracket notation, so path assertions match `["field"]` rather than the v3 dotted form. `load-release-config.test.ts` asserts against the bracketed message.
 
-#### Exec Mocking with Listeners (stdout/stderr Capture)
+#### Fake timers for retry logic
 
-Tests that mock `@actions/exec` capture output via listener callbacks. Used extensively in tests for modules that shell out to CLI tools:
-
-```typescript
-vi.mocked(exec.exec).mockImplementation(
-  async (cmd, args, options) => {
-    if (cmd === "pnpm" && args?.[0] === "ci:build") {
-      if (options?.listeners?.stdout) {
-        options.listeners.stdout(Buffer.from("M package.json\n"));
-      }
-    }
-    return 0;
-  }
-);
-```
-
-#### Fake Timers for Retry Logic
-
-Tests for retry-enabled operations use Vitest fake timers to avoid real delays. Fake timers are enabled per-test (not globally in `beforeEach`) because global fake timers affect all async operations:
+Enabled per-test (not globally in `beforeEach`), because global fake timers affect all async operations — and never combined with `it.effect`, whose `TestClock` already owns time:
 
 ```typescript
 it("should retry on ECONNRESET errors", async () => {
@@ -182,62 +210,23 @@ it("should retry on ECONNRESET errors", async () => {
 
   const actionPromise = retryableAction();
   await vi.advanceTimersByTimeAsync(60000);
-  const result = await actionPromise;
+  await actionPromise;
 
   expect(mockFn).toHaveBeenCalledTimes(2);
 });
 
 afterEach(() => {
-  vi.useRealTimers(); // Critical: always reset after each test
+  vi.useRealTimers(); // Critical: always reset
 });
 ```
 
-#### File System Mocking with Dynamic Paths
+#### Topological ordering without a sorter stub
 
-File system operations are mocked with path-based routing:
+There is no `TopologicalSorter` service to stub. `runValidation` and the Phase-3 orchestration order released packages via `sortReleasesTopologically`, which builds a real `DependencyGraph.make({ packages })` from `WorkspaceDiscovery.listPackages()` and calls `sortSubset`. The "dependency order, not workspace glob order" test therefore declares a real `workspace:*` dependency edge on a `WorkspacePackage` fixture (alpha depends on beta) and asserts both the report order and the `dryRunCalls` order follow the graph.
 
-```typescript
-vi.mocked(readFile).mockImplementation(async (path) => {
-  const pathStr = String(path);
-  if (pathStr.includes("changeset-status")) return changesetStatusContent;
-  if (pathStr.includes("package.json")) return JSON.stringify({ name: "@test/pkg" });
-  return "{}";
-});
-```
+#### Publishability integration tests
 
-#### Workspace Mocking (`@effected/workspaces`)
-
-Workspace-related tests mock `@effected/workspaces`'s sync API via `WorkspaceDiscovery` or direct `vi.mock`. The sync helpers now take `nodeSyncOps` from `@effected/workspaces/node-sync` in production, but the test still mocks the top-level `findWorkspaceRootSync` / `getWorkspacePackagesSync` exports:
-
-```typescript
-import { findWorkspaceRootSync, getWorkspacePackagesSync } from "@effected/workspaces";
-vi.mock("@effected/workspaces");
-
-vi.mocked(findWorkspaceRootSync).mockReturnValue("/test/workspace");
-vi.mocked(getWorkspacePackagesSync).mockReturnValue([
-  {
-    name: "@test/pkg-a",
-    version: "0.0.0",
-    path: "/test/workspace/packages/pkg-a",
-    packageJsonPath: "/test/workspace/packages/pkg-a/package.json",
-    relativePath: "packages/pkg-a",
-    private: false,
-    dependencies: {},
-    devDependencies: {},
-    peerDependencies: {},
-    optionalDependencies: {},
-    publishConfig: { access: "public" },
-  },
-]);
-```
-
-`@effected/workspaces` services that have no `/testing` layer are stubbed inline with `Layer.succeed`. The `WorkspaceDiscovery` shape grew across the v4 migration, so the in-memory doubles stub more methods — `info`, `resolveFile`, and `resolveFiles` alongside `listPackages`, `getPackage`, `importerMap`, and `refresh` (unexercised methods return `Effect.die(...)` so an accidental call fails loudly).
-
-The standalone `TopologicalSorter` service is gone. `runValidation` (and the Phase-3 orchestration) order released packages via `sortReleasesTopologically`, which builds a real `DependencyGraph.make({ packages })` from `WorkspaceDiscovery.listPackages()` and calls `sortSubset` — there is no sorter to stub. The dedicated "dependency order, not workspace glob order" test in `validation.test.ts` therefore declares a real `workspace:*` dependency edge on a `WorkspacePackage` fixture (alpha depends on beta) and asserts both the report order and the `dryRunCalls` order follow the graph's dependency-first sort, rather than injecting a reordering sorter stub.
-
-#### Publishability Integration Tests
-
-`__test__/integration/publishability.int.test.ts` uses real fixture workspaces to verify the full silk publishability matrix against the `SilkPublishabilityDetectorLive` layer without any mocking. Each fixture is a minimal workspace with a real `package.json` in `__test__/integration/fixtures/`:
+`__test__/integration/publishability.int.test.ts` uses real fixture workspaces to verify the full silk publishability matrix against `SilkPublishability.layer` without any mocking. Each fixture is a minimal workspace with a real `package.json` in `__test__/integration/fixtures/`:
 
 | Fixture | What it covers |
 | ------- | -------------- |
@@ -255,149 +244,135 @@ The standalone `TopologicalSorter` service is gone. `runValidation` (and the Pha
 | `private-mixed-access` | `private: true`, mix of targets with different access levels |
 | `ignore-monorepo` | changeset-ignored package — excluded from detection entirely |
 
-#### GitHub Context Mocking
+#### `ActionInput` env snapshot
 
-The `@actions/github` context object is mocked using `Object.defineProperty` to set read-only properties:
-
-```typescript
-Object.defineProperty(vi.mocked(context), "repo", {
-  value: { owner: "test-owner", repo: "test-repo" },
-  writable: true,
-});
-```
+Inject inputs via the `ActionInput` layer, not by mutating `process.env` between reads. The environment is snapshotted at first read, so a mid-test mutation reuses the first value — which turns expected-to-fail tests green.
 
 ### Test Coverage Map
 
-Co-located tests live in `src/release/*.test.ts`. Integration tests live in `__test__/integration/`. All other unit tests live in `__test__/`.
-
-| Test File | Source Module | Category |
-| --------- | ------------ | -------- |
-| `src/release/publish.test.ts` | `src/release/publish.ts` | Phase 3 |
-| `src/release/releases.test.ts` | `src/release/releases.ts` | Phase 3 |
-| `src/release/meta-archive.test.ts` | `src/release/meta-archive.ts` | Phase 3 |
-| `src/utils/group-id.test.ts` | `src/utils/group-id.ts` | Phase 3 |
-| `src/release/validation.test.ts` | `src/release/validation.ts` | Phase 2 |
-| `src/release/report.test.ts` | `src/release/report.ts` | Phase 2/3 |
-| `src/release/publishability.test.ts` | `src/release/publishability.ts` | Phase 2/3 |
-| `src/release/changeset-config.test.ts` | `src/release/changeset-config.ts` | Phase 2/3 |
-| `src/release/errors.test.ts` | `src/release/errors.ts` | Phase 2/3 |
-| `__test__/integration/publishability.int.test.ts` | `src/release/publishability.ts` | Integration |
+| Test file | Source module | Category |
+| --------- | ------------- | -------- |
+| `__test__/unit/program.test.ts` | `src/program.ts` | Composition |
 | `__test__/pre.test.ts` | `src/pre.ts` | Entry points |
 | `__test__/post.test.ts` | `src/post.ts` | Entry points |
+| `__test__/schema-inputs.test.ts` | `src/schema/inputs.ts` + `action.yml` | Manifest guard |
+| `__test__/schema-outputs.test.ts` | `src/schema/outputs.ts` + `action.yml` | Manifest guard |
+| `__test__/test-placement.test.ts` | the repo tree | Placement guard |
+| `__test__/generate-schema.test.ts` | `lib/scripts/generate-schema.ts` (drift guard over both committed JSON Schemas) | Schema |
+| `__test__/projections.test.ts` | `src/schema/projections.ts` | Schema |
+| `__test__/release-output.test.ts` | `src/schema/release-output.ts` | Schema |
+| `__test__/detect-workflow-phase.test.ts` | `detect-workflow-phase.ts` | Routing |
+| `__test__/event-payload.test.ts` | `utils/event-payload.ts` | Routing |
 | `__test__/check-release-branch.test.ts` | `check-release-branch.ts` | Phase 1 |
 | `__test__/create-release-branch.test.ts` | `create-release-branch.ts` | Phase 1 |
 | `__test__/update-release-branch.test.ts` | `update-release-branch.ts` | Phase 1 |
-| `__test__/native-version.test.ts` | `src/utils/native-version.ts` | Phase 1 |
-| `__test__/format-workspace.test.ts` | `src/utils/format-workspace.ts` | Phase 1 |
-| `__test__/close-linked-issues.test.ts` | `close-linked-issues.ts` | Phase 3a |
-| `__test__/cleanup-validation-checks.test.ts` | `cleanup-validation-checks.ts` | Infra |
-| `__test__/create-validation-check.test.ts` | `create-validation-check.ts` | Phase 2 |
-| `__test__/derive-check-conclusion.test.ts` | `derive-check-conclusion.ts` | Phase 2 |
-| `__test__/determine-tag-strategy.test.ts` | `determine-tag-strategy.ts` | Phase 3 |
-| `__test__/detect-workflow-phase.test.ts` | `detect-workflow-phase.ts` | Routing |
-| `__test__/extract-release-notes.test.ts` | `extract-release-notes.ts` | Infra |
-| `__test__/generate-schema.test.ts` | `lib/scripts/generate-schema.ts` (drift guard over both committed JSON Schemas) | Schema |
-| `__test__/infer-sbom-metadata.test.ts` | `infer-sbom-metadata.ts` | SBOM |
-| `__test__/link-issues-from-commits.test.ts` | `link-issues-from-commits.ts` | Phase 2 |
-| `__test__/load-release-config.test.ts` | `load-release-config.ts` | Infra |
-| `__test__/parse-changesets.test.ts` | `parse-changesets.ts` | Infra |
-| `__test__/pr-body.test.ts` | `src/utils/pr-body.ts` (managed-region round trip, `owned` merge rule) | Phase 1 |
-| `__test__/projections.test.ts` | `src/schema/projections.ts` | Schema |
-| `__test__/release-output.test.ts` | `src/schema/release-output.ts` | Schema |
-| `__test__/summary-writer.test.ts` | `summary-writer.ts` | Infra |
-| `__test__/tokens.test.ts` | `tokens.ts` | Infra |
-| `__test__/validate-builds.test.ts` | `validate-builds.ts` | Phase 2 |
-| `__test__/validate-ntia-compliance.test.ts` | `validate-ntia-compliance.ts` | SBOM |
-| `__test__/detect-repo-type.test.ts` | `detect-repo-type.ts` | Infra |
-| `__test__/commit-signoff.test.ts` | `commit-signoff.ts` | Infra |
+| `__test__/native-version.test.ts` | `utils/native-version.ts` | Phase 1 |
+| `__test__/format-workspace.test.ts` | `utils/format-workspace.ts` | Phase 1 |
+| `__test__/porcelain-changes.test.ts` | `utils/porcelain-changes.ts` | Phase 1 |
+| `__test__/pr-body.test.ts` | `utils/pr-body.ts` (managed-region round trip, `owned` merge rule) | Phase 1 |
+| `__test__/release-pr-title.test.ts` | `utils/release-summary-helpers.ts` | Phase 1 |
+| `__test__/release-plan.test.ts` | `utils/release-plan.ts` | Phase 1 |
+| `__test__/publish-release-plan.test.ts` | `steps/publish-release-plan.ts` | Phase 1 |
+| `__test__/managed-sections.test.ts` | `utils/managed-sections.ts` (incl. defect + interrupt paths) | Phase 1/2 |
+| `__test__/write-sections.test.ts` | `utils/write-sections.ts` | Phase 1/2 |
+| `__test__/release-table.test.ts` | `utils/release-table.ts` | Phase 1/2 |
+| `__test__/auto-merge.test.ts` | `utils/auto-merge.ts` | Phase 1 |
+| `__test__/link-issues-and-build-steps.test.ts` | `steps/link-issues.ts`, `steps/build-validation.ts` | Phase 2 |
+| `__test__/link-issues-from-commits.test.ts` | `utils/link-issues-from-commits.ts` | Phase 2 |
+| `__test__/validate-builds.test.ts` | `utils/validate-builds.ts` | Phase 2 |
+| `__test__/publish-validation.test.ts` | `steps/publish-validation.ts` | Phase 2 |
+| `__test__/validation-checks.test.ts` | `release/validation-checks.ts` | Phase 2 |
+| `__test__/per-step-checks.test.ts` | `steps/per-step-checks.ts` | Phase 2 |
+| `__test__/publish-validation-report.test.ts` | `steps/publish-validation-report.ts` | Phase 2 |
+| `__test__/create-validation-check.test.ts` | `utils/create-validation-check.ts` | Phase 2 |
+| `__test__/cleanup-validation-checks.test.ts` | `utils/cleanup-validation-checks.ts` | Phase 2 |
+| `__test__/derive-check-conclusion.test.ts` | `utils/derive-check-conclusion.ts` | Phase 2 |
+| `__test__/unit/release/validation.test.ts` | `release/validation.ts` | Phase 2 |
+| `__test__/unit/utils/turbo-summary.test.ts` | `utils/turbo-summary.ts` | Phase 2 |
+| `__test__/unit/release/publish.test.ts` | `release/publish.ts` | Phase 3 |
+| `__test__/unit/release/releases.test.ts` | `release/releases.ts` | Phase 3 |
+| `__test__/unit/release/meta-archive.test.ts` | `release/meta-archive.ts` | Phase 3 |
+| `__test__/unit/release/resolve-targets.test.ts` | `release/resolve-targets.ts` | Phase 2/3 |
+| `__test__/unit/release/report.test.ts` | `release/report.ts` | Phase 2/3 |
+| `__test__/unit/release/errors.test.ts` | `release/errors.ts` | Phase 2/3 |
+| `__test__/unit/utils/group-id.test.ts` | `utils/group-id.ts` | Phase 3 |
+| `__test__/unit/utils/sort-releases-topologically.test.ts` | `utils/sort-releases-topologically.ts` | Phase 2/3 |
+| `__test__/attest-helpers.test.ts` | `release/attest-helpers.ts` | Phase 3 |
+| `__test__/determine-tag-strategy.test.ts` | `utils/determine-tag-strategy.ts` | Phase 3 |
+| `__test__/close-linked-issues.test.ts` | `utils/close-linked-issues.ts` | Phase 3a |
+| `__test__/detect-repo-type.test.ts` | `utils/detect-repo-type.ts` | Infra |
+| `__test__/commit-signoff.test.ts` | `utils/commit-signoff.ts` | Infra |
+| `__test__/extract-release-notes.test.ts` | `utils/extract-release-notes.ts` | Infra |
+| `__test__/load-release-config.test.ts` | `utils/load-release-config.ts` | Infra |
+| `__test__/summary-writer.test.ts` | `utils/summary-writer.ts` | Infra |
+| `__test__/github-urls.test.ts` | `utils/github-urls.ts` | Infra |
+| `__test__/registry-label.test.ts` | `utils/registry-label.ts` | Infra |
+| `__test__/update-sticky-comment.test.ts` | `utils/update-sticky-comment.ts` | Infra |
+| `__test__/unit/utils/count-changesets.test.ts` | `utils/count-changesets.ts` | Infra |
+| `__test__/unit/utils/npm-cache.test.ts` | `utils/npm-cache.ts` | Infra |
+| `__test__/integration/publishability.int.test.ts` | `SilkPublishability` (silk-effects) | Integration |
 
 ### Coverage Gaps
 
-Source modules without dedicated test files:
-
-| Module | Reason for Gap |
+| Module | Reason for gap |
 | ------ | -------------- |
-| `src/main.ts` | Main action entry point; orchestrates phases |
+| `src/main.ts` | 19 lines: a `GITHUB_ACTIONS` guard and `Action.run`, marked `/* v8 ignore */`. The program it runs is covered by `unit/program.test.ts` |
+| `src/layers/app.ts` | Pure Layer wiring, marked `/* v8 ignore */`; exercised indirectly by the modules that consume it |
+| **`src/steps/validation.ts`** | ⚠️ **Uncovered orchestration.** No test executes `runValidation`, so a green suite says nothing about the wiring in that body — only about the six modules it calls. Replacing the body with `Effect.die` would still leave the suite green. The module says so in its own docs |
 | `src/types/*.ts` | Type definitions with no runtime behavior |
-| `src/utils/create-api-commit.ts` | GitHub API commit (excluded from coverage) |
 | `src/changelog/*.ts` | Re-export shims for the bundled changelog generators; no logic |
-| `src/release/resolve-targets.ts` | Covered indirectly via validation and publishability tests |
-| `src/utils/normalize-package-manager.ts` | Single-branch narrowing helper; exercised via publish and validation tests |
-| `src/utils/registry-label.ts` | Label helpers; exercised via publish and validation log-tree assertions |
+| `src/steps/branch-management.ts`, `src/steps/publishing.ts`, `src/steps/close-issues.ts` | Phase bodies covered indirectly through their callees; no direct orchestration test |
 
 ### Test Best Practices
 
-1. **Type Safety** — No `any` types anywhere in test code. Use Effect service test layers for Effect code; use explicit `as unknown as Type` casts for imperative mocks.
-2. **Arrange-Act-Assert** — Every test follows the AAA pattern with clear separation between setup, execution, and verification.
-3. **Descriptive Names** — Tests use the "should X when Y" naming format.
-4. **Nested Describe Blocks** — Related scenarios are grouped with nested `describe` blocks.
-5. **Top-Level Mocking** — `vi.mock()` calls are placed at the top of each file before imports to ensure proper hoisting.
-6. **Timer Cleanup** — Any test using `vi.useFakeTimers()` must call `vi.useRealTimers()` in its `afterEach`.
-7. **Error Path Coverage** — Tests cover both `Error` and non-`Error` throw scenarios, along with specific HTTP error codes.
-8. **Effect Layer Isolation** — Each test provides its own Layer composition; shared layers are composed in the test file's `beforeEach` or per-test.
+1. **Type safety** — no `any` types in test code. Use Effect layers for Effect code; use explicit `as unknown as Type` casts for imperative mocks.
+2. **Arrange-Act-Assert** — clear separation between setup, execution, and verification. Many suites annotate the phases as `// Given` / `// When` / `// Then`.
+3. **Descriptive names** — "should X when Y".
+4. **Nested `describe` blocks** — group related scenarios.
+5. **Top-level mocking** — `vi.mock()` above imports, from `"vitest"`, never through `@effect/vitest`.
+6. **Timer cleanup** — any test using `vi.useFakeTimers()` calls `vi.useRealTimers()` in its `afterEach`, and never combines fake timers with `it.effect`.
+7. **Error path coverage** — cover both `Error` and non-`Error` throw scenarios, plus specific HTTP error codes.
+8. **Layer isolation** — each test composes its own layers; stub unexercised service members with `Effect.die(...)`.
+9. **Label the pins** — a test that pins known-wrong behaviour says `CHARACTERIZATION`, names the issue, and states what it will look like when fixed.
 
 ### Test Commands
 
 ```bash
-pnpm test                        # Run all tests (pass with no tests)
+pnpm test                        # Run all tests
 pnpm ci:test                     # CI mode with coverage enforcement
-pnpm test --watch                # Watch mode for development
-pnpm test path/to/test.test.ts   # Run specific test file
+pnpm test:watch                  # Watch mode
 ```
+
+A CLI file argument does **not** filter to a single file — projects are discovered by the vitest-agent plugin. To run specific files, use the vitest-agent MCP `run_tests` tool with a `files` array.
 
 ## Rationale
 
-### Why 85% Coverage Threshold?
+### Why Effect Layers Instead of Mocks?
 
-The 85% per-file threshold balances thorough testing with pragmatism. Some modules (API commit creation, direct publishing) are difficult to unit test due to complex I/O dependencies involving multiple interacting external systems. These are validated through integration testing in the `savvy-web/silk-integration` repository.
+The orchestration depends on `PackagePublish` (npm publish), `NpmRegistry` (registry HTTP), `SigstoreSigner` / `Attestation` (Sigstore/Fulcio), `GitHubRelease`, `GitTag`, `Git` and similar services — none satisfiable in unit tests without live credentials or elaborate transport mocking. Effect's `Layer` system substitutes in-memory implementations that record calls and return canned responses, so the suite asserts that the right calls happened with the right arguments without any cryptographic or network work.
 
-The per-file enforcement (`perFile: true`) prevents high-coverage modules from masking low-coverage ones, which is a common problem with global thresholds in projects with many small utility modules.
+Stubbing unexercised members with `Effect.die(...)` is the part that makes this better than mocking: an accidental call fails loudly instead of returning a plausible default. That is exactly the failure the predecessor's `CommandRunnerTest` had — a default exit-0 for any unregistered command meant an unanticipated subprocess call silently passed.
 
-### Why Effect Test Layers for Phase-3 Code?
+### Why Move the Co-located Tests?
 
-The Phase-3 orchestration depends on `PackagePublish` (npm publish), `NpmRegistry` (npm view), `Attest` (Sigstore/Fulcio), `GitHubRelease`, `GitTag` and similar services — none of which can be satisfied in unit tests without live credentials or complex mocking. Effect's `Layer` system lets tests substitute in-memory implementations that record calls and return canned responses. The test suite asserts that the right calls happened with the right arguments without any actual cryptographic or network work. This is the same pattern used by `GitHubClientTest` in `@savvy-web/github-action-effects`.
+Co-located `src/**/*.test.ts` files were included in the same tree the coverage config scans and the schema-sync guard walks, and the split between "co-located Phase-3 tests" and "everything else in `__test__/`" was a historical accident nobody could state a rule for. One location plus a mirrored `unit/` subtree is a rule; `test-placement.test.ts` makes it executable, and also polices the `__test__/utils/` trap that silently drops suites.
 
-### Why Factory Functions Over Direct Mocking?
+### Why Characterization Tests for a Known Bug?
 
-Factory functions like those provided by `@savvy-web/github-action-effects/testing` provide four key benefits:
+Issue #216 spans six degradation paths across five modules. Fixing them and writing the tests in one change would produce a diff where nobody could tell which assertions describe the old behaviour and which the new. Pinning current behaviour first, with the issue named in each test, makes the fix a diff that flips clearly-labelled expectations — and guarantees the paths cannot regress further in the meantime. Critically, it also proved the bug is **one decision, not six patches**: a degraded step must contribute a *finding*, since that is the only thing the verdict reads.
 
-1. **Consistent initialization** — Every test starts with the same service shape.
-2. **Proper typing** — No `any` escape hatches needed.
-3. **Single update point** — When a service interface changes, only the test layer implementation needs updating.
-4. **Default values** — Test layers provide sensible defaults (e.g. pack succeeds, registry returns absent) that reduce boilerplate in individual tests.
+### Why Three-Legged Manifest Guards?
 
-### Why 240s Test Timeout?
-
-Some tests involve complex async operations with multiple retries and fake timer advances. The detect-workflow-phase tests, for example, simulate the release-commit detection retries (3 attempts with 5-second delays) via fake time advancement. The generous 240-second timeout prevents flaky failures in CI environments.
-
-### Why Exclude Certain Modules from Coverage?
-
-**`create-api-commit.ts`** — Requires simultaneously mocking the file system, `@actions/exec`, and the GitHub API's tree/blob/commit creation flow. The resulting tests would be tightly coupled to implementation details. Validated indirectly through `create-release-branch` tests and integration testing.
+`action.yml`, the `NAMES` tuples, and what the code actually reads are three independent sources of truth for the same fact. A two-way check lets the third drift silently — which is how a `build-command` read no workflow could set, and a `custom-registries` input nothing implemented, both survived for months. Scanning `src/` for actual reads and writes is the leg that makes a dead read visible.
 
 ## File Reference
 
-Test infrastructure files:
-
 | File | Purpose |
 | ---- | ------- |
-| `vitest.config.ts` | Vitest configuration with coverage thresholds |
+| `vitest.config.ts` | Vitest configuration via `@vitest-agent/plugin` (`AgentPlugin.discover()`), V8 coverage, `src/**/*.ts` include with empty exclude |
 | `vitest.setup.ts` | Global setup hook |
-| `__test__/utils/github-mocks.ts` | Environment helpers: setupTestEnvironment, cleanupTestEnvironment, suppressConsoleOutput |
-| `__test__/CLAUDE.md` | Testing documentation for Claude Code context |
-
-Source entry points:
-
-| File | Status |
-| ---- | ------ |
-| `src/main.ts` | No dedicated test; integration-tested |
-| `src/pre.ts` | `__test__/pre.test.ts` covers Effect program |
-| `src/post.ts` | `__test__/post.test.ts` covers Effect program |
-
-Type definition files (no runtime behavior):
-
-| File | Purpose |
-| ---- | ------- |
-| `src/types/global.d.ts` | Global type augmentations |
-| `src/types/shared-types.ts` | Shared type definitions across modules |
-| `src/types/publish-config.ts` | Publishing configuration types |
-| `src/types/sbom-config.ts` | SBOM configuration types |
+| `__test__/CLAUDE.md` | Operational testing guide: commands, `it.effect` rules, gotchas |
+| `__test__/utils/github-mocks.ts` | `setupTestEnvironment`, `cleanupTestEnvironment`, `suppressConsoleOutput`, `actionStateWithAppToken` |
+| `__test__/utils/manifest.ts` | Manifest parsing and `src/` scanning for the `action.yml` sync guards |
+| `__test__/test-placement.test.ts` | Executable placement rules (no tests in `src/`, none in `__test__/utils/`) |
+| `__test__/integration/fixtures/` | Real minimal workspaces for the publishability matrix |

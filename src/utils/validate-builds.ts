@@ -14,9 +14,9 @@ import { LocalExec, Run } from "@effected/commands";
 import type { GitHubError, Repo } from "@effected/github";
 import { Annotation, CheckRun, CheckRunOutput } from "@effected/github";
 import type { ActionEnvironmentError, ActionOutputError } from "@effected/github-actions";
-import { ActionEnvironment, ActionInput, ActionOutputs } from "@effected/github-actions";
-import type { FileSystem } from "effect";
-import { Cause, Config, Effect } from "effect";
+import { ActionEnvironment, ActionOutputs, DryRun } from "@effected/github-actions";
+import type { Config, FileSystem } from "effect";
+import { Cause, Effect } from "effect";
 import type { ChildProcessSpawner } from "effect/unstable/process";
 import { ChildProcess } from "effect/unstable/process";
 import { summaryWriter } from "./summary-writer.js";
@@ -47,10 +47,22 @@ export interface BuildValidationResult {
 const asLauncher = (packageManager: string): Launcher =>
 	packageManager === "pnpm" || packageManager === "yarn" || packageManager === "bun" ? packageManager : "npm";
 
-const buildInvocation = (packageManager: string, buildCommand: string): { cmd: string; args: string[] } => {
+/**
+ * The build script every validated workspace is expected to expose.
+ *
+ * @remarks
+ * Not configurable. There was a `build-command` input read here, but it was
+ * never declared in `action.yml` — in any commit — so no workflow could ever
+ * set it and it always resolved to `""`, i.e. this constant. The read was
+ * removed rather than the input declared: exposing a new public input is a
+ * capability decision, not a cleanup.
+ */
+const BUILD_SCRIPT = "ci:build";
+
+const buildInvocation = (packageManager: string): { cmd: string; args: string[] } => {
 	const launcher = asLauncher(packageManager);
 	const [cmd = launcher, ...prefixArgs] = LocalExec.prefixes(launcher).scriptPrefix;
-	return { cmd, args: [...prefixArgs, buildCommand !== "" ? buildCommand : "ci:build"] };
+	return { cmd, args: [...prefixArgs, BUILD_SCRIPT] };
 };
 
 // `Annotation` is a `Schema.Class` and renames every wire field: `startLine` /
@@ -106,19 +118,25 @@ export const validateBuilds = (
 	| CommandFailedError
 	| CommandOutputError
 	| Config.ConfigError,
-	ActionEnvironment | ActionOutputs | CheckRun | Repo | ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem
+	| ActionEnvironment
+	| ActionOutputs
+	| CheckRun
+	| DryRun
+	| Repo
+	| ChildProcessSpawner.ChildProcessSpawner
+	| FileSystem.FileSystem
 > =>
 	Effect.gen(function* () {
 		const env = yield* ActionEnvironment;
 		const outputs = yield* ActionOutputs;
 		const checks = yield* CheckRun;
 
-		const buildCommand = yield* ActionInput.string("build-command").pipe(Config.withDefault(""));
-		const dryRun = yield* ActionInput.boolean("dry-run").pipe(Config.withDefault(false));
+		// The rehearsal decision comes from the service, not a re-read of the input.
+		const dryRun = yield* (yield* DryRun).isDryRun;
 
 		const { sha } = yield* env.github;
 
-		const { cmd: buildCmd, args: buildArgs } = buildInvocation(packageManager, buildCommand);
+		const { cmd: buildCmd, args: buildArgs } = buildInvocation(packageManager);
 		yield* Effect.logInfo(`Running build command: ${buildCmd} ${buildArgs.join(" ")}`);
 
 		let buildError = "";
@@ -151,7 +169,7 @@ export const validateBuilds = (
 		if (!dryRun) {
 			turboSection = yield* readTurboDiagnostics(
 				process.cwd(),
-				buildCommand !== "" ? buildCommand : "ci:build",
+				BUILD_SCRIPT,
 				process.env as { TURBO_RUN_SUMMARY?: string | undefined },
 			).pipe(
 				Effect.flatMap((diag) =>

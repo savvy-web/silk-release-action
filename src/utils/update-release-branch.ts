@@ -17,26 +17,26 @@
 // `ActionState` is the KIT tag: this module never yields it directly, but
 // `resolveSignoff` requires it, and `R` propagates upward.
 import type { CommandFailedError, CommandOutputError, ToolDiscovery } from "@effected/commands";
-import { Run } from "@effected/commands";
-import type { FileChange, GitHubCommit, GitHubError, GitHubIssue, PullRequestInfo, Repo } from "@effected/github";
-import {
-	CheckRun,
-	CheckRunOutput,
-	FileContent,
-	FileDeletion,
-	GitBranch,
-	GitCommit,
-	PullRequest,
-} from "@effected/github";
-import type { ActionEnvironmentError, ActionOutputError, ActionState } from "@effected/github-actions";
-import { ActionEnvironment, ActionInput, ActionOutputs } from "@effected/github-actions";
+import type { GitCommandError, NotARepositoryError, UnknownRefError } from "@effected/git";
+import { Git, StatusEntry } from "@effected/git";
+import type { GitHubCommit, GitHubError, GitHubIssue, PullRequestInfo, Repo } from "@effected/github";
+import { CheckRun, CheckRunOutput, GitBranch, GitCommit, PullRequest } from "@effected/github";
+import type {
+	ActionEnvironmentError,
+	ActionOutputError,
+	ActionState,
+	ActionStateError,
+	GitHubTokenError,
+} from "@effected/github-actions";
+import { ActionEnvironment, ActionOutputs, DryRun } from "@effected/github-actions";
 import type { PublishabilityDetector } from "@effected/workspaces";
 import { WorkspaceDiscovery } from "@effected/workspaces";
 import type { Changesets } from "@savvy-web/silk-effects";
-import { Config, Effect, FileSystem, Option } from "effect";
+import type { Config } from "effect";
+import { Effect, FileSystem, Option } from "effect";
 import type { ChildProcessSpawner } from "effect/unstable/process";
-import { ChildProcess } from "effect/unstable/process";
 import type { ChangesetConfig } from "../release/changeset-config.js";
+import type { BranchRefs } from "../schema/inputs.js";
 import { applyAutoMerge } from "./auto-merge.js";
 import { resolveSignoff } from "./commit-signoff.js";
 import { isSinglePackage } from "./detect-repo-type.js";
@@ -95,19 +95,27 @@ export interface UpdateReleaseBranchResult {
  *
  * @public
  */
-export const updateReleaseBranch = (): Effect.Effect<
+export const updateReleaseBranch = (
+	refs: BranchRefs,
+): Effect.Effect<
 	UpdateReleaseBranchResult,
 	| ActionEnvironmentError
 	| ActionOutputError
+	| ActionStateError
 	| Changesets.ConfigurationError
 	| Changesets.ReleasePlanError
 	| CommandFailedError
 	| CommandOutputError
 	| Config.ConfigError
 	| FileReadError
-	| GitHubError,
+	| GitCommandError
+	| GitHubError
+	| GitHubTokenError
+	| NotARepositoryError
+	| UnknownRefError,
 	| ActionEnvironment
 	| ActionOutputs
+	| DryRun
 	| ActionState
 	| ChangesetConfig
 	| Changesets.ConfigInspector
@@ -116,6 +124,7 @@ export const updateReleaseBranch = (): Effect.Effect<
 	| ChildProcessSpawner.ChildProcessSpawner
 	| ToolDiscovery
 	| FileSystem.FileSystem
+	| Git
 	| GitBranch
 	| GitCommit
 	| GitHubCommit
@@ -129,17 +138,22 @@ export const updateReleaseBranch = (): Effect.Effect<
 		const env = yield* ActionEnvironment;
 		const outputs = yield* ActionOutputs;
 		const checks = yield* CheckRun;
+		const git = yield* Git;
 		const gitCommit = yield* GitCommit;
 		const branches = yield* GitBranch;
 		const pr = yield* PullRequest;
 		const fs = yield* FileSystem.FileSystem;
 		const signoff = yield* resolveSignoff();
 
-		const releaseBranch = yield* ActionInput.string("release-branch").pipe(
-			Config.withDefault("changeset-release/main"),
-		);
-		const targetBranch = yield* ActionInput.string("target-branch").pipe(Config.withDefault("main"));
-		const dryRun = yield* ActionInput.boolean("dry-run").pipe(Config.withDefault(false));
+		// Branch names arrive from the ONE decode in `readInputs`; the rehearsal
+		// decision comes from the `DryRun` service. Neither is re-read here — this
+		// module used to restate both defaults, and a drift between its copy and
+		// main's would silently target a different branch than the phase reported.
+		//
+		// `refs`, not `branches`: `branches` is the `GitBranch` SERVICE in this
+		// module, and shadowing it here compiles into a very confusing error.
+		const { releaseBranch, targetBranch } = refs;
+		const dryRun = yield* (yield* DryRun).isDryRun;
 
 		const { sha, repository } = yield* env.github;
 		const [owner, repo] = repository.split("/");
@@ -228,15 +242,27 @@ export const updateReleaseBranch = (): Effect.Effect<
 			// NON-DESCENDANT ref update. GitHub records that as
 			// `head_ref_force_pushed` — which is exactly the event on the PR timeline
 			// for run 30212579721, and there is no `--force` anywhere in this module.
-			yield* Effect.result(Run.text(ChildProcess.make("git", ["branch", "-D", releaseBranch])));
-			yield* Run.text(ChildProcess.make("git", ["checkout", "-b", releaseBranch, `origin/${targetBranch}`]));
+			// ONE call, not a delete-then-create pair. `force: true` runs
+			// `git checkout -B`, which both creates and resets in a single
+			// invocation, so the swallowed `branch -D` this replaces is unnecessary
+			// — and its removal fixes a real edge: `git branch -D` REFUSES to delete
+			// the currently checked-out branch, so on a runner already sitting on
+			// `releaseBranch` the delete failed silently (swallowed by
+			// `Effect.result`) and the `-b` that followed then failed for real.
+			// `checkout -B` handles both states.
+			yield* git.branchCreate(process.cwd(), releaseBranch, {
+				startPoint: `origin/${targetBranch}`,
+				checkout: true,
+				force: true,
+			});
 
 			// Make the branch point observable. A silent recreate is how a
 			// non-descendant update reached GitHub without anything in the log
-			// saying what we had branched from.
-			const branchedFrom = yield* Effect.result(Run.text(ChildProcess.make("git", ["rev-parse", "HEAD"])));
+			// saying what we had branched from. `Git.revParse` already trims, so the
+			// `.trim()` this replaces is gone rather than moved.
+			const branchedFrom = yield* Effect.result(git.revParse(process.cwd(), "HEAD"));
 			if (branchedFrom._tag === "Success") {
-				yield* Effect.logInfo(`  '${releaseBranch}' now at ${branchedFrom.success.trim()} (origin/${targetBranch})`);
+				yield* Effect.logInfo(`  '${releaseBranch}' now at ${branchedFrom.success} (origin/${targetBranch})`);
 			}
 		} else {
 			yield* Effect.logInfo(`[DRY RUN] Would recreate branch: ${releaseBranch} from ${targetBranch}`);
@@ -260,20 +286,22 @@ export const updateReleaseBranch = (): Effect.Effect<
 		let hasChanges = false;
 		let changedFiles = "";
 		if (!dryRun) {
-			// `Run.text`, NOT `Run.collect`. `collect` demotes a non-zero exit to a
-			// value with empty stdout, which reads here as "no version changes" —
-			// and this module's no-change path CLOSES THE RELEASE PR AND DELETES
-			// THE REMOTE RELEASE BRANCH, then returns `success: true`. A transient
-			// git failure would therefore destroy a live release and report it as
-			// a clean run. `text` makes the exit a typed failure.
+			// `Git.status`, and the property that made this `Run.text` rather than
+			// `Run.collect` is what it preserves: a non-zero exit is a TYPED FAILURE
+			// (`GitCommandError`/`NotARepositoryError`), never an empty listing. An
+			// empty listing reads here as "no version changes" — and this module's
+			// no-change path CLOSES THE RELEASE PR AND DELETES THE REMOTE RELEASE
+			// BRANCH, then returns `success: true`. A transient git failure demoted
+			// to a value would therefore destroy a live release and report a clean
+			// run.
 			//
-			// The trim `text` applies is safe for this (non-`-z`) form: all three
-			// consumers of `changedFiles` are whitespace-insensitive per line —
+			// The entries are rendered back to text because all three consumers of
+			// `changedFiles` want lines and are whitespace-insensitive —
 			// `.trim().length`, the per-line `.includes(...)` filter, and
 			// `getReleasingPackages`, which strips the porcelain status column with
-			// `^\s*\S+\s+`. The `-z` read further down is a different matter and
-			// must stay `Run.collect`; see the comment there.
-			changedFiles = yield* Run.text(ChildProcess.make("git", ["status", "--porcelain"]));
+			// `^\s*\S+\s+`. `StatusEntry.format` defaults to rendering a rename's
+			// NEW path only, which is the convention all three want.
+			changedFiles = StatusEntry.format(yield* git.status(process.cwd()));
 			hasChanges = changedFiles.trim().length > 0;
 		} else {
 			hasChanges = true;
@@ -335,7 +363,9 @@ export const updateReleaseBranch = (): Effect.Effect<
 				yield* Effect.logInfo(`Release PR title: ${prTitle}`);
 			}
 
-			if (!dryRun) yield* Run.text(ChildProcess.make("git", ["add", "."]));
+			// `Git.add` spells this `git add -- .`, which is the same staging with the
+			// pathspec separator made explicit.
+			if (!dryRun) yield* git.add(process.cwd(), ["."]);
 
 			// Commit subject matches the PR title; body lists the releasing packages
 			// with full (scoped) names, falling back to a description when none.
@@ -625,8 +655,8 @@ export const updateReleaseBranch = (): Effect.Effect<
 			commitMessage: string;
 		}): Effect.Effect<
 			void,
-			CommandFailedError | CommandOutputError | FileReadError | GitHubError,
-			ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | GitBranch | GitCommit | Repo
+			FileReadError | GitCommandError | GitHubError | NotARepositoryError | UnknownRefError,
+			FileSystem.FileSystem | Git | GitBranch | GitCommit | Repo
 		> {
 			return Effect.gen(function* () {
 				// INVARIANT: the commit is rooted on the TARGET branch head, not on
@@ -635,11 +665,11 @@ export const updateReleaseBranch = (): Effect.Effect<
 				// stack. `GitBranch.sha` replaces a hand-cast `client.rest("git.getRef")`.
 				const parentSha = yield* branches.sha(args.targetBranch);
 
-				// `-z` uses NUL separators so the positional [0..2]=status, [3..]=path
-				// parsing survives whitespace and trailing CRLF; trimming the line
-				// itself would shift the column for unstaged changes (" M file" → "M file").
-				const status = yield* Run.collect(ChildProcess.make("git", ["status", "--porcelain", "-z"]));
-				const changes = yield* collectPorcelainChanges(status.stdout);
+				// `Git.status` runs `--porcelain -z` and hands back PARSED entries, so
+				// the NUL splitting, the positional column arithmetic and the trim
+				// hazard that forced `Run.collect` here are all gone — together with
+				// the rename defect they hid (see `porcelain-changes.ts`).
+				const changes = yield* collectPorcelainChanges(yield* git.status(process.cwd()));
 
 				if (changes.length === 0) {
 					yield* Effect.logWarning("No changes to commit via API");

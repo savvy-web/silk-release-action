@@ -1,10 +1,11 @@
-// Turn `git status --porcelain -z` into the file changes a Git Data API commit
-// carries.
+// Turn a `git status --porcelain -z` listing into the file changes a Git Data
+// API commit carries.
 //
 // This lived twice — once in `create-release-branch.ts`, once in
 // `update-release-branch.ts` — byte for byte, and both copies carried the same
 // two defects. One copy exists now so a fix lands in both paths.
 
+import type { StatusEntry } from "@effected/git";
 import type { FileChange } from "@effected/github";
 import { FileContent, FileDeletion } from "@effected/github";
 import { Effect, FileSystem } from "effect";
@@ -22,24 +23,22 @@ export type FileReadError = Effect.Error<ReturnType<FileSystem.FileSystem["readF
 const DELETION_CODES = new Set(["D", "DD", "AD"]);
 
 /**
- * Parse `-z` porcelain output into {@link FileChange}s.
+ * Convert porcelain entries into {@link FileChange}s.
  *
  * @remarks
- * **The `-z` rename shape is not the human one.** Without `-z`, git renders a
- * rename inline as `R  old -> new`, and the predecessor split on `" -> "` to
- * recover the new path. Under `-z` there is no arrow: git emits the new path in
- * the entry and the **original path as its own following NUL-terminated field**.
+ * **The hand-rolled `-z` parse is gone.** This used to take raw stdout and
+ * split it on NUL itself, and the rename case was a documented defect: without
+ * `-z`, git renders a rename inline as `R  old -> new`, and the predecessor
+ * split on `" -> "` to recover the new path. Under `-z` there is no arrow — git
+ * emits the new path in the entry and the **original path as its own following
+ * NUL-terminated field** — so the split never fired, the trailing original path
+ * arrived on the next iteration looking like an ordinary entry, was read from
+ * disk where it no longer exists, and was committed as a zero-length file.
  *
- * So the split never fired, and the trailing original path arrived on the next
- * iteration looking like an ordinary entry whose status letters were really the
- * first two characters of a path. It was then read from disk — where it no
- * longer exists, because it was renamed — and, thanks to the second defect
- * below, committed as an empty file. A rename could therefore add a
- * zero-length copy of its own source path to the release commit.
- *
- * The original-path field is consumed here rather than parsed, because nothing
- * downstream needs it: the deletion of the source is already implied by the
- * tree the commit builds.
+ * `Git.status` now does that parsing, exposing the original path as
+ * {@link StatusEntry.origPath}. It is ignored here rather than parsed, because
+ * nothing downstream needs it: the deletion of the source is already implied by
+ * the tree the commit builds.
  *
  * **A failed read is a failure, not empty content.** The predecessor caught
  * every `readFileString` error into `""`. A transient read failure therefore
@@ -48,31 +47,26 @@ const DELETION_CODES = new Set(["D", "DD", "AD"]);
  * once closed a live release PR and deleted its branch: an error swallowed into
  * a plausible-looking empty value. Read errors now propagate.
  *
+ * @param entries - The listing `Git.status` returned.
  * @returns The changes to commit, in the order git reported them.
  *
  * @public
  */
 export const collectPorcelainChanges = (
-	stdout: string,
+	entries: ReadonlyArray<StatusEntry>,
 ): Effect.Effect<FileChange[], FileReadError, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
-		const fields = stdout.split("\0");
 		const changes: FileChange[] = [];
 
-		for (let i = 0; i < fields.length; i++) {
-			const entry = fields[i];
-			if (entry.length === 0) continue;
-
-			const statusCode = entry.substring(0, 2).trim();
-			const filePath = entry.substring(3);
-
-			// A rename or copy in the index is followed by its original path as a
-			// separate field. Consume it so it is not read as an entry of its own.
-			if (entry[0] === "R" || entry[0] === "C") i += 1;
-
+		for (const entry of entries) {
+			const filePath = entry.path;
 			if (filePath === "") continue;
 
+			// The two status columns, read as one code the way git's own porcelain
+			// documentation reads them (" D" and "D " both mean deleted, "DD" and
+			// "AD" are unmerged-with-deletion states).
+			const statusCode = `${entry.x}${entry.y}`.trim();
 			if (DELETION_CODES.has(statusCode)) {
 				changes.push(FileDeletion.make({ path: filePath }));
 				continue;

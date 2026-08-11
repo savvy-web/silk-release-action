@@ -4,7 +4,7 @@ import type { SpawnRecord } from "@effected/commands";
 import { ScriptedSpawner } from "@effected/commands";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
-import { tarMetaFolder } from "./meta-archive.js";
+import { tarMetaFolder } from "../../../src/release/meta-archive.js";
 
 const run = async (exit = 0): Promise<{ spawns: ReadonlyArray<SpawnRecord>; failed: boolean }> => {
 	const spawner = ScriptedSpawner.make((command) =>

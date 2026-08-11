@@ -1,5 +1,5 @@
 /**
- * Structural check for the npm-cache wiring in `main.ts`.
+ * Structural check for the npm-cache wiring in `program.ts`.
  *
  * @remarks
  * `main` is an `Effect.gen` program that requires the full `ActionRuntime`
@@ -17,10 +17,10 @@ import { describe, expect, it } from "vitest";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
-describe("main.ts npm-cache wiring", () => {
-	it("should call ensureNpmCacheEnv before detectWorkflowPhase in main.ts source", () => {
-		// Given: the main.ts source text
-		const source = readFileSync(join(HERE, "main.ts"), "utf8");
+describe("program.ts npm-cache wiring", () => {
+	it("should call ensureNpmCacheEnv before detectWorkflowPhase in program.ts source", () => {
+		// Given: the program.ts source text
+		const source = readFileSync(join(HERE, "..", "..", "src", "program.ts"), "utf8");
 
 		// When
 		const importsHelper = /import\s*\{[^}]*\bensureNpmCacheEnv\b[^}]*\}\s*from\s*["']\.\/utils\/npm-cache\.js["']/.test(

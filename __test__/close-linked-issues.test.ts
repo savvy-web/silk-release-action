@@ -44,20 +44,21 @@ const makeRecorder = (): Recorder => ({
 	summaries: [],
 });
 
-const linked = (number: number, title: string): LinkedIssue =>
+const linked = (number: number, title: string, state = "open"): LinkedIssue =>
 	LinkedIssue.make({
 		number,
 		title,
-		state: "open",
+		state,
 		url: `https://x.test/issues/${number}`,
 		nodeId: `I_${number}`,
 		userLinked: true,
 	});
 
 interface Options {
-	readonly issues?: ReadonlyArray<{ number: number; title: string }>;
+	readonly issues?: ReadonlyArray<{ number: number; title: string; state?: string }>;
 	readonly linkedFails?: boolean;
 	readonly closeFails?: boolean;
+	readonly commentFails?: boolean;
 }
 
 const makeLayer = (recorder: Recorder, options: Options) =>
@@ -92,12 +93,14 @@ const makeLayer = (recorder: Recorder, options: Options) =>
 								errors: [],
 							}),
 						)
-					: Effect.succeed((options.issues ?? []).map((i) => linked(i.number, i.title))),
+					: Effect.succeed((options.issues ?? []).map((i) => linked(i.number, i.title, i.state))),
 			comment: (number) =>
-				Effect.sync(() => {
-					recorder.comments.push(number);
-					return 1;
-				}),
+				options.commentFails === true
+					? Effect.fail(GitHubError.rejected("GitHubIssue.comment", 403, "no permission"))
+					: Effect.sync(() => {
+							recorder.comments.push(number);
+							return 1;
+						}),
 			close: (number) =>
 				options.closeFails === true
 					? Effect.fail(GitHubError.rejected("GitHubIssue.close", 403, "no permission"))
@@ -161,7 +164,7 @@ describe("closeLinkedIssues", () => {
 		const result = await run(recorder, { issues: [] });
 
 		expect(result.closedCount).toBe(0);
-		expect(recorder.outputs).toContainEqual({ name: "closed_issues_count", value: "0" });
+		expect(recorder.outputs).toContainEqual({ name: "closed-issues-count", value: "0" });
 	});
 
 	it("should emit the closed-issue outputs", async () => {
@@ -169,8 +172,8 @@ describe("closeLinkedIssues", () => {
 
 		await run(recorder, { issues: [{ number: 7, title: "seven" }] });
 
-		expect(recorder.outputs).toContainEqual({ name: "closed_issues_count", value: "1" });
-		const payload = recorder.outputs.find((o) => o.name === "closed_issues")?.value ?? "[]";
+		expect(recorder.outputs).toContainEqual({ name: "closed-issues-count", value: "1" });
+		const payload = recorder.outputs.find((o) => o.name === "closed-issues")?.value ?? "[]";
 		expect(JSON.parse(payload)).toEqual([{ number: 7, title: "seven", closed: true }]);
 	});
 
@@ -184,6 +187,63 @@ describe("closeLinkedIssues", () => {
 		expect(result.failedCount).toBe(1);
 		expect(result.closedCount).toBe(0);
 		expect(result.issues[0]?.error).toBeDefined();
+	});
+
+	// ── Re-run idempotency (the property the whole "fail loudly so the operator
+	// re-runs" posture in steps/publishing.ts depends on) ────────────────────
+	describe("re-running must not double-apply", () => {
+		it("should NOT comment again on an issue that is already closed", async () => {
+			const recorder = makeRecorder();
+
+			// The second run's view of the world: `linkedIssues` still returns the
+			// issue — `closingIssuesReferences` does not filter by state — but it now
+			// reports CLOSED. Before the guard, this posted a second "Closed by
+			// release PR #42 merge." comment on every linked issue, every re-run.
+			const result = await run(recorder, { issues: [{ number: 1, title: "a", state: "CLOSED" }] });
+
+			expect(recorder.comments).toEqual([]);
+			expect(recorder.closed).toEqual([]);
+			// Counted as closed: it IS closed. Reporting it as a failure would fail
+			// the phase forever on a successful release.
+			expect(result.closedCount).toBe(1);
+			expect(result.failedCount).toBe(0);
+		});
+
+		it("should treat the lower-case state spelling the same way", async () => {
+			const recorder = makeRecorder();
+
+			// GraphQL's IssueState is upper-case; the comparison is case-insensitive
+			// so a differently-cased source cannot silently reopen the double-comment.
+			const result = await run(recorder, { issues: [{ number: 1, title: "a", state: "closed" }] });
+
+			expect(recorder.comments).toEqual([]);
+			expect(result.closedCount).toBe(1);
+		});
+
+		it("should not comment when the close fails, so a re-run has nothing to duplicate", async () => {
+			const recorder = makeRecorder();
+
+			// The ordering guarantee. Comment-first would leave a comment behind on
+			// the exact path that makes the operator re-run — and the re-run, seeing
+			// the issue still open, would comment a second time.
+			const result = await run(recorder, { issues: [{ number: 1, title: "a" }], closeFails: true });
+
+			expect(recorder.comments).toEqual([]);
+			expect(result.failedCount).toBe(1);
+		});
+
+		it("should still count the issue closed when only the comment fails", async () => {
+			const recorder = makeRecorder();
+
+			// The issue is closed; the comment is a courtesy. Reporting a failure
+			// here would fail Phase 3 over a cosmetic call, and the re-run would skip
+			// the issue anyway because it is already CLOSED.
+			const result = await run(recorder, { issues: [{ number: 1, title: "a" }], commentFails: true });
+
+			expect(recorder.closed).toEqual([1]);
+			expect(result.closedCount).toBe(1);
+			expect(result.failedCount).toBe(0);
+		});
 	});
 
 	it("should degrade to zero issues when the linked-issue query fails", async () => {

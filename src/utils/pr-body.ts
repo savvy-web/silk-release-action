@@ -202,31 +202,6 @@ const parseReferenceIds = (region: string): ReadonlyArray<number> =>
 		.map(Number);
 
 /**
- * The bare `Closes #N` lines GitHub's linker reads.
- *
- * @remarks
- * One per open issue, each on its own line with nothing before or after it.
- * This is the load-bearing part of the body.
- *
- * **The form is empirically verified, not inferred from GitHub's docs.**
- * `savvy-web/silk-integration` PR #243 was constructed by hand as a deliberate
- * experiment to answer exactly this question: a body containing only a bare
- * `Closes #168` reported `closingIssuesReferences: [168]`. PRs #242 and #232 —
- * created by this action with an empty body — reported none.
- *
- * A reference **inside a fenced block does not count**, which is why the
- * proposed-squash-commit block carries its own copy and these lines are emitted
- * separately rather than shared. Do not "deduplicate" the two.
- *
- * @public
- */
-export const buildClosingReferences = (linkedIssues: ReadonlyArray<LinkedIssueRef>): string =>
-	linkedIssues
-		.filter(isOpen)
-		.map((issue) => `Closes #${issue.number}`)
-		.join("\n");
-
-/**
  * The marker-delimited reference region, merging this run's references with
  * any an agent added.
  *

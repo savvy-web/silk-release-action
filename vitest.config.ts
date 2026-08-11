@@ -22,6 +22,8 @@ export default async () => {
 				enabled: true,
 				provider: "v8",
 				thresholds: AgentPlugin.COVERAGE_LEVELS.standard.thresholds,
+				// Score never-imported src files as 0% instead of silently omitting them.
+				include: ["src/**/*.ts"],
 				exclude: [],
 			},
 		},

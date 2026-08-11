@@ -5,12 +5,11 @@
  * SBOM, publish, releases) surfaces packages in dependency-first order.
  */
 
+import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
 import { WorkspaceDiscovery, WorkspacePackage } from "@effected/workspaces";
 import { Effect, Layer, Logger } from "effect";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-
-import { cleanupTestEnvironment, setupTestEnvironment } from "../../__test__/utils/github-mocks.js";
-import { sortReleasesTopologically } from "./sort-releases-topologically.js";
+import { sortReleasesTopologically } from "../../../src/utils/sort-releases-topologically.js";
+import { cleanupTestEnvironment, setupTestEnvironment } from "../../utils/github-mocks.js";
 
 /** Build a WorkspacePackage fixture whose workspace dependency edges point at `deps`. */
 const pkg = (name: string, deps: ReadonlyArray<string> = []): WorkspacePackage =>
@@ -49,56 +48,60 @@ describe("sortReleasesTopologically", () => {
 	beforeEach(() => setupTestEnvironment({ suppressOutput: true }));
 	afterEach(() => cleanupTestEnvironment());
 
-	it("orders names dependency-first using the workspace dependency graph", async () => {
-		// dep depends on nothing; a and b each depend on dep.
-		const layer = makeDiscoveryLayer([
-			pkg("@scope/dep"),
-			pkg("@scope/a", ["@scope/dep"]),
-			pkg("@scope/b", ["@scope/dep"]),
-		]);
+	it.effect("orders names dependency-first using the workspace dependency graph", () =>
+		Effect.gen(function* () {
+			// dep depends on nothing; a and b each depend on dep.
+			const layer = makeDiscoveryLayer([
+				pkg("@scope/dep"),
+				pkg("@scope/a", ["@scope/dep"]),
+				pkg("@scope/b", ["@scope/dep"]),
+			]);
 
-		// Caller passes them in detection (alphabetical) order.
-		const result = await Effect.runPromise(
-			sortReleasesTopologically(["@scope/a", "@scope/b", "@scope/dep"]).pipe(
+			// Caller passes them in detection (alphabetical) order.
+			const result = yield* sortReleasesTopologically(["@scope/a", "@scope/b", "@scope/dep"]).pipe(
 				Effect.provide(layer),
 				Effect.provide(Logger.layer([])),
-			),
-		);
+			);
 
-		expect(result).toEqual(["@scope/dep", "@scope/a", "@scope/b"]);
-	});
+			expect(result).toEqual(["@scope/dep", "@scope/a", "@scope/b"]);
+		}),
+	);
 
-	it("keeps only the requested packages, dropping non-released transitive deps", async () => {
-		// a → dep → non-released. sortSubset pulls the whole transitive closure;
-		// the non-released dependency must be filtered back out.
-		const layer = makeDiscoveryLayer([
-			pkg("@scope/non-released"),
-			pkg("@scope/dep", ["@scope/non-released"]),
-			pkg("@scope/a", ["@scope/dep"]),
-		]);
+	it.effect("keeps only the requested packages, dropping non-released transitive deps", () =>
+		Effect.gen(function* () {
+			// a → dep → non-released. sortSubset pulls the whole transitive closure;
+			// the non-released dependency must be filtered back out.
+			const layer = makeDiscoveryLayer([
+				pkg("@scope/non-released"),
+				pkg("@scope/dep", ["@scope/non-released"]),
+				pkg("@scope/a", ["@scope/dep"]),
+			]);
 
-		const result = await Effect.runPromise(
-			sortReleasesTopologically(["@scope/a", "@scope/dep"]).pipe(
+			const result = yield* sortReleasesTopologically(["@scope/a", "@scope/dep"]).pipe(
 				Effect.provide(layer),
 				Effect.provide(Logger.layer([])),
-			),
-		);
+			);
 
-		expect(result).toEqual(["@scope/dep", "@scope/a"]);
-	});
+			expect(result).toEqual(["@scope/dep", "@scope/a"]);
+		}),
+	);
 
-	it("falls back to the input order when the sort fails", async () => {
-		// a ↔ b form a cycle, so DependencyGraph.sortSubset fails with a
-		// CyclicDependencyError and the helper returns the input order unchanged.
-		const layer = makeDiscoveryLayer([pkg("@scope/a", ["@scope/b"]), pkg("@scope/b", ["@scope/a"]), pkg("@scope/dep")]);
+	it.effect("falls back to the input order when the sort fails", () =>
+		Effect.gen(function* () {
+			// a ↔ b form a cycle, so DependencyGraph.sortSubset fails with a
+			// CyclicDependencyError and the helper returns the input order unchanged.
+			const layer = makeDiscoveryLayer([
+				pkg("@scope/a", ["@scope/b"]),
+				pkg("@scope/b", ["@scope/a"]),
+				pkg("@scope/dep"),
+			]);
 
-		const result = await Effect.runPromise(
-			sortReleasesTopologically(["@scope/a", "@scope/b", "@scope/dep"]).pipe(
+			const result = yield* sortReleasesTopologically(["@scope/a", "@scope/b", "@scope/dep"]).pipe(
 				Effect.provide(layer),
 				Effect.provide(Logger.layer([])),
-			),
-		);
+			);
 
-		expect(result).toEqual(["@scope/a", "@scope/b", "@scope/dep"]);
-	});
+			expect(result).toEqual(["@scope/a", "@scope/b", "@scope/dep"]);
+		}),
+	);
 });

@@ -16,7 +16,7 @@ import { Git, GitCommandError, LsTreeEntry } from "@effected/git";
 import { Effect, Option } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { countChangesetsPerPackage } from "./count-changesets.js";
+import { countChangesetsPerPackage } from "../../../src/utils/count-changesets.js";
 
 const blob = (path: string): LsTreeEntry =>
 	LsTreeEntry.make({ mode: "100644", type: "blob", oid: "0".repeat(40), path });
