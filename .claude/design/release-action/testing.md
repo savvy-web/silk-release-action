@@ -4,8 +4,8 @@ category: testing
 status: current
 completeness: 90
 created: 2026-02-07
-updated: 2026-08-06
-last-synced: 2026-08-06
+updated: 2026-08-11
+last-synced: 2026-08-11
 module: release-action
 related:
   - architecture.md
@@ -39,7 +39,7 @@ dependencies:
 
 ## Overview
 
-The project uses Vitest with a suite of **814 tests** covering the phase steps, the Phase-3 Effect orchestration, the check derivation, the silk publishability rules, and the utility modules. Tests enforce type-safe mocking with zero `any` types. All external dependencies (GitHub API, subprocess execution, file system, `@effected/workspaces`) are replaced with in-memory Effect layers or `vi.mock()` so tests are fast, reliable, and isolated.
+The project uses Vitest with a suite of **830 tests** covering the phase steps, the Phase-3 Effect orchestration, the check derivation, the silk publishability rules, and the utility modules. Tests enforce type-safe mocking with zero `any` types. All external dependencies (GitHub API, subprocess execution, file system, `@effected/workspaces`) are replaced with in-memory Effect layers or `vi.mock()` so tests are fast, reliable, and isolated.
 
 `@savvy-web/github-action-effects/testing` is gone with the library it belonged to. The `@effected/*` kit exposes no `/testing` entry point; service doubles are built with `Layer.succeed(Service, { … })` or the kit's own `*.makeTest` statics (`ActionEnvironment.makeTest`, `ActionOutputs.makeTest`, `SigstoreSigner.makeTest`). `@savvy-web/silk-effects` ships `Changesets.makeReleasePlannerTest` and `Changesets.makeConfigInspectorTest` for the native-versioning services.
 

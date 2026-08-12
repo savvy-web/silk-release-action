@@ -3,6 +3,14 @@
 	"$id": "https://raw.githubusercontent.com/savvy-web/silk-release-action/main/silk-release-action.output.schema.json",
 	"$ref": "#/$defs/ReleaseOutput",
 	"$defs": {
+		"Literal_": {
+			"type": "string",
+			"enum": [
+				"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/silk-release-action.output.schema.json"
+			],
+			"title": "JSON Schema URL",
+			"description": "URL of the hosted JSON Schema this output conforms to. Editors and json-schema-aware consumers use this for hover docs and validation."
+		},
 		"ReleaseStatus": {
 			"type": "string",
 			"enum": ["no-op", "success", "partial", "failed"],
@@ -48,25 +56,13 @@
 			"type": "object",
 			"properties": {
 				"number": {
-					"anyOf": [
+					"type": "number",
+					"allOf": [
 						{
-							"type": "number"
-						},
-						{
-							"type": "string",
-							"enum": ["NaN"]
-						},
-						{
-							"type": "string",
-							"enum": ["Infinity"]
-						},
-						{
-							"type": "string",
-							"enum": ["-Infinity"]
+							"title": "Release PR number",
+							"description": "The GitHub PR number for the release PR."
 						}
-					],
-					"title": "Release PR number",
-					"description": "The GitHub PR number for the release PR."
+					]
 				},
 				"url": {
 					"type": "string",
@@ -104,25 +100,13 @@
 					"$ref": "#/$defs/ChangesetsBumpType"
 				},
 				"changesetCount": {
-					"anyOf": [
+					"type": "number",
+					"allOf": [
 						{
-							"type": "number"
-						},
-						{
-							"type": "string",
-							"enum": ["NaN"]
-						},
-						{
-							"type": "string",
-							"enum": ["Infinity"]
-						},
-						{
-							"type": "string",
-							"enum": ["-Infinity"]
+							"title": "Changesets naming this package",
+							"description": "How many changeset files name this package. **Zero means the package releases only because a dependency did** — it still gets a version bump and a CHANGELOG entry, but no changeset asked for it, so it is invisible to a count of changeset files. Renders as the `—` in a release table's changeset column."
 						}
-					],
-					"title": "Changesets naming this package",
-					"description": "How many changeset files name this package. **Zero means the package releases only because a dependency did** — it still gets a version bump and a CHANGELOG entry, but no changeset asked for it, so it is invisible to a count of changeset files. Renders as the `—` in a release table's changeset column."
+					]
 				},
 				"oldVersion": {
 					"type": "string",
@@ -144,25 +128,13 @@
 			"type": "object",
 			"properties": {
 				"count": {
-					"anyOf": [
+					"type": "number",
+					"allOf": [
 						{
-							"type": "number"
-						},
-						{
-							"type": "string",
-							"enum": ["NaN"]
-						},
-						{
-							"type": "string",
-							"enum": ["Infinity"]
-						},
-						{
-							"type": "string",
-							"enum": ["-Infinity"]
+							"title": "Changeset count",
+							"description": "The number of changeset **files** observed in the `.changeset/` directory. Not the length of `packages`: one file may name several packages, and two files may name the same one, so the two numbers diverge in both directions."
 						}
-					],
-					"title": "Changeset count",
-					"description": "The number of changeset **files** observed in the `.changeset/` directory. Not the length of `packages`: one file may name several packages, and two files may name the same one, so the two numbers diverge in both directions."
+					]
 				},
 				"packages": {
 					"type": "array",
@@ -207,12 +179,7 @@
 			"type": "object",
 			"properties": {
 				"$schema": {
-					"type": "string",
-					"enum": [
-						"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/silk-release-action.output.schema.json"
-					],
-					"title": "JSON Schema URL",
-					"description": "URL of the hosted JSON Schema this output conforms to. Editors and json-schema-aware consumers use this for hover docs and validation."
+					"$ref": "#/$defs/Literal_"
 				},
 				"schemaVersion": {
 					"type": "string",
@@ -322,25 +289,13 @@
 					"description": "True when every released package built successfully."
 				},
 				"packageCount": {
-					"anyOf": [
+					"type": "number",
+					"allOf": [
 						{
-							"type": "number"
-						},
-						{
-							"type": "string",
-							"enum": ["NaN"]
-						},
-						{
-							"type": "string",
-							"enum": ["Infinity"]
-						},
-						{
-							"type": "string",
-							"enum": ["-Infinity"]
+							"title": "Package count",
+							"description": "Number of packages built and validated."
 						}
-					],
-					"title": "Package count",
-					"description": "Number of packages built and validated."
+					]
 				}
 			},
 			"required": ["passed", "packageCount"],
@@ -465,25 +420,13 @@
 			"type": "object",
 			"properties": {
 				"componentCount": {
-					"anyOf": [
+					"type": "number",
+					"allOf": [
 						{
-							"type": "number"
-						},
-						{
-							"type": "string",
-							"enum": ["NaN"]
-						},
-						{
-							"type": "string",
-							"enum": ["Infinity"]
-						},
-						{
-							"type": "string",
-							"enum": ["-Infinity"]
+							"title": "Component count",
+							"description": "Number of components (direct + transitive dependencies) in the BOM. 0 is legitimate for a dependency-free package."
 						}
-					],
-					"title": "Component count",
-					"description": "Number of components (direct + transitive dependencies) in the BOM. 0 is legitimate for a dependency-free package."
+					]
 				},
 				"ntiaCompliant": {
 					"type": "boolean",
@@ -549,25 +492,13 @@
 				"packedBytes": {
 					"anyOf": [
 						{
-							"anyOf": [
+							"type": "number",
+							"allOf": [
 								{
-									"type": "number"
-								},
-								{
-									"type": "string",
-									"enum": ["NaN"]
-								},
-								{
-									"type": "string",
-									"enum": ["Infinity"]
-								},
-								{
-									"type": "string",
-									"enum": ["-Infinity"]
+									"title": "Packed size (bytes)",
+									"description": "Size of the packed tarball in bytes. Null when the dry-run did not report it."
 								}
-							],
-							"title": "Packed size (bytes)",
-							"description": "Size of the packed tarball in bytes. Null when the dry-run did not report it."
+							]
 						},
 						{
 							"type": "null"
@@ -577,25 +508,13 @@
 				"unpackedBytes": {
 					"anyOf": [
 						{
-							"anyOf": [
+							"type": "number",
+							"allOf": [
 								{
-									"type": "number"
-								},
-								{
-									"type": "string",
-									"enum": ["NaN"]
-								},
-								{
-									"type": "string",
-									"enum": ["Infinity"]
-								},
-								{
-									"type": "string",
-									"enum": ["-Infinity"]
+									"title": "Unpacked size (bytes)",
+									"description": "Size of the unpacked contents in bytes. Null when the dry-run did not report it."
 								}
-							],
-							"title": "Unpacked size (bytes)",
-							"description": "Size of the unpacked contents in bytes. Null when the dry-run did not report it."
+							]
 						},
 						{
 							"type": "null"
@@ -605,25 +524,13 @@
 				"fileCount": {
 					"anyOf": [
 						{
-							"anyOf": [
+							"type": "number",
+							"allOf": [
 								{
-									"type": "number"
-								},
-								{
-									"type": "string",
-									"enum": ["NaN"]
-								},
-								{
-									"type": "string",
-									"enum": ["Infinity"]
-								},
-								{
-									"type": "string",
-									"enum": ["-Infinity"]
+									"title": "File count",
+									"description": "Number of files in the packed tarball. Null when the dry-run did not report it."
 								}
-							],
-							"title": "File count",
-							"description": "Number of files in the packed tarball. Null when the dry-run did not report it."
+							]
 						},
 						{
 							"type": "null"
@@ -779,25 +686,13 @@
 				"changesetCount": {
 					"anyOf": [
 						{
-							"anyOf": [
+							"type": "number",
+							"allOf": [
 								{
-									"type": "number"
-								},
-								{
-									"type": "string",
-									"enum": ["NaN"]
-								},
-								{
-									"type": "string",
-									"enum": ["Infinity"]
-								},
-								{
-									"type": "string",
-									"enum": ["-Infinity"]
+									"title": "Changeset count",
+									"description": "Number of changesets contributing to this package's bump. Null when unknown."
 								}
-							],
-							"title": "Changeset count",
-							"description": "Number of changesets contributing to this package's bump. Null when unknown."
+							]
 						},
 						{
 							"type": "null"
@@ -852,46 +747,22 @@
 					"description": "True when every GitHub Packages publish target passed its dry-run probe."
 				},
 				"totalTargets": {
-					"anyOf": [
+					"type": "number",
+					"allOf": [
 						{
-							"type": "number"
-						},
-						{
-							"type": "string",
-							"enum": ["NaN"]
-						},
-						{
-							"type": "string",
-							"enum": ["Infinity"]
-						},
-						{
-							"type": "string",
-							"enum": ["-Infinity"]
+							"title": "Total targets",
+							"description": "Total number of publish targets across every released package and every registry."
 						}
-					],
-					"title": "Total targets",
-					"description": "Total number of publish targets across every released package and every registry."
+					]
 				},
 				"readyTargets": {
-					"anyOf": [
+					"type": "number",
+					"allOf": [
 						{
-							"type": "number"
-						},
-						{
-							"type": "string",
-							"enum": ["NaN"]
-						},
-						{
-							"type": "string",
-							"enum": ["Infinity"]
-						},
-						{
-							"type": "string",
-							"enum": ["-Infinity"]
+							"title": "Ready targets",
+							"description": "Number of publish targets that passed their dry-run probe."
 						}
-					],
-					"title": "Ready targets",
-					"description": "Number of publish targets that passed their dry-run probe."
+					]
 				},
 				"packages": {
 					"type": "array",
@@ -973,12 +844,7 @@
 			"type": "object",
 			"properties": {
 				"$schema": {
-					"type": "string",
-					"enum": [
-						"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/silk-release-action.output.schema.json"
-					],
-					"title": "JSON Schema URL",
-					"description": "URL of the hosted JSON Schema this output conforms to. Editors and json-schema-aware consumers use this for hover docs and validation."
+					"$ref": "#/$defs/Literal_"
 				},
 				"schemaVersion": {
 					"type": "string",
@@ -1418,25 +1284,13 @@
 					"description": "The HTML URL of the GitHub release."
 				},
 				"id": {
-					"anyOf": [
+					"type": "number",
+					"allOf": [
 						{
-							"type": "number"
-						},
-						{
-							"type": "string",
-							"enum": ["NaN"]
-						},
-						{
-							"type": "string",
-							"enum": ["Infinity"]
-						},
-						{
-							"type": "string",
-							"enum": ["-Infinity"]
+							"title": "Release ID",
+							"description": "The numeric GitHub release ID."
 						}
-					],
-					"title": "Release ID",
-					"description": "The numeric GitHub release ID."
+					]
 				},
 				"packageName": {
 					"anyOf": [
@@ -1493,12 +1347,7 @@
 			"type": "object",
 			"properties": {
 				"$schema": {
-					"type": "string",
-					"enum": [
-						"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/silk-release-action.output.schema.json"
-					],
-					"title": "JSON Schema URL",
-					"description": "URL of the hosted JSON Schema this output conforms to. Editors and json-schema-aware consumers use this for hover docs and validation."
+					"$ref": "#/$defs/Literal_"
 				},
 				"schemaVersion": {
 					"type": "string",

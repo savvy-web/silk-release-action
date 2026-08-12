@@ -4,8 +4,8 @@ category: architecture
 status: current
 completeness: 95
 created: 2026-02-07
-updated: 2026-08-06
-last-synced: 2026-08-06
+updated: 2026-08-11
+last-synced: 2026-08-11
 module: release-action
 related:
   - integration.md
@@ -491,6 +491,8 @@ The `src/schema/` directory contains the input decode point, the output declarat
 - **`src/schema/inputs.ts`** — `INPUT_NAMES`, `Inputs`, `BranchRefs`, `readInputs`. See [Inputs and Outputs](#inputs-and-outputs-single-decode-point).
 - **`src/schema/outputs.ts`** — `PRE_OUTPUT_NAMES`, `OUTPUT_NAMES`, `emitReleaseOutput`.
 - **`src/schema/release-output.ts`** — `ReleaseOutput` as a `Schema.Union` of three phase structs discriminated by the `phase` literal: `BranchManagementOutput`, `ValidationOutput`, `PublishingOutput`. Each carries orthogonal machine flags (`noop`, `succeeded`, `hasFailures`) plus a derived human-readable `status`. The action emits a Schema-encoded instance as the single `result` output plus five scalar mirrors (`phase`, `status`, `succeeded`, `package-count`, `release-pr-number`), and three close-issues scalars. `ValidationPublishPackage.releaseNotes` is `Schema.optional` — populated in-memory for the Release Notes Preview check but stripped before serialization, so it is absent from the emitted `result` and from `silk-release-action.output.schema.json`'s `required` list.
+
+  Every numeric field in this module is `Schema.Finite`, not `Schema.Number`. Under the installed Effect version, `Schema.Number` lowers to `anyOf: [number, "NaN"|"Infinity"|"-Infinity"]` (v4 encodes non-finite values as strings) and that lowering silently drops any `title`/`description` annotation when it hoists the union into `$defs`; `Schema.Finite` lowers to a plain `{ type: "number" }` and keeps the annotation. All twelve fields this affects are counts, byte sizes, a PR number and a release ID — genuinely finite — so the fix is also a correctness tightening: those fields now reject `NaN`/`Infinity` at encode time instead of silently serializing them as strings. A future numeric field on this schema should default to `Schema.Finite` for the same reason.
 - **`src/schema/projections.ts`** — three pure projection functions, each taking an explicit input interface as the deliberate seam between internal pipeline types and the published contract.
 - **`src/schema/silk-release-config.ts`** — `SilkReleaseConfig` Effect schema for the `sbom-config` action input (and `.github/silk-release.json`), plus `INPUT_SCHEMA_URL`.
 

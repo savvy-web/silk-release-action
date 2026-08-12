@@ -134,7 +134,7 @@ const BranchManagementPayload = Schema.Struct({
 	}),
 	releasePr: Schema.NullOr(
 		Schema.Struct({
-			number: Schema.Number.annotate({
+			number: Schema.Finite.annotate({
 				title: "Release PR number",
 				description: "The GitHub PR number for the release PR.",
 			}),
@@ -155,7 +155,7 @@ const BranchManagementPayload = Schema.Struct({
 		}),
 	),
 	changesets: Schema.Struct({
-		count: Schema.Number.annotate({
+		count: Schema.Finite.annotate({
 			title: "Changeset count",
 			description:
 				"The number of changeset **files** observed in the `.changeset/` directory. Not the length of `packages`: one file may name several packages, and two files may name the same one, so the two numbers diverge in both directions.",
@@ -172,7 +172,7 @@ const BranchManagementPayload = Schema.Struct({
 					description:
 						"The bump the release plan applies to this package: `major`, `minor`, or `patch`. The validation phase emits an extended set under `ValidationBumpType` that adds `new` and `unknown`.",
 				}),
-				changesetCount: Schema.Number.annotate({
+				changesetCount: Schema.Finite.annotate({
 					title: "Changesets naming this package",
 					description:
 						"How many changeset files name this package. **Zero means the package releases only because a dependency did** — it still gets a version bump and a CHANGELOG entry, but no changeset asked for it, so it is invisible to a count of changeset files. Renders as the `—` in a release table's changeset column.",
@@ -363,7 +363,7 @@ const ValidationFinding = Schema.Struct({
 
 /** The SBOM preview for one build directory. */
 const ValidationBuildSbom = Schema.Struct({
-	componentCount: Schema.Number.annotate({
+	componentCount: Schema.Finite.annotate({
 		title: "Component count",
 		description:
 			"Number of components (direct + transitive dependencies) in the BOM. 0 is legitimate for a dependency-free package.",
@@ -422,19 +422,19 @@ const ValidationBuild = Schema.Struct({
 		examples: ["dist/npm", "dist/jsr"],
 	}),
 	packedBytes: Schema.NullOr(
-		Schema.Number.annotate({
+		Schema.Finite.annotate({
 			title: "Packed size (bytes)",
 			description: "Size of the packed tarball in bytes. Null when the dry-run did not report it.",
 		}),
 	),
 	unpackedBytes: Schema.NullOr(
-		Schema.Number.annotate({
+		Schema.Finite.annotate({
 			title: "Unpacked size (bytes)",
 			description: "Size of the unpacked contents in bytes. Null when the dry-run did not report it.",
 		}),
 	),
 	fileCount: Schema.NullOr(
-		Schema.Number.annotate({
+		Schema.Finite.annotate({
 			title: "File count",
 			description: "Number of files in the packed tarball. Null when the dry-run did not report it.",
 		}),
@@ -548,7 +548,7 @@ const ValidationPublishPackage = Schema.Struct({
 			"The validation phase's package bump type, derived by diffing the release-branch version against the target-branch version. A superset of `ChangesetsBumpType` (Phase 1 declared bumps): `major`/`minor`/`patch` are the standard semver bumps, and this enum adds `new` (no prior published version exists on the target branch) and `unknown` (could not be determined, typically when the prior version was a pre-release tag).",
 	}),
 	changesetCount: Schema.NullOr(
-		Schema.Number.annotate({
+		Schema.Finite.annotate({
 			title: "Changeset count",
 			description: "Number of changesets contributing to this package's bump. Null when unknown.",
 		}),
@@ -587,7 +587,7 @@ const ValidationPayload = Schema.Struct({
 			title: "Build validation passed",
 			description: "True when every released package built successfully.",
 		}),
-		packageCount: Schema.Number.annotate({
+		packageCount: Schema.Finite.annotate({
 			title: "Package count",
 			description: "Number of packages built and validated.",
 		}),
@@ -615,11 +615,11 @@ const ValidationPayload = Schema.Struct({
 			title: "GitHub Packages ready",
 			description: "True when every GitHub Packages publish target passed its dry-run probe.",
 		}),
-		totalTargets: Schema.Number.annotate({
+		totalTargets: Schema.Finite.annotate({
 			title: "Total targets",
 			description: "Total number of publish targets across every released package and every registry.",
 		}),
-		readyTargets: Schema.Number.annotate({
+		readyTargets: Schema.Finite.annotate({
 			title: "Ready targets",
 			description: "Number of publish targets that passed their dry-run probe.",
 		}),
@@ -970,7 +970,7 @@ export const PublishingRelease = Schema.Struct({
 		title: "Release URL",
 		description: "The HTML URL of the GitHub release.",
 	}),
-	id: Schema.Number.annotate({
+	id: Schema.Finite.annotate({
 		title: "Release ID",
 		description: "The numeric GitHub release ID.",
 	}),

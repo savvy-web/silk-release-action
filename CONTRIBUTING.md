@@ -4,8 +4,8 @@ Thank you for considering contributing to `silk-release-action`. This document e
 
 ## Prerequisites
 
-- **Node.js** 24.11.0 (see `devEngines` in `package.json`)
-- **pnpm** 10.28.2 (enforced via `packageManager` field)
+- **Node.js** 26.5.1 (see `devEngines` in `package.json`)
+- **pnpm** 11.20.0 (enforced via `packageManager` field)
 - **Git** with commit signing configured (recommended)
 
 ## Setup

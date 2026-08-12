@@ -37,13 +37,13 @@ Library edits ship separately on their own repo's branch and release with its ne
 
 ## Currently active
 
-**No dogfood link or override is active.** Everything is pinned to published versions: `@savvy-web/silk-effects ^5.5.0`, `@effected/git ^0.6.0`, `@effected/github-actions ^0.5.1`, `@effected/workspaces ^0.10.2`, `@effected/npm ^0.8.3`, `@effected/commands ^0.3.1`, `@effected/github ^0.2.3`, `@effected/sbom ^0.2.3`, `@effected/package-json ^0.7.3`, `@effected/markdown ^0.4.2`, `@effected/semver ^0.3.2`, `@effected/yaml ^0.6.1`, `@effected/jsonc ^0.5.2`; dev: `@savvy-web/github-action-builder ^2.2.2`, `@savvy-web/silk ^3.5.0`, `@effected/schemastore ^0.2.1`. `effect`, `@effect/platform-node` and `@effect/vitest` resolve via `catalog:effect` (**4.0.0-beta.101**, injected by the `@effected/pnpm-plugin-effect` config dependency in `pnpm-workspace.yaml`).
+**No dogfood link or override is active.** Everything is pinned to published versions: `@savvy-web/silk-effects ^5.5.2`, `@effected/git ^0.7.0`, `@effected/github-actions ^0.6.0`, `@effected/workspaces ^0.11.1`, `@effected/npm ^0.9.0`, `@effected/commands ^0.4.0`, `@effected/github ^0.3.0`, `@effected/sbom ^0.3.0`, `@effected/package-json ^0.8.0`, `@effected/markdown ^0.5.0`, `@effected/semver ^0.4.0`, `@effected/yaml ^0.7.0`, `@effected/jsonc ^0.6.0`; dev: `@savvy-web/github-action-builder ^2.2.3`, `@savvy-web/silk ^3.5.2`, `@effected/schemastore ^0.3.0`. `effect`, `@effect/platform-node` and `@effect/vitest` resolve via `catalog:effect` (**4.0.0-beta.107**, injected by the `@effected/pnpm-plugin-effect` config dependency in `pnpm-workspace.yaml`).
 
 ## What the dependency line buys
 
 - **v4 Schema** (`Schema.Literals([…])`, `Schema.Union([…])`, `.annotate`) drives `src/schema/*`; schema generation uses core `effect/JsonSchema` (`Schema.toJsonSchemaDocument` → `JsonSchema.toDocumentDraft07`). Both `json-schema-effect` and `ajv` are gone — `@effected/schemastore` covers validation.
 - **`NodeServices.layer`** (`@effect/platform-node`) replaces the old `NodeContext`/`NodeFileSystem`/`NodePath` stack; `@effect/platform` dissolved into core `effect` in v4.
-- **`@effected/git` 0.6** answers every git operation — **all 17 raw `ChildProcess.make("git", …)` spawns are gone.** Do not add one back.
+- **`@effected/git` 0.7** answers every git operation — **all 17 raw `ChildProcess.make("git", …)` spawns are gone.** Do not add one back.
 - **`@effected/workspaces`** provides `Workspaces.layerWithGit()`, `WorkspaceDiscovery`, `PublishabilityDetector`, `PackageManagerDetector` and `DependencyGraph` (`.sortSubset(...)`) for topological release ordering.
 - **`@effected/commands`** provides `LocalExec` / `ToolDiscovery` — the subprocess and tool-probe seams. Use them instead of a raw spawn.
 - **silk-effects 5** exports `Changesets.ReleasePlanner`/`ConfigInspector` (Phase-1 native versioning, `changelogModules` seam), `ChangesetConfigReader`, and `SilkPublishability` with `PublishTargetBindingError` — Phase-2 validation catches it to fail the check when a resolved publish directory is not bound by `dist/prod/targets.json`.
