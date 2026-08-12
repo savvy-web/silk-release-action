@@ -9,8 +9,8 @@ This is a **private GitHub Actions and Workflows repository** (`@savvy-web/silk-
 * **Type:** GitHub Actions & Workflows repository (infrastructure as code)
 * **Languages:** YAML (GitHub Actions), Shell scripts, TypeScript configuration
 * **Size:** ~253MB with dependencies installed
-* **Package Manager:** pnpm 10.20.0 (strictly enforced)
-* **Node.js Version:** 24.11.0 (specified in `.nvmrc`)
+* **Package Manager:** pnpm 11.20.0 (strictly enforced)
+* **Node.js Version:** 26.5.1 (specified in `devEngines.runtime` in `package.json`)
 * **No Build Output:** This repository does not produce artifacts or packages
 
 ## Critical: Bootstrap & Environment Setup
@@ -20,7 +20,7 @@ This is a **private GitHub Actions and Workflows repository** (`@savvy-web/silk-
 **You MUST install pnpm globally before running any commands:**
 
 ```bash
-npm install -g pnpm@10.20.0
+npm install -g pnpm@11.20.0
 ```
 
 **Then install dependencies:**
@@ -33,11 +33,11 @@ pnpm install
 
 ### Node.js Version
 
-The repository requires **Node.js 24.11.0** as specified in `.nvmrc`. If using nvm:
+The repository requires **Node.js 26.5.1** as specified in `devEngines.runtime` in `package.json`. If using nvm:
 
 ```bash
-nvm install
-nvm use
+nvm install 26.5.1
+nvm use 26.5.1
 ```
 
 ## Validation Commands (Run in This Order)
@@ -223,7 +223,7 @@ The repository uses **Husky with lint-staged** for automatic validation before c
 **Solution:** Install pnpm globally first:
 
 ```bash
-npm install -g pnpm@10.20.0
+npm install -g pnpm@11.20.0
 ```
 
 ### Error: "turbo_json_parse_error" (Found unknown key 'daemon')
@@ -357,8 +357,8 @@ The repository has **instruction files** in `.github/instructions/` that provide
 **These instructions have been validated by running actual commands and inspecting output.** If you encounter discrepancies:
 
 1. First, verify you've run `pnpm install` after cloning
-2. Check Node.js version matches `.nvmrc` (24.11.0)
-3. Verify pnpm version is 10.20.0
+2. Check Node.js version matches `devEngines.runtime` in `package.json` (26.5.1)
+3. Verify pnpm version is 11.20.0
 4. Only perform additional searches if the information is incomplete or incorrect
 
 ## Common Gotchas
@@ -377,7 +377,7 @@ The repository has **instruction files** in `.github/instructions/` that provide
 **Start working:**
 
 ```bash
-npm install -g pnpm@10.20.0
+npm install -g pnpm@11.20.0
 pnpm install
 ```
 
