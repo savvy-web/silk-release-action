@@ -61,7 +61,8 @@ export const registryShortLabel = (registry: string): string => {
  * Replaces the predecessor's `getRegistryDisplayName`, which the kit does not
  * ship — it is pure derivation from {@link classifyRegistry} and therefore
  * presentation policy. An absent or empty registry resolves to the public npm
- * registry, matching the classifier's own rule.
+ * registry — stated explicitly below rather than left to
+ * `classifyRegistry("")` happening to answer `"npm"`.
  *
  * @param registry - A registry URL or bare host, or null/undefined when none is
  *   configured.
@@ -70,8 +71,9 @@ export const registryShortLabel = (registry: string): string => {
  * @public
  */
 export const registryDisplayName = (registry: string | null | undefined): string => {
-	const value = registry ?? "";
-	switch (classifyRegistry(value)) {
+	// No registry configured means the default registry: public npm.
+	if (registry === null || registry === undefined || registry === "") return "npm";
+	switch (classifyRegistry(registry)) {
 		case "npm":
 			return "npm";
 		case "github-packages":
@@ -79,6 +81,6 @@ export const registryDisplayName = (registry: string | null | undefined): string
 		case "jsr":
 			return "JSR";
 		default:
-			return registryHost(value);
+			return registryHost(registry);
 	}
 };

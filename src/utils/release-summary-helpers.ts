@@ -77,6 +77,22 @@ function stripScope(name: string, scope: string | null): string {
 }
 
 /**
+ * The title for a release PR that names nothing.
+ *
+ * @remarks
+ * There was a `pr-title-prefix` input defaulting to `"chore: release"`. It
+ * never reached a real title — every branch that names packages or a version
+ * builds its own `release: …` string — so the input's only observable effect
+ * was the wording of the two fallbacks below, both of which mean "there is
+ * nothing to release". Phase 1 closes the PR and deletes the branch in exactly
+ * that case, so this is a guard rail rather than a title anyone should see.
+ *
+ * `release:` rather than `chore: release` to match the prefix the rest of the
+ * action actually emits, and commitlint accepts.
+ */
+export const NOTHING_TO_RELEASE_TITLE: string = "release: pending";
+
+/**
  * Decide the changeset release PR title from the packages that will release.
  *
  * @remarks
@@ -97,10 +113,14 @@ function stripScope(name: string, scope: string | null): string {
  *   is always named rather than collapsed).
  * - Nothing releasing, but a single-package repo → `release: <root version>`
  *   (covers private repos with nothing publishable).
- * - Nothing releasing and not single-package → the configured prefix.
+ * - Nothing releasing and not single-package → {@link NOTHING_TO_RELEASE_TITLE}.
  *
  * `perPackageVersioning` is the same signal as `isMonorepoForTagging`, so the
  * PR title and the git tag strategy stay aligned.
+ *
+ * The signature lost `prTitlePrefix` in #191 along with the `pr-title-prefix`
+ * input — see {@link NOTHING_TO_RELEASE_TITLE} for why the prefix never reached
+ * a real title.
  *
  * @param input - The decision inputs.
  * @param input.releasingPackages - The packages that will release (see {@link getReleasingPackages}).
@@ -110,22 +130,6 @@ function stripScope(name: string, scope: string | null): string {
  * @param input.maxLength - Title length cap before collapsing to a count (default {@link RELEASE_TITLE_MAX_LENGTH}).
  * @returns The resolved PR title.
  */
-/**
- * The title for a release PR that names nothing.
- *
- * @remarks
- * There was a `pr-title-prefix` input defaulting to `"chore: release"`. It
- * never reached a real title — every branch that names packages or a version
- * builds its own `release: …` string — so the input's only observable effect
- * was the wording of the two fallbacks below, both of which mean "there is
- * nothing to release". Phase 1 closes the PR and deletes the branch in exactly
- * that case, so this is a guard rail rather than a title anyone should see.
- *
- * `release:` rather than `chore: release` to match the prefix the rest of the
- * action actually emits, and commitlint accepts.
- */
-export const NOTHING_TO_RELEASE_TITLE = "release: pending";
-
 export function resolveReleasePrTitle(input: {
 	readonly releasingPackages: ReadonlyArray<{ readonly name: string; readonly version: string }>;
 	readonly perPackageVersioning: boolean;

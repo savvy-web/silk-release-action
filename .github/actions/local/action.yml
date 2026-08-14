@@ -19,8 +19,6 @@ inputs:
     description: |
       GitHub token for GitHub Packages publishing.
 
-      Pass secrets.GITHUB_TOKEN with workflow permissions: packages: write.
-
       REQUIRED for GitHub Packages. Pass secrets.GITHUB_TOKEN with workflow
       permissions: packages: write.
 

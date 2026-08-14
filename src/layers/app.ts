@@ -13,6 +13,7 @@
 
 import { NodeServices } from "@effect/platform-node";
 import { LocalExec, ToolDiscovery } from "@effected/commands";
+import type { GitHubClient } from "@effected/github";
 import {
 	ArtifactMetadata,
 	Attestation,
@@ -29,13 +30,57 @@ import {
 	PullRequestComment,
 	Repo,
 } from "@effected/github";
+import type { ActionEnvironment, ActionState } from "@effected/github-actions";
 import { ActionsIdentityToken, DryRun, GitHubToken, OidcTokenIssuer } from "@effected/github-actions";
 import { NpmRegistry, PackagePublish } from "@effected/npm";
 import { SigstoreSigner } from "@effected/sbom";
 import { Effect, Layer } from "effect";
+import type { HttpClient } from "effect/unstable/http";
 import { FetchHttpClient } from "effect/unstable/http";
 import { ReleaseLive } from "../release/layers.js";
 import { readInputs } from "../schema/inputs.js";
+
+/**
+ * Everything {@link makeAppLayer} provides.
+ *
+ * @remarks
+ * Named so the export can carry an explicit type — and so a reader sees the
+ * whole provision surface in one place instead of deriving it from the merge.
+ *
+ * @public
+ */
+export type AppServices =
+	| ArtifactMetadata
+	| Attestation
+	| CheckRun
+	| DryRun
+	| GitBranch
+	| GitCommit
+	| GitHubClient
+	| GitHubCommit
+	| GitHubContent
+	| GitHubIssue
+	| GitHubRelease
+	| GitHubRepository
+	| GitTag
+	| HttpClient.HttpClient
+	| NpmRegistry
+	| OidcTokenIssuer
+	| PackagePublish
+	| PullRequest
+	| PullRequestComment
+	| Repo
+	| SigstoreSigner
+	| NodeServices.NodeServices;
+
+/**
+ * What {@link makeAppLayer} requires — `ActionEnvironment` and `ActionState`
+ * from `ActionRuntime`, `LocalExec` from the release layer's workspace graph,
+ * and an `HttpClient`.
+ *
+ * @public
+ */
+export type AppRequirements = ActionEnvironment | ActionState | HttpClient.HttpClient | LocalExec;
 
 /* v8 ignore start -- pure Layer wiring, exercised indirectly by the modules that consume it */
 
@@ -46,11 +91,11 @@ import { readInputs } from "../schema/inputs.js";
  *   read here so the layer stays free of config reads and a test can drive both
  *   branches without a `ConfigProvider`.
  * @returns The composed domain layer, requiring only what `ActionRuntime`
- *   provides.
+ *   provides plus the release layer's `LocalExec`.
  *
  * @public
  */
-export const makeAppLayer = (dryRun: boolean) => {
+export const makeAppLayer = (dryRun: boolean): Layer.Layer<AppServices, never, AppRequirements> => {
 	// The App installation token is provisioned in `pre` and persisted to
 	// `ActionState`; this reads it back and builds a client. No
 	// `process.env.GITHUB_TOKEN` bridge. `ActionState` comes from the runtime, so
@@ -186,7 +231,11 @@ const releaseLive = ReleaseLive.pipe(Layer.provide(NodeServices.layer), Layer.or
  *
  * @public
  */
-export const MainLive = Layer.unwrap(
+export const MainLive: Layer.Layer<
+	AppServices | ToolDiscovery | Layer.Success<typeof releaseLive>,
+	never,
+	ActionEnvironment | ActionState | HttpClient.HttpClient
+> = Layer.unwrap(
 	Effect.map(readInputs, (inputs) =>
 		Layer.mergeAll(makeAppLayer(inputs.dryRun), toolDiscovery).pipe(Layer.provideMerge(releaseLive)),
 	),

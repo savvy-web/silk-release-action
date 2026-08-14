@@ -84,6 +84,8 @@ export interface AttestationSubject {
  * uploaded it. That path is now an {@link InvalidSha256DigestError} instead of a
  * meaningless attestation.
  *
+ * @param subject - What the attestation is about and what it asserts — the
+ *   subject name, its SHA-256, and the predicate.
  * @returns The stored attestation's URL.
  *
  * @public
