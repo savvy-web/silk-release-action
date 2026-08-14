@@ -10,9 +10,6 @@ import { PullRequest } from "@effected/github";
 import { ActionInput } from "@effected/github-actions";
 import { Config, Effect, Option, Schema } from "effect";
 
-/** How GitHub should merge the release PR once its checks pass. */
-export type AutoMergeMethod = "merge" | "squash" | "rebase";
-
 /**
  * The accepted values, as a schema.
  *
@@ -23,6 +20,15 @@ export type AutoMergeMethod = "merge" | "squash" | "rebase";
  * the list in two places and let them drift.
  */
 const AutoMergeMethodSchema = Schema.Literals(["merge", "squash", "rebase"]);
+
+/**
+ * How GitHub should merge the release PR once its checks pass.
+ *
+ * @remarks
+ * Derived from {@link AutoMergeMethodSchema} rather than restated, per the
+ * schema's own "avoid drift" note — the literal list exists exactly once.
+ */
+export type AutoMergeMethod = typeof AutoMergeMethodSchema.Type;
 
 /**
  * The `auto-merge` input: a merge method, or `Option.none` when disabled.

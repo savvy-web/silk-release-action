@@ -91,6 +91,36 @@ describe("rule 4 — sections are independent", () => {
 	});
 });
 
+describe("stamp decoding validates the state", () => {
+	// A stamp is machine-written, but it lives in a PR body anyone can edit. A
+	// state outside the known six used to pass straight through `decodeStamp`
+	// and fall into `renderBanner`'s fallback arm, which rendered the garbled
+	// value as "Up to date" — a false claim about unreadable data.
+
+	it("drops a stamp whose state is not one of the known six", () => {
+		const garbled = upsertSection("", section(), HEAD).replace('"state":"complete"', '"state":"garbled"');
+
+		expect(readSection(garbled, "build-validation")).toBeUndefined();
+	});
+
+	it("leaves a region with an unreadable stamp alone on a banner refresh, instead of claiming it is up to date", () => {
+		const garbled = upsertSection("", section(), HEAD).replace('"state":"complete"', '"state":"garbled"');
+
+		expect(refreshBanners(garbled, HEAD)).toBe(garbled);
+	});
+
+	it("lets a fresh write replace a region whose stamp is unreadable", () => {
+		// The monotonic guard compares stamps; with no readable existing stamp
+		// there is nothing to be older than, so the write proceeds — the garbled
+		// region is recovered rather than wedged.
+		const garbled = upsertSection("", section(), HEAD).replace('"state":"complete"', '"state":"garbled"');
+
+		const replaced = upsertSection(garbled, section({ body: "fresh result" }), HEAD);
+
+		expect(readSection(replaced, "build-validation")?.body).toContain("fresh result");
+	});
+});
+
 describe("rule 5 — writes are monotonic", () => {
 	it("drops a write whose stamp is OLDER than what is already there", () => {
 		const newer = upsertSection("", section({ body: "newer", stamp: stamp({ at: "2026-07-26T13:00:00.000Z" }) }), HEAD);

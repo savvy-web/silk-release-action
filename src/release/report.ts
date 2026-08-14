@@ -473,24 +473,19 @@ export interface ValidationCommentOptions {
 }
 
 /**
- * Assemble the Phase-2 release-validation sticky-comment body from the
- * canonical {@link ValidationOutput} validation payload.
+ * The validation verdict, as a heading title.
  *
  * @remarks
- * Pure function — no I/O. The comment is provably a projection of the exact
- * emitted JSON — checks, findings, and the build-centric publish forecast all
- * come from the one `validation` payload. Frames the comment as a forecast of
- * what merging the release PR will publish. The header icon is the worst state
- * across all `findings` (`❌` if any error, `⚠️` if any warning, else `✅`). A
- * findings section is inserted directly after the checks table only when
- * `findings` is non-empty. The hidden sticky-comment marker is added by
- * `updateStickyComment`, not here. The footer timestamp comes from
- * `options.now` (defaulting to the current time), so the function is
- * deterministic when `now` is supplied.
+ * Pure function — no I/O. The icon **is** the verdict, computed as the worst
+ * severity across `findings`: `❌` if any error, `⚠️` if any warning, `✅`
+ * otherwise — and `⏳` when validation has not run yet, which is what Phase 1
+ * reports. Carried as the managed section's title rather than baked into the
+ * body (see {@link buildValidationHeader}), so the verdict moves with the
+ * heading.
  *
- * @param validation - The canonical build-centric validation payload.
- * @param options - Optional display options.
- * @returns The full markdown comment body.
+ * @param validation - The canonical build-centric validation payload, or
+ *   `null` when validation has not run.
+ * @returns The heading text, icon first.
  *
  * @public
  */

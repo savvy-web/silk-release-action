@@ -51,9 +51,10 @@
 //    silent clobber on the exact concurrency pattern release PRs generate.
 //
 //    (An earlier draft of this note credited `section-queue.ts` with enforcing
-//    rule 5 by re-reading on every batch. It does re-read — but that module has
-//    never been imported by any source file since it was added in #191, so it
-//    guards nothing. `upsertSection` is where the rule actually lives.)
+//    rule 5 by re-reading on every batch. It did re-read — but that module was
+//    never imported by any source file after it was added in #191, so it
+//    guarded nothing and has since been deleted. `upsertSection` is where the
+//    rule actually lives.)
 //
 // Blocking the partial swap: the wire formats are incompatible. The kit marker
 // is `<!-- --- BEGIN <ns>.<key>.<region> MANAGED REGION --- -->`; ours is
@@ -185,6 +186,18 @@ const BANNER_TOKEN = "silk-release:banner";
  */
 const encodeStamp = (stamp: SectionStamp): string => `<!-- silk-release:stamp ${JSON.stringify(stamp)} -->`;
 
+/** The states a stamp may carry, for validating one read back off a body. */
+const SECTION_STATES: ReadonlySet<string> = new Set([
+	"pending",
+	"running",
+	"complete",
+	"failed",
+	"skipped",
+	"cancelled",
+] satisfies ReadonlyArray<SectionState>);
+
+const isSectionState = (value: string): value is SectionState => SECTION_STATES.has(value);
+
 const decodeStamp = (text: string): SectionStamp | undefined => {
 	const match = STAMP_RE.exec(text);
 	if (match?.[1] === undefined) return undefined;
@@ -193,6 +206,10 @@ const decodeStamp = (text: string): SectionStamp | undefined => {
 		if (parsed === null || typeof parsed !== "object") return undefined;
 		const s = parsed as Partial<SectionStamp>;
 		if (typeof s.state !== "string" || typeof s.sha !== "string" || typeof s.at !== "string") return undefined;
+		// A stamp whose state is not one of the known six is dropped, not passed
+		// through: `renderBanner`'s fallback arm would otherwise render a garbled
+		// value as "up to date", which is a false claim about unreadable data.
+		if (!isSectionState(s.state)) return undefined;
 		return { state: s.state, sha: s.sha, runId: String(s.runId ?? ""), at: s.at };
 	} catch {
 		return undefined;

@@ -97,6 +97,10 @@ const NPM_EXECUTOR = NpmExecutor.dlx("npm@11");
  * CI image that sets it would otherwise have the token written to a file npm
  * never reads.
  *
+ * @param env - The environment to consult; injectable so a test never depends
+ *   on the ambient `process.env`.
+ * @returns The `.npmrc` path npm will actually read.
+ *
  * @internal
  */
 export const userNpmrcPath = (env: Readonly<Record<string, string | undefined>> = process.env): string => {
@@ -731,7 +735,7 @@ const publishDirectoryGroup = (
 				// configured, the first attempt succeeds and this retry never fires.
 				if (!publishOutcome.ok && !isGhPkgs && redactedToken !== null) {
 					yield* Effect.logWarning(
-						`[publish] ${t.registry}: trusted-publishing publish failed for ${packResult.name}@${packResult.version} (${publishOutcome.error}); retrying with token auth`,
+						`[publish] ${t.registry}: trusted-publishing publish failed for ${packResult.name}@${packResult.version} (${publishOutcome.error}); retrying with token auth — provenance disabled for this attempt`,
 					);
 					publishOutcome = yield* publishSvc
 						.publishTarball(packResult.tarballPath, {
@@ -1210,7 +1214,12 @@ export const runPublishTargets = (
 			Option.isSome(ghPkgsTokenOpt) && ghPkgsTokenOpt.value.token !== "" ? ghPkgsTokenOpt.value.token : null;
 		if (ghPkgsToken !== null) yield* outputs.setSecret(ghPkgsToken);
 
-		const npmrcPath = userNpmrcPath();
+		// Resolved through `ActionEnvironment` rather than `userNpmrcPath()`'s
+		// ambient-`process.env` default, so a test layer controls the answer.
+		// `getOptional` treats empty as absent, exactly as the helper does.
+		const environment = yield* ActionEnvironment;
+		const userconfig = yield* environment.getOptional("NPM_CONFIG_USERCONFIG");
+		const npmrcPath = userNpmrcPath(Option.isSome(userconfig) ? { NPM_CONFIG_USERCONFIG: userconfig.value } : {});
 
 		if (detected.length === 0) {
 			return {
