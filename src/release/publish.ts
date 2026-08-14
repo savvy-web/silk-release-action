@@ -12,7 +12,14 @@ import { Run } from "@effected/commands";
 import type { GitHubError, Repo } from "@effected/github";
 import { Attestation, GitHubCommit, GitHubContent, PullRequest } from "@effected/github";
 import type { OidcTokenIssuer } from "@effected/github-actions";
-import { ActionEnvironment, ActionInput, ActionLogger, ActionOutputs, ActionState } from "@effected/github-actions";
+import {
+	ActionEnvironment,
+	ActionInput,
+	ActionLogger,
+	ActionOutputs,
+	ActionState,
+	Secret,
+} from "@effected/github-actions";
 import { NpmExecutor, NpmRegistry, PackagePublish, classifyRegistry } from "@effected/npm";
 import type { SigstoreSigner } from "@effected/sbom";
 import { CYCLONEDX_BOM_PREDICATE, Sbom, SbomMetadataSource, SlsaProvenance } from "@effected/sbom";
@@ -23,6 +30,7 @@ import type { ChildProcessSpawner } from "effect/unstable/process";
 import { ChildProcess } from "effect/unstable/process";
 
 import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
+import type { CustomRegistryAuth } from "../utils/custom-registries.js";
 import { getGroupId } from "../utils/group-id.js";
 import { registryHost, registryShortLabel } from "../utils/registry-label.js";
 import { sortReleasesTopologically } from "../utils/sort-releases-topologically.js";
@@ -544,6 +552,7 @@ const publishDirectoryGroup = (
 	targetsInGroup: ReadonlyArray<TargetSpec>,
 	npmToken: string | null,
 	ghPkgsToken: string | null,
+	customTokens: ReadonlyMap<string, string>,
 	npmrcPath: string,
 	sbomPath: string | null,
 ): Effect.Effect<ReadonlyArray<TargetPublishResult>, never, PublishServices> =>
@@ -633,7 +642,7 @@ const publishDirectoryGroup = (
 			// pipeline buys tidiness and risks a failure mode discovered in
 			// production. Whether the setup can move after the probe is on the
 			// post-migration list.
-			const token = pickToken(t.registry, npmToken, ghPkgsToken);
+			const token = pickToken(t.registry, npmToken, ghPkgsToken, customTokens);
 
 			// Name the missing credential instead of letting it surface as a 403.
 			//
@@ -1181,6 +1190,10 @@ export const runPublishTargets = (
 	// upload step in `runReleases`. Absent entries omit the field — no SBOM
 	// means no SBOM asset.
 	sbomPaths: ReadonlyMap<string, string> = new Map(),
+	// The parsed `custom-registries` input, handed down from the decoded
+	// `Inputs` record by `steps/publishing.ts` — the wiring whose absence was
+	// issue #215. Tokens stay `Redacted` until the declassification below.
+	customRegistries: ReadonlyArray<CustomRegistryAuth> = [],
 ): Effect.Effect<
 	PublishPackagesResult,
 	Config.ConfigError,
@@ -1213,6 +1226,18 @@ export const runPublishTargets = (
 		const ghPkgsToken: string | null =
 			Option.isSome(ghPkgsTokenOpt) && ghPkgsTokenOpt.value.token !== "" ? ghPkgsTokenOpt.value.token : null;
 		if (ghPkgsToken !== null) yield* outputs.setSecret(ghPkgsToken);
+
+		// Custom-registry tokens, declassified ONCE, through the `Secret` seam —
+		// `forSigning` masks before returning plaintext, so each token is
+		// registered with the runner's log filter before any plaintext copy
+		// exists in this scope (the same mask-at-resolution rule the two tokens
+		// above follow via `setSecret`). No process-environment bridge: the
+		// value reaches npm only through `PackagePublish.setupAuth`'s npmrc
+		// write, keyed for `pickToken` by the parse-normalized registry URL.
+		const customTokens = new Map<string, string>();
+		for (const entry of customRegistries) {
+			customTokens.set(entry.registry, yield* Secret.forSigning(entry.token));
+		}
 
 		// Resolved through `ActionEnvironment` rather than `userNpmrcPath()`'s
 		// ambient-`process.env` default, so a test layer controls the answer.
@@ -1367,6 +1392,7 @@ export const runPublishTargets = (
 							groupTargets,
 							npmToken,
 							ghPkgsToken,
+							customTokens,
 							npmrcPath,
 							sbomPathForPackage,
 						),

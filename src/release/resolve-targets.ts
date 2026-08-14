@@ -74,19 +74,34 @@ export const resolvePublishableTargets = (
  * Resolution:
  *  - npm public registry  → the resolved npm token (from `Config` via caller)
  *  - GitHub Packages      → the resolved GitHub Packages token (from `ActionState` via caller)
- *  - Custom registries    → an env var derived from the registry URL
+ *  - Custom registries    → the `custom-registries` input (parsed and
+ *    declassified by the caller), falling back to an env var derived from the
+ *    registry URL
  *
  * Returns `null` when no token is found (OIDC / first-time publish).
  *
- * Shared by `publish.ts` and `validation.ts` so the token-selection rules stay
- * in one place.
+ * Kept as the single token-selection seam so the rules cannot fork per phase
+ * (Phase 2 deliberately resolves no tokens at all — `npm pack --dry-run`
+ * never contacts a registry).
  *
  * @param registry - The target registry URL.
  * @param npmToken - The resolved npm token, or `null`.
  * @param ghPkgsToken - The resolved GitHub Packages token, or `null`.
+ * @param customTokens - Custom-registry tokens keyed by trailing-slash
+ *   normalized registry URL, from the `custom-registries` input. Values are
+ *   already masked in the CI log by the caller.
  * @returns The token for the registry, or `null` when none applies.
  */
-export function pickToken(registry: string, npmToken: string | null, ghPkgsToken: string | null): string | null {
+export function pickToken(
+	registry: string,
+	npmToken: string | null,
+	ghPkgsToken: string | null,
+	// No default value, deliberately: the ONE production caller must thread the
+	// parsed `custom-registries` input here. A `= new Map()` default is how the
+	// input regresses to "decoded but consumed by nothing" a second time
+	// without a compile error (issue #215).
+	customTokens: ReadonlyMap<string, string>,
+): string | null {
 	// One classification, switched exhaustively — rather than two independent
 	// booleans asked in sequence, which can disagree. `classifyRegistry` is the
 	// construct whose docstring names this call site.
@@ -103,8 +118,15 @@ export function pickToken(registry: string, npmToken: string | null, ghPkgsToken
 		// product decision and belongs in its own change.
 		case "jsr":
 		case "custom": {
-			// Derive an env var name from the URL,
-			// e.g. https://registry.example.com/ → REGISTRY_EXAMPLE_COM_TOKEN
+			// The `custom-registries` input first — the documented path, restored
+			// for issue #215. Keys are normalized with a trailing slash at parse
+			// time (`parseCustomRegistries`), so normalize the lookup the same way.
+			const configured = customTokens.get(`${registry.replace(/\/+$/, "")}/`);
+			if (configured !== undefined) return configured;
+			// Fallback: an env var derived from the URL,
+			// e.g. https://registry.example.com/ → REGISTRY_EXAMPLE_COM_TOKEN.
+			// Undocumented but kept — it is the only path that worked at all while
+			// the input was severed, and a workflow can legitimately set it.
 			const envName = registry
 				.replace(/^https?:\/\//, "")
 				.replace(/[^a-zA-Z0-9]/g, "_")

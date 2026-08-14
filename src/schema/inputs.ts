@@ -22,6 +22,8 @@ import type { Redacted } from "effect";
 import { Config, Effect, Option, Schema } from "effect";
 import type { AutoMergeMethod } from "../utils/auto-merge.js";
 import { autoMergeMethodConfig } from "../utils/auto-merge.js";
+import type { CustomRegistryAuth } from "../utils/custom-registries.js";
+import { parseCustomRegistries } from "../utils/custom-registries.js";
 import type { WorkflowPhase } from "../utils/detect-workflow-phase.js";
 
 /**
@@ -137,16 +139,17 @@ export interface Inputs extends BranchRefs {
 	/** SBOM metadata JSON. Empty when omitted. */
 	readonly sbomConfig: string;
 	/**
-	 * Custom registry auth lines.
+	 * Custom registry auth, parsed: one registry URL + `Redacted` token per line.
 	 *
 	 * @remarks
-	 * Decoded here and, as of this change, consumed by nothing — the auth
-	 * implementation was lost in the publish-chain migration (#90) while the
-	 * manifest and README kept advertising it. Decoding it keeps the manifest
-	 * honest and puts the value one wiring step from working; see the module
-	 * note in `__test__/schema-inputs.test.ts`.
+	 * WIRED (issue #215). The auth implementation was lost in the publish-chain
+	 * migration (#90) and the input spent four minor releases as a silent
+	 * no-op; it now reaches Phase-3 publishing — `steps/publishing.ts` hands it
+	 * to `runPublishTargets`, which routes each token through `pickToken` into
+	 * `PackagePublish.setupAuth`'s npmrc write. A malformed line fails the
+	 * decode here, typed, rather than silently configuring nothing.
 	 */
-	readonly customRegistries: ReadonlyArray<string>;
+	readonly customRegistries: ReadonlyArray<CustomRegistryAuth>;
 }
 
 /**
@@ -184,7 +187,10 @@ const loadInputs: Config.Config<Inputs> = Config.all({
 	npmToken: ActionInput.string("npm-token").pipe(Config.withDefault("")),
 	strictWarnings: ActionInput.boolean("strict-warnings").pipe(Config.withDefault(false)),
 	sbomConfig: ActionInput.string("sbom-config").pipe(Config.withDefault("")),
-	customRegistries: ActionInput.lines("custom-registries").pipe(Config.withDefault([])),
+	customRegistries: ActionInput.lines("custom-registries").pipe(
+		Config.withDefault([]),
+		Config.mapOrFail(parseCustomRegistries),
+	),
 });
 
 /**

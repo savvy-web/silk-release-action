@@ -216,7 +216,10 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 			}
 
 			// ── Step 4: Publish to registries ──────────────────────────────────────
-			const publishResult = yield* runPublishTargets(detected, buildSbom.sbomPaths);
+			// `inputs.customRegistries` rides along so custom-registry targets get
+			// their configured tokens (issue #215 — this hand-off is the wiring the
+			// publish-chain migration lost).
+			const publishResult = yield* runPublishTargets(detected, buildSbom.sbomPaths, inputs.customRegistries);
 			if (!publishResult.success) {
 				yield* Effect.logError(
 					`❌ Published ${publishResult.successfulTargets}/${publishResult.totalTargets} target(s) — aborting before releases`,

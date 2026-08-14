@@ -6,8 +6,8 @@
  *
  * The two guards that use this need three independent legs, because any two
  * agreeing while the third drifts is precisely how this repo shipped a
- * `build-command` read no workflow could set and a `custom-registries` input
- * nothing implemented:
+ * `build-command` read no workflow could set and, for four minor releases, a
+ * `custom-registries` input nothing implemented (issue #215 — since rewired):
  *
  *  1. the manifest — {@link declaredInputNames} / {@link declaredOutputNames}
  *  2. the NAMES tuples in `src/schema/*`

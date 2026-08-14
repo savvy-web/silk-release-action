@@ -1058,6 +1058,73 @@ describe("runPublishTargets", () => {
 		);
 	});
 
+	describe("custom-registry auth (issue #215)", () => {
+		// THE regression tests for issue #215. The `custom-registries` input was
+		// decoded and consumed by nothing from #90 (v0.2.3) through four minor
+		// releases — every structural guard stayed green while the configured
+		// token reached no npmrc. These assert the restored behavior END TO END
+		// at the seam that matters: the token handed to `runPublishTargets` must
+		// come back out of `PackagePublish.setupAuth` for the custom registry.
+		// A test at this seam in 2026-05 would have failed the #90 migration.
+
+		it.effect("routes a configured custom-registries token into the custom registry's npmrc auth", () =>
+			Effect.gen(function* () {
+				const CUSTOM_REGISTRY = "https://registry.example.com/";
+				const pub = makePackagePublishLayer();
+				const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, `/tmp/test/${PACK_NAME}`);
+				const target = new PublishTarget({
+					name: PACK_NAME,
+					registry: CUSTOM_REGISTRY,
+					directory: `/tmp/test/${PACK_NAME}`,
+					access: "restricted",
+					provenance: false,
+				});
+				const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
+
+				yield* runPublishTargets(detected, new Map(), [
+					{ registry: CUSTOM_REGISTRY, token: Redacted.make("custom-registry-token") },
+				]).pipe(Effect.provide(makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [target])));
+
+				// The configured token reached the npmrc write for the custom host…
+				expect(pub.setupAuthCalls).toHaveLength(1);
+				expect(pub.setupAuthCalls[0]?.registry).toBe(CUSTOM_REGISTRY);
+				expect(pub.setupAuthCalls[0]?.token).toBe("custom-registry-token");
+				expect(pub.setupAuthCalls[0]?.npmrcPath).toBe(userNpmrcPath());
+				// …and the publish itself proceeded against that registry.
+				expect(pub.publishTarballCalls).toHaveLength(1);
+				expect(pub.publishTarballCalls[0]?.options.registry).toBe(CUSTOM_REGISTRY);
+			}),
+		);
+
+		it.effect("does not send the custom token to other registries, nor other tokens to the custom host", () =>
+			Effect.gen(function* () {
+				// Credential isolation across a mixed target set: npm keeps its token,
+				// the custom host gets exactly its configured one.
+				const CUSTOM_REGISTRY = "https://registry.example.com/";
+				const SHARED_DIR = `/tmp/test/${PACK_NAME}`;
+				const pub = makePackagePublishLayer();
+				const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, SHARED_DIR);
+				const npmTarget = makeNpmTarget(PACK_NAME, SHARED_DIR);
+				const customTarget = new PublishTarget({
+					name: PACK_NAME,
+					registry: CUSTOM_REGISTRY,
+					directory: SHARED_DIR,
+					access: "restricted",
+					provenance: false,
+				});
+				const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
+
+				yield* runPublishTargets(detected, new Map(), [
+					{ registry: CUSTOM_REGISTRY, token: Redacted.make("custom-registry-token") },
+				]).pipe(Effect.provide(makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [npmTarget, customTarget])));
+
+				const byRegistry = new Map(pub.setupAuthCalls.map((call) => [call.registry, call.token]));
+				expect(byRegistry.get(CUSTOM_REGISTRY)).toBe("custom-registry-token");
+				expect(byRegistry.get("https://registry.npmjs.org/")).not.toBe("custom-registry-token");
+			}),
+		);
+	});
+
 	describe("attestation hoisted out of the per-target loop", () => {
 		it.effect("fires attestation exactly ONCE per build directory and shares the URL across both targets", () =>
 			Effect.gen(function* () {
