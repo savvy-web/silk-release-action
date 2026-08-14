@@ -48,17 +48,17 @@
 		"@effected/package-json": "^0.8.0",
 		"@effected/sbom": "^0.3.0",
 		"@effected/semver": "^0.4.0",
-		"@effected/workspaces": "^0.11.2",
+		"@effected/workspaces": "^0.12.0",
 		"@effected/yaml": "^0.8.0",
-		"@savvy-web/silk-effects": "^5.7.0",
+		"@savvy-web/silk-effects": "^5.7.1",
 		"effect": "catalog:effect"
 	},
 	"devDependencies": {
 		"@effect/vitest": "catalog:effect",
 		"@effected/schemastore": "^0.3.0",
 		"@savvy-web/github-action-builder": "^2.2.4",
-		"@savvy-web/silk": "^3.7.0",
-		"@vitest-agent/plugin": "^2.2.1",
+		"@savvy-web/silk": "^3.7.1",
+		"@vitest-agent/plugin": "^2.2.2",
 		"tsx": "catalog:silk"
 	},
 	"packageManager": "pnpm@11.21.0+sha512.521705bce689924eac72f5a3587122f362689ef6571e55ba80076fd637c11132ecffada26fad4ea79c485bfddbfd3d5a2a5b05805a77e893de71ec8a6cca3bb1",
