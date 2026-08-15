@@ -16,12 +16,24 @@
  * answerable only by reading twelve separate initialiser expressions, and
  * nothing asserted on it.
  *
- * Failure posture: **degrade-to-warning**, and the error channel says so —
- * `never`. Both skip paths are ordinary outcomes, not failures: a failed build
- * means there is nothing to dry-run, and a validation run that throws is worth
- * a warning and a skipped report rather than a dead release branch. The
- * *findings* it returns are what make the run fail downstream, via
- * `deriveCheckConclusion`.
+ * Failure posture: **degrade-with-a-finding**, and the error channel says so —
+ * `never`. The step never fails its own effect; what it returns is what decides
+ * the verdict, because `deriveCheckConclusion` reads *findings* and nothing
+ * else. The two non-running paths are therefore not interchangeable:
+ *
+ * - **Build failed** — an ordinary outcome. Returns {@link SKIPPED_PUBLISH_VALIDATION}
+ *   and stays quiet, because the caller's build finding already fails the phase
+ *   and the build-failed cascade already covers every downstream row.
+ * - **`runValidation` threw** — a FAILURE, and reported as one. Returns
+ *   {@link crashedPublishValidation}, which carries an `error` finding per
+ *   affected check so the release PR shows the failure instead of ✅ 5/5. Before
+ *   [#216](https://github.com/savvy-web/silk-release-action/issues/216) this
+ *   path shared the quiet baseline, and a crashed validation passed.
+ *
+ * A **defect** (as opposed to an error) still propagates and kills the phase.
+ * That is deliberate and load-bearing: it is the one path where a broken
+ * validation fails the run outright, so the `Effect.catch` below must never be
+ * widened to `catchCause`.
  *
  * @module steps/publish-validation
  */
@@ -37,6 +49,7 @@ import type { ChangesetConfig } from "../release/changeset-config.js";
 import type { ValidationFinding, ValidationPackageResult } from "../release/types.js";
 import { runValidation as runValidationEffect } from "../release/validation.js";
 import type { ConfigSource } from "../utils/load-release-config.js";
+import { PER_STEP_CHECK_NAMES } from "./per-step-checks.js";
 
 /**
  * What Phase 2 learned from the publish dry-runs, the release-notes pass and
@@ -108,6 +121,52 @@ export const SKIPPED_PUBLISH_VALIDATION: PublishValidationResult = {
 };
 
 /**
+ * What Phase 2 reports when `runValidation` threw.
+ *
+ * @remarks
+ * Distinct from {@link SKIPPED_PUBLISH_VALIDATION}, and the distinction is the
+ * fix for [#216](https://github.com/savvy-web/silk-release-action/issues/216).
+ * Both describe "the dry-run did not happen", but only one of them has
+ * something else reporting the failure: on the build-failed path the *build*
+ * finding fails the phase and `deriveCheckConclusion`'s cascade covers every
+ * downstream row, so the baseline must stay quiet to avoid double-counting. On
+ * the crash path the build PASSED, so that cascade never fires and nothing else
+ * speaks — which is how a crashed validation reported ✅ 5/5.
+ *
+ * So the baseline is reused **verbatim**, `publishOk: true` included, and the
+ * only thing added is a finding per affected check. Findings are the sole input
+ * the verdict reads, which is why this is one decision rather than six patches:
+ * flipping `publishOk` instead would fix this path and break the other one.
+ *
+ * The three checks come from {@link PER_STEP_CHECK_NAMES} rather than a fourth
+ * copy of the same literals. Those strings are a **join key**:
+ * `deriveCheckConclusion` and `statusFor` both match findings by
+ * `finding.check === name`, so a name that drifts from the constant detaches
+ * the finding from its row and the conclusion silently returns to green — the
+ * exact failure this fix exists to remove. `Build Validation` is deliberately
+ * absent (it ran, and reported honestly), as is `Link Issues from Commits`
+ * (a different step, with its own degradation).
+ *
+ * @param message - The rendered crash, already logged, repeated into each
+ *   finding so the failure is legible on the release PR and not only in the
+ *   job log.
+ * @returns The skipped baseline carrying one `error` finding per check in
+ *   {@link PER_STEP_CHECK_NAMES}.
+ *
+ * @public
+ */
+export const crashedPublishValidation = (message: string): PublishValidationResult => ({
+	...SKIPPED_PUBLISH_VALIDATION,
+	sbomSummary: "SBOM Preview did not run — publish validation crashed",
+	findings: PER_STEP_CHECK_NAMES.map((check) => ({
+		severity: "error" as const,
+		check,
+		scope: null,
+		message: `Publish validation crashed before this check ran: ${message}`,
+	})),
+});
+
+/**
  * What the step needs to decide whether to run, and how.
  *
  * @public
@@ -161,11 +220,17 @@ export const publishValidation = (
 		}
 
 		yield* Effect.logInfo("Validate publishing");
-		const report = yield* runValidationEffect({
+		// `Effect.catch`, NOT `catchCause`. A DEFECT from `runValidation` is left to
+		// propagate and kill the phase, which is the one path where a broken
+		// validation fails the run outright. Widening this to catch defects would
+		// route that last honest failure signal into the same degraded result the
+		// rest of this function builds — see #216's "deliberately not touched".
+		const outcome = yield* runValidationEffect({
 			packageManager: args.packageManager,
 			targetBranch: args.targetBranch,
 			dryRun: args.dryRun,
 		}).pipe(
+			Effect.map((report) => ({ crashed: false as const, report })),
 			Effect.catch((e) =>
 				Effect.gen(function* () {
 					// The stack matters here: this is the one place a validation crash is
@@ -174,41 +239,53 @@ export const publishValidation = (
 					const message =
 						e instanceof Error ? `${e.message}\n${String((e as Error & { stack?: string }).stack ?? "")}` : String(e);
 					yield* Effect.logWarning(`runValidation failed: ${message}`);
-					return null;
+					return { crashed: true as const, message };
 				}),
 			),
 		);
 
-		const result: PublishValidationResult =
-			report === null
-				? SKIPPED_PUBLISH_VALIDATION
-				: {
-						publishOk: report.publishOk,
-						npmReady: report.npmReady,
-						githubPackagesReady: report.githubPackagesReady,
-						totalTargets: report.totalTargets,
-						readyTargets: report.readyTargets,
-						packages: report.packages,
-						validationPackages: report.validationPackages,
-						sbomOk: report.sbomOk,
-						sbomSummary: report.sbomSummary,
-						findings: report.findings,
-						resolvedSbomConfig: report.resolvedSbomConfig,
-						sbomConfigSource: report.sbomConfigSource,
-					};
+		// The crash arm is only reachable as a crash: the build-failed path returned
+		// above, so the two no longer share a result.
+		const result: PublishValidationResult = outcome.crashed
+			? crashedPublishValidation(outcome.message)
+			: {
+					publishOk: outcome.report.publishOk,
+					npmReady: outcome.report.npmReady,
+					githubPackagesReady: outcome.report.githubPackagesReady,
+					totalTargets: outcome.report.totalTargets,
+					readyTargets: outcome.report.readyTargets,
+					packages: outcome.report.packages,
+					validationPackages: outcome.report.validationPackages,
+					sbomOk: outcome.report.sbomOk,
+					sbomSummary: outcome.report.sbomSummary,
+					findings: outcome.report.findings,
+					resolvedSbomConfig: outcome.report.resolvedSbomConfig,
+					sbomConfigSource: outcome.report.sbomConfigSource,
+				};
 
-		// The three log lines the region emitted, unchanged and in order. They are
-		// emitted on the ran-but-failed path too: `publishOk === false` is a result
-		// worth reporting, not a reason to say nothing.
-		yield* Effect.logInfo(
-			result.publishOk
-				? `✅ Publish validation — ${result.readyTargets}/${result.totalTargets} target(s) ready`
-				: `❌ Publish validation — ${result.readyTargets}/${result.totalTargets} target(s) ready`,
-		);
-		yield* Effect.logInfo(`✅ Release notes — ${result.packages.length} package(s) ready`);
-		yield* Effect.logInfo(
-			result.sbomOk ? `✅ SBOM preview — ${result.sbomSummary}` : `❌ SBOM preview — ${result.sbomSummary}`,
-		);
+		// The three log lines the region emitted, in order. They are emitted on the
+		// ran-but-failed path too: `publishOk === false` is a result worth
+		// reporting, not a reason to say nothing.
+		//
+		// The crash arm says "did not run" rather than reusing the ok/not-ok
+		// ternary. `publishOk` stays TRUE on that path by design (see
+		// `crashedPublishValidation`), so the ternary alone would print ✅ for a
+		// dry-run that never happened — the log-shaped half of #216.
+		if (outcome.crashed) {
+			yield* Effect.logInfo("❌ Publish validation — did not run (crashed)");
+			yield* Effect.logInfo("❌ Release notes — did not run (publish validation crashed)");
+			yield* Effect.logInfo(`❌ SBOM preview — ${result.sbomSummary}`);
+		} else {
+			yield* Effect.logInfo(
+				result.publishOk
+					? `✅ Publish validation — ${result.readyTargets}/${result.totalTargets} target(s) ready`
+					: `❌ Publish validation — ${result.readyTargets}/${result.totalTargets} target(s) ready`,
+			);
+			yield* Effect.logInfo(`✅ Release notes — ${result.packages.length} package(s) ready`);
+			yield* Effect.logInfo(
+				result.sbomOk ? `✅ SBOM preview — ${result.sbomSummary}` : `❌ SBOM preview — ${result.sbomSummary}`,
+			);
+		}
 
 		return result;
 	});
