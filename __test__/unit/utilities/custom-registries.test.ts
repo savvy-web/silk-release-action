@@ -9,17 +9,15 @@
  * what issue #215 condemned. The failure-message assertions also pin that no
  * message ever contains the token text.
  *
- * Placed FLAT rather than at the mirrored `__test__/unit/utils/` path,
- * deliberately: the vitest-agent discovery (plugin 2.2.2) excludes
- * `__test__/**\/utils/**` at ANY depth, so a suite under `unit/utils/` is
- * silently never collected — verified by `vitest list` in this tree, which
- * also shows the five pre-existing `unit/utils` suites uncollected. A test
- * that does not run cannot catch the regression it exists for.
+ * Lives at the mirrored `__test__/unit/utilities/` path. It was written flat,
+ * as a workaround for the discovery bug that made `unit/utils/` never collect
+ * (#237); that directory has since been renamed and the suite moved here, so
+ * the workaround is gone rather than merely documented.
  */
 
 import { describe, expect, it } from "@effect/vitest";
 import { Config, Effect, Redacted } from "effect";
-import { parseCustomRegistries } from "../src/utils/custom-registries.js";
+import { parseCustomRegistries } from "../../../src/utils/custom-registries.js";
 
 describe("parseCustomRegistries", () => {
 	it.effect("parses a registry URL immediately followed by _authToken=", () =>

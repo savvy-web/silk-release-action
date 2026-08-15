@@ -17,36 +17,52 @@ pnpm ci:test                                     # CI mode
 A CLI file argument does __not__ filter to a single file in this repo (vitest projects come from the vitest-agent plugin). To run specific files, use the vitest-agent MCP `run_tests` tool with a `files` array (e.g. `["__test__/native-version.test.ts"]`).
 
 __Every test lives at or below `__test__/`.__ There are no co-located `src/**/*.test.ts`: unit
-tests mirror the source layout under `__test__/unit/` (`unit/release/`, `unit/utils/`,
+tests mirror the source layout under `__test__/unit/` (`unit/release/`, `unit/utilities/`,
 `unit/program.test.ts`), the older flat suites stay directly in `__test__/`, and integration
 tests live in `__test__/integration/` with fixture workspaces under `integration/fixtures/`.
 
-## ⚠️ `__test__/utils/**` is NEVER collected
+## ⚠️ A directory named `utils` is NEVER collected — at ANY depth
 
-__A `*.test.ts` file placed under `__test__/utils/` does not run, and nothing reports that it
-did not.__ Verified empirically (2026-07-26): a trivial passing test dropped there left the
-collected count unchanged. `__test__/utils/` is for helpers only — today, `github-mocks.ts` and
-`manifest.ts`.
+__A `*.test.ts` file under a directory named `utils` does not run, and nothing reports that it
+did not.__ The exclusion matches the directory __name anywhere in the path__, not one top-level
+location. `utils/` is for helpers only — today, `github-mocks.ts` and `manifest.ts`.
 
-The exclusion is specific to the __top-level `__test__/utils/`__ directory, not to `utils`
-anywhere in a path. Verified collection map (2026-08-05, by name-probe):
+Verified collection map (__2026-08-14__, by `vitest list` file-count parity):
 
 | directory | collects? |
 | --------- | --------- |
 | `__test__/` (flat) | ✅ |
 | `__test__/unit/`, `unit/release/` | ✅ |
-| `__test__/unit/utils/` | ✅ — this is where `src/utils` unit tests go |
+| `__test__/unit/utilities/` | ✅ — this is where `src/utils` unit tests go |
+| `__test__/unit/utils/` | ❌ __never__ |
 | `__test__/utils/` | ❌ __never__ |
 
-__Why this matters more than it looks.__ The obvious tidy-up — "mirror the source layout" — puts
-`src/utils/*.test.ts` into `__test__/utils/` and __silently deletes five suites' worth of
-coverage__ while everything stays green. The only signal is the collected count going *down*,
-which is why the gate for this repo is __the test count, never the exit code__. Use
-`__test__/unit/utils/`; do __not__ rename `__test__/utils/`.
+__This map was wrong once, and the wrongness was invisible for nine days.__ It previously stated
+the exclusion was specific to the top-level `__test__/utils/` and that `__test__/unit/utils/`
+collected. That was probe-verified on 2026-08-05 and false by 2026-08-14: the plugin's pattern
+had widened to match `utils` at any depth, taking `__test__/unit/utils/` with it — __5 suites, 60
+cases, silently not running__ ([#237](https://github.com/savvy-web/silk-release-action/issues/237)).
+Treat any dated map here as evidence with a shelf life, and re-probe rather than trust it.
 
-__Placement is asserted by a test.__ `__test__/test-placement.test.ts` fails if any `*.test.ts`
-sits under `src/**`, under `__test__/utils/**`, or outside `__test__/`. If that suite went red,
-move the file to `__test__/unit/<mirrored-path>/`.
+__Why this matters more than it looks.__ The obvious tidy-up — "mirror the source layout" — puts
+`src/utils/*.test.ts` into a `utils/` directory and __silently deletes those suites' coverage__
+while everything stays green. The only signal is the collected count going *down*, which is why
+the gate for this repo is __the test count, never the exit code__. Note `pnpm test` passes
+`--pass-with-no-tests`, so collecting __zero__ suites also exits 0. Use `utilities/`, never
+`utils/`, for any directory holding tests.
+
+__Placement is asserted two ways, and both must stay.__
+
+- `__test__/test-placement.test.ts` fails if any `*.test.ts` sits under `src/**`, outside
+  `__test__/`, or under a directory whose name is in its `UNCOLLECTED_DIR_NAMES` set
+  (`utils`, `fixtures`, `snapshots`) __at any depth__. If it goes red, move the file to
+  `__test__/unit/<mirrored-path>/`.
+- `scripts/check-test-collection.mjs` (`pnpm check:collection`, and the first step of
+  `pnpm ci:test`) compares test files __on disk__ against what `vitest list` reports
+  __collecting__, and fails on any gap. This one needs no hardcoded name list, so it catches an
+  exclusion rule nobody has learned about yet — which is exactly how #237 got through.
+
+Both are mutation-checked: renaming `unit/utilities/` back to `unit/utils/` turns each red.
 
 __Always state the count arithmetic__ when a move changes it — "N moved, N collected" — rather
 than reporting "all green".
