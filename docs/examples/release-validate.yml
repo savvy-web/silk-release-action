@@ -10,8 +10,6 @@ on:
   push:
     branches: [changeset-release/main]
   workflow_dispatch:
-
-# Don't cancel validation runs - they should complete for accurate status
 concurrency:
   group: release-validate
   cancel-in-progress: false
@@ -44,7 +42,8 @@ jobs:
         with:
           app-client-id: ${{ vars.APP_CLIENT_ID }}
           app-private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          # Custom registries: accepted but NOT wired up -- the value is ignored.
-          # Non-functional since v0.2.3; tracked at issue #215.
-          # custom-registries: |
-          #   https://registry.savvyweb.dev/${{ secrets.SAVVYWEB_NPM_AUTH_TOKEN }}
+          # Custom registries: one per line, URL immediately followed by the
+          # npmrc auth string. Each token is masked and written to the npmrc
+          # npm publishes through.
+          custom-registries: |
+            https://registry.savvyweb.dev/_authToken=${{ secrets.SAVVYWEB_NPM_AUTH_TOKEN }}

@@ -12,9 +12,12 @@
  * does not yet install; converting the suite is tracked separately.
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "@effect/vitest";
 import { ActionInput } from "@effected/github-actions";
-import { Config, Effect, Option } from "effect";
+import { Config, Effect, Option, Redacted } from "effect";
 import { INPUT_NAMES, readInputs } from "../src/schema/inputs.js";
 import { declaredInputNames, scanInputReads, stripComments } from "./utils/manifest.js";
 
@@ -83,7 +86,8 @@ describe("action.yml ↔ src/ input reads", () => {
 
 	it("should read every input action.yml declares", () => {
 		// The leg that catches a manifest-only input. `custom-registries` was
-		// advertised in the manifest and the README while nothing read it.
+		// advertised in the manifest and the README while nothing read it —
+		// from #90 until the wiring was restored for issue #215.
 		const read = new Set(scanInputReads().names.keys());
 		expect(declaredInputNames().filter((name) => !read.has(name))).toEqual([]);
 	});
@@ -122,7 +126,7 @@ describe("readInputs", () => {
 						"dry-run": "true",
 						"auto-merge": "squash",
 						phase: "validation",
-						"custom-registries": "https://a.example.com/_authToken=x\n\nhttps://b.example.com/",
+						"custom-registries": "https://a.example.com/_authToken=x\n\nhttps://b.example.com/_authToken=y",
 					}),
 				),
 			);
@@ -130,8 +134,13 @@ describe("readInputs", () => {
 			expect(inputs.dryRun).toBe(true);
 			expect(inputs.autoMerge).toEqual(Option.some("squash"));
 			expect(inputs.phase).toEqual(Option.some("validation"));
-			// `lines` drops blanks and trims — the multiline auth format's shape.
-			expect(inputs.customRegistries).toEqual(["https://a.example.com/_authToken=x", "https://b.example.com/"]);
+			// `lines` drops blanks and trims, then `parseCustomRegistries` yields
+			// one registry/`Redacted`-token pair per line (issue #215).
+			expect(inputs.customRegistries.map((e) => e.registry)).toEqual([
+				"https://a.example.com/",
+				"https://b.example.com/",
+			]);
+			expect(inputs.customRegistries.map((e) => Redacted.value(e.token))).toEqual(["x", "y"]);
 		}),
 	);
 
@@ -174,19 +183,49 @@ describe("readInputs", () => {
 });
 
 describe("custom-registries", () => {
-	it("should be decoded but consumed by nothing (REGRESSION, tracked)", () => {
-		// Not an accepted state — a pinned one. The auth implementation
-		// (npmrc `_authToken=` / `_auth=` parsing, per-registry env vars,
-		// masking) lived in `src/utils/registry-auth.ts` and was lost in
-		// "feat!: migrate the publish chain to Effect" (#90). The manifest and
-		// the README have advertised it as working ever since.
-		//
-		// This asserts the CURRENT state so that wiring it up fails here and
-		// forces the note to be removed, rather than leaving a stale comment
-		// claiming a regression that has since been fixed.
+	// The predecessor of this block pinned the REGRESSION state — "decoded but
+	// consumed by nothing" (issue #215, lost in #90). The wiring is restored:
+	// `schema/inputs.ts` parses the lines into registry/`Redacted`-token pairs,
+	// `steps/publishing.ts` hands them to `runPublishTargets`, and `pickToken`
+	// routes each token into `PackagePublish.setupAuth`. The END-TO-END proof —
+	// a configured token reaching the npmrc write for a custom-registry target —
+	// lives in `__test__/unit/release/publish.test.ts` ("custom-registry auth");
+	// what is pinned here is the decode surface and the hand-off.
+
+	it("should still be read only in schema/inputs.ts", () => {
+		// The single-decode rule survives the wiring: consumers take the PARSED
+		// value from `Inputs`, nothing re-reads the raw input.
 		const consumers = scanInputReads().names.get("custom-registries") ?? [];
 		expect([...consumers]).toEqual(["src/schema/inputs.ts"]);
 	});
+
+	it("should be handed from the publishing step to runPublishTargets", () => {
+		// The wiring whose ABSENCE was issue #215, pinned structurally. This is
+		// the one hop a compile error cannot guard: `runPublishTargets` defaults
+		// the parameter (so its many test callers need not thread it), which
+		// means deleting the hand-off below would type-check — and the input
+		// would be a silent no-op again with every other suite green.
+		const source = readFileSync(
+			join(fileURLToPath(new URL("../", import.meta.url)), "src/steps/publishing.ts"),
+			"utf8",
+		);
+		expect(stripComments(source)).toMatch(/runPublishTargets\([^)]*inputs\.customRegistries/s);
+	});
+
+	it.effect("should fail the decode on a malformed line rather than silently ignoring it", () =>
+		Effect.gen(function* () {
+			// A bare URL (the predecessor's App-token-fallback form) is no longer
+			// accepted — silence is the failure mode this input already shipped
+			// once. Full parse-rule coverage lives in
+			// `__test__/unit/utils/custom-registries.test.ts`.
+			const exit = yield* Effect.exit(
+				readInputs.pipe(
+					Effect.provide(ActionInput.layer({ ...CREDENTIALS, "custom-registries": "https://registry.example.com/" })),
+				),
+			);
+			expect(exit._tag).toBe("Failure");
+		}),
+	);
 });
 
 /**

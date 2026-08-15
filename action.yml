@@ -123,15 +123,20 @@ inputs:
     description: |
       Custom registries with authentication (one per line).
 
-      NOT WIRED UP. The value is parsed and then ignored -- no custom registry
-      is authenticated or published to. Non-functional since v0.2.3; tracked at
-      https://github.com/savvy-web/silk-release-action/issues/215. The format
-      below is what the input still accepts.
+      Each token is masked in the workflow log and written to the npmrc npm
+      publishes through. A malformed line fails the run rather than being
+      silently ignored.
 
-      Format (one registry per line):
+      Format (one registry per line, URL immediately followed by the npmrc
+      auth string):
         https://registry.example.com/_authToken=<token>
-        https://registry.example.com/_auth=<base64-credentials>
-        https://registry.example.com/                          # Falls back to GitHub App token
+
+      Not accepted (each fails the run with a message naming the line):
+        - `_auth=<base64-credentials>` -- basic auth is no longer supported;
+          supply a bearer token as `_authToken=<token>`
+        - a bare registry URL -- the GitHub App token fallback was removed;
+          every custom registry needs an explicit token
+        - two lines for the same registry
 
       For reusable workflows, store the entire config in a secret:
         1. Create a repository secret (e.g., CUSTOM_REGISTRIES) containing:
