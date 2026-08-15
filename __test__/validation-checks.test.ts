@@ -14,7 +14,7 @@ import type { ValidationFinding } from "../src/release/types.js";
 import type { ValidationCheckInputs } from "../src/release/validation-checks.js";
 import { CHECK_NAMES, applyCheckUrls, deriveValidationChecks } from "../src/release/validation-checks.js";
 import type { PublishValidationResult } from "../src/steps/publish-validation.js";
-import { SKIPPED_PUBLISH_VALIDATION } from "../src/steps/publish-validation.js";
+import { SKIPPED_PUBLISH_VALIDATION, crashedPublishValidation } from "../src/steps/publish-validation.js";
 
 /** A publish result that ran and passed cleanly. */
 const HEALTHY: PublishValidationResult = {
@@ -307,32 +307,45 @@ describe("applyCheckUrls", () => {
 	});
 });
 
-describe("CHARACTERIZATION — savvy-web/silk-release-action#216", () => {
-	it("reports a fully GREEN phase when the publish validation crashed", () => {
-		// ⚠️ THIS PINS A BUG. The crash path hands back
-		// `SKIPPED_PUBLISH_VALIDATION` while the build genuinely PASSED, so
-		// `deriveCheckConclusion`'s cascade — gated on `!buildPassed` — never fires,
-		// and the baseline contributes no findings for it to fire on.
-		//
-		// Result: no publish dry-run ran, no SBOM check ran, and the release PR
-		// gets ✅ 5/5 with every row `pass`.
-		const state = deriveValidationChecks(inputs({ buildPassed: true, publish: SKIPPED_PUBLISH_VALIDATION }));
-
-		expect(state.findings).toEqual([]);
-		expect(state.results.every((r) => r.success)).toBe(true);
-		expect(state.rows.every((r) => r.status === "pass")).toBe(true);
-		expect(state.summaryLine).toBe("Release validation: ✅ 5/5 checks passed");
-	});
-
-	it("is not rescued by strict-warnings", () => {
-		// There is no warning to escalate, so the strictest available setting still
-		// reports green. Worth pinning separately: "turn on strict-warnings" is the
-		// obvious wrong fix.
+describe("savvy-web/silk-release-action#216 — a crashed publish validation fails the phase", () => {
+	// Was a CHARACTERIZATION block pinning the bug. These three fed
+	// `SKIPPED_PUBLISH_VALIDATION` with `buildPassed: true` — the combination that
+	// produced ✅ 5/5 for work that never ran. That combination is now
+	// unreachable in production: the crash path returns `crashedPublishValidation`
+	// and the baseline is only ever seen with `buildPassed: false`. Re-aimed at
+	// the real crash result so they assert the fix instead of an impossible state.
+	it("reports every affected row red", () => {
 		const state = deriveValidationChecks(
-			inputs({ buildPassed: true, strictWarnings: true, publish: SKIPPED_PUBLISH_VALIDATION }),
+			inputs({ buildPassed: true, publish: crashedPublishValidation("workspace discovery exploded") }),
 		);
 
-		expect(state.results.every((r) => r.success)).toBe(true);
+		expect(state.findings).not.toEqual([]);
+		expect(resultNamed(state, "Publish Validation")?.success).toBe(false);
+		expect(resultNamed(state, "Release Notes Preview")?.success).toBe(false);
+		expect(resultNamed(state, "SBOM Preview")?.success).toBe(false);
+		expect(rowNamed(state, "Publish Validation")?.status).toBe("error");
+		expect(state.summaryLine).not.toBe("Release validation: ✅ 5/5 checks passed");
+	});
+
+	it("leaves the rows the crash did not touch alone", () => {
+		// The crash is scoped. Build Validation genuinely ran and passed, and
+		// Link Issues is a different step with its own (still-degrading) path — so
+		// neither may be collateral of this fix.
+		const state = deriveValidationChecks(inputs({ buildPassed: true, publish: crashedPublishValidation("boom") }));
+
+		expect(resultNamed(state, "Build Validation")?.success).toBe(true);
+		expect(resultNamed(state, "Link Issues from Commits")?.success).toBe(true);
+	});
+
+	it("does not depend on strict-warnings", () => {
+		// The findings are errors, and strict-warnings only escalates warnings. It
+		// was worth pinning that the setting did not rescue the bug; it is worth
+		// pinning now that the fix does not quietly depend on it either.
+		const state = deriveValidationChecks(
+			inputs({ buildPassed: true, strictWarnings: false, publish: crashedPublishValidation("boom") }),
+		);
+
+		expect(resultNamed(state, "Publish Validation")?.success).toBe(false);
 	});
 
 	it("DOES report red when the build failed — the case the baseline was written for", () => {

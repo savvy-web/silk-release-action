@@ -4,7 +4,7 @@
 		{
 			"source": "CLAUDE.md",
 			"target": ".claude/design/release-action/architecture.md",
-			"hash": "fec7c5536b1ce5e9c84d0f581a6ed50845911cefad584c826fb83543a2ec204b",
+			"hash": "220db4b9f6d87e04aa359cb1cd7bd0b9d7165657f8acfdf918242bfaae7fda9b",
 			"recordedAt": "2026-08-15"
 		},
 		{
@@ -16,19 +16,19 @@
 		{
 			"source": "CLAUDE.md",
 			"target": ".claude/design/release-action/testing.md",
-			"hash": "88ff81cb1b96bd4992b3f2d44da7575eefaecec3d36d2934bc34ddfe82130e33",
+			"hash": "afc0f9a2ac7b74879df22a0ea758fc9737baf7b66a904a7cd454896bb4c5ab6f",
 			"recordedAt": "2026-08-15"
 		},
 		{
 			"source": "__test__/CLAUDE.md",
 			"target": ".claude/design/release-action/testing.md",
-			"hash": "88ff81cb1b96bd4992b3f2d44da7575eefaecec3d36d2934bc34ddfe82130e33",
+			"hash": "afc0f9a2ac7b74879df22a0ea758fc9737baf7b66a904a7cd454896bb4c5ab6f",
 			"recordedAt": "2026-08-15"
 		},
 		{
 			"source": "src/CLAUDE.md",
 			"target": ".claude/design/release-action/architecture.md",
-			"hash": "fec7c5536b1ce5e9c84d0f581a6ed50845911cefad584c826fb83543a2ec204b",
+			"hash": "220db4b9f6d87e04aa359cb1cd7bd0b9d7165657f8acfdf918242bfaae7fda9b",
 			"recordedAt": "2026-08-15"
 		},
 		{

@@ -4,7 +4,7 @@ Unit testing patterns and infrastructure for silk-release-action.
 
 __See also:__ [Root CLAUDE.md](../CLAUDE.md) | [src/CLAUDE.md](../src/CLAUDE.md)
 
-__For comprehensive testing documentation:__ `@../.claude/design/release-action/testing.md` -- test-layer patterns, silk-effects test factories, all specialized patterns (fake timers, filesystem, workspaces sync APIs, GitHub context, summaries), the `__test__/unit/` mirrored layout, the integration fixture harness, the 18 `CHARACTERIZATION` tests (issue #216), and the coverage map.
+__For comprehensive testing documentation:__ `@../.claude/design/release-action/testing.md` -- test-layer patterns, silk-effects test factories, all specialized patterns (fake timers, filesystem, workspaces sync APIs, GitHub context, summaries), the `__test__/unit/` mirrored layout, the integration fixture harness, the 10 remaining `CHARACTERIZATION` tests (issue #216 — its own pins are fixed and converted), and the coverage map.
 
 ## Running Tests
 

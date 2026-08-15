@@ -179,13 +179,28 @@ describe("publishValidation — mapping the report", () => {
 });
 
 describe("publishValidation — a validation that throws", () => {
-	it("degrades to the skipped baseline rather than failing the phase", async () => {
+	it("degrades without failing the phase, but reports the crash as findings", async () => {
 		runValidationEffect.mockReturnValue(Effect.fail(new Error("workspace discovery exploded")));
 		const { result } = await unwrap(ARGS);
 
 		// The whole reason the error channel is `never`: a crashed validation is
-		// worth a warning and a skipped report, not a dead release branch.
-		expect(result).toEqual(SKIPPED_PUBLISH_VALIDATION);
+		// worth a reported failure, not a dead release branch.
+		expect(result.publishOk).toBe(true);
+		expect(result.totalTargets).toBe(0);
+
+		// It is NOT the quiet baseline. That distinction is the #216 fix: the
+		// build-failed path stays quiet because the build finding already fails the
+		// phase, and this path must not, because nothing else speaks for it.
+		expect(result).not.toEqual(SKIPPED_PUBLISH_VALIDATION);
+		expect(result.findings.map((f) => ({ severity: f.severity, check: f.check }))).toEqual([
+			{ severity: "error", check: "Publish Validation" },
+			{ severity: "error", check: "Release Notes Preview" },
+			{ severity: "error", check: "SBOM Preview" },
+		]);
+		// The crash reaches the release PR, not just the job log.
+		for (const finding of result.findings) {
+			expect(finding.message).toContain("workspace discovery exploded");
+		}
 	});
 
 	it("logs the stack, not just the message", async () => {
@@ -201,60 +216,61 @@ describe("publishValidation — a validation that throws", () => {
 		expect(text).toContain("at somewhere.ts:42");
 	});
 
-	it("CHARACTERIZATION — a crashed validation currently reports a GREEN phase", async () => {
-		// ⚠️ THIS PINS A BUG. It is not a description of correct behaviour.
+	it("fails every check it was responsible for, even though the build passed", async () => {
+		// Was `CHARACTERIZATION — a crashed validation currently reports a GREEN
+		// phase`, which pinned #216 and was written to fail when the fix landed. It
+		// did; this is the true-behaviour assertion it asked to become.
 		//
-		// The build-failed path is safe: `deriveCheckConclusion` cascades `failure`
-		// onto every build-dependent row when `buildSuccess` is false, so the
-		// `publishOk: true` baseline cannot make it look green. That cascade is
-		// exactly why the baseline starts `true` — see the SKIPPED tests above.
+		// The build-failed path is safe on its own: `deriveCheckConclusion` cascades
+		// `failure` onto every build-dependent row when `buildSuccess` is false, so
+		// the `publishOk: true` baseline cannot make it look green. That cascade is
+		// exactly why the baseline starts `true`.
 		//
-		// The validation-CRASHED path has no such protection. `buildSuccess` is
-		// TRUE (the build really did pass), so the cascade never fires — and the
-		// crash contributes NO findings for it to fire on.
+		// The validation-CRASHED path never had that protection — `buildSuccess` is
+		// TRUE, so the cascade does not fire. The fix is that the crash now
+		// contributes its own error findings for it to fire on, leaving the shared
+		// baseline untouched.
 		//
-		// Asserted against the REAL crash-path result, not against
-		// `SKIPPED_PUBLISH_VALIDATION` directly. That distinction is the whole
-		// value of the test: the likeliest fix gives the crash path its own
-		// finding while leaving the shared baseline alone, and a version of this
-		// test that read the constant would sail straight past that fix.
+		// Asserted against the REAL crash-path result rather than a constant, for
+		// the same reason the characterization was: reading a constant here would
+		// not notice the wiring being removed.
 		runValidationEffect.mockReturnValue(Effect.fail(new Error("workspace discovery exploded")));
 		const { result } = await unwrap(ARGS);
 
 		const buildPassed = true;
 		const findings = [...result.findings];
 
-		expect(findings).toEqual([]);
-		expect(deriveCheckConclusion("Publish Validation", findings, buildPassed, false)).toBe("success");
-		expect(deriveCheckConclusion("SBOM Preview", findings, buildPassed, false)).toBe("success");
-		// And strict-warnings does not help — there is no warning to escalate.
-		expect(deriveCheckConclusion("Publish Validation", findings, buildPassed, true)).toBe("success");
+		expect(findings).not.toEqual([]);
+		expect(deriveCheckConclusion("Publish Validation", findings, buildPassed, false)).toBe("failure");
+		expect(deriveCheckConclusion("Release Notes Preview", findings, buildPassed, false)).toBe("failure");
+		expect(deriveCheckConclusion("SBOM Preview", findings, buildPassed, false)).toBe("failure");
 
-		// The phase body then computes `success: buildResult.success && publish.publishOk
-		// && successFor(...)` for the Publish row, which is `true && true && true`.
-		expect(buildPassed && result.publishOk).toBe(true);
+		// An error finding fails regardless of strict-warnings — the setting only
+		// escalates warnings, and these are errors.
+		expect(deriveCheckConclusion("Publish Validation", findings, buildPassed, true)).toBe("failure");
+
+		// The baseline fields are deliberately unchanged: the finding is what
+		// fails the row, not a flipped boolean. `Build Validation` stays clean
+		// because the build genuinely passed.
+		expect(result.publishOk).toBe(true);
 		expect(result.sbomOk).toBe(true);
-
-		// Net effect: `runValidation` throws, no publish dry-run and no SBOM check
-		// ever runs, and Phase 2 reports "Release validation: ✅ 5/5 checks passed"
-		// on the release PR. The only trace is one `logWarning` in the job log.
-		//
-		// The fix is NOT to flip the baseline — that would break the build-failed
-		// path's double-counting. It is for the crash path to contribute an
-		// error-severity finding, which is a behaviour change and therefore out of
-		// scope for C2. Pinned here so the fix is deliberate and this test fails
-		// loudly when it lands.
+		expect(deriveCheckConclusion("Build Validation", findings, buildPassed, false)).toBe("success");
 	});
 
-	it("CHARACTERIZATION — the structured output disagrees with the green verdict", () => {
-		// ⚠️ Same bug, second symptom. The baseline reports both registries NOT
-		// ready while reporting publishing OK, so the emitted `result` JSON says
-		// `npmReady: false` on the very run whose checks table says ✅. Internally
-		// inconsistent, and the inconsistency is the only machine-readable hint
-		// that the validation did not actually run.
+	it("keeps the quiet baseline for the build-failed path, where something else already speaks", () => {
+		// Was `CHARACTERIZATION — the structured output disagrees with the green
+		// verdict`. The internal inconsistency it pinned — `publishOk: true`
+		// alongside `npmReady: false` — is still the shape of the constant, but it
+		// is no longer a symptom: the constant is now reached ONLY when the build
+		// failed, and there the cascade reports every downstream row red.
+		//
+		// Kept, re-aimed, because the constant staying quiet is load-bearing. A
+		// future "tidy-up" that flips `publishOk` here would double-count the
+		// build failure — the wrong fix #216 explicitly warned against.
 		expect(SKIPPED_PUBLISH_VALIDATION.publishOk).toBe(true);
 		expect(SKIPPED_PUBLISH_VALIDATION.npmReady).toBe(false);
 		expect(SKIPPED_PUBLISH_VALIDATION.githubPackagesReady).toBe(false);
+		expect(SKIPPED_PUBLISH_VALIDATION.findings).toEqual([]);
 	});
 
 	it("does NOT catch a defect — a crash still kills the phase", async () => {
@@ -277,15 +293,18 @@ describe("publishValidation — a validation that throws", () => {
 		expect(exit._tag).toBe("Failure");
 	});
 
-	it("still reports the three summary lines, off the baseline", async () => {
+	it("says the checks did not run rather than printing a ✅ off the baseline", async () => {
 		runValidationEffect.mockReturnValue(Effect.fail(new Error("nope")));
 		const { text } = await unwrap(ARGS);
 
-		// Unlike the build-failed path, this one DID start — so it reports, and it
-		// reports the defaults. That asymmetry is deliberate and was previously
-		// implicit in where the log calls sat relative to the `if`.
-		expect(text).toContain("✅ Publish validation — 0/0 target(s) ready");
-		expect(text).toContain("✅ SBOM preview — SBOM Preview skipped");
+		// Unlike the build-failed path, this one DID start — so it reports. What it
+		// reports is the log-shaped half of #216: `publishOk` stays TRUE here by
+		// design, so the ok/not-ok ternary alone printed "✅ Publish validation" for
+		// a dry-run that never happened. The crash arm states the fact instead.
+		expect(text).toContain("❌ Publish validation — did not run (crashed)");
+		expect(text).toContain("❌ Release notes — did not run (publish validation crashed)");
+		expect(text).toContain("❌ SBOM preview — SBOM Preview did not run — publish validation crashed");
+		expect(text).not.toContain("✅ Publish validation");
 	});
 });
 
