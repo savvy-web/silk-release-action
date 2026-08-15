@@ -101,8 +101,8 @@ importers:
         specifier: ^0.8.0
         version: 0.8.0(effect@4.0.0-beta.107)
       '@savvy-web/silk-effects':
-        specifier: ^5.7.2
-        version: 5.7.2(effect@4.0.0-beta.107)(supports-color@7.2.0)
+        specifier: ^5.8.1
+        version: 5.8.1(effect@4.0.0-beta.107)(supports-color@7.2.0)
       effect:
         specifier: catalog:effect
         version: 4.0.0-beta.107
@@ -470,6 +470,12 @@ packages:
     peerDependencies:
       effect: 4.0.0-beta.107
 
+  '@effected/git@0.8.0':
+    resolution: {integrity: sha512-P9ykE47booor04zw+OGx9qpybNFZa65uGdAd15Dug1ftoFxs6bdQj6rIXn1hP7kmlTquQCgqinSAnorxBaYf4g==}
+    engines: {node: '>=24.11.0'}
+    peerDependencies:
+      effect: 4.0.0-beta.107
+
   '@effected/github-actions@0.7.0':
     resolution: {integrity: sha512-ZHIEWv8zv6kOwAIOJN5EhcpCD7lIapT1pqWnmpiRYJsmInieDIKPzTi19i8RBWxTDDPB3kauycyzHv96fSf0Dg==}
     engines: {node: '>=24.11.0'}
@@ -591,6 +597,12 @@ packages:
 
   '@effected/workspaces@0.12.0':
     resolution: {integrity: sha512-ngBidDytLQgCgBy2tnD9RDPBQEU+aiuYhal1Z6+j0OCb59shiV9PiqVHYK5ZbTfVcZmRA0NRJx9ayQNb7xBxtg==}
+    engines: {node: '>=24.11.0'}
+    peerDependencies:
+      effect: 4.0.0-beta.107
+
+  '@effected/workspaces@0.13.0':
+    resolution: {integrity: sha512-ps0m+AAPYXHRx6NaMyAC/vXXnFb30oc1K8h+a1Zb2Jahs5JMO9llTpzbWP3+acKabsgcEBm5jrQ2OmXZajSrsA==}
     engines: {node: '>=24.11.0'}
     peerDependencies:
       effect: 4.0.0-beta.107
@@ -1180,6 +1192,11 @@ packages:
 
   '@savvy-web/silk-effects@5.7.2':
     resolution: {integrity: sha512-ngEot5SpNe8+0U9H1tVoDSJ1XLDLyu9bmNotrY7fru5ET+WNUm4PB0Jxorjug/7YiZ50BvHXtoTWuyeS/AiZUA==}
+    peerDependencies:
+      effect: 4.0.0-beta.107
+
+  '@savvy-web/silk-effects@5.8.1':
+    resolution: {integrity: sha512-ja2Zhq1K4/qxLmjPPzaGHCntSdl4tL85o4EHWhDic582/NuStRwl+5knBluqe8Gri4W78nqJam2dxgUtGKyVJA==}
     peerDependencies:
       effect: 4.0.0-beta.107
 
@@ -3780,6 +3797,10 @@ snapshots:
     dependencies:
       effect: 4.0.0-beta.107
 
+  '@effected/git@0.8.0(effect@4.0.0-beta.107)':
+    dependencies:
+      effect: 4.0.0-beta.107
+
   '@effected/github-actions@0.7.0(@effect/platform-node@4.0.0-beta.107(effect@4.0.0-beta.107)(ioredis@5.11.1(supports-color@7.2.0)))(@effected/jsonc@0.6.0(effect@4.0.0-beta.107))(@effected/semver@0.4.0(effect@4.0.0-beta.107))(@effected/toml@0.4.0(effect@4.0.0-beta.107))(@effected/yaml@0.8.0(effect@4.0.0-beta.107))(effect@4.0.0-beta.107)(supports-color@7.2.0)':
     dependencies:
       '@azure/storage-blob': 12.33.0(supports-color@7.2.0)
@@ -3912,6 +3933,25 @@ snapshots:
       '@effected/lockfiles': 0.4.1(@effected/jsonc@0.6.0(effect@4.0.0-beta.107))(@effected/npm@0.9.0(@effected/semver@0.4.0(effect@4.0.0-beta.107))(effect@4.0.0-beta.107))(@effected/semver@0.4.0(effect@4.0.0-beta.107))(@effected/yaml@0.8.0(effect@4.0.0-beta.107))(effect@4.0.0-beta.107)
       '@effected/npm': 0.9.0(@effected/semver@0.4.0(effect@4.0.0-beta.107))(effect@4.0.0-beta.107)
       '@effected/package-json': 0.8.0(effect@4.0.0-beta.107)
+      '@effected/semver': 0.4.0(effect@4.0.0-beta.107)
+      '@effected/walker': 0.4.0(@effected/glob@0.3.0(effect@4.0.0-beta.107))(effect@4.0.0-beta.107)
+      '@effected/yaml': 0.8.0(effect@4.0.0-beta.107)
+      '@pnpm/catalogs.config': 1100.0.4
+      '@pnpm/catalogs.protocol-parser': 1100.0.1
+      '@pnpm/catalogs.resolver': 1100.0.1
+      '@pnpm/catalogs.types': 1100.0.1
+      effect: 4.0.0-beta.107
+    transitivePeerDependencies:
+      - '@effected/jsonc'
+
+  '@effected/workspaces@0.13.0(@effected/jsonc@0.6.0(effect@4.0.0-beta.107))(effect@4.0.0-beta.107)':
+    dependencies:
+      '@effected/commands': 0.4.0(effect@4.0.0-beta.107)
+      '@effected/git': 0.8.0(effect@4.0.0-beta.107)
+      '@effected/glob': 0.3.0(effect@4.0.0-beta.107)
+      '@effected/lockfiles': 0.4.1(@effected/jsonc@0.6.0(effect@4.0.0-beta.107))(@effected/npm@0.9.0(@effected/semver@0.4.0(effect@4.0.0-beta.107))(effect@4.0.0-beta.107))(@effected/semver@0.4.0(effect@4.0.0-beta.107))(@effected/yaml@0.8.0(effect@4.0.0-beta.107))(effect@4.0.0-beta.107)
+      '@effected/npm': 0.9.0(@effected/semver@0.4.0(effect@4.0.0-beta.107))(effect@4.0.0-beta.107)
+      '@effected/package-json': 0.9.0(effect@4.0.0-beta.107)
       '@effected/semver': 0.4.0(effect@4.0.0-beta.107)
       '@effected/walker': 0.4.0(@effected/glob@0.3.0(effect@4.0.0-beta.107))(effect@4.0.0-beta.107)
       '@effected/yaml': 0.8.0(effect@4.0.0-beta.107)
@@ -4416,6 +4456,35 @@ snapshots:
       '@effected/templates': 0.2.0(effect@4.0.0-beta.107)
       '@effected/walker': 0.4.0(@effected/glob@0.3.0(effect@4.0.0-beta.107))(effect@4.0.0-beta.107)
       '@effected/workspaces': 0.12.0(@effected/jsonc@0.6.0(effect@4.0.0-beta.107))(effect@4.0.0-beta.107)
+      '@effected/yaml': 0.8.0(effect@4.0.0-beta.107)
+      '@manypkg/get-packages': 3.1.0
+      effect: 4.0.0-beta.107
+      mdast-util-heading-range: 4.0.0
+      mdast-util-to-string: 4.0.0
+      remark-gfm: 4.0.1(supports-color@7.2.0)
+      remark-parse: 11.0.0(supports-color@7.2.0)
+      remark-stringify: 11.0.0
+      shell-quote: 1.10.0
+      unified: 11.0.5
+      unified-lint-rule: 3.0.1
+      unist-util-visit: 5.1.0
+    transitivePeerDependencies:
+      - supports-color
+
+  '@savvy-web/silk-effects@5.8.1(effect@4.0.0-beta.107)(supports-color@7.2.0)':
+    dependencies:
+      '@changesets/apply-release-plan': 8.0.0
+      '@changesets/config': 4.0.0
+      '@changesets/get-github-info': 1.0.0
+      '@changesets/get-release-plan': 5.0.0
+      '@effected/commands': 0.4.0(effect@4.0.0-beta.107)
+      '@effected/git': 0.8.0(effect@4.0.0-beta.107)
+      '@effected/glob': 0.3.0(effect@4.0.0-beta.107)
+      '@effected/jsonc': 0.6.0(effect@4.0.0-beta.107)
+      '@effected/package-json': 0.9.0(effect@4.0.0-beta.107)
+      '@effected/templates': 0.2.0(effect@4.0.0-beta.107)
+      '@effected/walker': 0.4.0(@effected/glob@0.3.0(effect@4.0.0-beta.107))(effect@4.0.0-beta.107)
+      '@effected/workspaces': 0.13.0(@effected/jsonc@0.6.0(effect@4.0.0-beta.107))(effect@4.0.0-beta.107)
       '@effected/yaml': 0.8.0(effect@4.0.0-beta.107)
       '@manypkg/get-packages': 3.1.0
       effect: 4.0.0-beta.107

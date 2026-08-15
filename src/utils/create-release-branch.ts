@@ -29,6 +29,7 @@ import { ActionEnvironment, ActionOutputs, DryRun } from "@effected/github-actio
 import type { PublishabilityDetector } from "@effected/workspaces";
 import { WorkspaceDiscovery } from "@effected/workspaces";
 import type { Changesets } from "@savvy-web/silk-effects";
+import { PrBody } from "@savvy-web/silk-effects";
 import type { Config } from "effect";
 import { Effect, FileSystem } from "effect";
 import type { ChildProcessSpawner } from "effect/unstable/process";
@@ -44,7 +45,7 @@ import { getLinkedIssuesFromCommits } from "./link-issues-from-commits.js";
 import { runNativeVersion } from "./native-version.js";
 import type { FileReadError } from "./porcelain-changes.js";
 import { collectPorcelainChanges } from "./porcelain-changes.js";
-import { buildManagedPrBody } from "./pr-body.js";
+
 import {
 	NOTHING_TO_RELEASE_TITLE,
 	formatReleasePackageList,
@@ -354,7 +355,7 @@ export const createReleaseBranch = (
 		// The bug this replaces: `const prBody = ""`. A first release PR was
 		// created with an empty description, so GitHub linked nothing — observed
 		// on silk-integration #242 and #232.
-		const prBody = buildManagedPrBody({
+		const prBody = PrBody.ManagedPrBody.build({
 			subject: prTitle,
 			linkedIssues,
 			signoff,

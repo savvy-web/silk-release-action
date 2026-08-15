@@ -32,6 +32,7 @@ import { ActionEnvironment, ActionOutputs, DryRun } from "@effected/github-actio
 import type { PublishabilityDetector } from "@effected/workspaces";
 import { WorkspaceDiscovery } from "@effected/workspaces";
 import type { Changesets } from "@savvy-web/silk-effects";
+import { PrBody } from "@savvy-web/silk-effects";
 import type { Config } from "effect";
 import { Effect, FileSystem, Option } from "effect";
 import type { ChildProcessSpawner } from "effect/unstable/process";
@@ -47,7 +48,7 @@ import { getLinkedIssuesFromCommits } from "./link-issues-from-commits.js";
 import { runNativeVersion } from "./native-version.js";
 import type { FileReadError } from "./porcelain-changes.js";
 import { collectPorcelainChanges } from "./porcelain-changes.js";
-import { buildManagedPrBody, extractSummary, upsertManagedRegion } from "./pr-body.js";
+
 import {
 	NOTHING_TO_RELEASE_TITLE,
 	formatReleasePackageList,
@@ -469,7 +470,7 @@ export const updateReleaseBranch = (
 
 		// ---------- Create new PR if none exists ----------
 		if (!branchDeleted && prNumber === null && !dryRun) {
-			const prBody = buildManagedPrBody({
+			const prBody = PrBody.ManagedPrBody.build({
 				subject: prTitle,
 				linkedIssues,
 				signoff,
@@ -523,21 +524,21 @@ export const updateReleaseBranch = (
 				// around it survives verbatim. The heading splice this replaces keyed
 				// on `## Linked Issues` and could not tell our text from theirs.
 				const existingBody = getPr.success.body ?? "";
-				const managed = buildManagedPrBody({
+				const managed = PrBody.ManagedPrBody.build({
 					subject: prTitle,
 					linkedIssues,
 					signoff,
 					// Carried through, not regenerated. The managed region is rebuilt
 					// each run, so re-emitting an empty summary region would delete
 					// whatever the summariser wrote as soon as any commit landed.
-					summary: extractSummary(existingBody),
+					summary: PrBody.ManagedPrBody.extractSummary(existingBody),
 					// Same hazard, same fix: an agent may link an issue this release
 					// never detected, and rebuilding from `linkedIssues` alone would
 					// drop it silently. References for issues this run DOES know
 					// about are still decided there, not carried.
 					priorBody: existingBody,
 				});
-				const newBody = upsertManagedRegion(existingBody, managed);
+				const newBody = PrBody.ManagedPrBody.upsert(existingBody, managed);
 
 				const update = yield* Effect.result(pr.update(prNumber, { body: newBody }));
 				if (update._tag === "Success") {
