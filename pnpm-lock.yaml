@@ -71,11 +71,11 @@ importers:
         specifier: ^0.7.0
         version: 0.7.0(effect@4.0.0-beta.107)
       '@effected/github':
-        specifier: ^0.4.1
-        version: 0.4.1(effect@4.0.0-beta.107)
+        specifier: ^0.4.2
+        version: 0.4.2(effect@4.0.0-beta.107)
       '@effected/github-actions':
-        specifier: ^0.6.1
-        version: 0.6.1(@effect/platform-node@4.0.0-beta.107(effect@4.0.0-beta.107)(ioredis@5.11.1(supports-color@7.2.0)))(@effected/jsonc@0.6.0(effect@4.0.0-beta.107))(@effected/semver@0.4.0(effect@4.0.0-beta.107))(@effected/toml@0.4.0(effect@4.0.0-beta.107))(@effected/yaml@0.8.0(effect@4.0.0-beta.107))(effect@4.0.0-beta.107)(supports-color@7.2.0)
+        specifier: ^0.7.0
+        version: 0.7.0(@effect/platform-node@4.0.0-beta.107(effect@4.0.0-beta.107)(ioredis@5.11.1(supports-color@7.2.0)))(@effected/jsonc@0.6.0(effect@4.0.0-beta.107))(@effected/semver@0.4.0(effect@4.0.0-beta.107))(@effected/toml@0.4.0(effect@4.0.0-beta.107))(@effected/yaml@0.8.0(effect@4.0.0-beta.107))(effect@4.0.0-beta.107)(supports-color@7.2.0)
       '@effected/jsonc':
         specifier: ^0.6.0
         version: 0.6.0(effect@4.0.0-beta.107)
@@ -470,15 +470,15 @@ packages:
     peerDependencies:
       effect: 4.0.0-beta.107
 
-  '@effected/github-actions@0.6.1':
-    resolution: {integrity: sha512-3aAkNqdNMCLMCVJHP9xzuabeBtAnaq+LeoucQzEK3+az2vBHyaZBZdFo2Sm2GWL6se/2vBQ2nDsULRFhk1vv7A==}
+  '@effected/github-actions@0.7.0':
+    resolution: {integrity: sha512-ZHIEWv8zv6kOwAIOJN5EhcpCD7lIapT1pqWnmpiRYJsmInieDIKPzTi19i8RBWxTDDPB3kauycyzHv96fSf0Dg==}
     engines: {node: '>=24.11.0'}
     peerDependencies:
       '@effect/platform-node': 4.0.0-beta.107
       effect: 4.0.0-beta.107
 
-  '@effected/github@0.4.1':
-    resolution: {integrity: sha512-QLPejsm3Cc2b4EuiuKNVbhhRRr2ZKXnUXv4FOOoE4NscQaSHBG1xgiu/fZKzobx633Rc+9Sj/5cEWKtAD3Gv+Q==}
+  '@effected/github@0.4.2':
+    resolution: {integrity: sha512-El83ZvRXr+bHByUKL2s9e+tm8PODxId8CZmNuhCVU8XdHoMfd4zt5Wmd1uaqXfWSfV3eryikaKAp8UVeqOHmTA==}
     engines: {node: '>=24.11.0'}
     peerDependencies:
       effect: 4.0.0-beta.107
@@ -534,8 +534,20 @@ packages:
     peerDependencies:
       effect: 4.0.0-beta.107
 
+  '@effected/package-json@0.9.0':
+    resolution: {integrity: sha512-kuXcMKfFtrQfI/dd+dblT2mZJv7g77VmQbytG4ice0YbsuKvmC+K5o9aGqSK1v7tGLYQUBGe3IR3WSJSkcTtsA==}
+    engines: {node: '>=24.11.0'}
+    peerDependencies:
+      effect: 4.0.0-beta.107
+
   '@effected/sbom@0.3.0':
     resolution: {integrity: sha512-XA0qzCjy7+BGXl2SMOaf+UH7v18HoZnGm02echy7iqXXaoz+lvtvd3SvOLymvwmDCdIW7yf60NjR9KlLoFncTw==}
+    engines: {node: '>=24.11.0'}
+    peerDependencies:
+      effect: 4.0.0-beta.107
+
+  '@effected/sbom@0.3.1':
+    resolution: {integrity: sha512-ALNOD+d/06Pnfrog0VvqwWLAfW3ECnthIQCP+hiVvDS7JBwQw1f3AmHQ4mywI9kwCwvUjpngYmTCAOzx2N6LQA==}
     engines: {node: '>=24.11.0'}
     peerDependencies:
       effect: 4.0.0-beta.107
@@ -3768,15 +3780,15 @@ snapshots:
     dependencies:
       effect: 4.0.0-beta.107
 
-  '@effected/github-actions@0.6.1(@effect/platform-node@4.0.0-beta.107(effect@4.0.0-beta.107)(ioredis@5.11.1(supports-color@7.2.0)))(@effected/jsonc@0.6.0(effect@4.0.0-beta.107))(@effected/semver@0.4.0(effect@4.0.0-beta.107))(@effected/toml@0.4.0(effect@4.0.0-beta.107))(@effected/yaml@0.8.0(effect@4.0.0-beta.107))(effect@4.0.0-beta.107)(supports-color@7.2.0)':
+  '@effected/github-actions@0.7.0(@effect/platform-node@4.0.0-beta.107(effect@4.0.0-beta.107)(ioredis@5.11.1(supports-color@7.2.0)))(@effected/jsonc@0.6.0(effect@4.0.0-beta.107))(@effected/semver@0.4.0(effect@4.0.0-beta.107))(@effected/toml@0.4.0(effect@4.0.0-beta.107))(@effected/yaml@0.8.0(effect@4.0.0-beta.107))(effect@4.0.0-beta.107)(supports-color@7.2.0)':
     dependencies:
       '@azure/storage-blob': 12.33.0(supports-color@7.2.0)
       '@effect/platform-node': 4.0.0-beta.107(effect@4.0.0-beta.107)(ioredis@5.11.1(supports-color@7.2.0))
-      '@effected/github': 0.4.1(effect@4.0.0-beta.107)
+      '@effected/github': 0.4.2(effect@4.0.0-beta.107)
       '@effected/glob': 0.3.0(effect@4.0.0-beta.107)
       '@effected/markdown': 0.5.1(@effected/jsonc@0.6.0(effect@4.0.0-beta.107))(@effected/toml@0.4.0(effect@4.0.0-beta.107))(@effected/yaml@0.8.0(effect@4.0.0-beta.107))(effect@4.0.0-beta.107)
       '@effected/npm': 0.9.0(@effected/semver@0.4.0(effect@4.0.0-beta.107))(effect@4.0.0-beta.107)
-      '@effected/sbom': 0.3.0(effect@4.0.0-beta.107)(supports-color@7.2.0)
+      '@effected/sbom': 0.3.1(effect@4.0.0-beta.107)(supports-color@7.2.0)
       '@effected/templates': 0.2.0(effect@4.0.0-beta.107)
       effect: 4.0.0-beta.107
     transitivePeerDependencies:
@@ -3787,7 +3799,7 @@ snapshots:
       - kerberos
       - supports-color
 
-  '@effected/github@0.4.1(effect@4.0.0-beta.107)':
+  '@effected/github@0.4.2(effect@4.0.0-beta.107)':
     dependencies:
       '@effected/semver': 0.4.0(effect@4.0.0-beta.107)
       '@octokit/core': 7.0.7
@@ -3835,9 +3847,28 @@ snapshots:
       '@effected/spdx': 0.2.0(effect@4.0.0-beta.107)
       effect: 4.0.0-beta.107
 
+  '@effected/package-json@0.9.0(effect@4.0.0-beta.107)':
+    dependencies:
+      '@effected/jsonc': 0.6.0(effect@4.0.0-beta.107)
+      '@effected/npm': 0.9.0(@effected/semver@0.4.0(effect@4.0.0-beta.107))(effect@4.0.0-beta.107)
+      '@effected/semver': 0.4.0(effect@4.0.0-beta.107)
+      '@effected/spdx': 0.2.0(effect@4.0.0-beta.107)
+      effect: 4.0.0-beta.107
+
   '@effected/sbom@0.3.0(effect@4.0.0-beta.107)(supports-color@7.2.0)':
     dependencies:
       '@effected/package-json': 0.8.0(effect@4.0.0-beta.107)
+      '@effected/spdx': 0.2.0(effect@4.0.0-beta.107)
+      '@sigstore/bundle': 5.0.0
+      '@sigstore/sign': 5.0.0(supports-color@7.2.0)
+      effect: 4.0.0-beta.107
+    transitivePeerDependencies:
+      - kerberos
+      - supports-color
+
+  '@effected/sbom@0.3.1(effect@4.0.0-beta.107)(supports-color@7.2.0)':
+    dependencies:
+      '@effected/package-json': 0.9.0(effect@4.0.0-beta.107)
       '@effected/spdx': 0.2.0(effect@4.0.0-beta.107)
       '@sigstore/bundle': 5.0.0
       '@sigstore/sign': 5.0.0(supports-color@7.2.0)

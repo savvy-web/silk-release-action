@@ -312,7 +312,7 @@ const runStage = async (
 					f.summaries.push(content);
 				}),
 			// `runNativeVersion` declassifies the App token through
-			// `Secret.forSigning`, which masks it with the runner. The double dies
+			// `Secret.forProcessEnv`, which masks it with the runner. The double dies
 			// loudly on an unstubbed member, so this records the masks instead —
 			// which is also what proves the token reaches the log filter before it
 			// reaches `process.env.GITHUB_TOKEN`.

@@ -56,7 +56,7 @@ const gitOver = (spawner: Layer.Layer<ChildProcessSpawner.ChildProcessSpawner>):
  * Records every `setSecret` the run performs.
  *
  * @remarks
- * `withGithubTokenEnv` declassifies the App token through `Secret.forSigning`,
+ * `withGithubTokenEnv` declassifies the App token through `Secret.forProcessEnv`,
  * which masks it with the runner on the way out. Capturing the masks lets the
  * suite assert that the token written into `process.env.GITHUB_TOKEN` was
  * registered with the log filter first — the property the bare `Redacted.value`
