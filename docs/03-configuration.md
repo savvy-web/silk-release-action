@@ -15,7 +15,7 @@
 | `npm-token` | No | `""` | NPM access token for publishing to npmjs.org. Only needed for first-time publish or when OIDC is not configured |
 | `strict-warnings` | No | `"false"` | When `"true"`, warning-severity validation findings escalate the per-step and unified check-run conclusions from `neutral` to `failure`, blocking anything that gates on check status — a branch-protection required check, and the auto-merge the `auto-merge` input enables. Errors always fail regardless of this setting |
 | `sbom-config` | No | `""` | SBOM metadata configuration (JSON string) for NTIA-compliant SBOM generation. Must conform to the `SilkReleaseConfig` schema |
-| `custom-registries` | No | `""` | Custom registries with authentication (one per line). Format: `https://registry.example.com/_authToken=<token>`. **Currently a no-op** — see [Custom registry format](#custom-registry-format) |
+| `custom-registries` | No | `""` | Custom registries with authentication (one per line). Format: `https://registry.example.com/_authToken=<token>` — see [Custom registry format](#custom-registry-format) |
 
 ## Outputs
 
@@ -94,7 +94,7 @@ The action uses a tiered approach for multi-registry publishing:
 | npm | OIDC trusted publishing, with token-auth fallback | No token needed once trusted publishing is configured. Provide `npm-token` for first-time publishes or as a fallback |
 | JSR | OIDC trusted publishing | No configuration needed |
 | GitHub Packages | Token auth | Requires the `github-token` input, set to the workflow's `secrets.GITHUB_TOKEN`, with `packages: write` on the job |
-| Custom registries | `custom-registries` input | **Not wired up** — the input is accepted and validated, but nothing publishes to these registries. See [Custom registry format](#custom-registry-format) |
+| Custom registries | `custom-registries` input | One `_authToken` per registry, written to the npmrc npm publishes through. See [Custom registry format](#custom-registry-format) |
 
 ### npm trusted publishing and token fallback
 
@@ -123,15 +123,20 @@ Omitting the input fails every GitHub Packages target immediately, naming the mi
 
 ### Custom registry format
 
-**This input does nothing today.** Its implementation was removed in [#90](https://github.com/savvy-web/silk-release-action/pull/90) and has not been replaced, so since v0.2.3 the value is parsed and then ignored — no custom registry is ever authenticated or published to, and the run stays green while silently skipping them. Do not rely on it to ship a package. Rewiring is tracked at [#215](https://github.com/savvy-web/silk-release-action/issues/215); the shape below is what the input still accepts and is what a future implementation will consume.
-
-Pass one registry per line in the `custom-registries` input:
+Pass one registry per line in the `custom-registries` input — the registry URL immediately followed by its npmrc auth string:
 
 ```yaml
 custom-registries: |
   https://registry.example.com/_authToken=${{ secrets.CUSTOM_NPM_TOKEN }}
   https://other-registry.com/_authToken=${{ secrets.OTHER_TOKEN }}
 ```
+
+Each token is masked in the workflow log and written to the npmrc that `npm publish` reads; it is never exported into the process environment. A malformed line **fails the run** with a message naming the line — silence is how this input once regressed into a multi-release no-op ([#90](https://github.com/savvy-web/silk-release-action/pull/90), restored via [#215](https://github.com/savvy-web/silk-release-action/issues/215)).
+
+Two shapes the pre-v0.2.3 implementation accepted are deliberately rejected now:
+
+- `https://registry.example.com/_auth=<base64>` — basic auth is no longer supported; supply a bearer token as `_authToken=<token>`.
+- `https://registry.example.com/` (a bare URL) — the GitHub App token fallback was removed; every custom registry needs an explicit token.
 
 ## SBOM configuration
 

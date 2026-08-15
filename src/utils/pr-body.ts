@@ -15,9 +15,9 @@
 // sized to be replaced by it.
 
 /** Opening marker of the region this module owns. */
-export const MANAGED_START = "<!-- silk-release:start -->";
+export const MANAGED_START: string = "<!-- silk-release:start -->";
 /** Closing marker of the region this module owns. */
-export const MANAGED_END = "<!-- silk-release:end -->";
+export const MANAGED_END: string = "<!-- silk-release:end -->";
 
 /**
  * The fence language for the proposed squash-commit block.
@@ -27,7 +27,7 @@ export const MANAGED_END = "<!-- silk-release:end -->";
  * a target for AI integrations to read and rewrite into the eventual
  * squash-commit message. **Do not "correct" it to `text`.**
  */
-export const SQUASH_FENCE_LANGUAGE = "proposed-squash-commit";
+export const SQUASH_FENCE_LANGUAGE: string = "proposed-squash-commit";
 
 const FENCE = "```";
 
@@ -51,9 +51,9 @@ export interface LinkedIssueRef {
 const isOpen = (issue: LinkedIssueRef): boolean => issue.state !== "closed";
 
 /** Opening marker of the region an AI summariser owns. */
-export const SUMMARY_START = "<!-- silk-release:summary:start -->";
+export const SUMMARY_START: string = "<!-- silk-release:summary:start -->";
 /** Closing marker of the region an AI summariser owns. */
-export const SUMMARY_END = "<!-- silk-release:summary:end -->";
+export const SUMMARY_END: string = "<!-- silk-release:summary:end -->";
 
 /**
  * The summary region's current content, or `""` when it is empty or absent.
@@ -93,6 +93,9 @@ export const extractSummary = (existing: string): string => {
  * Emitting one form in both places satisfies one consumer and breaks the other,
  * so the duplication below is load-bearing. Do not "simplify" it.
  *
+ * @param linkedIssues - The issues linked to the release; closed ones are dropped.
+ * @returns The one-line `Closes #1, #2` trailer, or `""` when nothing is open.
+ *
  * @public
  */
 export const buildSquashClosingReferences = (linkedIssues: ReadonlyArray<LinkedIssueRef>): string => {
@@ -109,9 +112,9 @@ export const buildSquashClosingReferences = (linkedIssues: ReadonlyArray<LinkedI
  * see {@link buildReferencesRegion} for why merely knowing the region's
  * contents is not enough to merge it safely.
  */
-export const REFERENCES_START = "<!-- silk-release:references:start -->";
+export const REFERENCES_START: string = "<!-- silk-release:references:start -->";
 /** Closing marker of the closing-reference region. */
-export const REFERENCES_END = "<!-- silk-release:references:end -->";
+export const REFERENCES_END: string = "<!-- silk-release:references:end -->";
 
 /**
  * The opening marker up to its attributes, for locating a region whose
@@ -124,7 +127,7 @@ export const REFERENCES_END = "<!-- silk-release:references:end -->";
  *
  * @public
  */
-export const REFERENCES_START_PREFIX = "<!-- silk-release:references:start";
+export const REFERENCES_START_PREFIX: string = "<!-- silk-release:references:start";
 
 /**
  * The reference region's current content, or `""` when it is empty or absent.
@@ -270,6 +273,10 @@ const buildSquashBlock = (args: {
  * {@link upsertManagedRegion} can regenerate it without touching anything a
  * human wrote around it.
  *
+ * @param args - The subject, linked issues, signoff, carried summary, and the
+ *   PR's prior body (see the per-field remarks below).
+ * @returns The managed region, markers included.
+ *
  * @public
  */
 export const buildManagedPrBody = (args: {
@@ -355,6 +362,10 @@ export const buildManagedPrBody = (args: {
  *
  * A body with no markers keeps its content and gains the region **below** it,
  * so an existing hand-written description is not displaced.
+ *
+ * @param existing - The PR description as it stands.
+ * @param managed - The freshly built managed region, from {@link buildManagedPrBody}.
+ * @returns The description with the managed region replaced or appended.
  *
  * @public
  */

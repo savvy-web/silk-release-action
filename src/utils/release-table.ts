@@ -102,8 +102,16 @@ export const toPendingReleaseRows = (
 		targets: "pending",
 	}));
 
-/** One validated package, as much of it as the table renders. */
-interface ValidatedPackage {
+/**
+ * One validated package, as much of it as the table renders.
+ *
+ * @remarks
+ * Exported because it is the parameter type of {@link toValidatedReleaseRows} —
+ * a consumer of that function could not otherwise name the shape it must build.
+ *
+ * @public
+ */
+export interface ValidatedPackage {
 	readonly name: string;
 	readonly version: string;
 	readonly baseVersion: string | null;

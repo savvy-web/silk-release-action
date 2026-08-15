@@ -243,6 +243,10 @@ export const runValidation = (inputs: Inputs) =>
 					owner,
 					releaseBranch,
 					targetBranch,
+					// The one `env.github` read above — the report step no longer
+					// re-reads GITHUB_SHA with a `""` fallback that could stamp an
+					// empty sha.
+					headSha: sha,
 					report: {
 						validation: validationOutput.validation,
 						validationPackages: publish.validationPackages,

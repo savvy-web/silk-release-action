@@ -142,6 +142,7 @@ const run = async (
 		readonly existingComment?: string;
 		readonly env?: Readonly<Record<string, string>>;
 		readonly report?: ValidationReport;
+		readonly headSha?: string;
 	} = {},
 ) => {
 	const listed: Array<Listed> = [];
@@ -196,6 +197,7 @@ const run = async (
 			releaseBranch: RELEASE_BRANCH,
 			targetBranch: TARGET_BRANCH,
 			report: options.report ?? report(),
+			headSha: options.headSha ?? HEAD_SHA,
 			now: () => NOW,
 		}).pipe(Effect.provide(layer), Effect.provide(Logger.layer([capture]))),
 	);
@@ -307,10 +309,12 @@ describe("publishValidationReport", () => {
 		expect(body).toContain(`"runId":"${RUN_ID}"`);
 	});
 
-	it("stamps an empty sha when the runner names none, rather than failing", async () => {
-		// `getOptional`, not `get`: a missing `GITHUB_SHA` degrades to `""`, which
-		// `renderBanner` treats as "staleness unknown" instead of raising.
-		const { outcome, body } = await run({ env: { GITHUB_SHA: "", GITHUB_RUN_ID: "" } });
+	it("stamps the sha the caller resolved, even an empty one, rather than failing", async () => {
+		// The sha is the CALLER's one `env.github` read, passed in — this step no
+		// longer re-reads GITHUB_SHA with a `""` fallback of its own. An empty
+		// caller-supplied sha still degrades: `renderBanner` treats `""` as
+		// "staleness unknown" instead of raising.
+		const { outcome, body } = await run({ headSha: "", env: { GITHUB_RUN_ID: "" } });
 
 		expect(outcome.written).toBe(true);
 		expect(body).toContain(`"sha":""`);

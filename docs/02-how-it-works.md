@@ -84,7 +84,7 @@ By default, warnings appear in the findings table but do not fail the check run 
 When the release PR is merged, the action detects the merge and publishes:
 
 1. Identifies which packages had version bumps by analyzing the PR diff
-2. Publishes each package to all configured registries using the appropriate authentication — OIDC for npm and JSR, the `github-token` input for GitHub Packages. Custom registries are not published to at all — the `custom-registries` input is accepted but unwired ([#215](https://github.com/savvy-web/silk-release-action/issues/215))
+2. Publishes each package to all configured registries using the appropriate authentication — OIDC for npm and JSR, the `github-token` input for GitHub Packages, and the `custom-registries` input's per-registry `_authToken` for custom registries
 3. Creates artifact attestations for published packages (provenance)
 4. Determines the tag strategy — single tag for single-package repos, per-package tags for monorepos
 5. Creates GitHub releases with auto-generated release notes from CHANGELOGs

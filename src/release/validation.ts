@@ -367,7 +367,7 @@ export const detectReleasedPackages = (
 				(e) =>
 					new ValidationError({
 						reason: "dry-run",
-						message: `Could not read the workspace at '${targetBranch}': ${String(e)}`,
+						message: `Could not read the workspace at '${targetBranch}': ${e instanceof Error ? e.message : String(e)}`,
 						cause: e,
 					}),
 			),
@@ -457,6 +457,11 @@ export const runValidation = (args: ValidationInputArgs) =>
 			});
 			yield* Effect.logWarning(`sbom-config decode failed: ${sbomConfigResult.error}`);
 		}
+
+		// Loop-invariant: the SBOM options depend only on the resolved template
+		// and the single clock read above, so they are computed once here rather
+		// than once per package-build below.
+		const sbomOptions = sbomOptionsFromConfig(sbomConfig, nowMillis);
 
 		// ── Step 1: Discover workspace packages ──────────────────────────────
 
@@ -639,10 +644,11 @@ export const runValidation = (args: ValidationInputArgs) =>
 
 				// The built `dist/<dir>/package.json` is the artifact that actually
 				// ships, so it is the source for both the BOM's components and the
-				// root component's metadata. Undecodable → `Option.none`, and the
-				// SBOM falls back to the workspace package's own name/version.
+				// root component's metadata. Absent or undecodable manifests come
+				// back as tagged fallbacks (`absent` / `undecodable` with the
+				// reason), and the SBOM falls back to the workspace package's own
+				// name/version.
 				const manifest = yield* readBuiltManifest(build.absoluteDirectory);
-				const sbomOptions = sbomOptionsFromConfig(sbomConfig, nowMillis);
 
 				// One collapsible group per package-build, mirroring the Phase-3 publish
 				// tree: a `📦 pack` line (dry-run sizing), per-registry readiness rows,

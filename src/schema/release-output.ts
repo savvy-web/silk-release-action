@@ -195,7 +195,7 @@ const BranchManagementPayload = Schema.Struct({
 		).annotate({
 			title: "Changeset packages",
 			description:
-				"Every package this release will version, from the release plan — including packages bumped only because a dependency moved, distinguished by `explicit`. Empty array when there is nothing to release; the action emits a no-op in that case.",
+				"Every package this release will version, from the release plan — including packages bumped only because a dependency moved, which `changesetCount: 0` identifies. Empty array when there is nothing to release; the action emits a no-op in that case.",
 		}),
 	}).annotate({
 		identifier: "BranchManagementChangesets",

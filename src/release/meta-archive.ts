@@ -20,6 +20,7 @@ import { ChildProcess } from "effect/unstable/process";
  *
  * @param metaDir - Absolute path to the group's `meta/` folder.
  * @param outPath - Absolute path to write the `.meta.tgz` to.
+ * @returns Nothing on success; a non-zero `tar` exit is a typed failure.
  */
 export const tarMetaFolder = (
 	metaDir: string,

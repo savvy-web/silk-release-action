@@ -188,7 +188,7 @@ export type ValidationReportServices = ActionEnvironment | PullRequest | PullReq
  * the rendered body say it was a dry run. Preserved verbatim and pinned by a
  * test; changing it is a behaviour change.
  *
- * @param args - The branch refs, the owner, the report, and the clock.
+ * @param args - The branch refs, the owner, the report, the head sha, and the clock.
  * @returns What was written and where. Never fails.
  *
  * @public
@@ -199,6 +199,15 @@ export const publishValidationReport = (args: {
 	readonly releaseBranch: string;
 	readonly targetBranch: string;
 	readonly report: ValidationReport;
+	/**
+	 * The commit the report describes, for the section stamps.
+	 *
+	 * @remarks
+	 * Passed in from the caller's one `env.github` read rather than re-read
+	 * here through `getOptional("GITHUB_SHA")` — the re-read's `""` fallback
+	 * could stamp an empty sha the caller's typed read would have failed on.
+	 */
+	readonly headSha: string;
 	/** The stamp timestamp; injectable so a test is deterministic. */
 	readonly now?: (() => string) | undefined;
 }): Effect.Effect<ValidationReportOutcome, never, ValidationReportServices> =>
@@ -219,12 +228,11 @@ export const publishValidationReport = (args: {
 		}
 
 		const environment = yield* ActionEnvironment;
-		const headSha = Option.getOrElse(yield* environment.getOptional("GITHUB_SHA"), () => "");
 		const runId = Option.getOrElse(yield* environment.getOptional("GITHUB_RUN_ID"), () => "");
 		const commitLink = yield* resolveCommitLinker();
 		const stamp: SectionStamp = {
 			state: "complete",
-			sha: headSha,
+			sha: args.headSha,
 			runId,
 			at: (args.now ?? (() => new Date().toISOString()))(),
 		};
@@ -233,7 +241,7 @@ export const publishValidationReport = (args: {
 			prNumber: pr.number,
 			key: RELEASE_PLAN_KEY,
 			sections: buildValidationSections(args.report, stamp),
-			headSha,
+			headSha: args.headSha,
 			commitLink,
 			warning: "Could not update the release comment",
 			read: readStickyComment,
