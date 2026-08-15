@@ -1,5 +1,92 @@
 # @savvy-web/silk-release-action
 
+## 4.4.1
+
+### Bug Fixes
+
+* ### Octokit deprecation warnings no longer clutter the Phase-3 log
+
+  Every issue closed during publishing emitted a deprecation warning into the workflow log, interleaved with the `✓ Closed issue #N` lines — a release closing four issues carried four of them (#190).
+
+  The cause was never the route. Octokit sends no `X-GitHub-Api-Version` header, so every request rode GitHub's deprecated `2022-11-28` calendar default. `@effected/github` 0.4.2 pins `2026-03-10` on `GitHubIssue`'s four REST calls, so the warnings stop.
+
+  Adoption only — no code changed on our side for this.
+
+- ### Already-closed issues are no longer re-linked and re-closed by the release PR
+
+  The release PR's managed region classified linked issues with `state !== "closed"`. But `GitHubIssue.linkedIssues` is a **GraphQL** query (`closingIssuesReferences`), and GraphQL returns the enum spelling `CLOSED` — uppercase, and not normalised by the kit.
+
+  So a closed issue arrived as `"CLOSED"`, failed the lowercase comparison, and was treated as open: it got a bare `Closes #N` line in the PR description and an entry in the region's `owned="…"` attribute. Merging the release PR then **closed an issue the release had deliberately dropped**, which is the exact outcome the `owned` attribute exists to prevent.
+
+  Only issues reaching the action through the GraphQL linked-issues path were affected, which is all of them on the release PR. Nothing failed and nothing warned.
+
+  Fixed by adopting the shared implementation, whose `LinkedIssueRef.isClosed` classifies every casing.
+
+* ### 60 test cases that were never running now run
+
+  Five suites under `__test__/unit/utils/` were silently excluded from every test run (#237). The vitest-agent project discovery drops any directory named `utils`, and its pattern had widened to match that name at **any** depth rather than only at the top level — so `__test__/unit/utils/` began matching and its suites stopped being collected. Nothing failed and nothing warned; the run simply reported a smaller total.
+
+  The directory is renamed to `__test__/unit/utilities/`, restoring **60 cases** across `turbo-summary` (31), `count-changesets` (14), `group-id` (8), `npm-cache` (4) and `sort-releases-topologically` (3). The suite total goes 792 → 852 across 56 → 61 files.
+
+  No product code changed. These tests cover changeset counting, group-id derivation, npm cache behaviour, topological release ordering and turbo summary parsing, none of which was being verified.
+
+- ### The PR-body contract now has one implementation instead of two
+
+  `src/utils/pr-body.ts` is deleted; the marker vocabulary, managed-region upsert, summary and reference carry-through, and the `owned="…"` attribute now come from `PrBody` in `@savvy-web/silk-effects` (#209).
+
+  The contract's whole purpose is that independent writers agree on it, so a second copy here — with `silk-update-action` doing substantially similar work — was the wrong shape. The local module's own header had anticipated the move.
+
+  Call sites use `PrBody.ManagedPrBody` (`build`, `upsert`, `extractSummary`, `extractReferences`) and `PrBody.Markers`. `__test__/pr-body.test.ts` shrinks from an exhaustive suite to a contract smoke test over the properties the call sites depend on; the exhaustive suite moved upstream with the implementation. The empirically verified linking rule — GitHub links an issue only from a bare `Closes #N` outside every fence, confirmed against real pull requests rather than inferred from documentation — is kept here, since it is the reason the assertion exists at all.
+
+  `utils/managed-sections.ts` and `utils/write-sections.ts` are unchanged: the sticky-comment surface was out of scope.
+
+  ### Dependencies
+
+  * `@savvy-web/silk-effects` `^5.7.2` → `^5.8.1` [#246][#246]
+
+* ### Two guards so this cannot recur silently
+
+  * `__test__/test-placement.test.ts` now rejects a `*.test.ts` under an excluded directory **name at any depth**, rather than checking one hardcoded top-level prefix — the narrowness is precisely why the widened pattern slipped past it
+  * `scripts/check-test-collection.mjs` (`pnpm check:collection`, and now the first step of `pnpm ci:test`) compares test files on disk against what `vitest list` reports collecting and fails on any gap. It hardcodes no directory names, so it catches an exclusion rule that nobody has learned about yet
+
+  Both are mutation-verified: renaming the directory back turns each red.
+
+  `__test__/unit/utilities/custom-registries.test.ts` moves to its mirrored home from the flat path it was parked at to dodge this bug.
+
+  ### Corrected the collection map in `__test__/CLAUDE.md`
+
+  The map asserted that `__test__/unit/utils/` collected. That was probe-verified on 2026-08-05 and false by 2026-08-14 — nine days in which a document intended to prevent this exact mistake was instead endorsing it. It now records the any-depth rule, carries its verification date, and notes that `pnpm test` runs with `--pass-with-no-tests`, so collecting zero suites also exits 0. [#246][#246]
+
+### Dependencies
+
+* | Dependency             | Type       | Action  | From    | To      |                                                                              |
+  | ---------------------- | ---------- | ------- | ------- | ------- | ---------------------------------------------------------------------------- |
+  | @effected/git          | dependency | updated | ^0.7.0  | ^0.8.0  |                                                                              |
+  | @effected/package-json | dependency | updated | ^0.8.0  | ^0.9.0  |                                                                              |
+  | @effected/sbom         | dependency | updated | ^0.3.0  | ^0.3.1  |                                                                              |
+  | @effected/workspaces   | dependency | updated | ^0.12.0 | ^0.13.0 | [#246][#246] Thanks [@savvy-web-bot](https://github.com/apps/savvy-web-bot)! |
+
+### Maintenance
+
+* ### `Secret.forProcessEnv` replaces `forSigning` at the one process-env bridge
+
+  `@effected/github-actions` 0.7.0 adds a member named for exactly what the `withGithubTokenEnv` bridge in `native-version.ts` does: declassify a token bound for the **ambient** environment, as distinct from a child's environment (`forChildEnv`), a runner file (`forRunnerFile`), or a value that stays in-process (`forSigning`). Masking behaviour and signature are identical, so this is a rename at the call site plus honest audit vocabulary (#208).
+
+  The kit still declines to mutate `process.env` itself, so the assignment and the restore arm remain ours — which is the documented division for this member, and what `Effect.acquireUseRelease` here already implements.
+
+  `Secret.forSigning` correctly survives at the custom-registry site in `publish.ts`: that token is written to the npmrc in-process and never enters an environment.
+
+  ### Dependencies
+
+  * `@effected/github` `^0.4.1` → `^0.4.2`
+  * `@effected/github-actions` `^0.6.1` → `^0.7.0` [#246][#246]
+
+### Patch Changes
+
+Thanks to [@savvy-web-bot](https://github.com/apps/savvy-web-bot) for their contributions!
+
+[#246]: https://github.com/savvy-web/silk-release-action/pull/246
+
 ## 4.4.0
 
 ### Features
