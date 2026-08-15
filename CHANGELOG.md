@@ -1,5 +1,54 @@
 # @savvy-web/silk-release-action
 
+## 4.4.0
+
+### Features
+
+* ### Custom registry publishing restored
+
+  The `custom-registries` input works again. It had been a silent no-op since v0.2.3 — the implementation was deleted in #90 while the manifest and docs kept advertising it (#215). Each configured line now authenticates its registry during Phase-3 publishing:
+
+  ```yaml
+  custom-registries: |
+    https://registry.example.com/_authToken=${{ secrets.CUSTOM_NPM_TOKEN }}
+  ```
+
+  * Each token is masked in the workflow log before use and written to the npmrc `npm publish` reads — it is never exported into the process environment
+  * The configured token takes precedence over the URL-derived environment-variable fallback (`REGISTRY_EXAMPLE_COM_TOKEN`), which remains supported
+  * A malformed line now **fails the run** with a message naming the line, instead of being silently ignored:
+    * `_auth=<base64>` (basic auth) is no longer supported — supply a bearer token as `_authToken=<token>`
+    * a bare registry URL is rejected — the GitHub App token fallback was removed, so every custom registry needs an explicit token
+    * duplicate lines for one registry are rejected [#239][#239]
+
+### Bug Fixes
+
+* Release-PR section stamps are now validated when read back: a stamp whose state is not one of the known six is dropped instead of rendering a garbled value as "Up to date". An unreadable region no longer blocks a fresh write, so it recovers on the next run.
+* Phase 2's sticky-comment stamp carries the same commit sha the validation run resolved, instead of a second `GITHUB_SHA` read whose `""` fallback could stamp an empty sha.
+* The `result` output schema's changeset-packages description no longer references an `explicit` field that does not exist; dependency-only bumps are identified by `changesetCount: 0`.
+
+### Documentation
+
+* Completed TSDoc (`@param`/`@returns`) on exported release and PR-body helpers, and reattached the doc comment that had drifted off `resolveReleasePrTitle`.
+* De-duplicated the `github-token` input description so the REQUIRED-for-GitHub-Packages sentence leads.
+
+### Dependencies
+
+* | Dependency              | Type       | Action  | From   | To     |                                                                              |
+  | ----------------------- | ---------- | ------- | ------ | ------ | ---------------------------------------------------------------------------- |
+  | @savvy-web/silk-effects | dependency | updated | ^5.7.1 | ^5.7.2 | [#239][#239] Thanks [@savvy-web-bot](https://github.com/apps/savvy-web-bot)! |
+
+### Maintenance
+
+* Explicit types on exported declarations (`makeAppLayer`, `MainLive`, PR-body markers, and friends); `AutoMergeMethod` is now derived from its schema instead of restating the literals.
+* Exported `ValidatedPackage`, the parameter type of `toValidatedReleaseRows`.
+* Token-auth publish retries now say provenance is disabled for the retry attempt; empty-registry display naming is explicit; loop-invariant SBOM options are computed once. [#239][#239]
+
+### Patch Changes
+
+Thanks to [@savvy-web-bot](https://github.com/apps/savvy-web-bot) for their contributions!
+
+[#239]: https://github.com/savvy-web/silk-release-action/pull/239
+
 ## 4.3.4
 
 ### Dependencies
