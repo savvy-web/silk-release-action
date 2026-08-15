@@ -4,8 +4,8 @@ category: architecture
 status: current
 completeness: 95
 created: 2026-02-07
-updated: 2026-08-11
-last-synced: 2026-08-11
+updated: 2026-08-15
+last-synced: 2026-08-15
 module: release-action
 related:
   - integration.md
@@ -76,7 +76,7 @@ The action automates the full release lifecycle: detecting pending changes, mana
 | `@effected/commands` | `LocalExec`, `ToolDiscovery` — the subprocess and tool-probe seams |
 | `@effected/workspaces` | `Workspaces.layerWithGit()`, `WorkspaceDiscovery`, `PublishabilityDetector`, `DependencyGraph`, `PackageManagerDetector` |
 | `@effected/markdown`, `@effected/package-json`, `@effected/jsonc` | Markdown assembly, manifest reads, JSONC parsing |
-| `@savvy-web/silk-effects` | `Changesets.ReleasePlanner` / `ConfigInspector` (native versioning), `ChangesetConfigReader`, `SilkPublishability` (silk rules + `PublishTargetBindingError`) |
+| `@savvy-web/silk-effects` | `Changesets.ReleasePlanner` / `ConfigInspector` (native versioning), `ChangesetConfigReader`, `SilkPublishability` (silk rules + `PublishTargetBindingError`), `PrBody` (the managed release-PR description) |
 
 **All 17 raw `ChildProcess.make("git", …)` spawns are gone** — `@effected/git` 0.6 answers every one of them (`clean`, `branchDelete`, `branchCreate`, `restore`, `isShallow`, `fetchUnshallow`).
 
@@ -227,13 +227,26 @@ The commit subject matches the PR title; the commit body is a bullet list of ful
 
 #### Release PR body (managed region)
 
-`src/utils/pr-body.ts` builds the slice of the release PR *description* this action owns, delimited by `<!-- silk-release:start -->` / `<!-- silk-release:end -->` so `upsertManagedRegion` can regenerate it without disturbing prose a human wrote around it. Both branch-management flows call `buildManagedPrBody`; only `update-release-branch.ts` has a prior description to feed back in, via the optional `priorBody` argument.
+**The implementation is upstream, not in this repo.** `PrBody` in `@savvy-web/silk-effects` (`^5.8.1`) builds the slice of the release PR *description* this action owns, delimited by `<!-- silk-release:start -->` / `<!-- silk-release:end -->` so `ManagedPrBody.upsert` can regenerate it without disturbing prose a human wrote around it. Both branch-management flows call `PrBody.ManagedPrBody.build`; only `update-release-branch.ts` has a prior description to feed back in, via the optional `priorBody` argument.
 
-Three properties of the body are load-bearing:
+The local `src/utils/pr-body.ts` was deleted in [#209](https://github.com/savvy-web/silk-release-action/issues/209) — the same contract was maintained twice, here and in `silk-update-action`, and the two copies had begun to drift. The names map one-for-one:
+
+| Was (local `utils/pr-body.ts`) | Now (`PrBody` from `@savvy-web/silk-effects`) |
+| :--- | :--- |
+| `buildManagedPrBody(args)` | `PrBody.ManagedPrBody.build(args)` |
+| `upsertManagedRegion(existing, managed)` | `PrBody.ManagedPrBody.upsert(existing, managed)` |
+| `extractSummary(existing)` | `PrBody.ManagedPrBody.extractSummary(existing)` |
+| `extractReferences(existing)` | `PrBody.ManagedPrBody.extractReferences(existing)` |
+| module constants `MANAGED_START`, `REFERENCES_START_PREFIX`, … | `PrBody.Markers.*` |
+
+The namespace also carries `PrBody.LinkedIssueRef` (a `Schema.Class` over `{ number, title, state }` with the static `isClosed`), `PrBody.ClosingReferences`, `PrBody.Region`, `PrBody.OwnedAttribute` and `PrBody.PrBodyDiagnostic.scan`; this action uses `ManagedPrBody`, `Markers` and `LinkedIssueRef`.
+
+Four properties of the body are load-bearing:
 
 - **Two spellings of the closing references, deliberately not deduplicated.** GitHub's linker only counts a bare `Closes #N` alone on a line and outside any fence; commitlint reads a single comma-joined `Closes #1, #2` trailer. The proposed-squash-commit fence therefore carries its own copy of the references and the plain lines are emitted separately. Empirically verified against `savvy-web/silk-integration` PR #243, after first release PRs shipped with an empty body and linked nothing (#242, #232).
-- **Nested regions are reserved, never written by this action.** The summary region (`silk-release:summary:*`) is held open for an AI summariser that runs elsewhere, and the reference region (`silk-release:references:*`) is emitted whether or not there is anything to put in it — an empty region is still an addressable target. Because the managed region is rebuilt on every push to the release branch, content inside a nested region must be read out of the prior body and re-emitted or it is silently destroyed; `extractSummary` and `extractReferences` do that reading.
+- **Nested regions are reserved, never written by this action.** The summary region (`silk-release:summary:*`) is held open for an AI summariser that runs elsewhere, and the reference region (`silk-release:references:*`) is emitted whether or not there is anything to put in it — an empty region is still an addressable target. Because the managed region is rebuilt on every push to the release branch, content inside a nested region must be read out of the prior body and re-emitted or it is silently destroyed; `ManagedPrBody.extractSummary` and `ManagedPrBody.extractReferences` do that reading. Locate the reference region by `Markers.REFERENCES_START_PREFIX`, never the plain `REFERENCES_START`, because every region this action emits carries an `owned="…"` attribute on the opening marker.
 - **An `owned` attribute on the reference marker decides the merge.** This action decides every issue in `linkedIssues` — emitted when open, dropped when closed — and records the ids it emitted on the opening marker (`owned="1,2,3"`). The next run subtracts them, so what carries through is exactly what this action never wrote. Without the attribute an id absent from `linkedIssues` is ambiguous between an agent's addition and a reference this action emitted before it stopped tracking that issue, and preserving both would re-link — and on merge auto-close — an issue the release deliberately dropped. A malformed or absent attribute degrades to "none owned", preserving rather than deleting.
+- **Closedness is decided by `PrBody.LinkedIssueRef.isClosed`, never a bare `state === "closed"` comparison.** The local implementation compared `state !== "closed"` and was wrong: `GitHubIssue.linkedIssues` is a **GraphQL** read (`closingIssuesReferences`), which returns the enum spelling `CLOSED`, and `@effected/github` does not normalise it. Every closed issue therefore failed the lowercase comparison, was classified as open, and got both a bare `Closes #N` line and an entry in `owned="…"` — so the action re-linked issues the release had deliberately dropped and re-closed them on merge. `isClosed` lowercases before comparing, so REST (`"closed"`) and GraphQL (`"CLOSED"`) payloads both classify correctly. Adopting `PrBody` fixed that live defect; it is not a behaviour-neutral refactor.
 
 #### The release-plan comment section
 
@@ -384,7 +397,7 @@ main.ts  (guard + Action.run only)
         |       +-- GitCommit / GitBranch.createLinked / PullRequest (@effected/github)
         |       +-- utils/commit-signoff.ts (DCO trailer)
         |       +-- utils/release-summary-helpers.ts
-        |       +-- utils/pr-body.ts (buildManagedPrBody)
+        |       +-- PrBody.ManagedPrBody.build (@savvy-web/silk-effects)
         |       +-- utils/auto-merge.ts
         |       +-- utils/determine-tag-strategy.ts (isMonorepoForTagging)
         |     utils/update-release-branch.ts   (same chain + priorBody merge)
@@ -585,7 +598,7 @@ The predecessor's `Step.*` primitives are gone with `@savvy-web/github-action-ef
 
 ### Managed Sections
 
-The release PR carries two managed surfaces: the PR **description** (`utils/pr-body.ts`, marker-delimited so human prose around it survives) and a sticky **comment** written by both Phase 1 and Phase 2 under the same marker key (`utils/managed-sections.ts` + `utils/write-sections.ts`).
+The release PR carries two managed surfaces, and they are separate mechanisms with separate owners: the PR **description** (built upstream by `PrBody.ManagedPrBody` in `@savvy-web/silk-effects`, marker-delimited so human prose around it survives) and a sticky **comment** written by both Phase 1 and Phase 2 under the same marker key (`utils/managed-sections.ts` + `utils/write-sections.ts`, both still local — the comment surface was not part of the [#209](https://github.com/savvy-web/silk-release-action/issues/209) migration).
 
 Three rules make the comment safe for multiple writers: sections are stamped and rewritten independently, so the verdict can flip ✅→❌ without touching the table; the `running` transition is written *before* the work, so a reader never sees a stale result presented as current; and banners are refreshed across the whole body after every write, so a section nobody rewrote does not go on claiming it is current at a sha the branch has moved past.
 
@@ -681,6 +694,8 @@ Registry reads go through `NpmRegistry` over `FetchHttpClient` (HTTP, not `npm v
 
 ### Utilities
 
+`src/utils/pr-body.ts` is **not** in this table because it no longer exists: the managed release-PR description is `PrBody.ManagedPrBody` in `@savvy-web/silk-effects` since [#209](https://github.com/savvy-web/silk-release-action/issues/209). See [Release PR body (managed region)](#release-pr-body-managed-region).
+
 | File | Description |
 | :--- | :---------- |
 | `src/utils/auto-merge.ts` | Opt-in auto-merge on the release PR; `autoMergeMethodConfig` |
@@ -709,7 +724,6 @@ Registry reads go through `NpmRegistry` over `FetchHttpClient` (HTTP, not `npm v
 | `src/utils/native-version.ts` | `runNativeVersion`, `CHANGELOG_MODULES`, token scoping, reset-then-retry |
 | `src/utils/npm-cache.ts` | `ensureNpmCacheEnv` — runner-writable npm cache |
 | `src/utils/porcelain-changes.ts` | `git status --porcelain -z` → Git Data API `FileChange` set |
-| `src/utils/pr-body.ts` | `buildManagedPrBody`, `upsertManagedRegion`, `extractSummary`, `extractReferences` |
 | `src/utils/registry-label.ts` | `registryShortLabel` / `registryHost` — `⬆` row labels |
 | `src/utils/release-plan.ts` | Pure projection of the release plan into Phase-1 reporting |
 | `src/utils/release-summary-helpers.ts` | `listPublishablePackages`, `getReleasingPackages`, `resolveReleasePrTitle`, `formatReleasePackageList` |

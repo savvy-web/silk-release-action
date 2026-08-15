@@ -44,11 +44,10 @@ import {
 } from "@effected/github";
 import { ActionEnvironment, ActionOutputs, DryRun } from "@effected/github-actions";
 import { PublishabilityDetector, WorkspaceDiscovery } from "@effected/workspaces";
-import { Changesets } from "@savvy-web/silk-effects";
+import { Changesets, PrBody } from "@savvy-web/silk-effects";
 import { DateTime, Effect, FileSystem, Layer, Logger, Option } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ChangesetConfig } from "../src/release/changeset-config.js";
-import { MANAGED_END, MANAGED_START } from "../src/utils/pr-body.js";
 import type { LinkedIssue, UpdateReleaseBranchResult } from "../src/utils/update-release-branch.js";
 import { updateReleaseBranch } from "../src/utils/update-release-branch.js";
 import { actionStateWithAppToken, cleanupTestEnvironment, setupTestEnvironment } from "./utils/github-mocks.js";
@@ -312,7 +311,7 @@ const runStage = async (
 					f.summaries.push(content);
 				}),
 			// `runNativeVersion` declassifies the App token through
-			// `Secret.forSigning`, which masks it with the runner. The double dies
+			// `Secret.forProcessEnv`, which masks it with the runner. The double dies
 			// loudly on an unstubbed member, so this records the masks instead —
 			// which is also what proves the token reaches the log filter before it
 			// reaches `process.env.GITHUB_TOKEN`.
@@ -569,8 +568,8 @@ describe("updateReleaseBranch", () => {
 		expect(f.prs[0].state).toBe("open");
 
 		// …and its body now carries our managed region.
-		expect(f.prs[0].body ?? "").toContain(MANAGED_START);
-		expect(f.prs[0].body ?? "").toContain(MANAGED_END);
+		expect(f.prs[0].body ?? "").toContain(PrBody.Markers.MANAGED_START);
+		expect(f.prs[0].body ?? "").toContain(PrBody.Markers.MANAGED_END);
 	});
 
 	it("REOPENS a PR closed MID-RUN — the guard reads state fresh, not the opening snapshot", async () => {

@@ -97,12 +97,14 @@ const withGithubTokenEnv = <A, E, R>(
 	Effect.acquireUseRelease(
 		Effect.gen(function* () {
 			const previous = process.env.GITHUB_TOKEN;
-			// `Secret.forSigning`, NOT a bare `Redacted.value`. Declassification
-			// lives in one kit module, and this is its documented "in-process use
-			// that needs the raw value" member — it additionally MASKS the token
-			// with the runner, so if it ever surfaces in a stack trace, a serialized
-			// error or a debug log of outgoing headers, it comes out redacted. The
-			// bare unwrap this replaces registered nothing.
+			// `Secret.forProcessEnv`, NOT a bare `Redacted.value`. Declassification
+			// lives in one kit module, and this is its member for a value bound for
+			// the AMBIENT environment — as opposed to `forChildEnv` (a child's
+			// environment), `forRunnerFile` (`GITHUB_STATE` / `GITHUB_OUTPUT`) or
+			// `forSigning` (stays in this process). It masks the token with the
+			// runner on the way out, so if it ever surfaces in a stack trace, a
+			// serialized error or a debug log of outgoing headers, it comes out
+			// redacted.
 			//
 			// `ActionEnvironment.withEnv` is deliberately NOT used here, and cannot
 			// be: it is fiber-local and "`process.env` is never mutated"
@@ -110,12 +112,11 @@ const withGithubTokenEnv = <A, E, R>(
 			// `process.env.GITHUB_TOKEN` off the real ambient environment, so a
 			// fiber-local override is invisible to it.
 			//
-			// The kit anticipates exactly this case and rules on it, under
-			// `Secret.forSigning`: "A third-party SDK that reads only the ambient
-			// environment is the hard case: this package never mutates
-			// `process.env` … so if a consumer chooses that bridge, the mutation —
-			// and its restore discipline — lives in consumer code as the consumer's
-			// own tradeoff." Hence the real mutation below, and the restore arm.
+			// The kit still declines to do the mutation itself — a write from
+			// inside would be invisible to the seeding every consumer's assumptions
+			// rest on — so the assignment below and the restore arm at the bottom
+			// are ours to own. That is the documented division for this member, not
+			// a workaround.
 			//
 			// The SOURCE is `GitHubToken.read()` — the persisted App token, straight
 			// from `ActionState`. It used to arrive through a `process.env.STATE_token`
@@ -124,7 +125,7 @@ const withGithubTokenEnv = <A, E, R>(
 			// hand one function a value the kit already serves. `read()` also fails
 			// typed when the token is spent, which the bridge answered as `""`.
 			const installation = yield* GitHubToken.read();
-			process.env.GITHUB_TOKEN = yield* Secret.forSigning(installation.token);
+			process.env.GITHUB_TOKEN = yield* Secret.forProcessEnv(installation.token);
 			return previous;
 		}),
 		() => use,

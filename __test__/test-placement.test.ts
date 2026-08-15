@@ -2,14 +2,22 @@
  * Placement guard for test files.
  *
  * @remarks
- * `__test__/utils/` is never collected by the vitest-agent project discovery —
- * a `*.test.ts` dropped there does not run and nothing reports that it did not.
- * The only visible signal is the collected count going *down*, which no green
- * run surfaces. This suite makes the placement rules executable instead:
+ * A directory named `utils` is never collected by the vitest-agent project
+ * discovery — a `*.test.ts` dropped there does not run and nothing reports that
+ * it did not. The only visible signal is the collected count going *down*,
+ * which no green run surfaces. This suite makes the placement rules executable
+ * instead:
  *
  * - no `*.test.ts` under `src/**` (tests are not co-located any more),
- * - no `*.test.ts` under `__test__/utils/**` (the directory that never collects),
+ * - no `*.test.ts` under any directory whose name the discovery excludes,
  * - every `*.test.ts` in the repo lives at or below `__test__/`.
+ *
+ * The exclusion applies to the directory NAME at ANY depth, not to one
+ * top-level path. That was learned the expensive way: this suite originally
+ * checked only the literal prefix `__test__/utils/`, so when the plugin's
+ * pattern widened, `__test__/unit/utils/` began matching and five suites — 60
+ * cases — stopped running with nothing red (#237). Checking the name at every
+ * depth is what makes the guard survive the next widening.
  */
 
 import { readdirSync } from "node:fs";
@@ -21,6 +29,18 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, "..");
 
 const SKIP_DIRS = new Set([".git", ".repos", ".turbo", "coverage", "dist", "node_modules"]);
+
+/**
+ * Directory names the vitest-agent project discovery drops, at any depth.
+ *
+ * @remarks
+ * These are treated by the plugin as holding helpers, fixtures or stored
+ * output rather than suites, so anything matching is excluded before vitest
+ * sees it. A `*.test.ts` below one of them is invisible, not failing. Keep
+ * this in step with the plugin's exclude list; `scripts/check-test-collection.mjs`
+ * is the backstop that catches a name this set has not learned about yet.
+ */
+const UNCOLLECTED_DIR_NAMES: ReadonlySet<string> = new Set(["utils", "fixtures", "snapshots"]);
 
 /** Every `*.test.ts` path in the repository, repo-relative and POSIX-separated. */
 const collectTestFiles = (dir: string, acc: string[] = []): string[] => {
@@ -53,12 +73,18 @@ describe("test file placement", () => {
 		expect(inSrc).toEqual([]);
 	});
 
-	it("should have no test files under __test__/utils/, which is never collected", () => {
-		// Given every test file; When filtered to the uncollected helper directory
-		const inHelperDir = testFiles.filter((f) => f.startsWith("__test__/utils/"));
+	it("should have no test files under a directory the discovery never collects", () => {
+		// Given every test file; When filtered to any path carrying an excluded
+		// directory NAME at any depth — not just a top-level prefix.
+		const inExcludedDir = testFiles.filter((f) =>
+			f
+				.split("/")
+				.slice(0, -1)
+				.some((segment) => UNCOLLECTED_DIR_NAMES.has(segment)),
+		);
 
 		// Then none remain — a suite there would silently never run.
-		expect(inHelperDir).toEqual([]);
+		expect(inExcludedDir).toEqual([]);
 	});
 
 	it("should keep every test file at or below __test__/", () => {

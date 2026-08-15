@@ -217,7 +217,7 @@ describe("custom-registries", () => {
 			// A bare URL (the predecessor's App-token-fallback form) is no longer
 			// accepted — silence is the failure mode this input already shipped
 			// once. Full parse-rule coverage lives in
-			// `__test__/unit/utils/custom-registries.test.ts`.
+			// `__test__/unit/utilities/custom-registries.test.ts`.
 			const exit = yield* Effect.exit(
 				readInputs.pipe(
 					Effect.provide(ActionInput.layer({ ...CREDENTIALS, "custom-registries": "https://registry.example.com/" })),
