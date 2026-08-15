@@ -19,7 +19,7 @@ Every phase is a pure Effect program. The imperative `@actions/*` layer is gone,
 - **Release module** -- `release/`: `publish.ts`, `releases.ts` (group-keyed asset names), `validation.ts`, `validation-checks.ts` (`deriveValidationChecks`, pure), `report.ts`, `publishability.ts`, `changeset-config.ts`, `meta-archive.ts`, `attest-helpers.ts`, `resolve-targets.ts` (fails with `PublishTargetBindingError` when detection misses the `dist/prod/targets.json` binding), `types.ts`, `errors.ts`, `layers.ts` (`ReleaseLive` — workspace discovery, `ChangesetConfig`, the adaptive `PublishabilityDetector`, and the silk-effects `ReleasePlanner`/`ConfigInspector`)
 - **Schema** -- `schema/inputs.ts` and `schema/outputs.ts` are the single decode/declare points (see below); `release-output.ts`, `projections.ts`, `silk-release-config.ts`. JSON Schema artifacts at repo root
 - **Changelog workers** -- `changelog/silk.ts` / `changelog/default.ts` bundle to `dist/changelog-*.js` via `action.config.ts` `workers`; `build.nativeDynamicImports` keeps the `@changesets/apply-release-plan` runtime import native
-- **Utilities** -- `utils/*.ts`, one focused purpose each, notably `native-version.ts`, `write-sections.ts` (the fold shared by both phases), `pr-body.ts`, `sort-releases-topologically.ts`, `group-id.ts`, `detect-workflow-phase.ts`
+- **Utilities** -- `utils/*.ts`, one focused purpose each, notably `native-version.ts`, `write-sections.ts` (the fold shared by both phases), `sort-releases-topologically.ts`, `group-id.ts`, `detect-workflow-phase.ts`
 - **SBOM/attestation** -- `@effected/sbom` (`SigstoreSigner`) and `@effected/github` `Attestation`; not in this repo
 
 ## Coding Standards
@@ -56,10 +56,11 @@ Every `action.yml` input is decoded **once**, in `schema/inputs.ts`; `main` hand
 
 ### Managed PR Body Region
 
-`pr-body.ts` owns a marker-delimited slice of the release PR description with two nested regions (AI summary, closing references):
+**Owned upstream, not here.** `PrBody` in `@savvy-web/silk-effects` owns the marker-delimited slice of the release PR description and its two nested regions (AI summary, closing references). The local `utils/pr-body.ts` is **gone** — migrated in #209 so this repo and `silk-update-action` share one contract rather than two drifting copies. Use `PrBody.ManagedPrBody` (`build`, `upsert`, `extractSummary`, `extractReferences`) and `PrBody.Markers`; `__test__/pr-body.test.ts` is now a contract smoke test over the properties our call sites depend on, not a reimplementation of the upstream suite.
 
-- Never rebuild a nested region from scratch when a prior body exists — carry it through (`extractSummary`, `extractReferences`), or an agent's edit is silently deleted on the next commit
-- Locate the reference region with `REFERENCES_START_PREFIX`, never the plain `REFERENCES_START`: emitted markers carry an `owned="…"` attribute, so the bare constant misses every region this action wrote
+- Never rebuild a nested region from scratch when a prior body exists — carry it through (`ManagedPrBody.extractSummary`, `extractReferences`), or an agent's edit is silently deleted on the next commit
+- Classify a linked issue with `PrBody.LinkedIssueRef.isClosed`, never a bare `state === "closed"`. `GitHubIssue.linkedIssues` is a GraphQL query and returns the enum spelling `CLOSED`; the kit does not normalise it, so a lowercase comparison silently treats every closed issue as open and re-links it. That was a live defect here until #209
+- Locate the reference region with `Markers.REFERENCES_START_PREFIX`, never the plain `REFERENCES_START`: emitted markers carry an `owned="…"` attribute, so the bare constant misses every region this action wrote
 - `owned` lists the ids this run emitted so the next run subtracts them and carries through only agent-added references. Without it, preserving an id absent from `linkedIssues` re-links (and on merge auto-closes) an issue the release deliberately dropped
 - The reference region is emitted unconditionally, empty or not, so it stays an addressable target
 - Closing references have two non-interchangeable spellings: comma-joined inside the squash fence (commitlint), bare one-per-line outside it (GitHub's linker)

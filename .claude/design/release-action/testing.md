@@ -4,8 +4,8 @@ category: testing
 status: current
 completeness: 90
 created: 2026-02-07
-updated: 2026-08-11
-last-synced: 2026-08-11
+updated: 2026-08-15
+last-synced: 2026-08-15
 module: release-action
 related:
   - architecture.md
@@ -39,7 +39,7 @@ dependencies:
 
 ## Overview
 
-The project uses Vitest with a suite of **830 tests** covering the phase steps, the Phase-3 Effect orchestration, the check derivation, the silk publishability rules, and the utility modules. Tests enforce type-safe mocking with zero `any` types. All external dependencies (GitHub API, subprocess execution, file system, `@effected/workspaces`) are replaced with in-memory Effect layers or `vi.mock()` so tests are fast, reliable, and isolated.
+The project uses Vitest with a suite of **829 tests across 61 files** covering the phase steps, the Phase-3 Effect orchestration, the check derivation, the silk publishability rules, and the utility modules. Tests enforce type-safe mocking with zero `any` types. All external dependencies (GitHub API, subprocess execution, file system, `@effected/workspaces`) are replaced with in-memory Effect layers or `vi.mock()` so tests are fast, reliable, and isolated.
 
 `@savvy-web/github-action-effects/testing` is gone with the library it belonged to. The `@effected/*` kit exposes no `/testing` entry point; service doubles are built with `Layer.succeed(Service, { … })` or the kit's own `*.makeTest` statics (`ActionEnvironment.makeTest`, `ActionOutputs.makeTest`, `SigstoreSigner.makeTest`). `@savvy-web/silk-effects` ships `Changesets.makeReleasePlannerTest` and `Changesets.makeConfigInspectorTest` for the native-versioning services.
 
@@ -244,6 +244,14 @@ There is no `TopologicalSorter` service to stub. `runValidation` and the Phase-3
 | `private-mixed-access` | `private: true`, mix of targets with different access levels |
 | `ignore-monorepo` | changeset-ignored package — excluded from detection entirely |
 
+#### Contract smoke tests for upstreamed implementations
+
+When an implementation moves out of this repo into a shared library, its exhaustive suite moves with it and what stays behind is a **contract smoke test**: only the properties this repo's call sites actually depend on, so an upstream change that breaks *us* is caught here rather than in a release. Duplicating the upstream suite would instead pin behaviour we do not own and fail on changes that never mattered to us.
+
+`__test__/pr-body.test.ts` is the worked example. It shrank from 412 lines (43 cases over the local `utils/pr-body.ts`) to ~128 lines (8 cases) when `PrBody` moved into `@savvy-web/silk-effects` at [#209](https://github.com/savvy-web/silk-release-action/issues/209). What it keeps is the narrow, easy-to-lose behaviour: a bare `Closes #N` line outside every fenced block (the only spelling GitHub's linker counts, verified empirically against `savvy-web/silk-integration` #242/#232 — empty bodies, no links — and #243 — a bare line, linked), the two non-interchangeable reference spellings, closed issues being dropped, the `silk-release:*` markers the other modules match on, and the summary region surviving a regeneration. It asserts through the public `PrBody.ManagedPrBody` / `PrBody.Markers` surface only.
+
+Before deleting the local module, both implementations were run side by side on the same inputs. That harness is what found the `state !== "closed"` defect — closed issues arriving from GraphQL as `"CLOSED"` were classified as open and re-linked — so the upstreaming was **not** byte-parity, and a "pure refactor" framing would have hidden a fix. See [Release PR body (managed region)](architecture.md#release-pr-body-managed-region).
+
 #### `ActionInput` env snapshot
 
 Inject inputs via the `ActionInput` layer, not by mutating `process.env` between reads. The environment is snapshotted at first read, so a mid-test mutation reuses the first value — which turns expected-to-fail tests green.
@@ -269,7 +277,7 @@ Inject inputs via the `ActionInput` layer, not by mutating `process.env` between
 | `__test__/native-version.test.ts` | `utils/native-version.ts` | Phase 1 |
 | `__test__/format-workspace.test.ts` | `utils/format-workspace.ts` | Phase 1 |
 | `__test__/porcelain-changes.test.ts` | `utils/porcelain-changes.ts` | Phase 1 |
-| `__test__/pr-body.test.ts` | `utils/pr-body.ts` (managed-region round trip, `owned` merge rule) | Phase 1 |
+| `__test__/pr-body.test.ts` | `PrBody.ManagedPrBody` (silk-effects) — **contract smoke test**, not a reimplementation of the upstream suite | Phase 1 |
 | `__test__/release-pr-title.test.ts` | `utils/release-summary-helpers.ts` | Phase 1 |
 | `__test__/release-plan.test.ts` | `utils/release-plan.ts` | Phase 1 |
 | `__test__/publish-release-plan.test.ts` | `steps/publish-release-plan.ts` | Phase 1 |
