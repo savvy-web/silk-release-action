@@ -17,8 +17,9 @@
 	"scripts": {
 		"build": "turbo run build:prod --log-order=grouped",
 		"build:prod": "github-action-builder build",
+		"check:collection": "node scripts/check-test-collection.mjs",
 		"ci:build": "CI=\"true\" turbo run build:prod --log-order=grouped --output-logs=full",
-		"ci:test": "CI=\"true\" vitest run --coverage",
+		"ci:test": "node scripts/check-test-collection.mjs && CI=\"true\" vitest run --coverage",
 		"ci:version": "savvy changeset version && biome format --write .",
 		"claude": "claude --plugin-dir=../../spencerbeggs/effected/plugin",
 		"generate-schema": "tsx lib/scripts/generate-schema.ts",
