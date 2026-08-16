@@ -39,7 +39,7 @@ dependencies:
 
 ## Overview
 
-The project uses Vitest with a suite of **829 tests across 61 files** covering the phase steps, the Phase-3 Effect orchestration, the check derivation, the silk publishability rules, and the utility modules. Tests enforce type-safe mocking with zero `any` types. All external dependencies (GitHub API, subprocess execution, file system, `@effected/workspaces`) are replaced with in-memory Effect layers or `vi.mock()` so tests are fast, reliable, and isolated.
+The project uses Vitest with a suite of **830 tests across 61 files** covering the phase steps, the Phase-3 Effect orchestration, the check derivation, the silk publishability rules, and the utility modules. Tests enforce type-safe mocking with zero `any` types. All external dependencies (GitHub API, subprocess execution, file system, `@effected/workspaces`) are replaced with in-memory Effect layers or `vi.mock()` so tests are fast, reliable, and isolated.
 
 `@savvy-web/github-action-effects/testing` is gone with the library it belonged to. The `@effected/*` kit exposes no `/testing` entry point; service doubles are built with `Layer.succeed(Service, { … })` or the kit's own `*.makeTest` statics (`ActionEnvironment.makeTest`, `ActionOutputs.makeTest`, `SigstoreSigner.makeTest`). `@savvy-web/silk-effects` ships `Changesets.makeReleasePlannerTest` and `Changesets.makeConfigInspectorTest` for the native-versioning services.
 
@@ -174,19 +174,22 @@ The input guard additionally enforces that each input is read in exactly one pla
 
 ### Characterization Tests
 
-18 tests across five files are marked `CHARACTERIZATION`. They pin **what the code does today, not what it should do**; where the two differ the test still pins today's behaviour, says so in a comment, and is written to fail when the fix lands.
+10 tests across four files are marked `CHARACTERIZATION`. They pin **what the code does today, not what it should do**; where the two differ the test still pins today's behaviour, says so in a comment, and is written to fail when the fix lands.
 
 They exist because these paths received their **first-ever coverage** in the `main.ts` split. The logic lived inline in a 624-line orchestrator that no test executed — replacing that whole body with `Effect.die` left the suite green. Writing characterization tests first, before changing behaviour, is what makes the eventual fix a reviewable diff rather than an unverifiable rewrite.
 
-The main subject is [issue #216](https://github.com/savvy-web/silk-release-action/issues/216): **six of seven Phase-2 degradation paths report a green release verdict for work that never ran.** See [Degradation semantics](architecture.md#degradation-semantics-issue-216) in the architecture doc for the mechanism and the one-line fix. The tests:
+The main subject is [issue #216](https://github.com/savvy-web/silk-release-action/issues/216): a Phase-2 step that degrades without contributing a **finding** reports a green release verdict for work that never ran. See [Degradation semantics](architecture.md#degradation-semantics-issue-216) in the architecture doc for the mechanism, which path is fixed and which remain. The tests that remain pinned:
 
 | File | What it pins |
 | ---- | ------------ |
-| `validation-checks.test.ts` | The green-on-crash chain itself: `conclusionFor` → `results` → `rows`, reporting ✅ 5/5 when publish validation crashed; that `strict-warnings` does not rescue it; and the contrasting `buildPassed: false` case that *does* report red |
-| `link-issues-and-build-steps.test.ts` | A degrade-to-warning that is invisible downstream (`LINK_ISSUES_FAILED`), beside build validation's honest degradation |
-| `per-step-checks.test.ts` | A check run that could not be created yielding `""` → a `null` row URL, indistinguishable from "no page yet" |
-| `publish-validation-report.test.ts` | A failed comment write contributing no finding; a failed PR *lookup* reported identically to "there is no release PR" |
-| `publish-validation.test.ts` | `SKIPPED_PUBLISH_VALIDATION`'s `publishOk: true` baseline and both skip paths |
+| `link-issues-and-build-steps.test.ts` | 2 — a degrade-to-warning that is invisible downstream (`LINK_ISSUES_FAILED`), beside build validation's honest degradation |
+| `per-step-checks.test.ts` | 2 — a check run that could not be created yielding `""` → a `null` row URL, indistinguishable from "no page yet"; and a row linking to a check stuck `in_progress` |
+| `publish-validation-report.test.ts` | 3 — a failed comment write contributing no finding; a failed PR *lookup* reported identically to "there is no release PR"; plus one unrelated pin, that a rehearsal still writes to the real pull request |
+| `validation-checks.test.ts` | 3 — none of them degradation: the Build row bypassing the strict-warnings rule, `checkId` being write-only, and the icon ignoring strict-warnings while the conclusion honours it |
+
+**Converted, not deleted, when the publish-validation crash path was fixed.** `publish-validation.test.ts` no longer has a `CHARACTERIZATION` test, and `validation-checks.test.ts`'s `#216` block is now a true-behaviour block. The pins were written to fail when the fix landed, and they did: each became the assertion it asked to become — a crashed validation failing every check it was responsible for, the crash log saying "did not run" instead of ✅, and the untouched rows (`Build Validation`, `Link Issues from Commits`) staying green. `SKIPPED_PUBLISH_VALIDATION`'s `publishOk: true` baseline is still asserted, re-aimed at the build-failed path it is now only ever reached from, because keeping it quiet is load-bearing: flipping it would double-count the build failure. That the fed combination (`SKIPPED_PUBLISH_VALIDATION` with `buildPassed: true`) is now **unreachable in production** is why those tests were re-pointed at `crashedPublishValidation(...)` rather than kept as-is.
+
+Both directions of the conversion are mutation-verified: stripping the crash findings turns 4 tests red, and removing the crash log branch turns 1 red.
 
 ### Specialized Testing Patterns
 
@@ -335,7 +338,7 @@ Inject inputs via the `ActionInput` layer, not by mutating `process.env` between
 
 1. **Type safety** — no `any` types in test code. Use Effect layers for Effect code; use explicit `as unknown as Type` casts for imperative mocks.
 2. **Arrange-Act-Assert** — clear separation between setup, execution, and verification. Many suites annotate the phases as `// Given` / `// When` / `// Then`.
-3. **Descriptive names** — "should X when Y".
+3. **Descriptive names** — state the observable behaviour, what happens under what condition, in plain language. `"should X when Y"` is one acceptable shape, not a required template; see `__test__/CLAUDE.md`.
 4. **Nested `describe` blocks** — group related scenarios.
 5. **Top-level mocking** — `vi.mock()` above imports, from `"vitest"`, never through `@effect/vitest`.
 6. **Timer cleanup** — any test using `vi.useFakeTimers()` calls `vi.useRealTimers()` in its `afterEach`, and never combines fake timers with `it.effect`.
@@ -367,7 +370,9 @@ Co-located `src/**/*.test.ts` files were included in the same tree the coverage 
 
 ### Why Characterization Tests for a Known Bug?
 
-Issue #216 spans six degradation paths across five modules. Fixing them and writing the tests in one change would produce a diff where nobody could tell which assertions describe the old behaviour and which the new. Pinning current behaviour first, with the issue named in each test, makes the fix a diff that flips clearly-labelled expectations — and guarantees the paths cannot regress further in the meantime. Critically, it also proved the bug is **one decision, not six patches**: a degraded step must contribute a *finding*, since that is the only thing the verdict reads.
+Issue #216 spans several degradation paths across five modules. Fixing them and writing the tests in one change would produce a diff where nobody could tell which assertions describe the old behaviour and which the new. Pinning current behaviour first, with the issue named in each test, makes the fix a diff that flips clearly-labelled expectations — and guarantees the paths cannot regress further in the meantime. Critically, it also proved the bug is **one decision, not a patch per path**: a degraded step must contribute a *finding*, since that is the only thing the verdict reads.
+
+The publish-validation fix is the evidence that this worked. Its two pins were written to fail when it landed; the diff that fixed it flipped exactly those expectations and touched no boolean in the shared baseline, and the reviewer could read the old behaviour and the new one side by side in the same test bodies. The remaining pins are unchanged and still name the issue.
 
 ### Why Three-Legged Manifest Guards?
 

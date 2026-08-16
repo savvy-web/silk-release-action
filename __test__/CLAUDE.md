@@ -4,7 +4,7 @@ Unit testing patterns and infrastructure for silk-release-action.
 
 __See also:__ [Root CLAUDE.md](../CLAUDE.md) | [src/CLAUDE.md](../src/CLAUDE.md)
 
-__For comprehensive testing documentation:__ `@../.claude/design/release-action/testing.md` -- test-layer patterns, silk-effects test factories, all specialized patterns (fake timers, filesystem, workspaces sync APIs, GitHub context, summaries), the `__test__/unit/` mirrored layout, the integration fixture harness, the 18 `CHARACTERIZATION` tests (issue #216), and the coverage map.
+__For comprehensive testing documentation:__ `@../.claude/design/release-action/testing.md` -- test-layer patterns, silk-effects test factories, all specialized patterns (fake timers, filesystem, workspaces sync APIs, GitHub context, summaries), the `__test__/unit/` mirrored layout, the integration fixture harness, the 10 remaining `CHARACTERIZATION` tests (issue #216 — its own pins are fixed and converted), and the coverage map.
 
 ## Running Tests
 
@@ -123,7 +123,13 @@ Load before migrating any suite to `it.effect`.
 
 ## Key Testing Rules
 
-- Never use `any` types; Arrange-Act-Assert; descriptive names (`"should X when Y"`)
+- Never use `any` types; Arrange-Act-Assert
+- __A test title states the observable behaviour — what happens, under what condition — in plain
+  language.__ `"should X when Y"` is one acceptable shape, not a required template, and
+  `"drops a write whose stamp is OLDER than what is already there"` is equally good: it carries
+  the condition without the prefix. Rename a title only when it fails to communicate the
+  behaviour. __Do not sweep a suite to fit the template__ — a mechanical rewrite adds length, not
+  clarity, and churns diffs for no reader's benefit
 - Cover all code paths (branches, switch cases, error handling)
 - A test pinning known-wrong behaviour says `CHARACTERIZATION`, names the issue, and is written to
   fail when the fix lands — 18 exist for issue #216. Do not "fix" one to make it pass

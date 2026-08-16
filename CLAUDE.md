@@ -12,9 +12,15 @@ Load design docs when working on the relevant subsystem:
 
 - `@./.claude/design/release-action/architecture.md` - Three-phase workflow, native versioning (zero-install Phase 1), the managed release-PR body region, module dependency graph, entry points, shared infrastructure
 - `@./.claude/design/release-action/integration.md` - Multi-registry publishing, OIDC auth, native versioning/changelog module map, token plumbing, SBOM/NTIA compliance, publish summaries
-- `@./.claude/design/release-action/testing.md` - Test strategy, test-layer patterns, silk-effects test factories, coverage map, specialized testing patterns, the 18 `CHARACTERIZATION` tests
+- `@./.claude/design/release-action/testing.md` - Test strategy, test-layer patterns, silk-effects test factories, coverage map, specialized testing patterns, the remaining `CHARACTERIZATION` tests
 
-**Known live defect — read before touching Phase-2 degradation.** Six of the seven Phase-2 degradation paths report a green release verdict for work that never ran ([issue #216](https://github.com/savvy-web/silk-release-action/issues/216)), pinned by 18 `CHARACTERIZATION` tests that are written to fail when the fix lands. Load *Degradation semantics (issue #216)* in `architecture.md` and its companion in `testing.md` before changing a `steps/*` failure posture, or you will "fix" a test that is deliberately pinning the bug.
+**Phase-2 degradation — partly fixed, still partly live. Read before touching it.** A degraded step reports a green release verdict for work that never ran unless it **contributes a finding**, because findings are the only thing the verdict reads.
+
+The **publish-validation crash path is fixed** ([issue #216](https://github.com/savvy-web/silk-release-action/issues/216)): a crash now returns `crashedPublishValidation`, carrying an `error` finding per affected check, so it reports red instead of ✅ 5/5. Its characterization tests were converted to assert the fixed behaviour.
+
+The **other Phase-2 degradation paths are still live** — a crashed issue-linking step, a check run that could not be created, a failed comment write, and a failed pull-request lookup all still degrade silently. They remain pinned by 10 `CHARACTERIZATION` tests written to fail when *their* fix lands. Load *Degradation semantics (issue #216)* in `architecture.md` and its companion in `testing.md` before changing a `steps/*` failure posture, or you will "fix" a test that is deliberately pinning a bug.
+
+Two rules the fix established, both load-bearing: a degraded step contributes a **finding** rather than flipping a boolean (flipping `publishOk` would double-count the build-failed path), and `Effect.catch` must never be widened to `catchCause` — a defect killing the phase is the last honest failure signal.
 
 ### Vendored reference repos (`.repos/`)
 

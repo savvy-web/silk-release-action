@@ -113,7 +113,7 @@ Input names: `app-client-id`, `app-private-key` (renamed from the pre-1.1.0 `app
 | `steps/validation.ts` | 2 | fail-the-job, with check-run cleanup; errors re-raised untouched |
 | `steps/link-issues.ts` | 2 | degrade-to-warning — **invisible** (`LINK_ISSUES_FAILED`) |
 | `steps/build-validation.ts` | 2 | degrade-to-warning — **visible**; `buildValidationFailed(cause)` reports `success: false` and cascades red |
-| `steps/publish-validation.ts` | 2 | degrade-to-warning (`SKIPPED_PUBLISH_VALIDATION`) |
+| `steps/publish-validation.ts` | 2 | degrade-with-a-finding — **visible**; quiet `SKIPPED_PUBLISH_VALIDATION` when the build failed, `crashedPublishValidation(message)` when the dry-run threw |
 | `steps/per-step-checks.ts` | 2 | degrade-to-warning — **invisible** (`""` URL → `null` row) |
 | `steps/publish-validation-report.ts` | 2 | degrade-to-warning — **invisible** |
 | `steps/publishing.ts` | 3 | fail-the-job; raises `PublishError` rather than returning |
@@ -266,7 +266,7 @@ The six extractions:
 
 1. **`steps/link-issues.ts`** — finds the issues the release closes (`linkIssuesFromCommits`) and reports them as a check run.
 2. **`steps/build-validation.ts`** — runs every package's build (`validateBuilds`) and reports it as a check run.
-3. **`steps/publish-validation.ts`** — the publish / release-notes / SBOM region. This module exists to give the twelve mutable `let` bindings that used to coordinate it a name and a type: they were never twelve independent variables, but one optional `ValidationReport` plus a default. `PublishValidationResult` and `SKIPPED_PUBLISH_VALIDATION` are that record and that default. Naming the default is as much the point as the extraction — "what does Phase 2 report when the build failed?" was previously answerable only by reading twelve separate initialiser expressions.
+3. **`steps/publish-validation.ts`** — the publish / release-notes / SBOM region. This module exists to give the twelve mutable `let` bindings that used to coordinate it a name and a type: they were never twelve independent variables, but one optional `ValidationReport` plus a default. `PublishValidationResult` and `SKIPPED_PUBLISH_VALIDATION` are that record and that default. Naming the default is as much the point as the extraction — "what does Phase 2 report when the build failed?" was previously answerable only by reading twelve separate initialiser expressions. The two paths that reach the default are **not** interchangeable: the build-failed path keeps the quiet baseline, while a crashed `runValidation` returns `crashedPublishValidation(message)` — the same baseline plus an `error` finding per affected check. See [Degradation semantics](#degradation-semantics-issue-216).
 4. **`release/validation-checks.ts`** — the pure derivation. See below.
 5. **`steps/per-step-checks.ts`** — the three per-step check runs, created *after* the canonical projection is known because each summary renders from it. That ordering is why the three rows carry a `null` URL when first derived and are patched afterwards by `applyCheckUrls`.
 6. **`steps/publish-validation-report.ts`** — the write to the release PR's sticky comment.
@@ -301,20 +301,31 @@ These strings are a **join key**, not labels: `deriveCheckConclusion` filters fi
 
 #### Degradation semantics (issue #216)
 
-**Six of the seven Phase-2 degradation paths report a green release verdict for work that never ran.** This is [issue #216](https://github.com/savvy-web/silk-release-action/issues/216), pinned by 18 `CHARACTERIZATION` tests across `validation-checks.test.ts`, `per-step-checks.test.ts`, `publish-validation-report.test.ts`, `link-issues-and-build-steps.test.ts` and `publish-validation.test.ts`. The tests pin what the code does *today*, say where that differs from what it should do, and are written to fail when the fix lands.
+**A Phase-2 step that degrades without contributing a *finding* reports a green release verdict for work that never ran.** That is [issue #216](https://github.com/savvy-web/silk-release-action/issues/216). **The publish-validation crash path is fixed; the other paths are still live** and remain pinned by `CHARACTERIZATION` tests in `link-issues-and-build-steps.test.ts`, `per-step-checks.test.ts` and `publish-validation-report.test.ts`, written to fail when *their* fix lands.
 
-The mechanism: `deriveCheckConclusion`'s cascade is gated on `!buildPassed`. When the build genuinely **passed** but a downstream step crashed, the step degrades to a default value that carries no failure signal and contributes **no finding** — and findings are the only thing the verdict reads. Concretely:
+The mechanism: `deriveCheckConclusion`'s cascade is gated on `!buildPassed`. When the build genuinely **passed** but a downstream step crashed, a step that degrades to a default value carrying no failure signal contributes **no finding** — and findings are the only thing the verdict reads.
 
-- A crashed publish validation hands back `SKIPPED_PUBLISH_VALIDATION`, whose baseline is `publishOk: true`. No publish dry-run ran, no SBOM check ran, and the release PR gets ✅ 5/5 with every row `pass`.
+**Fixed — a crashed publish validation.** It used to hand back `SKIPPED_PUBLISH_VALIDATION`, whose baseline is `publishOk: true`: no publish dry-run ran, no SBOM check ran, and the release PR got ✅ 5/5 with every row `pass`. The step now separates its two non-running paths:
+
+- **Build failed** — still `SKIPPED_PUBLISH_VALIDATION`, still deliberately quiet. The caller's build finding already fails the phase and the build-failed cascade already covers every downstream row, so speaking here would double-count.
+- **`runValidation` threw** — `crashedPublishValidation(message)`, which spreads that same baseline with **every boolean unchanged** (`publishOk: true` included) and adds one `error`-severity finding per check in `PER_STEP_CHECK_NAMES` (`Publish Validation`, `Release Notes Preview`, `SBOM Preview`), each carrying the rendered crash. The only other difference is `sbomSummary`, which says the preview did not run because publish validation crashed rather than "skipped". `Build Validation` and `Link Issues from Commits` are deliberately untouched — the build really did pass, and issue linking is a different step. The names come from the shared constant because they are a **join key**: a name that drifts from it detaches the finding from its row and the conclusion silently returns to green.
+
+The crash arm also stops reusing the ok/not-ok ternary for its three log lines and prints `❌ … did not run (crashed)`. The ternary reads `publishOk`, which stays `true` on that path by design, so it printed `✅ Publish validation` for a dry-run that never happened — the log-shaped half of the same bug.
+
+**Still live.** Each of these still degrades silently when the build passed:
+
 - A crashed issue-linking step yields `LINK_ISSUES_FAILED`, which is indistinguishable from a successful run that found nothing (`✅ Link issues — 0`). `LinkIssuesResult` carries no failure signal and no finding is scoped to that check.
 - A check run that could not be created yields `""`, which becomes a `null` row URL — indistinguishable from a row that legitimately has no page yet.
 - A failed comment write contributes no finding, and a failed pull-request *lookup* is reported with the same line as "there is no release PR".
 
-**`strict-warnings` does not rescue any of this** — there is no warning to escalate, so the strictest available setting still reports green. That is pinned as its own test because "turn on strict-warnings" is the obvious wrong fix.
+**`strict-warnings` does not rescue any of this** — there is no warning to escalate, so the strictest available setting still reports green on the remaining paths. That is pinned as its own test because "turn on strict-warnings" is the obvious wrong fix. Symmetrically, the fix does not *depend* on it either: `crashedPublishValidation`'s findings are errors, which fail the row at any setting.
 
-**Only build validation degrades honestly.** `buildValidationFailed(cause)` reports `success: false` with the rendered cause in `errors`, which the derivation turns into an error-severity finding and then cascades onto every build-dependent row. A crashed build validation fails the phase exactly as a failed build does. That asymmetry is the *point* of the step being separate: the build is the gate everything downstream is conditioned on, and issue linking is not.
+**Build validation always degraded honestly.** `buildValidationFailed(cause)` reports `success: false` with the rendered cause in `errors`, which the derivation turns into an error-severity finding and then cascades onto every build-dependent row. A crashed build validation fails the phase exactly as a failed build does. That asymmetry is the *point* of the step being separate: the build is the gate everything downstream is conditioned on, and issue linking is not.
 
-**The fix is one decision, not six patches: a degraded step must contribute a *finding*, since that is the only thing the verdict reads.** Flipping `SKIPPED_PUBLISH_VALIDATION`'s `publishOk` to `false` is the wrong fix — the baseline is `true` precisely so the `buildPassed: false` path, where the cascade *does* cover every downstream row, reports correctly.
+Two rules the publish-validation fix established, both load-bearing for the paths still to be fixed:
+
+1. **Contribute a finding; do not flip a boolean.** Findings are the only input the verdict reads, which is what makes this one decision rather than a patch per path. Flipping `SKIPPED_PUBLISH_VALIDATION`'s `publishOk` to `false` is the wrong fix, and always was: the baseline is `true` precisely so the `buildPassed: false` path, where the cascade *does* cover every downstream row, reports correctly. `crashedPublishValidation` therefore reuses the baseline untouched and adds only findings.
+2. **Never widen `Effect.catch` to `catchCause`.** A **defect** from `runValidation` still propagates and kills the phase. That is the one path where a broken validation fails the run outright, and catching it would route the last honest failure signal into the same degraded result the rest of the step builds.
 
 ### Phase 3: Release Publishing
 
@@ -584,9 +595,9 @@ The vanilla `PublishabilityDetectorLive` from `@effected/workspaces` treats `pac
 
 ### Declared Failure Postures
 
-Every module under `steps/` states its failure posture in its module docs **and** encodes it in its error channel. `never` in the error channel means "this degrades to a warning"; anything else propagates and fails the job.
+Every module under `steps/` states its failure posture in its module docs **and** encodes it in its error channel. `never` in the error channel means "this degrades"; anything else propagates and fails the job.
 
-The pairing is the discipline: a posture stated only in prose drifts from the code, and an error channel alone does not say *what a reader sees* when the step degrades. Where a degradation is invisible downstream, the module says so explicitly and links the characterization test — see [Degradation semantics (issue #216)](#degradation-semantics-issue-216).
+The pairing is the discipline: a posture stated only in prose drifts from the code, and an error channel alone does not say *what a reader sees* when the step degrades. `never` alone is not a posture — a step that degrades must also say whether it **contributes a finding** (visible in the verdict) or degrades to a warning nobody downstream reads. Where a degradation is invisible downstream, the module says so explicitly and links the characterization test; where it has been fixed, the module says what it now contributes. See [Degradation semantics (issue #216)](#degradation-semantics-issue-216) — `publish-validation.ts` is the fixed example, `link-issues.ts`, `per-step-checks.ts` and `publish-validation-report.ts` are the outstanding ones.
 
 Reporting writes are never gates. `withSection` types its `publish` callback as infallible for exactly that reason: a finalizer that could fail on the way out would replace the caller's real error with a reporting one.
 
@@ -657,7 +668,7 @@ Registry reads go through `NpmRegistry` over `FetchHttpClient` (HTTP, not `npm v
 | `src/steps/validation.ts` | Phase 2 body: order and value flow across six extractions |
 | `src/steps/link-issues.ts` | Phase 2 issue linking; `LINK_ISSUES_FAILED` |
 | `src/steps/build-validation.ts` | Phase 2 build validation; `buildValidationFailed(cause)` |
-| `src/steps/publish-validation.ts` | Phase 2 publish/notes/SBOM region; `SKIPPED_PUBLISH_VALIDATION` |
+| `src/steps/publish-validation.ts` | Phase 2 publish/notes/SBOM region; `SKIPPED_PUBLISH_VALIDATION`, `crashedPublishValidation` |
 | `src/steps/per-step-checks.ts` | The three per-step check runs |
 | `src/steps/publish-validation-report.ts` | Phase 2 sticky-comment write |
 | `src/steps/publishing.ts` | Phase 3 body; raises `PublishError` |
