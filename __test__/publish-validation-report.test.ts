@@ -284,9 +284,9 @@ describe("publishValidationReport", () => {
 		expect(outcome).toEqual({ prNumber: 243, written: true, lookupFailed: false });
 		expect(upserted).toHaveLength(1);
 		expect(upserted[0]?.issueNumber).toBe(243);
-		expect(body).toContain(`silk-release:section:${VALIDATION_STATUS_KEY}`);
-		expect(body).toContain(`silk-release:section:${RELEASE_PLAN_KEY}`);
-		expect(body).toContain(`silk-release:section:${VALIDATION_DETAILS_KEY}`);
+		expect(body).toContain(`silk-release.sections.${VALIDATION_STATUS_KEY} `);
+		expect(body).toContain(`silk-release.sections.${RELEASE_PLAN_KEY} `);
+		expect(body).toContain(`silk-release.sections.${VALIDATION_DETAILS_KEY} `);
 	});
 
 	it("writes under Phase 1's comment marker, so it updates rather than duplicates", async () => {
@@ -304,9 +304,9 @@ describe("publishValidationReport", () => {
 	it("stamps the sections with the run's sha and run id, complete", async () => {
 		const { body } = await run();
 
-		expect(body).toContain(`"state":"complete"`);
-		expect(body).toContain(`"sha":"${HEAD_SHA}"`);
-		expect(body).toContain(`"runId":"${RUN_ID}"`);
+		expect(body).toContain(`state="complete"`);
+		expect(body).toContain(`sha="${HEAD_SHA}"`);
+		expect(body).toContain(`runId="${RUN_ID}"`);
 	});
 
 	it("stamps the sha the caller resolved, even an empty one, rather than failing", async () => {
@@ -317,7 +317,7 @@ describe("publishValidationReport", () => {
 		const { outcome, body } = await run({ headSha: "", env: { GITHUB_RUN_ID: "" } });
 
 		expect(outcome.written).toBe(true);
-		expect(body).toContain(`"sha":""`);
+		expect(body).toContain(`sha=""`);
 	});
 
 	it("links the stamped sha at the instance the run is executing against", async () => {

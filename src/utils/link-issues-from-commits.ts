@@ -18,16 +18,10 @@
  */
 
 import type { GitHubError, Repo } from "@effected/github";
-import {
-	CheckRun,
-	CheckRunOutput,
-	GitHubCommit,
-	GitHubIssue,
-	PullRequest,
-	harvestIssueReferences,
-} from "@effected/github";
+import { CheckRun, CheckRunOutput, GitHubCommit, GitHubIssue, PullRequest } from "@effected/github";
 import type { ActionEnvironmentError, ActionOutputError } from "@effected/github-actions";
 import { ActionEnvironment, ActionOutputs, DryRun } from "@effected/github-actions";
+import { collectReferenceLists } from "@effected/github-references";
 import { Effect, Option } from "effect";
 import type { BranchRefs } from "../schema/inputs.js";
 import { commitUrl, resolveServerUrl } from "./github-urls.js";
@@ -66,16 +60,38 @@ const MERGE_COMMIT_PR_PATTERN = /\(#(\d+)\)$/m;
  * commit message.
  *
  * @remarks
- * The grammar itself is the kit's — `harvestIssueReferences` is the
- * inline-in-prose dialect (mandatory whitespace, no colon), which matches
- * the `CLOSE_KEYWORD_PATTERN` regex this module used to carry. The kit
- * preserves duplicates in document order; this caller wants the distinct
- * issue numbers, so it dedupes.
+ * The grammar is the kit's, and it now comes from `@effected/github-references`
+ * directly rather than through `@effected/github`'s compat re-export, which is
+ * documented as droppable at a later `github` bump (issue #261).
+ *
+ * **`collectReferenceLists` rather than `harvestIssueReferences`, and that is a
+ * behaviour change.** The old harvester reads the inline dialect one reference
+ * at a time, so `Closes #247, #248 and #251` — the spelling this suite's own
+ * commit convention writes — contributed **only #247**, silently dropping the
+ * rest of the list from every release that used it. The list dialect reads the
+ * whole list, which is what a release pipeline wants.
+ *
+ * It also composes both postures per line: a whole-line trailer first
+ * (colon-tolerant, matching GitHub's own acceptance of `Closes: #5`), falling
+ * back to the inline-in-prose harvest, with the preference arranged so a
+ * colon-less trailer contributes its list exactly once rather than once per
+ * posture.
+ *
+ * Non-closing keywords are filtered out: `Refs #12` associates without closing,
+ * and this list drives issues that a release **closes**. The kit preserves
+ * duplicates in document order; this caller wants distinct numbers, so it
+ * dedupes.
  *
  * @internal
  */
 const extractIssueReferences = (message: string): number[] =>
-	Array.from(new Set(harvestIssueReferences(message).map((ref) => ref.issueNumber)));
+	Array.from(
+		new Set(
+			collectReferenceLists(message)
+				.filter((list) => list.closing)
+				.flatMap((list) => list.issueNumbers),
+		),
+	);
 
 /**
  * Extract a PR number from a GitHub merge-commit message

@@ -13,6 +13,7 @@ import {
 	readSection,
 	refreshBanners,
 	renderBanner,
+	renderSection,
 	upsertSection,
 	withSection,
 } from "../src/utils/managed-sections.js";
@@ -98,13 +99,13 @@ describe("stamp decoding validates the state", () => {
 	// value as "Up to date" — a false claim about unreadable data.
 
 	it("drops a stamp whose state is not one of the known six", () => {
-		const garbled = upsertSection("", section(), HEAD).replace('"state":"complete"', '"state":"garbled"');
+		const garbled = upsertSection("", section(), HEAD).replace('state="complete"', 'state="garbled"');
 
 		expect(readSection(garbled, "build-validation")).toBeUndefined();
 	});
 
 	it("leaves a region with an unreadable stamp alone on a banner refresh, instead of claiming it is up to date", () => {
-		const garbled = upsertSection("", section(), HEAD).replace('"state":"complete"', '"state":"garbled"');
+		const garbled = upsertSection("", section(), HEAD).replace('state="complete"', 'state="garbled"');
 
 		expect(refreshBanners(garbled, HEAD)).toBe(garbled);
 	});
@@ -113,7 +114,7 @@ describe("stamp decoding validates the state", () => {
 		// The monotonic guard compares stamps; with no readable existing stamp
 		// there is nothing to be older than, so the write proceeds — the garbled
 		// region is recovered rather than wedged.
-		const garbled = upsertSection("", section(), HEAD).replace('"state":"complete"', '"state":"garbled"');
+		const garbled = upsertSection("", section(), HEAD).replace('state="complete"', 'state="garbled"');
 
 		const replaced = upsertSection(garbled, section({ body: "fresh result" }), HEAD);
 
@@ -336,11 +337,155 @@ describe("refreshBanners", () => {
 
 		// Only the banner is recomputed; a refresh must not rewrite another
 		// phase's content or advance its stamp.
-		expect(refreshed).toContain('"sha":"old1234"');
+		expect(refreshed).toContain('sha="old1234"');
 		expect(refreshed).toContain("plan body");
 	});
 
 	it("is a no-op on a body with no sections", () => {
 		expect(refreshBanners("just prose", "new5678")).toBe("just prose");
+	});
+});
+
+// ─── Issue #258: the one-shot wire-format migration ───────────────────────────
+//
+// The kit's region scanner does not see the old `silk-release:section:<key>`
+// markers and preserves them as prose, so a swap without a conversion would
+// leave every open release PR carrying orphan regions nothing updates, plus a
+// fresh set appended below them.
+describe("legacy wire-format migration", () => {
+	const legacy = (key: string, title: string, body: string, over: Partial<SectionStamp> = {}): string =>
+		[
+			`<!-- silk-release:section:${key}:start -->`,
+			`<!-- silk-release:stamp ${JSON.stringify(stamp(over))} -->`,
+			`### ${title}`,
+			"",
+			body,
+			"",
+			"<!-- silk-release:banner:start -->",
+			"<sub>Up to date as of `abc1234`</sub>",
+			"<!-- silk-release:banner:end -->",
+			`<!-- silk-release:section:${key}:end -->`,
+		].join("\n");
+
+	it("carries a legacy section's title, body and stamp into the new format", () => {
+		const migrated = refreshBanners(legacy("release-plan", "What will be released", "@scope/a 1.0.0 → 1.1.0"), HEAD);
+
+		expect(migrated).toContain("silk-release.sections.release-plan ");
+		expect(migrated).not.toContain("silk-release:section:release-plan:start");
+		expect(migrated).not.toContain("silk-release:stamp");
+
+		const back = readSection(migrated, "release-plan");
+		expect(back?.title).toBe("What will be released");
+		expect(back?.body).toContain("@scope/a 1.0.0 → 1.1.0");
+		expect(back?.stamp.sha).toBe(HEAD);
+		expect(back?.stamp.runId).toBe("100");
+	});
+
+	it("is idempotent — a second pass changes nothing", () => {
+		const once = refreshBanners(legacy("release-plan", "Plan", "the plan"), HEAD);
+		expect(refreshBanners(once, HEAD)).toBe(once);
+	});
+
+	it("does not duplicate the banner it converted", () => {
+		const migrated = refreshBanners(legacy("release-plan", "Plan", "the plan"), HEAD);
+
+		// The legacy banner was regenerated on every render, so carrying it into
+		// the body would have re-emitted it AND rendered a fresh one beside it.
+		expect(migrated.match(/Up to date as of/g)).toHaveLength(1);
+	});
+
+	it("preserves human prose on both sides of a legacy region", () => {
+		const body = `Above.\n\n${legacy("release-plan", "Plan", "the plan")}\n\nBelow.`;
+		const migrated = upsertSection(body, section(), HEAD);
+
+		expect(migrated).toContain("Above.");
+		expect(migrated).toContain("Below.");
+		expect(migrated).toContain("the plan");
+	});
+
+	it("reads a section that is still in the legacy format", () => {
+		// Rule 2 depends on this: the retained previous body is read off the live
+		// comment, so a mid-flight release PR whose sections have not been
+		// converted yet must not read as an absent section and blank on the next
+		// write.
+		const back = readSection(legacy("release-plan", "Plan", "the previous result"), "release-plan");
+
+		expect(back?.body).toContain("the previous result");
+		expect(back?.stamp.state).toBe("complete");
+	});
+
+	it("converts a neighbour it does not own, rather than dropping it", () => {
+		const body = legacy("release-plan", "Plan", "someone else's section");
+		const migrated = upsertSection(body, section(), HEAD);
+
+		// The write owns `build-validation`; `release-plan` belongs to another
+		// phase. Migration must carry it across, because no single run writes
+		// every section — the first run after the swap would otherwise delete the
+		// two it does not own.
+		expect(migrated).toContain("someone else's section");
+		expect(readSection(migrated, "build-validation")?.body).toContain("3 packages built.");
+	});
+
+	it("leaves a legacy region whose stamp will not decode exactly where it is", () => {
+		// It carries no readable provenance, so this module cannot manage it —
+		// which is not a licence to delete it. A hand-written or truncated region
+		// survives as prose.
+		const orphan =
+			"<!-- silk-release:section:mystery:start -->\nhand-written\n<!-- silk-release:section:mystery:end -->";
+		const migrated = upsertSection(`Prose.\n\n${orphan}`, section(), HEAD);
+
+		expect(migrated).toContain("hand-written");
+		expect(migrated).toContain("silk-release:section:mystery:start");
+	});
+
+	it("still migrates when the incoming write is dropped as stale", () => {
+		// Rule 5 withholds the stale run's RESULT, not the wire-format conversion
+		// the document needs regardless of who is writing.
+		const body = legacy("release-plan", "Plan", "the newer run's result", { at: "2026-08-01T00:00:00.000Z" });
+		const older: Section = {
+			key: "release-plan",
+			title: "Plan",
+			stamp: stamp({ at: "2026-01-01T00:00:00.000Z" }),
+			body: "the older run's result",
+		};
+		const migrated = upsertSection(body, older, HEAD);
+
+		expect(migrated).toContain("silk-release.sections.release-plan ");
+		expect(migrated).toContain("the newer run's result");
+		expect(migrated).not.toContain("the older run's result");
+	});
+});
+
+// ─── Issue #258, work item 4: the comparator's two post-handoff refinements ───
+describe("rule 5 — delegated to the kit's comparator", () => {
+	it('orders a blank runId lexically, not as Number("") === 0', () => {
+		// The refinement the local comparator lacked: `Number("")` is `0`, which
+		// made a blank runId outrank every real one at the same instant.
+		const blank = stamp({ runId: "", at: "2026-07-26T12:00:00.000Z" });
+		const real = stamp({ runId: "100", at: "2026-07-26T12:00:00.000Z" });
+
+		expect(isAtLeastAsRecent(blank, real)).toBe(false);
+		expect(isAtLeastAsRecent(real, blank)).toBe(true);
+	});
+
+	it("compares `at` as an instant, so offset spellings of one time order correctly", () => {
+		// Same instant, two spellings. A lexical compare calls the Z form older.
+		const utc = stamp({ at: "2026-07-26T12:00:00.000Z" });
+		const offset = stamp({ at: "2026-07-26T14:00:00.000+02:00" });
+
+		expect(isAtLeastAsRecent(utc, offset)).toBe(true);
+		expect(isAtLeastAsRecent(offset, utc)).toBe(true);
+	});
+
+	it("lets a run refine its own section", () => {
+		expect(isAtLeastAsRecent(stamp(), stamp())).toBe(true);
+	});
+});
+
+describe("the banner suffix is reserved", () => {
+	it("refuses a section key that would collide with a neighbour's banner", () => {
+		// `<key>-banner` is where a section's banner region lives, so a section
+		// named that way would silently overwrite one.
+		expect(() => renderSection(section({ key: "plan-banner" }), HEAD)).toThrow(/reserved/);
 	});
 });

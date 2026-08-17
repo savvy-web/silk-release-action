@@ -672,6 +672,117 @@ describe("runBuildAndSbom", () => {
 				expect(result.packageCount).toBe(1);
 			}),
 		);
+
+		// Issue #262. `Run.collect` buffers both streams; the failure path used to
+		// discard them and log `stderr` alone, so the compiler diagnostics turbo
+		// writes to STDOUT under `--output-logs=full` appeared in no log at all.
+		describe("failure diagnostics (issue #262)", () => {
+			/** A spawner whose `pnpm ci:build` fails with the given captured streams. */
+			const failingSpawner = (stdout: string, stderr: string) =>
+				ScriptedSpawner.make((command) =>
+					command === "pnpm" ? { exit: 1, stdout, stderr } : ScriptedSpawner.notFound(command),
+				).layer;
+
+			const runFailingBuild = (
+				stdout: string,
+				stderr: string,
+			): Effect.Effect<{ result: BuildSbomResult; stdoutWrites: string; stderrWrites: string }> =>
+				Effect.gen(function* () {
+					const pkg = makeWsPkg("@test/diagnostics", "1.0.0");
+					const detected: DetectedRelease[] = [makeDetected("@test/diagnostics", "1.0.0", pkg.path)];
+
+					const stdoutWrites: string[] = [];
+					const stderrWrites: string[] = [];
+					const outSpy = vi.spyOn(process.stdout, "write").mockImplementation((chunk: unknown) => {
+						stdoutWrites.push(String(chunk));
+						return true;
+					});
+					const errSpy = vi.spyOn(process.stderr, "write").mockImplementation((chunk: unknown) => {
+						stderrWrites.push(String(chunk));
+						return true;
+					});
+
+					const layers = Layer.mergeAll(
+						loggerLayer,
+						NodeServices.layer,
+						makeWorkspaceDiscoveryLayer([pkg]),
+						failingSpawner(stdout, stderr),
+					);
+
+					const result = yield* runBuildAndSbom(detected, buildArgs).pipe(
+						Effect.provide(layers),
+						Effect.ensuring(
+							Effect.sync(() => {
+								outSpy.mockRestore();
+								errSpy.mockRestore();
+							}),
+						),
+					);
+
+					return { result, stdoutWrites: stdoutWrites.join(""), stderrWrites: stderrWrites.join("") };
+				});
+
+			it.effect("re-emits the captured stdout diagnostics that stderr does not carry", () =>
+				Effect.gen(function* () {
+					// The shape from the ticket: turbo echoes the command to stderr and
+					// puts the actual `tsc --noEmit` diagnostics on stdout.
+					const diagnostics = "src/index.ts(4,7): error TS2322: Type 'string' is not assignable to type 'number'.";
+					const { stdoutWrites } = yield* runFailingBuild(
+						`@effected/package-json#types:check\n${diagnostics}\n`,
+						'$ CI="true" turbo run build:dev build:prod\ncommand finished (1)\n',
+					);
+
+					expect(stdoutWrites).toContain(diagnostics);
+				}),
+			);
+
+			it.effect("re-emits the captured stderr as well", () =>
+				Effect.gen(function* () {
+					const { stderrWrites } = yield* runFailingBuild("", "ENOENT: no such file or directory\n");
+
+					expect(stderrWrites).toContain("ENOENT: no such file or directory");
+				}),
+			);
+
+			it.effect("writes nothing when the failed build captured no output at all", () =>
+				Effect.gen(function* () {
+					const { stdoutWrites, stderrWrites } = yield* runFailingBuild("", "");
+
+					expect(stdoutWrites).toBe("");
+					expect(stderrWrites).toBe("");
+				}),
+			);
+
+			it.effect("falls back to the stdout tail when stderr is empty, rather than a bare annotation", () =>
+				Effect.gen(function* () {
+					const { result } = yield* runFailingBuild("error TS2322: not assignable\n", "");
+
+					// Pre-fix this was `""` — the annotation read `ci:build failed —`
+					// with nothing after it, which is the useless surface #262 reports.
+					expect(result.buildError).toContain("error TS2322: not assignable");
+				}),
+			);
+
+			it.effect("caps the stdout fallback at the last 20 lines", () =>
+				Effect.gen(function* () {
+					const stdout = Array.from({ length: 50 }, (_, i) => `line-${i}`).join("\n");
+					const { result } = yield* runFailingBuild(stdout, "");
+
+					expect(result.buildError?.split("\n")).toHaveLength(20);
+					expect(result.buildError).toContain("line-49");
+					expect(result.buildError).not.toContain("line-29");
+				}),
+			);
+
+			it.effect("still reports a reason when the build failed with no output on either stream", () =>
+				Effect.gen(function* () {
+					const { result } = yield* runFailingBuild("", "");
+
+					expect(result.ok).toBe(false);
+					expect(result.buildError).toBe("ci:build exited non-zero with no captured output");
+				}),
+			);
+		});
 	});
 
 	describe("happy path", () => {
