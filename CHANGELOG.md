@@ -1,5 +1,42 @@
 # @savvy-web/silk-release-action
 
+## 4.5.2
+
+### Bug Fixes
+
+* The "Closed by release PR #N merge." comment posted on a linked issue during Phase 3 publishing is now written through the kit's `commentOnce`, keyed by a hidden marker scoped to the release PR. A re-run of the publishing phase can no longer post the comment twice, even in the partial-failure window between closing the issue and commenting on it — the close-before-comment ordering is retained as a second line of defense, not replaced.
+
+### Refactoring
+
+* Closing-keyword reference parsing (`closes/fixes/resolves #N` in commit messages) now uses the shared `harvestIssueReferences` grammar from `@effected/github` instead of a local regular expression. Behavior is unchanged. [#257][#257]
+
+### Dependencies
+
+* | Dependency                | Type       | Action  | From           | To           |                                                                       |
+  | ------------------------- | ---------- | ------- | -------------- | ------------ | --------------------------------------------------------------------- |
+  | @changesets/changelog-git | dependency | updated | 1.0.0-next.8   | 1.0.0        |                                                                       |
+  | @effect/platform-node     | dependency | updated | 4.0.0-beta.107 | 4.0.0-rc.109 |                                                                       |
+  | @effected/commands        | dependency | updated | ^0.4.0         | ^0.5.0       |                                                                       |
+  | @effected/git             | dependency | updated | ^0.8.0         | ^0.9.0       |                                                                       |
+  | @effected/github          | dependency | updated | ^0.4.3         | ^0.6.0       |                                                                       |
+  | @effected/github-actions  | dependency | updated | ^0.7.0         | ^0.9.0       |                                                                       |
+  | @effected/jsonc           | dependency | updated | ^0.6.0         | ^0.7.0       |                                                                       |
+  | @effected/markdown        | dependency | updated | ^0.5.1         | ^0.6.0       |                                                                       |
+  | @effected/npm             | dependency | updated | ^0.9.0         | ^0.10.0      |                                                                       |
+  | @effected/package-json    | dependency | updated | ^0.9.0         | ^0.10.0      |                                                                       |
+  | @effected/sbom            | dependency | updated | ^0.3.1         | ^0.4.0       |                                                                       |
+  | @effected/semver          | dependency | updated | ^0.4.0         | ^0.5.0       |                                                                       |
+  | @effected/workspaces      | dependency | updated | ^0.13.0        | ^0.14.0      |                                                                       |
+  | @effected/yaml            | dependency | updated | ^0.8.0         | ^0.10.0      |                                                                       |
+  | @savvy-web/silk-effects   | dependency | updated | ^5.9.0         | ^5.9.2       |                                                                       |
+  | effect                    | dependency | updated | 4.0.0-beta.107 | 4.0.0-rc.109 | [#257][#257] Thanks [@spencerbeggs](https://github.com/spencerbeggs)! |
+
+### Patch Changes
+
+Thanks to [@spencerbeggs](https://github.com/spencerbeggs) for their contributions!
+
+[#257]: https://github.com/savvy-web/silk-release-action/pull/257
+
 ## 4.5.1
 
 ### Dependencies
