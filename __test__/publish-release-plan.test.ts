@@ -167,7 +167,7 @@ describe("withReleasePlanSection — what reaches the pull request", () => {
 		const last = published.at(-1)?.body ?? "";
 
 		expect(last).toContain("complete");
-		expect(last).not.toContain('"state":"running"');
+		expect(last).not.toContain('state="running"');
 	});
 
 	it("leaves the section FAILED, retaining the plan, when the branch work fails", async () => {
@@ -189,7 +189,7 @@ describe("withReleasePlanSection — what reaches the pull request", () => {
 		// The case a tap/tapError pair misses. A section stuck at `running` reads
 		// as a job still working, forever.
 		expect(last).toContain("failed");
-		expect(last).not.toContain('"state":"running"');
+		expect(last).not.toContain('state="running"');
 	});
 
 	it("leaves the section CANCELLED when the branch work is interrupted", async () => {
@@ -222,8 +222,8 @@ describe("withReleasePlanSection — what reaches the pull request", () => {
 
 		// `upsertSection` appends a key it has not seen. Without Phase 1 seeding the
 		// verdict, validation's header would land BELOW the table.
-		const verdict = last.indexOf("silk-release:section:validation-status");
-		const plan = last.indexOf("silk-release:section:release-plan");
+		const verdict = last.indexOf("silk-release.sections.validation-status ");
+		const plan = last.indexOf("silk-release.sections.release-plan ");
 		expect(verdict).toBeGreaterThanOrEqual(0);
 		expect(plan).toBeGreaterThanOrEqual(0);
 		expect(verdict).toBeLessThan(plan);

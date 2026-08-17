@@ -105,7 +105,7 @@ describe("writeSections", () => {
 		// this behaviour.
 		const { body } = await run({ sections: [section("first", "1"), section("second", "2")] });
 
-		expect(body.indexOf("silk-release:section:first")).toBeLessThan(body.indexOf("silk-release:section:second"));
+		expect(body.indexOf("silk-release.sections.first ")).toBeLessThan(body.indexOf("silk-release.sections.second "));
 	});
 
 	it("READS before writing, so a neighbour's content survives the rewrite", async () => {

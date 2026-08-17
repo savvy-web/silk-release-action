@@ -22,52 +22,46 @@
 //  5. Writes are monotonic. A slower OLDER run finishing last must not
 //     overwrite a newer run's result.
 //
-// UPSTREAM STATUS (re-checked 2026-08-05 against the installed
-// `@effected/github-actions@0.5.1`, superseding the "has NOT landed" note this
-// comment used to carry):
+// REGION MECHANICS ARE THE KIT'S (issue #258, landed).
 //
-// The construct HAS landed, as `ManagedDocument` and `CheckDocument`. A review
-// against the five rules above concluded a PARTIAL swap is right, and not yet.
+// The ~80 lines that used to scan and splice regions here — `regionStart`,
+// `regionEnd`, `readRegion`, `stripRegion` and the splice in `upsertSection` —
+// are gone. `ManagedDocument` from `@effected/github-actions` owns the region
+// grammar now, and its `@effected/templates` engine is better tested than this
+// module ever was: idempotence, CRLF, BOM and marker injection, with a recorded
+// surviving-mutant history.
 //
-//  - Rule 4 is native to `ManagedDocument.withRegionsResult`, and the
-//    `@effected/templates` engine under it is better tested than this module
-//    (idempotence, CRLF, BOM and marker-injection, with a recorded surviving-
-//    mutant history). The ~80 lines here that scan and splice regions
-//    (`regionStart`/`regionEnd`/`readRegion`/`stripRegion` and the splice in
-//    `upsertSection`) are the part that should eventually go.
-//  - Rules 1, 2 and 3 are THIN LAYERS over it, not deletions: `CheckReport` is
-//    `state | title | outcome | detail | url` with no sha, run id or timestamp
-//    and no extension point, so the stamp must live in region content, and
-//    `CheckState` has no `pending` and (deliberately) no `cancelled` — both of
-//    which this module renders distinctly and pins in tests.
-//  - Rule 5 is NOT EXPRESSIBLE on `CheckDocument`, which is why the swap is
-//    partial. Its reconciler compares against a `writtenRef` seeded once at
-//    layer construction and thereafter only from its own writes; it never
-//    re-reads the sink. An older slow run therefore republishes from its own
-//    stale base and clobbers a newer run's regions — including ones it never
-//    owned. Here the rule is enforced by `isAtLeastAsRecent`, called from
-//    `upsertSection` below, which drops a write whose stamp is older than the
-//    one already in the region. Adopting `CheckDocument` would trade that for a
-//    silent clobber on the exact concurrency pattern release PRs generate.
+// What each rule became:
 //
-//    (An earlier draft of this note credited `section-queue.ts` with enforcing
-//    rule 5 by re-reading on every batch. It did re-read — but that module was
-//    never imported by any source file after it was added in #191, so it
-//    guarded nothing and has since been deleted. `upsertSection` is where the
-//    rule actually lives.)
+//  - Rule 4 is native. `withRegionsResult` replaces named regions in place and
+//    leaves every other byte — neighbouring sections, human prose — untouched.
+//  - Rule 3 got BETTER out of the swap rather than merely surviving it. The
+//    banner is now its own region (`<key>-banner`), so refreshing every banner
+//    on a write rewrites only the banner regions and leaves each section's
+//    content and stamp byte-identical. The old whole-section re-render is what
+//    made rule 4 and rule 3 pull against each other.
+//  - The stamp moved out of an in-content HTML comment into REGION METADATA,
+//    which round-trips verbatim and survives writes by parties that do not know
+//    about it. `at` and `runId` are deliberately spelled bare: those are the two
+//    keys `CheckDocument`'s own drop rule reads, so a later swap onto it
+//    inherits rule 5 rather than re-deriving it.
+//  - Rule 5 delegates to `CheckDocumentStamp.isAtLeastAsRecent`, which is this
+//    module's old comparator plus two refinements it lacked: a blank `runId`
+//    orders lexically instead of as `Number("") === 0`, and `at` is compared
+//    `Date.parse`-aware so offset spellings order correctly.
+//  - Rules 1 and 2 are untouched — `withSection`'s exit-aware finalizer and the
+//    retained previous body are above the region layer, not part of it.
 //
-// Blocking the partial swap: the wire formats are incompatible. The kit marker
-// is `<!-- --- BEGIN <ns>.<key>.<region> MANAGED REGION --- -->`; ours is
-// `<!-- silk-release:section:<key>:start -->`, which the kit scanner does not
-// see at all and preserves as prose. Swapping without a one-shot strip of the
-// old markers leaves every open release PR and sticky comment with orphan
-// regions the new engine never updates, plus a fresh set appended below.
-//
-// Tracking: spencerbeggs/effected — `CheckDocument` staleness guard, and
-// region-level metadata on `ManagedDocument` (this module's `owned="…"`
-// attribute has no slot in the kit's marker grammar).
+// The wire formats are incompatible: ours was
+// `<!-- silk-release:section:<key>:start -->`, the kit's is
+// `<!-- --- BEGIN <ns>.<key>.<region> MANAGED REGION --- -->`, and the kit
+// scanner preserves the old markers as prose. So every read path runs
+// `migrateLegacySections` first — a one-shot, idempotent, content-preserving
+// conversion of any legacy region it finds. See its docs for why stripping
+// rather than converting would have been a data-loss bug.
 
-import { Effect, Exit } from "effect";
+import { CheckDocumentStamp, ManagedDocument } from "@effected/github-actions";
+import { Effect, Exit, Option, Result } from "effect";
 
 /**
  * What a section is doing.
@@ -101,7 +95,7 @@ export interface SectionStamp {
  * @public
  */
 export interface Section {
-	/** Stable id; also the marker name. */
+	/** Stable id; also the region key. */
 	readonly key: string;
 	/** Heading shown to a reader. */
 	readonly title: string;
@@ -110,83 +104,27 @@ export interface Section {
 	readonly body: string;
 }
 
-/**
- * The delimiters for a named region.
- *
- * @remarks
- * **Every marker is a pair.** A lone opening marker can only be located by
- * scanning forward to whatever happens to follow it, which makes the region's
- * extent a function of its neighbours rather than of itself — so moving
- * anything nearby silently redefines it. That is exactly how the banner came
- * to be swallowed into the body and then duplicated on every write.
- *
- * The token is free-form; `:start` and `:end` are the whole contract. Pairs
- * therefore nest, and a region can contain sub-regions without either needing
- * to know about the other:
- *
- * ```text
- * <!-- silk-release:section:details:start -->
- *   <!-- silk-release:banner:start --> … <!-- silk-release:banner:end -->
- * <!-- silk-release:section:details:end -->
- * ```
- *
- * @public
- */
-export const regionStart = (token: string): string => `<!-- ${token}:start -->`;
-/** The closing delimiter for a named region. See {@link regionStart}. */
-export const regionEnd = (token: string): string => `<!-- ${token}:end -->`;
+/** The managed document these sections live in. */
+const NAMESPACE = "silk-release";
+const DOCUMENT_KEY = "sections";
 
 /**
- * The content between a region's delimiters, or `undefined` when absent.
+ * The suffix that makes a region a section's banner rather than a section.
  *
  * @remarks
- * Finds the FIRST opening and the matching close after it, so a nested region
- * of a different token is returned as part of the content rather than
- * truncating it.
- *
- * @public
+ * **Reserved.** A section key ending in this would collide with its
+ * neighbour's banner, so {@link renderSection} rejects one rather than letting
+ * the collision surface later as a section that silently overwrites a banner.
+ * Nothing in this repository comes close — the three keys are `release-plan`,
+ * `validation-status` and `validation-details` — but the rule is cheap and the
+ * failure it prevents is not.
  */
-export const readRegion = (body: string, token: string): string | undefined => {
-	const from = body.indexOf(regionStart(token));
-	const to = body.indexOf(regionEnd(token), from === -1 ? 0 : from);
-	if (from === -1 || to === -1 || to < from) return undefined;
-	return body.slice(from + regionStart(token).length, to);
-};
+const BANNER_SUFFIX = "-banner";
 
-/** Everything outside a region, with the region and its delimiters removed. */
-export const stripRegion = (body: string, token: string): string => {
-	const from = body.indexOf(regionStart(token));
-	const to = body.indexOf(regionEnd(token), from === -1 ? 0 : from);
-	if (from === -1 || to === -1 || to < from) return body;
-	return `${body.slice(0, from)}${body.slice(to + regionEnd(token).length)}`;
-};
+const bannerKey = (key: string): string => `${key}${BANNER_SUFFIX}`;
+const isBannerKey = (key: string): boolean => key.endsWith(BANNER_SUFFIX);
 
-const start = (key: string): string => regionStart(`silk-release:section:${key}`);
-const end = (key: string): string => regionEnd(`silk-release:section:${key}`);
-const STAMP_RE = /<!-- silk-release:stamp (\{.*?\}) -->/;
-
-/**
- * Delimits the banner so a read can tell it from the body.
- *
- * @remarks
- * The banner is regenerated on every render, so it must never be mistaken for
- * retained content — a read that swallowed it would re-emit it, and the next
- * render would append another. Position alone is not enough to tell them apart:
- * it was inferred from a fixed line offset, and moving the banner below the
- * body silently broke that, duplicating it on every write.
- */
-const BANNER_TOKEN = "silk-release:banner";
-
-/**
- * The stamp, encoded so it can be read back off a rendered body.
- *
- * @remarks
- * An HTML comment rather than a visible line: it is machinery, and a reader
- * should see the state banner instead.
- */
-const encodeStamp = (stamp: SectionStamp): string => `<!-- silk-release:stamp ${JSON.stringify(stamp)} -->`;
-
-/** The states a stamp may carry, for validating one read back off a body. */
+/** The states a stamp may carry, for validating one read back off a region. */
 const SECTION_STATES: ReadonlySet<string> = new Set([
 	"pending",
 	"running",
@@ -198,22 +136,40 @@ const SECTION_STATES: ReadonlySet<string> = new Set([
 
 const isSectionState = (value: string): value is SectionState => SECTION_STATES.has(value);
 
-const decodeStamp = (text: string): SectionStamp | undefined => {
-	const match = STAMP_RE.exec(text);
-	if (match?.[1] === undefined) return undefined;
-	try {
-		const parsed: unknown = JSON.parse(match[1]);
-		if (parsed === null || typeof parsed !== "object") return undefined;
-		const s = parsed as Partial<SectionStamp>;
-		if (typeof s.state !== "string" || typeof s.sha !== "string" || typeof s.at !== "string") return undefined;
-		// A stamp whose state is not one of the known six is dropped, not passed
-		// through: `renderBanner`'s fallback arm would otherwise render a garbled
-		// value as "up to date", which is a false claim about unreadable data.
-		if (!isSectionState(s.state)) return undefined;
-		return { state: s.state, sha: s.sha, runId: String(s.runId ?? ""), at: s.at };
-	} catch {
-		return undefined;
-	}
+/**
+ * The stamp as region metadata.
+ *
+ * @remarks
+ * Four flat `name="value"` attributes rather than one JSON blob: the kit's
+ * marker grammar forbids `"` in a value, so a JSON object could not be written
+ * there at all, and flat keys are what let `at`/`runId` be read by anything
+ * else that understands the kit's stamp — `CheckDocument`'s drop rule above
+ * all.
+ *
+ * @internal
+ */
+const encodeStamp = (stamp: SectionStamp): Record<string, string> => ({
+	state: stamp.state,
+	sha: stamp.sha,
+	runId: stamp.runId,
+	at: stamp.at,
+});
+
+/**
+ * A stamp read back off region metadata, or `undefined` when unreadable.
+ *
+ * @remarks
+ * A region whose `state` is not one of the known six is dropped rather than
+ * passed through: {@link renderBanner}'s fallback arm would otherwise render a
+ * garbled value as "up to date", which is a false claim about unreadable data.
+ *
+ * @internal
+ */
+const decodeStamp = (meta: Readonly<Record<string, string>>): SectionStamp | undefined => {
+	const { state, sha, at, runId } = meta;
+	if (state === undefined || sha === undefined || at === undefined) return undefined;
+	if (!isSectionState(state)) return undefined;
+	return { state, sha, at, runId: runId ?? "" };
 };
 
 const shortSha = (sha: string): string => (sha.length > 7 ? sha.slice(0, 7) : sha);
@@ -257,29 +213,203 @@ export const renderBanner = (stamp: SectionStamp, headSha: string, commitUrl?: (
 	}
 };
 
+/** A section's own region content: heading, then the retained result. */
+const sectionContent = (section: Section): string => `### ${section.title}\n\n${section.body}`;
+
 /**
- * Render one section, markers included.
+ * The region entries one section contributes: its content and its banner.
+ *
+ * @remarks
+ * Provenance goes in the *second* region so it renders below the content. Above
+ * it, it pushed the thing a reader came for below the fold on every section.
+ *
+ * @internal
+ */
+const entriesFor = (
+	section: Section,
+	headSha: string,
+	commitUrl?: (sha: string) => string,
+): ReadonlyArray<readonly [string, string, Readonly<Record<string, string>>?]> => [
+	[section.key, sectionContent(section), encodeStamp(section.stamp)],
+	[bannerKey(section.key), renderBanner(section.stamp, headSha, commitUrl)],
+];
+
+// ─── Legacy wire format (issue #258 migration) ────────────────────────────────
+
+const legacyStart = (key: string): string => `<!-- silk-release:section:${key}:start -->`;
+const legacyEnd = (key: string): string => `<!-- silk-release:section:${key}:end -->`;
+const LEGACY_KEY_RE = /<!-- silk-release:section:([^:]+):start -->/g;
+const LEGACY_STAMP_RE = /<!-- silk-release:stamp (\{.*?\}) -->/;
+const LEGACY_BANNER_START = "<!-- silk-release:banner:start -->";
+const LEGACY_BANNER_END = "<!-- silk-release:banner:end -->";
+
+/** A stamp decoded from the legacy in-content JSON comment. */
+const decodeLegacyStamp = (text: string): SectionStamp | undefined => {
+	const match = LEGACY_STAMP_RE.exec(text);
+	if (match?.[1] === undefined) return undefined;
+	try {
+		const parsed: unknown = JSON.parse(match[1]);
+		if (parsed === null || typeof parsed !== "object") return undefined;
+		const s = parsed as Partial<SectionStamp>;
+		if (typeof s.state !== "string" || typeof s.sha !== "string" || typeof s.at !== "string") return undefined;
+		if (!isSectionState(s.state)) return undefined;
+		return { state: s.state, sha: s.sha, runId: String(s.runId ?? ""), at: s.at };
+	} catch {
+		return undefined;
+	}
+};
+
+/**
+ * Convert every legacy region in a body into a {@link Section}, and remove it.
+ *
+ * @remarks
+ * **The one-shot wire-format migration, and it converts rather than strips.**
+ * Stripping would have been a data-loss bug of exactly the kind rule 2 exists
+ * to prevent: no single run owns every section, so the first run after the swap
+ * would have deleted the two sections it does not write and re-added only its
+ * own. Carrying the content across means a release PR mid-flight keeps every
+ * result it had, under the same keys, with the same stamps.
+ *
+ * **Idempotent by construction.** It matches only the legacy marker, which the
+ * conversion removes, so a second pass finds nothing and returns the body
+ * unchanged — the property that lets it run unconditionally on every read path
+ * instead of behind a one-time flag nobody could safely retire.
+ *
+ * A legacy region whose stamp will not decode is **left exactly where it is**,
+ * markers and all. It carries no readable provenance, so this module cannot
+ * manage it — but "cannot manage" is not "may delete". Removing it was a real
+ * data-loss bug caught by test: a hand-written or truncated region, or one
+ * another tool wrote under the same marker spelling, would have vanished on the
+ * first write after the swap. Left in place it survives as prose, which is what
+ * the kit's scanner does with every marker it does not own.
+ *
+ * @param body - The document as it exists on GitHub right now.
+ * @returns The body with legacy regions excised, and the sections recovered
+ *   from them in document order.
+ *
+ * @internal
+ */
+export const migrateLegacySections = (
+	body: string,
+): { readonly text: string; readonly recovered: ReadonlyArray<Section> } => {
+	const keys = [...body.matchAll(LEGACY_KEY_RE)]
+		.map((match) => match[1])
+		.filter((key): key is string => key !== undefined);
+	if (keys.length === 0) return { text: body, recovered: [] };
+
+	const recovered: Section[] = [];
+	let text = body;
+
+	for (const key of keys) {
+		const from = text.indexOf(legacyStart(key));
+		const to = text.indexOf(legacyEnd(key), from === -1 ? 0 : from);
+		if (from === -1 || to === -1 || to < from) continue;
+
+		const inner = text.slice(from + legacyStart(key).length, to);
+
+		// Decode BEFORE excising. An undecodable region is left in place — see the
+		// remarks — so the excision has to be conditional on having somewhere to
+		// carry the content to.
+		const stamp = decodeLegacyStamp(inner);
+		if (stamp === undefined) continue;
+
+		text = `${text.slice(0, from)}${text.slice(to + legacyEnd(key).length)}`;
+
+		// The banner was its own delimited region inside the content; drop it
+		// wholesale rather than cutting around it, because it is regenerated on
+		// every render and re-emitting it would duplicate it.
+		const bannerFrom = inner.indexOf(LEGACY_BANNER_START);
+		const bannerTo = inner.indexOf(LEGACY_BANNER_END, bannerFrom === -1 ? 0 : bannerFrom);
+		const withoutBanner =
+			bannerFrom === -1 || bannerTo === -1 || bannerTo < bannerFrom
+				? inner
+				: `${inner.slice(0, bannerFrom)}${inner.slice(bannerTo + LEGACY_BANNER_END.length)}`;
+
+		const lines = withoutBanner.split("\n");
+		const headingIdx = lines.findIndex((l) => l.startsWith("### "));
+		const title = headingIdx === -1 ? key : (lines[headingIdx]?.slice(4) ?? key);
+		const sectionBody = lines
+			.slice(headingIdx === -1 ? 0 : headingIdx + 1)
+			.join("\n")
+			.trim();
+
+		recovered.push({ key, title, stamp, body: sectionBody });
+	}
+
+	// Trim only when something was actually excised: an untouched body must come
+	// back byte-identical, or every read path would report a spurious change.
+	return { text: recovered.length === 0 ? text : text.trim(), recovered };
+};
+
+// ─── Reading and writing ──────────────────────────────────────────────────────
+
+/**
+ * The migrated body as a parsed document, plus what the migration recovered.
+ *
+ * @remarks
+ * **A structurally corrupt document degrades to `undefined`, and every caller
+ * turns that into "leave the body exactly as it is".** `parseResult` fails only
+ * on a region layout that cannot be read unambiguously — which is a document a
+ * human edited into a shape where any repair would destroy something they
+ * wrote. Dropping our write is the only move that cannot lose their content.
+ *
+ * @internal
+ */
+const open = (
+	body: string,
+): { readonly doc: ManagedDocument; readonly recovered: ReadonlyArray<Section> } | undefined => {
+	const { text, recovered } = migrateLegacySections(body);
+	const parsed = ManagedDocument.parseResult({ namespace: NAMESPACE, key: DOCUMENT_KEY, text });
+	if (Result.isFailure(parsed)) return undefined;
+	return { doc: parsed.success, recovered };
+};
+
+/** Apply region entries, or `undefined` when the kit refuses them. */
+const apply = (
+	doc: ManagedDocument,
+	entries: ReadonlyArray<readonly [string, string, Readonly<Record<string, string>>?]>,
+): string | undefined => {
+	const next = doc.withRegionsResult(entries);
+	return Result.isFailure(next) ? undefined : next.success.text;
+};
+
+/**
+ * Every section a document carries, in document order.
+ *
+ * @internal
+ */
+const readSections = (doc: ManagedDocument): ReadonlyArray<Section> =>
+	doc.regions.flatMap((region) => {
+		if (isBannerKey(region.key)) return [];
+		const stamp = decodeStamp(region.meta);
+		if (stamp === undefined) return [];
+		const lines = region.content.split("\n");
+		const headingIdx = lines.findIndex((l) => l.startsWith("### "));
+		const title = headingIdx === -1 ? region.key : (lines[headingIdx]?.slice(4) ?? region.key);
+		const body = lines
+			.slice(headingIdx === -1 ? 0 : headingIdx + 1)
+			.join("\n")
+			.trim();
+		return [{ key: region.key, title, stamp, body }];
+	});
+
+/**
+ * Render one section as a standalone document fragment, markers included.
+ *
+ * @remarks
+ * Rendering into an empty document rather than concatenating markers by hand:
+ * the result then carries the document sentinel, so a caller that pastes it
+ * beside human prose produces text {@link readSection} and
+ * {@link upsertSection} read back as a real document.
  *
  * @public
  */
-export const renderSection = (section: Section, headSha: string, commitUrl?: (sha: string) => string): string =>
-	[
-		start(section.key),
-		encodeStamp(section.stamp),
-		`### ${section.title}`,
-		"",
-		section.body,
-		"",
-		// Provenance last, as a footnote. Above the content it pushed the thing a
-		// reader came for below the fold on every section.
-		regionStart(BANNER_TOKEN),
-		renderBanner(section.stamp, headSha, commitUrl),
-		regionEnd(BANNER_TOKEN),
-		end(section.key),
-	].join("\n");
-
-/** Every section key present in a body, in the order they appear. */
-const SECTION_KEY_RE = /<!-- silk-release:section:([^:]+):start -->/g;
+export const renderSection = (section: Section, headSha: string, commitUrl?: (sha: string) => string): string => {
+	if (isBannerKey(section.key)) {
+		throw new Error(`section key must not end in "${BANNER_SUFFIX}" — it is reserved for banners: ${section.key}`);
+	}
+	return upsertSection("", section, headSha, commitUrl);
+};
 
 /**
  * Recompute every section's staleness banner against the current head.
@@ -288,14 +418,14 @@ const SECTION_KEY_RE = /<!-- silk-release:section:([^:]+):start -->/g;
  * **A banner is rendered into the text, so it freezes at write time.** A section
  * nobody rewrites keeps whatever it said when it was last written — which was
  * computed against the head *as of that run*. On a later commit, a section left
- * alone goes on claiming `✅ Up to date as of <old sha>` while the branch has
+ * alone goes on claiming `Up to date as of <old sha>` while the branch has
  * moved, which is a false claim rather than merely a stale one.
  *
  * Refreshing them all on any write costs nothing — the write is already a
- * whole-body rewrite — and it is what makes the stamp's promise good. It does
- * mean a write touches sections it does not own, but only their banners: each
- * section's stamp and body are re-rendered from what was already there, so no
- * other phase's content changes.
+ * whole-body rewrite — and it is what makes the stamp's promise good. Since the
+ * swap onto `ManagedDocument` it costs even less than that: only the `-banner`
+ * regions are rewritten, so a section's content and stamp come back
+ * byte-identical and no other phase's result is touched at all.
  *
  * @param body - The comment body.
  * @param headSha - The commit sections should be measured against.
@@ -304,67 +434,90 @@ const SECTION_KEY_RE = /<!-- silk-release:section:([^:]+):start -->/g;
  * @public
  */
 export const refreshBanners = (body: string, headSha: string, commitUrl?: (sha: string) => string): string => {
-	const keys = [...body.matchAll(SECTION_KEY_RE)]
-		.map((match) => match[1])
-		.filter((key): key is string => key !== undefined);
-	return keys.reduce((acc, key) => {
-		const section = readSection(acc, key);
-		return section === undefined ? acc : upsertSection(acc, section, headSha, commitUrl);
-	}, body);
+	const opened = open(body);
+	if (opened === undefined) return body;
+
+	const entries = [
+		// Recovered legacy sections are re-emitted in full — they have no regions
+		// in the new document yet, so refreshing "their banner" would write a
+		// banner for a section that is not there.
+		...opened.recovered.flatMap((section) => entriesFor(section, headSha, commitUrl)),
+		...readSections(opened.doc).map(
+			(section) => [bannerKey(section.key), renderBanner(section.stamp, headSha, commitUrl)] as const,
+		),
+	];
+
+	// Nothing to refresh: return the body untouched rather than writing a
+	// sentinel into a document that carries no managed section at all. A body of
+	// pure human prose must survive a refresh byte-identical — a caller compares
+	// against it to decide whether to issue an API call.
+	if (entries.length === 0) return body;
+
+	return apply(opened.doc, entries) ?? body;
 };
 
 /**
  * Read a section back out of a body.
  *
+ * @remarks
+ * Reads the legacy wire format too, through the same migration every write
+ * path runs — so a mid-flight release PR's retained body (rule 2) survives the
+ * swap instead of reading as an absent section and blanking on the next write.
+ *
  * @public
  */
 export const readSection = (body: string, key: string): Section | undefined => {
-	const from = body.indexOf(start(key));
-	const to = body.indexOf(end(key));
-	if (from === -1 || to === -1 || to < from) return undefined;
+	const opened = open(body);
+	if (opened === undefined) return undefined;
 
-	const inner = body.slice(from + start(key).length, to);
-	const stamp = decodeStamp(inner);
+	const recovered = opened.recovered.find((section) => section.key === key);
+	if (recovered !== undefined) return recovered;
+
+	const entry = opened.doc.entry(key);
+	if (Option.isNone(entry)) return undefined;
+	const stamp = decodeStamp(entry.value.meta);
 	if (stamp === undefined) return undefined;
 
-	// The retained result is what sits between the heading and the banner.
-	// Both edges are found explicitly: the banner marker rather than a line
-	// offset, so the layout can change without silently redefining "body".
-	// The banner is a region of its own, so it is removed rather than cut around
-	// — its extent is its own business, not a function of where it happens to sit.
-	const lines = stripRegion(inner, BANNER_TOKEN).split("\n");
+	const lines = entry.value.content.split("\n");
 	const headingIdx = lines.findIndex((l) => l.startsWith("### "));
 	const title = headingIdx === -1 ? key : (lines[headingIdx]?.slice(4) ?? key);
-	const bodyStart = headingIdx === -1 ? 0 : headingIdx + 1;
-	return { key, title, stamp, body: lines.slice(bodyStart).join("\n").trim() };
+	const sectionBody = lines
+		.slice(headingIdx === -1 ? 0 : headingIdx + 1)
+		.join("\n")
+		.trim();
+	return { key, title, stamp, body: sectionBody };
 };
 
 /**
  * Is `incoming` at least as recent as `existing`?
  *
  * @remarks
- * **Rule 5.** Two runs in flight, the older finishing last, must not overwrite
- * the newer one's result. `at` orders them; `runId` breaks a tie, numerically
- * when both parse and lexically otherwise. Equal stamps are allowed through so
- * a run can refine its own section.
+ * **Rule 5**, delegated to `CheckDocumentStamp.isAtLeastAsRecent` (issue #258).
+ * The kit's comparator is this module's old one plus two refinements it was
+ * missing: a blank `runId` orders lexically rather than as `Number("") === 0`,
+ * and `at` compares as epoch milliseconds when both sides `Date.parse` cleanly,
+ * so offset spellings of the same instant order correctly.
+ *
+ * The contract is unchanged: `at` orders, `runId` breaks ties, and equal stamps
+ * pass so a run can refine its own section.
  *
  * @public
  */
-export const isAtLeastAsRecent = (incoming: SectionStamp, existing: SectionStamp): boolean => {
-	if (incoming.at !== existing.at) return incoming.at >= existing.at;
-	const a = Number(incoming.runId);
-	const b = Number(existing.runId);
-	if (Number.isFinite(a) && Number.isFinite(b) && a !== b) return a >= b;
-	return incoming.runId >= existing.runId;
-};
+export const isAtLeastAsRecent = (incoming: SectionStamp, existing: SectionStamp): boolean =>
+	CheckDocumentStamp.isAtLeastAsRecent(incoming, existing);
 
 /**
  * Write `section` into `body`, replacing only its own region.
  *
  * @remarks
  * **Rules 4 and 5.** Other sections and any human prose are untouched, and an
- * older write is DROPPED rather than applied — the body comes back byte-identical
- * so a caller can skip the API call entirely.
+ * older write is DROPPED rather than applied.
+ *
+ * The drop returns the body **as migrated** rather than verbatim. A stale run
+ * still must not publish its result, but it has no business withholding the
+ * wire-format conversion from a document that needs one — and on a body with no
+ * legacy markers the migration is the identity, so the byte-identical
+ * compare-and-skip a caller relies on is unaffected.
  *
  * @public
  */
@@ -374,20 +527,29 @@ export const upsertSection = (
 	headSha: string,
 	commitUrl?: (sha: string) => string,
 ): string => {
-	const existing = readSection(body, section.key);
-	if (existing !== undefined && !isAtLeastAsRecent(section.stamp, existing.stamp)) {
-		return body;
-	}
+	const opened = open(body);
+	if (opened === undefined) return body;
 
-	const rendered = renderSection(section, headSha, commitUrl);
-	const from = body.indexOf(start(section.key));
-	const to = body.indexOf(end(section.key));
-	if (from !== -1 && to !== -1 && to > from) {
-		return `${body.slice(0, from)}${rendered}${body.slice(to + end(section.key).length)}`;
-	}
-	const trimmed = body.trim();
-	return trimmed === "" ? rendered : `${trimmed}\n\n${rendered}`;
+	const carried = opened.recovered.filter((other) => other.key !== section.key);
+	const existing =
+		opened.recovered.find((other) => other.key === section.key) ?? readSectionFrom(opened.doc, section.key);
+
+	const entries = [
+		...carried.flatMap((other) => entriesFor(other, headSha, commitUrl)),
+		...(existing !== undefined && !isAtLeastAsRecent(section.stamp, existing.stamp)
+			? // Stale: the section keeps the newer run's result, so it is re-emitted
+				// from what is already there rather than simply omitted — omitting it
+				// would leave a recovered legacy section unwritten.
+				entriesFor(existing, headSha, commitUrl)
+			: entriesFor(section, headSha, commitUrl)),
+	];
+
+	return apply(opened.doc, entries) ?? body;
 };
+
+/** {@link readSection}, against an already-opened document. */
+const readSectionFrom = (doc: ManagedDocument, key: string): Section | undefined =>
+	readSections(doc).find((section) => section.key === key);
 
 /**
  * Run `work` inside a section bracket: `running` on entry, a terminal state on
