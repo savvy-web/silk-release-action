@@ -1,5 +1,67 @@
 # @savvy-web/silk-release-action
 
+## 4.6.0
+
+### Bug Fixes
+
+* ### A failed publish build now shows you why it failed
+
+  When the publishing phase's Build & SBOM step failed, the job log carried only the exit summary — the group opened and went straight to the error annotation, and the compiler diagnostics appeared in no log at all. Root-causing a failed release meant reproducing the build out of band.
+
+  The captured output is now re-emitted on failure. Both streams go out, because the producing tool decides which one it uses: turbo puts task output on stdout under `--output-logs=full`, while a bare compiler writes diagnostics to stderr. The failure annotation also falls back to the stdout tail when stderr is empty, replacing the bare `ci:build failed —` that a stdout-only tool used to produce.
+
+  ### Comma-separated closing references link every issue, not just the first
+
+  `Closes #247, #248 and #251` in a commit body linked only #247 — the rest of the list was silently dropped from the release. Closing references are now read with the list dialect from `@effected/github-references`, which reads the whole list, accepts the colon-tolerant `Closes: #5` spelling GitHub itself accepts, and ignores non-closing keywords such as `Refs`.
+
+  ### Re-running the close-issues stage recovers a comment that never landed
+
+  An issue whose close succeeded while its follow-up comment failed ended closed with no comment, and a re-run could not repair it: the already-closed check skipped the issue before reaching the comment.
+
+  An already-closed linked issue is now skipped only when GitHub does not attribute its closure to the release pull request being processed. One that this release closed falls through to the comment, which is marker-guarded and therefore a no-op on an ordinary re-run. Attribution that cannot be established still skips — a courtesy comment is worth less than the false claim that posting unconditionally would put on issues closed manually or by an earlier release.
+
+### Refactoring
+
+* ### Managed sections moved onto the kit's region engine
+
+  The release PR body and its sticky comments no longer scan and splice their own marker regions; `ManagedDocument` from `@effected/github-actions` owns the region grammar.
+
+  Behaviour visible to a reader of the release PR:
+
+  * The section provenance stamp moved from an HTML comment inside the content into region metadata, so the rendered body carries one less line of machinery per section.
+  * Refreshing the staleness banners now rewrites only the banner regions, leaving every section's content and stamp byte-identical — previously a write re-rendered every section in order to refresh its banner.
+  * The write-ordering guard picked up two refinements: a blank run id orders lexically rather than as zero, and write times compare as instants, so two offset spellings of the same moment order correctly.
+
+  Existing release PRs and sticky comments migrate on the first write. The conversion carries each section's title, body and stamp across rather than stripping the old markers, so a release in flight keeps every result it had; it is idempotent, and a legacy region whose stamp cannot be read is left exactly where it is rather than removed. [#264][#264]
+
+### Dependencies
+
+* | Dependency                  | Type       | Action  | From           | To           |                                                                              |
+  | --------------------------- | ---------- | ------- | -------------- | ------------ | ---------------------------------------------------------------------------- |
+  | @changesets/changelog-git   | dependency | updated | 1.0.0-next.8   | 1.0.0        |                                                                              |
+  | @effect/platform-node       | dependency | updated | 4.0.0-beta.107 | 4.0.0-rc.109 |                                                                              |
+  | @effected/commands          | dependency | updated | ^0.4.0         | ^0.5.0       |                                                                              |
+  | @effected/git               | dependency | updated | ^0.8.0         | ^0.9.0       |                                                                              |
+  | @effected/github            | dependency | updated | ^0.4.3         | ^0.7.0       |                                                                              |
+  | @effected/github-actions    | dependency | updated | ^0.7.0         | ^0.9.1       |                                                                              |
+  | @effected/jsonc             | dependency | updated | ^0.6.0         | ^0.7.0       |                                                                              |
+  | @effected/markdown          | dependency | updated | ^0.5.1         | ^0.6.0       |                                                                              |
+  | @effected/npm               | dependency | updated | ^0.9.0         | ^0.11.0      |                                                                              |
+  | @effected/package-json      | dependency | updated | ^0.9.0         | ^0.10.2      |                                                                              |
+  | @effected/sbom              | dependency | updated | ^0.3.1         | ^0.4.1       |                                                                              |
+  | @effected/semver            | dependency | updated | ^0.4.0         | ^0.5.0       |                                                                              |
+  | @effected/workspaces        | dependency | updated | ^0.13.0        | ^0.14.2      |                                                                              |
+  | @effected/yaml              | dependency | updated | ^0.8.0         | ^0.10.0      |                                                                              |
+  | @savvy-web/silk-effects     | dependency | updated | ^5.9.0         | ^5.9.3       |                                                                              |
+  | effect                      | dependency | updated | 4.0.0-beta.107 | 4.0.0-rc.109 |                                                                              |
+  | @effected/github-references | dependency | added   | —              | ^0.1.0       | [#264][#264] Thanks [@savvy-web-bot](https://github.com/apps/savvy-web-bot)! |
+
+### Patch Changes
+
+Thanks to [@savvy-web-bot](https://github.com/apps/savvy-web-bot) for their contributions!
+
+[#264]: https://github.com/savvy-web/silk-release-action/pull/264
+
 ## 4.5.2
 
 ### Bug Fixes
