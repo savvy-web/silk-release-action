@@ -4,8 +4,8 @@
 		{
 			"source": "CLAUDE.md",
 			"target": ".claude/design/release-action/architecture.md",
-			"hash": "220db4b9f6d87e04aa359cb1cd7bd0b9d7165657f8acfdf918242bfaae7fda9b",
-			"recordedAt": "2026-08-15"
+			"hash": "6f44a0637ac76390de8998a4ee0119262f6b38502863e94ec8c51c73b82b1b10",
+			"recordedAt": "2026-08-17"
 		},
 		{
 			"source": "CLAUDE.md",
@@ -28,8 +28,8 @@
 		{
 			"source": "src/CLAUDE.md",
 			"target": ".claude/design/release-action/architecture.md",
-			"hash": "220db4b9f6d87e04aa359cb1cd7bd0b9d7165657f8acfdf918242bfaae7fda9b",
-			"recordedAt": "2026-08-15"
+			"hash": "6f44a0637ac76390de8998a4ee0119262f6b38502863e94ec8c51c73b82b1b10",
+			"recordedAt": "2026-08-17"
 		},
 		{
 			"source": "src/CLAUDE.md",

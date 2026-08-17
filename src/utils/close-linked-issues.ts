@@ -14,7 +14,7 @@
  */
 
 import type { GitHubError, LinkedIssue, Repo } from "@effected/github";
-import { CheckRun, CheckRunOutput, GitHubIssue } from "@effected/github";
+import { CheckRun, CheckRunOutput, CommentMarker, GitHubIssue } from "@effected/github";
 import { ActionEnvironment, ActionOutputs } from "@effected/github-actions";
 import { Effect } from "effect";
 import { issueUrl, resolveServerUrl } from "./github-urls.js";
@@ -61,10 +61,15 @@ const isAlreadyClosed = (state: string): boolean => state.toUpperCase() === "CLO
  *    issue regardless of its state.
  * 2. **Close happens BEFORE the comment.** This is the ordering, not an
  *    accident. Comment-first leaves a window — comment posted, close failed —
- *    that a re-run cannot detect from `state` alone, so it would comment again;
- *    and that window is not an edge case, it is precisely the path a re-run
- *    exists to recover. Closing first collapses it: a failed close posted no
- *    comment, and a successful close is visible to the next run as `CLOSED`.
+ *    that a re-run cannot detect from `state` alone; closing first collapses
+ *    it: a failed close posted no comment, and a successful close is visible
+ *    to the next run as `CLOSED`.
+ * 3. **The comment itself is `commentOnce`, keyed by a marker carrying the
+ *    release PR number.** Even on a path that reaches the comment twice —
+ *    close raced by another run, a partial failure between close and
+ *    comment — the marker lookup finds the existing comment and skips.
+ *    The lookup is not atomic (two runs can both see "absent" and both
+ *    post), so the ordering above stays load-bearing rather than replaced.
  *
  * A failed *comment* after a successful close is deliberately **not** an
  * error — the issue is closed, which is the point; the comment is a courtesy.
@@ -110,12 +115,19 @@ const closeOne = (
 			return { number: issueNumber, title, closed: false, error: reason } satisfies ClosedIssue;
 		}
 
+		const marker = CommentMarker.make({ namespace: "savvy-web", key: `closed-by-release-${prNumber}` });
 		const commented = yield* Effect.result(
-			issues.comment(issueNumber, `Closed by release PR #${prNumber} merge.\n\n🤖 _Automated by silk-release-action_`),
+			issues.commentOnce(
+				issueNumber,
+				marker,
+				`Closed by release PR #${prNumber} merge.\n\n🤖 _Automated by silk-release-action_`,
+			),
 		);
 		if (commented._tag !== "Success") {
 			const reason = (commented.failure as GitHubError).reason ?? String(commented.failure);
 			yield* Effect.logWarning(`Closed issue #${issueNumber} but failed to comment on it: ${reason}`);
+		} else if (!commented.success.wrote) {
+			yield* Effect.logInfo(`✓ Issue #${issueNumber} already carried the release comment — skipped posting`);
 		}
 
 		yield* Effect.logInfo(`✓ Closed issue #${issueNumber}: ${title}`);

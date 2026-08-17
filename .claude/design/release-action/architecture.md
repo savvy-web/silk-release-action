@@ -4,8 +4,8 @@ category: architecture
 status: current
 completeness: 95
 created: 2026-02-07
-updated: 2026-08-15
-last-synced: 2026-08-15
+updated: 2026-08-17
+last-synced: 2026-08-17
 module: release-action
 related:
   - integration.md
@@ -69,7 +69,7 @@ The action automates the full release lifecycle: detecting pending changes, mana
 | Package | What the action uses it for |
 | ------- | --------------------------- |
 | `@effected/github-actions` | `Action.run`, `ActionInput`, `ActionOutputs`, `ActionState`, `ActionEnvironment`, `ActionLogger`, `GitHubToken`, `OidcTokenIssuer`, `DryRun`, `GitHubMarkdown`, `ActionsProvenance`, `Secret` |
-| `@effected/github` | `GitHubClient` (REST + GraphQL), `Repo`, `CheckRun`, `GitBranch`, `GitCommit`, `GitHubCommit`, `GitHubContent`, `GitHubIssue`, `GitHubRelease`, `GitHubRepository`, `GitTag`, `PullRequest`, `PullRequestComment`, `ArtifactMetadata`, `Attestation`, `GitHubApp` |
+| `@effected/github` | `GitHubClient` (REST + GraphQL), `Repo`, `CheckRun`, `GitBranch`, `GitCommit`, `GitHubCommit`, `GitHubContent`, `GitHubIssue` (incl. `commentOnce` + `CommentMarker` for marker-keyed idempotent comments), `GitHubRelease`, `GitHubRepository`, `GitTag`, `PullRequest`, `PullRequestComment`, `ArtifactMetadata`, `Attestation`, `GitHubApp`, `harvestIssueReferences` (the closing-keyword issue-reference grammar) |
 | `@effected/git` | Every git operation — `status`, `clean`, `restore`, `branchCreate`, `branchDelete`, `isShallow`, `fetchUnshallow`, log/diff reads |
 | `@effected/npm` | `PackagePublish` (pack / publish / dry-run / auth), `NpmRegistry` (HTTP registry reads), `classifyRegistry` |
 | `@effected/sbom` | SBOM generation, `SigstoreSigner` |
@@ -78,7 +78,7 @@ The action automates the full release lifecycle: detecting pending changes, mana
 | `@effected/markdown`, `@effected/package-json`, `@effected/jsonc` | Markdown assembly, manifest reads, JSONC parsing |
 | `@savvy-web/silk-effects` | `Changesets.ReleasePlanner` / `ConfigInspector` (native versioning), `ChangesetConfigReader`, `SilkPublishability` (silk rules + `PublishTargetBindingError`), `PrBody` (the managed release-PR description) |
 
-**All 17 raw `ChildProcess.make("git", …)` spawns are gone** — `@effected/git` 0.6 answers every one of them (`clean`, `branchDelete`, `branchCreate`, `restore`, `isShallow`, `fetchUnshallow`).
+**All 17 raw `ChildProcess.make("git", …)` spawns are gone** — `@effected/git` answers every one of them (`clean`, `branchDelete`, `branchCreate`, `restore`, `isShallow`, `fetchUnshallow`).
 
 Publish and release target the `@savvy-web/bundler` per-byte-group prod layout (via `@savvy-web/silk-effects`). Each package's `publishConfig.targets` is a Record map (binding-driven; the legacy array form is gone) and the build emits `dist/prod/<group>/pkg` directories, one per byte-variant group. `npm: true` + `github: true` collapse into a single tarball deployed to both. See [Per-byte-group prod layout](#per-byte-group-prod-layout).
 
@@ -227,7 +227,7 @@ The commit subject matches the PR title; the commit body is a bullet list of ful
 
 #### Release PR body (managed region)
 
-**The implementation is upstream, not in this repo.** `PrBody` in `@savvy-web/silk-effects` (`^5.8.1`) builds the slice of the release PR *description* this action owns, delimited by `<!-- silk-release:start -->` / `<!-- silk-release:end -->` so `ManagedPrBody.upsert` can regenerate it without disturbing prose a human wrote around it. Both branch-management flows call `PrBody.ManagedPrBody.build`; only `update-release-branch.ts` has a prior description to feed back in, via the optional `priorBody` argument.
+**The implementation is upstream, not in this repo.** `PrBody` in `@savvy-web/silk-effects` (see `package.json` for the declared range) builds the slice of the release PR *description* this action owns, delimited by `<!-- silk-release:start -->` / `<!-- silk-release:end -->` so `ManagedPrBody.upsert` can regenerate it without disturbing prose a human wrote around it. Both branch-management flows call `PrBody.ManagedPrBody.build`; only `update-release-branch.ts` has a prior description to feed back in, via the optional `priorBody` argument.
 
 The local `src/utils/pr-body.ts` was deleted in [#209](https://github.com/savvy-web/silk-release-action/issues/209) — the same contract was maintained twice, here and in `silk-update-action`, and the two copies had begun to drift. The names map one-for-one:
 
@@ -372,7 +372,9 @@ The `meta.tgz` doc bundle packs the bundler's `meta/` folder (`<unscoped>.api.js
 
 ### Phase 3a: Issue Closing
 
-`steps/close-issues.ts` runs `close-linked-issues.ts`, which queries the merged PR's `closingIssuesReferences` via `GitHubIssue.getLinkedIssues` (up to 50 issues). For each linked issue it posts a comment noting the release and closes the issue, then creates a Check Run summarizing results. An event payload with no pull-request number is a **skip**, not a failure, and says so on the log.
+`steps/close-issues.ts` runs `close-linked-issues.ts`, which queries the merged PR's `closingIssuesReferences` via `GitHubIssue.getLinkedIssues` (up to 50 issues). For each linked issue it **closes first, then comments**, and creates a Check Run summarizing results. An event payload with no pull-request number is a **skip**, not a failure, and says so on the log.
+
+Three idempotence properties are load-bearing (the module docs in `src/utils/close-linked-issues.ts` carry the full rationale): an already-`CLOSED` issue is skipped rather than re-closed; the close happens *before* the comment, so a failed close posts no comment and a successful one is visible to the next run as `CLOSED`; and the comment itself goes through `GitHubIssue.commentOnce` with a `CommentMarker` carrying the release PR number (`savvy-web:closed-by-release-<pr>`), so a re-run of the same release skips the comment while a later release closing a reopened issue still posts. The marker lookup is create-or-skip and **not atomic** — two racing runs can both post — which is why the close-before-comment ordering stays load-bearing rather than being replaced by the marker.
 
 The event payload is decoded once through a schema (`utils/event-payload.ts`) rather than parsed and cast at each call site — `ActionEnvironment` already exposes the parsed payload, so the file read and the parse are the kit's problem; what is left is deciding which fields to trust.
 
@@ -729,7 +731,7 @@ Registry reads go through `NpmRegistry` over `FetchHttpClient` (HTTP, not `npm v
 | `src/utils/github-urls.ts` | Instance-aware web URLs (GHES-correct) |
 | `src/utils/group-id.ts` | `getGroupId`, `insertGroupToken` — byte-group asset naming |
 | `src/utils/grouped.ts` | Collapsible Actions log groups |
-| `src/utils/link-issues-from-commits.ts` | Issue references from commits since the last release tag |
+| `src/utils/link-issues-from-commits.ts` | Issue references from commits since the last release tag; the closing-keyword grammar is the kit's `harvestIssueReferences`, deduped here |
 | `src/utils/load-release-config.ts` | Layered SBOM config loading; `SilkReleaseConfig` decoding |
 | `src/utils/managed-sections.ts` | `withSection` — per-section state for PR body and sticky comments |
 | `src/utils/native-version.ts` | `runNativeVersion`, `CHANGELOG_MODULES`, token scoping, reset-then-retry |

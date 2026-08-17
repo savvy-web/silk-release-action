@@ -5,13 +5,15 @@
  * Written against the kit's `layerTest` seams. Two properties are load-bearing:
  * the whole stage is **non-fatal** (its error channel is `never`), so a failed
  * close is recorded and reported rather than aborting the phase; and dry-run
- * must reach neither `comment` nor `close`.
+ * must reach neither `commentOnce` nor `close`.
  */
 
 import type { CheckRunOutput } from "@effected/github";
 import {
 	CheckRun,
 	CheckRunRef,
+	CommentOnceResult,
+	CommentRecord,
 	GitHubError,
 	GitHubGraphQLError,
 	GitHubIssue,
@@ -30,6 +32,7 @@ interface Recorder {
 	readonly created: Array<{ name: string; sha: string }>;
 	readonly completed: Array<{ id: number; conclusion: string; output?: CheckRunOutput | undefined }>;
 	readonly comments: Array<number>;
+	readonly markers: Array<string>;
 	readonly closed: Array<number>;
 	readonly outputs: Array<{ name: string; value: string }>;
 	readonly summaries: Array<string>;
@@ -39,6 +42,7 @@ const makeRecorder = (): Recorder => ({
 	created: [],
 	completed: [],
 	comments: [],
+	markers: [],
 	closed: [],
 	outputs: [],
 	summaries: [],
@@ -59,6 +63,8 @@ interface Options {
 	readonly linkedFails?: boolean;
 	readonly closeFails?: boolean;
 	readonly commentFails?: boolean;
+	/** The marker is already on the issue: `commentOnce` finds it and skips posting. */
+	readonly commentExists?: boolean;
 }
 
 const makeLayer = (recorder: Recorder, options: Options) =>
@@ -94,12 +100,24 @@ const makeLayer = (recorder: Recorder, options: Options) =>
 							}),
 						)
 					: Effect.succeed((options.issues ?? []).map((i) => linked(i.number, i.title, i.state))),
-			comment: (number) =>
+			commentOnce: (number, marker) =>
 				options.commentFails === true
-					? Effect.fail(GitHubError.rejected("GitHubIssue.comment", 403, "no permission"))
+					? Effect.fail(GitHubError.rejected("GitHubIssue.commentOnce", 403, "no permission"))
 					: Effect.sync(() => {
+							recorder.markers.push(marker.html);
+							// The duplicate branch: the marker is already on the issue, so no
+							// comment is created — only the lookup happened.
+							if (options.commentExists === true) {
+								return CommentOnceResult.make({
+									wrote: false,
+									comment: CommentRecord.make({ id: 1, body: "existing", url: "https://x.test/comments/1" }),
+								});
+							}
 							recorder.comments.push(number);
-							return 1;
+							return CommentOnceResult.make({
+								wrote: true,
+								comment: CommentRecord.make({ id: 1, body: "posted", url: "https://x.test/comments/1" }),
+							});
 						}),
 			close: (number) =>
 				options.closeFails === true
@@ -133,6 +151,12 @@ describe("closeLinkedIssues", () => {
 		});
 
 		expect(recorder.comments).toEqual([1, 2]);
+		// The marker keys the comment to THIS release PR, so a re-run of the same
+		// release skips it while a later release PR can still comment.
+		expect(recorder.markers).toEqual([
+			"<!-- savvy-web:closed-by-release-42 -->",
+			"<!-- savvy-web:closed-by-release-42 -->",
+		]);
 		expect(recorder.closed).toEqual([1, 2]);
 		expect(result.closedCount).toBe(2);
 		expect(result.failedCount).toBe(0);
@@ -241,6 +265,20 @@ describe("closeLinkedIssues", () => {
 			const result = await run(recorder, { issues: [{ number: 1, title: "a" }], commentFails: true });
 
 			expect(recorder.closed).toEqual([1]);
+			expect(result.closedCount).toBe(1);
+			expect(result.failedCount).toBe(0);
+		});
+
+		it("should skip posting when the marker is already on the issue (wrote: false)", async () => {
+			const recorder = makeRecorder();
+
+			// The commentOnce duplicate branch: the marker lookup finds an existing
+			// comment, so nothing is posted and the issue still counts as closed.
+			const result = await run(recorder, { issues: [{ number: 1, title: "a" }], commentExists: true });
+
+			expect(recorder.closed).toEqual([1]);
+			expect(recorder.markers).toEqual(["<!-- savvy-web:closed-by-release-42 -->"]);
+			expect(recorder.comments).toEqual([]);
 			expect(result.closedCount).toBe(1);
 			expect(result.failedCount).toBe(0);
 		});

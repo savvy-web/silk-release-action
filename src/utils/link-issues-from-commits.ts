@@ -18,7 +18,14 @@
  */
 
 import type { GitHubError, Repo } from "@effected/github";
-import { CheckRun, CheckRunOutput, GitHubCommit, GitHubIssue, PullRequest } from "@effected/github";
+import {
+	CheckRun,
+	CheckRunOutput,
+	GitHubCommit,
+	GitHubIssue,
+	PullRequest,
+	harvestIssueReferences,
+} from "@effected/github";
 import type { ActionEnvironmentError, ActionOutputError } from "@effected/github-actions";
 import { ActionEnvironment, ActionOutputs, DryRun } from "@effected/github-actions";
 import { Effect, Option } from "effect";
@@ -52,23 +59,23 @@ export interface LinkIssuesResult {
 	htmlUrl: string;
 }
 
-const CLOSE_KEYWORD_PATTERN = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)/gi;
 const MERGE_COMMIT_PR_PATTERN = /\(#(\d+)\)$/m;
 
 /**
  * Extract `closes #N` / `fixes #N` / `resolves #N` references from a
  * commit message.
  *
+ * @remarks
+ * The grammar itself is the kit's — `harvestIssueReferences` is the
+ * inline-in-prose dialect (mandatory whitespace, no colon), which matches
+ * the `CLOSE_KEYWORD_PATTERN` regex this module used to carry. The kit
+ * preserves duplicates in document order; this caller wants the distinct
+ * issue numbers, so it dedupes.
+ *
  * @internal
  */
-const extractIssueReferences = (message: string): number[] => {
-	const issues = new Set<number>();
-	for (const match of message.matchAll(CLOSE_KEYWORD_PATTERN)) {
-		const n = Number.parseInt(match[1], 10);
-		if (!Number.isNaN(n)) issues.add(n);
-	}
-	return Array.from(issues);
-};
+const extractIssueReferences = (message: string): number[] =>
+	Array.from(new Set(harvestIssueReferences(message).map((ref) => ref.issueNumber)));
 
 /**
  * Extract a PR number from a GitHub merge-commit message
