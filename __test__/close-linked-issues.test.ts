@@ -14,6 +14,7 @@ import {
 	CheckRunRef,
 	CommentOnceResult,
 	CommentRecord,
+	GitHubClient,
 	GitHubError,
 	GitHubGraphQLError,
 	GitHubIssue,
@@ -65,7 +66,56 @@ interface Options {
 	readonly commentFails?: boolean;
 	/** The marker is already on the issue: `commentOnce` finds it and skips posting. */
 	readonly commentExists?: boolean;
+	/**
+	 * Issue numbers GitHub attributes to THIS release PR's merge (issue #259).
+	 * Anything not listed reads as closed by someone else, which is the state an
+	 * already-closed issue has by default.
+	 */
+	readonly closedByThisRelease?: ReadonlyArray<number>;
+	/** The attribution query itself fails — the degrade-to-skip path. */
+	readonly attributionFails?: boolean;
 }
+
+/**
+ * The attribution seam (issue #259).
+ *
+ * @remarks
+ * Answers the one `GraphQLDocument` `issue-close-attribution.ts` owns, shaped
+ * exactly as GitHub's `closedByPullRequestsReferences` connection is, and runs
+ * the raw payload through **the document's own `decode`** rather than handing
+ * back an already-decoded value — otherwise the module's null-tolerant response
+ * schema would never be exercised by any test here. The `issue` variable is
+ * read back off the call so a test can attribute one issue and not another.
+ */
+const attributionClient = (options: Options): Layer.Layer<GitHubClient> =>
+	GitHubClient.layerTest({
+		graphql: (document, variables) => {
+			if (options.attributionFails === true) {
+				return Effect.fail(
+					new GitHubGraphQLError({
+						kind: "transport",
+						operation: "closedByPullRequests",
+						reason: "attribution unavailable",
+						errors: [],
+					}),
+				);
+			}
+			const issueNumber = variables.issue as number;
+			const attributed = (options.closedByThisRelease ?? []).includes(issueNumber);
+			return document
+				.decode({
+					repository: {
+						issue: {
+							// PR 42 is the release PR every test in this file runs against.
+							closedByPullRequestsReferences: { nodes: attributed ? [{ number: 42 }] : [] },
+						},
+					},
+				})
+				.pipe(
+					Effect.orDie, // a decode failure here is a broken fixture, not a scenario
+				);
+		},
+	});
 
 const makeLayer = (recorder: Recorder, options: Options) =>
 	Layer.mergeAll(
@@ -125,6 +175,7 @@ const makeLayer = (recorder: Recorder, options: Options) =>
 					: Effect.sync(() => void recorder.closed.push(number)),
 		}),
 		Layer.succeed(Repo, RepoRef.make({ owner: "savvy-web", repo: "silk-release-action" })),
+		attributionClient(options),
 	);
 
 const run = (recorder: Recorder, options: Options, dryRun = false): Promise<CloseLinkedIssuesResult> =>
@@ -231,6 +282,123 @@ describe("closeLinkedIssues", () => {
 			// the phase forever on a successful release.
 			expect(result.closedCount).toBe(1);
 			expect(result.failedCount).toBe(0);
+		});
+
+		// ── Issue #259: the closed-but-uncommented window ─────────────────────
+		//
+		// The skip above is what makes a re-run safe, and it is also what made a
+		// close-succeeded-comment-failed run unrecoverable: the re-run exited
+		// before reaching the comment. Attribution splits the two cases apart.
+		describe("recovering a close whose comment never landed (issue #259)", () => {
+			it("comments on an already-closed issue THIS release closed", async () => {
+				const recorder = makeRecorder();
+
+				// The unrecoverable window, replayed: run 1 closed #1 and then failed
+				// to comment. Run 2 sees CLOSED — but GitHub attributes the closure to
+				// PR #42, this very release, so the comment is reconciled.
+				const result = await run(recorder, {
+					issues: [{ number: 1, title: "a", state: "CLOSED" }],
+					closedByThisRelease: [1],
+				});
+
+				expect(recorder.comments).toEqual([1]);
+				expect(result.closedCount).toBe(1);
+				expect(result.failedCount).toBe(0);
+			});
+
+			it("does not re-close an issue it only reconciles the comment on", async () => {
+				const recorder = makeRecorder();
+
+				await run(recorder, {
+					issues: [{ number: 1, title: "a", state: "CLOSED" }],
+					closedByThisRelease: [1],
+				});
+
+				// Attribution enables the COMMENT, never a second close call.
+				expect(recorder.closed).toEqual([]);
+			});
+
+			it("posts nothing on the ordinary re-run, where the marker is already there", async () => {
+				const recorder = makeRecorder();
+
+				// Attributed AND already commented — the common case by far. The
+				// fall-through reaches `commentOnce`, whose marker lookup finds the
+				// existing comment and skips, so recovery costs one lookup and adds
+				// no duplicate.
+				const result = await run(recorder, {
+					issues: [{ number: 1, title: "a", state: "CLOSED" }],
+					closedByThisRelease: [1],
+					commentExists: true,
+				});
+
+				expect(recorder.comments).toEqual([]);
+				expect(recorder.markers).toHaveLength(1);
+				expect(result.closedCount).toBe(1);
+			});
+
+			it("stays silent on an issue closed manually or by an earlier release", async () => {
+				const recorder = makeRecorder();
+
+				// The reason the obvious fix is wrong. `linkedIssues` returns this
+				// issue regardless of who closed it, and "Closed by release PR #42
+				// merge." would be a FALSE claim — worse than the missing courtesy
+				// comment the recovery exists to restore.
+				const result = await run(recorder, {
+					issues: [{ number: 1, title: "a", state: "CLOSED" }],
+					closedByThisRelease: [],
+				});
+
+				expect(recorder.comments).toEqual([]);
+				expect(result.closedCount).toBe(1);
+			});
+
+			it("degrades to the skip when attribution cannot be established", async () => {
+				const recorder = makeRecorder();
+
+				// A failed attribution query must never read as attribution. The cost
+				// of a wrong `false` is a missing comment; the cost of a wrong `true`
+				// is a false claim on someone else's issue.
+				const result = await run(recorder, {
+					issues: [{ number: 1, title: "a", state: "CLOSED" }],
+					closedByThisRelease: [1],
+					attributionFails: true,
+				});
+
+				expect(recorder.comments).toEqual([]);
+				expect(result.closedCount).toBe(1);
+				expect(result.failedCount).toBe(0);
+			});
+
+			it("attributes per issue rather than per run", async () => {
+				const recorder = makeRecorder();
+
+				const result = await run(recorder, {
+					issues: [
+						{ number: 1, title: "ours", state: "CLOSED" },
+						{ number: 2, title: "someone else's", state: "CLOSED" },
+					],
+					closedByThisRelease: [1],
+				});
+
+				expect(recorder.comments).toEqual([1]);
+				expect(result.closedCount).toBe(2);
+			});
+
+			it("does not consult attribution for an issue that is still open", async () => {
+				const recorder = makeRecorder();
+
+				// The ordinary first-run path must not pay for the recovery: an open
+				// issue is closed and commented without an attribution query, and it
+				// works even when that query would have failed.
+				const result = await run(recorder, {
+					issues: [{ number: 1, title: "a" }],
+					attributionFails: true,
+				});
+
+				expect(recorder.closed).toEqual([1]);
+				expect(recorder.comments).toEqual([1]);
+				expect(result.closedCount).toBe(1);
+			});
 		});
 
 		it("should treat the lower-case state spelling the same way", async () => {

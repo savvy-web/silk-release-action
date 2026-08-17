@@ -449,6 +449,61 @@ describe("getLinkedIssuesFromCommits", () => {
 		});
 	});
 
+	// Issue #261 — the list dialect. `harvestIssueReferences` read one reference
+	// per keyword, so a comma-separated closing list contributed only its FIRST
+	// issue and silently dropped the rest of the release's links.
+	it("harvests every issue in a comma-separated closing list, not just the first", async () => {
+		const f = makeFixtures({
+			releasePrs: [releasePr(240, "sha-latest")],
+			comparisons: new Map([
+				[`sha-latest...${TARGET_BRANCH}`, [commit("abc0001", "fix: bug\n\nCloses #247, #248 and #251")]],
+			]),
+			issues: new Map([
+				[247, issueInfo(247, "First")],
+				[248, issueInfo(248, "Second")],
+				[251, issueInfo(251, "Third")],
+			]),
+		});
+
+		const result = await runCollect(f);
+
+		expect(result.linkedIssues.map((i) => i.number).sort((a, b) => a - b)).toEqual([247, 248, 251]);
+	});
+
+	it("accepts the colon-tolerant trailer spelling GitHub itself accepts", async () => {
+		const f = makeFixtures({
+			releasePrs: [releasePr(240, "sha-latest")],
+			comparisons: new Map([[`sha-latest...${TARGET_BRANCH}`, [commit("abc0001", "fix: bug\n\nCloses: #9, #11")]]]),
+			issues: new Map([
+				[9, issueInfo(9, "Nine")],
+				[11, issueInfo(11, "Eleven")],
+			]),
+		});
+
+		const result = await runCollect(f);
+
+		expect(result.linkedIssues.map((i) => i.number).sort((a, b) => a - b)).toEqual([9, 11]);
+	});
+
+	// `Refs` associates without closing. This list drives issues a release
+	// CLOSES, so a non-closing keyword must contribute nothing.
+	it("ignores a non-closing reference keyword", async () => {
+		const f = makeFixtures({
+			releasePrs: [releasePr(240, "sha-latest")],
+			comparisons: new Map([
+				[`sha-latest...${TARGET_BRANCH}`, [commit("abc0001", "chore: note\n\nRefs #30\nCloses #31")]],
+			]),
+			issues: new Map([
+				[30, issueInfo(30, "Merely referenced")],
+				[31, issueInfo(31, "Actually closed")],
+			]),
+		});
+
+		const result = await runCollect(f);
+
+		expect(result.linkedIssues.map((i) => i.number)).toEqual([31]);
+	});
+
 	it("drops an issue that is already closed", async () => {
 		const f = makeFixtures({
 			releasePrs: [releasePr(240, "sha-latest")],

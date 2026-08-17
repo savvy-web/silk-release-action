@@ -7,17 +7,21 @@
  * each one. The whole flow is wrapped in `CheckRun.withCheckRun` for PR
  * feedback.
  *
- * **Re-running this stage is safe**: an already-closed issue is skipped
- * outright, and the close precedes the comment so a failed close leaves no
- * comment to duplicate. See {@link closeOne} for why that ordering is the
- * mechanism rather than a detail.
+ * **Re-running this stage is safe, and now also *recovers*** (issue #259). The
+ * close precedes the comment so a failed close leaves no comment to duplicate —
+ * see {@link closeOne} for why that ordering is the mechanism rather than a
+ * detail. An already-closed issue is no longer skipped *outright*: it is skipped
+ * unless GitHub attributes its closure to **this** release PR, in which case the
+ * run reconciles the comment it may have failed to post. `commentOnce`'s marker
+ * makes that fall-through a no-op on the ordinary re-run.
  */
 
-import type { GitHubError, LinkedIssue, Repo } from "@effected/github";
+import type { GitHubClient, GitHubError, LinkedIssue, Repo } from "@effected/github";
 import { CheckRun, CheckRunOutput, CommentMarker, GitHubIssue } from "@effected/github";
 import { ActionEnvironment, ActionOutputs } from "@effected/github-actions";
 import { Effect } from "effect";
 import { issueUrl, resolveServerUrl } from "./github-urls.js";
+import { wasClosedByPullRequestOrFalse } from "./issue-close-attribution.js";
 import { summaryWriter } from "./summary-writer.js";
 
 /** Per-issue result. */
@@ -48,6 +52,46 @@ export interface CloseLinkedIssuesResult {
 const isAlreadyClosed = (state: string): boolean => state.toUpperCase() === "CLOSED";
 
 /**
+ * Post the release's courtesy comment, once, never fatally.
+ *
+ * @remarks
+ * Extracted so the two paths that reach it — a close this run performed, and
+ * the issue #259 reconciliation of a close a previous run performed but never
+ * commented on — write the **same** comment under the **same** marker. Two
+ * spellings of the marker would defeat the idempotence they both depend on.
+ *
+ * The marker carries the release PR number, so it is unique per release and a
+ * later release's comment never suppresses an earlier one's.
+ *
+ * A failure is logged and swallowed: the issue is closed, which is the point;
+ * the comment is a courtesy, and failing the phase over it would abort a
+ * release that had already succeeded.
+ *
+ * @internal
+ */
+const commentOnClosure = (
+	issues: typeof GitHubIssue.Service,
+	issueNumber: number,
+	prNumber: number,
+): Effect.Effect<void, never, Repo> =>
+	Effect.gen(function* () {
+		const marker = CommentMarker.make({ namespace: "savvy-web", key: `closed-by-release-${prNumber}` });
+		const commented = yield* Effect.result(
+			issues.commentOnce(
+				issueNumber,
+				marker,
+				`Closed by release PR #${prNumber} merge.\n\n🤖 _Automated by silk-release-action_`,
+			),
+		);
+		if (commented._tag !== "Success") {
+			const reason = (commented.failure as GitHubError).reason ?? String(commented.failure);
+			yield* Effect.logWarning(`Closed issue #${issueNumber} but failed to comment on it: ${reason}`);
+		} else if (!commented.success.wrote) {
+			yield* Effect.logInfo(`✓ Issue #${issueNumber} already carried the release comment — skipped posting`);
+		}
+	});
+
+/**
  * Close a single linked issue (close + comment) and capture per-issue success.
  *
  * @remarks
@@ -55,10 +99,19 @@ const isAlreadyClosed = (state: string): boolean => state.toUpperCase() === "CLO
  * and both are load-bearing now that a failure here fails Phase 3 and therefore
  * *invites* a re-run:
  *
- * 1. **An already-closed issue is skipped entirely** — no comment, no close
- *    call. Without this, every re-run posted a second "Closed by release PR #N
+ * 1. **An already-closed issue is skipped unless this release closed it.**
+ *    Without any skip, every re-run posted a second "Closed by release PR #N
  *    merge." comment on every linked issue, because `linkedIssues` returns an
- *    issue regardless of its state.
+ *    issue regardless of its state — and worse, posted that claim on issues
+ *    closed manually or by an earlier release, which the merge did not close.
+ *
+ *    An *unconditional* skip has its own defect (issue #259): a close that
+ *    succeeded while its comment failed persistently is unrecoverable, because
+ *    the re-run exits here before reaching the comment. So the skip is
+ *    conditioned on attribution — `wasClosedByPullRequestOrFalse` asks GitHub
+ *    which pull requests closed the issue — and only an issue **this** release
+ *    PR closed falls through to `commentOnClosure`. Attribution that cannot be
+ *    established degrades to a skip, never to a claim.
  * 2. **Close happens BEFORE the comment.** This is the ordering, not an
  *    accident. Comment-first leaves a window — comment posted, close failed —
  *    that a re-run cannot detect from `state` alone; closing first collapses
@@ -89,7 +142,10 @@ const closeOne = (
 	issue: LinkedIssue,
 	prNumber: number,
 	dryRun: boolean,
-): Effect.Effect<ClosedIssue, never, GitHubIssue | Repo> =>
+	// `GitHubClient` joins the requirements for the issue #259 attribution query;
+	// `GraphQLDocument` is the kit's consumer extension point, so this is still
+	// the one client the layer graph already builds, not a second one.
+): Effect.Effect<ClosedIssue, never, GitHubClient | GitHubIssue | Repo> =>
 	Effect.gen(function* () {
 		const { number: issueNumber, title } = issue;
 
@@ -98,12 +154,32 @@ const closeOne = (
 			return { number: issueNumber, title, closed: true } satisfies ClosedIssue;
 		}
 
+		const issues = yield* GitHubIssue;
+
 		if (isAlreadyClosed(issue.state)) {
-			yield* Effect.logInfo(`✓ Issue #${issueNumber} already closed — idempotent recovery: ${title}`);
+			// **Issue #259.** A skip here used to be unconditional, which made the
+			// close-succeeded-but-comment-failed window unrecoverable: the re-run
+			// exited before reaching `commentOnce`. Dropping the skip outright is the
+			// wrong repair — see `issue-close-attribution.ts` for why an unattributed
+			// comment is a false claim rather than a harmless one — so the skip
+			// stands for every issue this release did not close, and only an issue
+			// GitHub attributes to THIS release PR falls through to the comment.
+			//
+			// `commentOnce` is what makes the fall-through safe on the ordinary
+			// re-run path, where the comment already exists: the marker is found and
+			// nothing is posted.
+			const ours = yield* wasClosedByPullRequestOrFalse(issueNumber, prNumber);
+			if (!ours) {
+				yield* Effect.logInfo(`✓ Issue #${issueNumber} already closed — not by this release, leaving it: ${title}`);
+				return { number: issueNumber, title, closed: true } satisfies ClosedIssue;
+			}
+			yield* Effect.logInfo(
+				`✓ Issue #${issueNumber} already closed by this release — reconciling its comment: ${title}`,
+			);
+			yield* commentOnClosure(issues, issueNumber, prNumber);
 			return { number: issueNumber, title, closed: true } satisfies ClosedIssue;
 		}
 
-		const issues = yield* GitHubIssue;
 		const closed = yield* Effect.result(issues.close(issueNumber, "completed"));
 
 		if (closed._tag !== "Success") {
@@ -115,20 +191,7 @@ const closeOne = (
 			return { number: issueNumber, title, closed: false, error: reason } satisfies ClosedIssue;
 		}
 
-		const marker = CommentMarker.make({ namespace: "savvy-web", key: `closed-by-release-${prNumber}` });
-		const commented = yield* Effect.result(
-			issues.commentOnce(
-				issueNumber,
-				marker,
-				`Closed by release PR #${prNumber} merge.\n\n🤖 _Automated by silk-release-action_`,
-			),
-		);
-		if (commented._tag !== "Success") {
-			const reason = (commented.failure as GitHubError).reason ?? String(commented.failure);
-			yield* Effect.logWarning(`Closed issue #${issueNumber} but failed to comment on it: ${reason}`);
-		} else if (!commented.success.wrote) {
-			yield* Effect.logInfo(`✓ Issue #${issueNumber} already carried the release comment — skipped posting`);
-		}
+		yield* commentOnClosure(issues, issueNumber, prNumber);
 
 		yield* Effect.logInfo(`✓ Closed issue #${issueNumber}: ${title}`);
 		return { number: issueNumber, title, closed: true } satisfies ClosedIssue;
@@ -145,7 +208,11 @@ const closeOne = (
 export const closeLinkedIssues = (
 	prNumber: number,
 	dryRun: boolean,
-): Effect.Effect<CloseLinkedIssuesResult, never, ActionEnvironment | ActionOutputs | CheckRun | GitHubIssue | Repo> =>
+): Effect.Effect<
+	CloseLinkedIssuesResult,
+	never,
+	ActionEnvironment | ActionOutputs | CheckRun | GitHubClient | GitHubIssue | Repo
+> =>
 	Effect.gen(function* () {
 		const serverUrl = yield* resolveServerUrl();
 		const env = yield* ActionEnvironment;

@@ -990,6 +990,54 @@ export const detectReleases = (
 // ─── runBuildAndSbom ───────────────────────────────────────────────────────────
 
 /**
+ * Re-emit a failed build's captured streams so its diagnostics reach the log.
+ *
+ * @remarks
+ * Issue #262. `Run.collect` buffers both streams and the old failure path
+ * emitted neither, so a release that failed on a `tsc --noEmit` diagnostic
+ * reported only the exit summary — root-causing it meant reproducing the build
+ * out of band. Both streams go out because the producing tool decides which one
+ * it uses: turbo puts task output on stdout under `--output-logs=full`, while a
+ * bare compiler puts diagnostics on stderr.
+ *
+ * Written with `process.*.write` rather than `Effect.log*` deliberately: the
+ * transcript is already formatted (turbo's own grouping and colour), and a
+ * per-line log prefix would destroy that. Empty streams write nothing, so a
+ * failure with no captured output adds no noise.
+ *
+ * @internal
+ */
+const emitBuildTranscript = (stdout: string, stderr: string): Effect.Effect<void> =>
+	Effect.sync(() => {
+		if (stdout !== "") process.stdout.write(stdout.endsWith("\n") ? stdout : `${stdout}\n`);
+		if (stderr !== "") process.stderr.write(stderr.endsWith("\n") ? stderr : `${stderr}\n`);
+	});
+
+/**
+ * The short failure text carried in {@link BuildSbomResult.buildError}.
+ *
+ * @remarks
+ * This value becomes a **single-line** `::error::` annotation and a field on the
+ * publish result, so it stays a summary — the full transcript is
+ * {@link emitBuildTranscript}'s job. `stderr` is preferred because that is where
+ * a runner reports how the command died; stdout is the fallback for the case
+ * that motivated issue #262, where a tool writes everything to stdout and an
+ * empty stderr produced the useless bare annotation `ci:build failed —`.
+ *
+ * @internal
+ */
+const buildErrorSummary = (stdout: string, stderr: string): string => {
+	if (stderr.trim() !== "") return stderr;
+	const tail = stdout.trim();
+	if (tail === "") return "ci:build exited non-zero with no captured output";
+	const lines = tail.split("\n");
+	return lines.length > BUILD_ERROR_SUMMARY_LINES ? lines.slice(-BUILD_ERROR_SUMMARY_LINES).join("\n") : tail;
+};
+
+/** How much of a stdout-only failure the summary keeps. See {@link buildErrorSummary}. */
+const BUILD_ERROR_SUMMARY_LINES = 20;
+
+/**
  * Result of {@link runBuildAndSbom} — the Phase-3 Build & SBOM gate.
  *
  * @public
@@ -1004,7 +1052,13 @@ export interface BuildSbomResult {
 	 * release its SBOM asset, not the release itself.
 	 */
 	readonly ok: boolean;
-	/** `ci:build` stderr/output when the build failed. */
+	/**
+	 * A short summary of why `ci:build` failed — see {@link buildErrorSummary}.
+	 *
+	 * @remarks
+	 * **Not the transcript.** It is rendered as a one-line annotation, so the
+	 * captured stdout/stderr go to the job log instead (issue #262).
+	 */
 	readonly buildError?: string;
 	/** Names of packages whose SBOM generation failed. */
 	readonly sbomFailures: ReadonlyArray<string>;
@@ -1076,11 +1130,25 @@ export const runBuildAndSbom = (
 					yield* Effect.logDebug(build.output);
 					yield* Effect.logInfo("  ✅ ci:build succeeded");
 				} else {
+					// **Failure is precisely when the captured output is the product**
+					// (issue #262). `Run.collect` buffers both streams; the success path
+					// can afford to drop them, but discarding them here left the compiler
+					// diagnostics in NO log — the group opened and went straight to the
+					// error annotation. Turbo runs with `--output-logs=full`, so the task
+					// diagnostics are on STDOUT, which is exactly the stream the old code
+					// never emitted on this path (it logged `stderr` only, and stderr
+					// carries little more than the echoed command line).
+					//
+					// Written straight through rather than through `Effect.log*`: a
+					// multi-hundred-line transcript re-prefixed per line by the logger is
+					// unreadable, and the same passthrough idiom is what Phase 2's
+					// `validate-builds` already uses.
+					yield* emitBuildTranscript(build.output, build.error);
 					yield* Effect.logError(`ci:build failed — ${build.error}`);
 					yield* Effect.logWarning("  ❌ aborted — build failed");
 					return {
 						ok: false,
-						buildError: build.error,
+						buildError: buildErrorSummary(build.output, build.error),
 						sbomFailures: [],
 						packageCount: detected.length,
 						sbomPaths: new Map<string, string>(),
