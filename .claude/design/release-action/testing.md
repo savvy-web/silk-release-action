@@ -5,7 +5,7 @@ status: current
 completeness: 90
 created: 2026-02-07
 updated: 2026-08-15
-last-synced: 2026-08-15
+last-synced: 2026-08-17
 module: release-action
 related:
   - architecture.md

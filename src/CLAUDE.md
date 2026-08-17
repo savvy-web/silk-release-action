@@ -40,6 +40,8 @@ Every phase is a pure Effect program. The imperative `@actions/*` layer is gone,
 
 Yield kit services — `GitHubIssue`, `PullRequest`, `CheckRun`, `GitBranch`, `GitTag`, `GitHubRelease`, … from `@effected/github` — not a raw client. `GitHubClient` (REST + GraphQL, GraphQL is a *member*) is built once in `layers/app.ts` via `GitHubToken.clientLayer()`; `Repo` is required per call, never captured at construction. Never call `core.getInput` or reach for `@actions/github`.
 
+Two kit-owned idioms, do not re-localise them: parse closing-keyword issue references with `harvestIssueReferences` (the local `CLOSE_KEYWORD_PATTERN` regex was deleted — do not reintroduce one), and make idempotent bot comments with `GitHubIssue.commentOnce` + `CommentMarker` (create-or-skip, never edit; `close-linked-issues` closes *before* commenting as belt-and-suspenders, since the marker lookup is not atomic).
+
 ### Subprocesses and Git
 
 Use `@effected/git` for **every** git operation. All 17 raw `ChildProcess.make("git", …)` spawns were deleted — do not reintroduce one. For other subprocesses use `LocalExec` / `ToolDiscovery` from `@effected/commands`, and `PackagePublish` / `NpmRegistry` from `@effected/npm` for npm. `@actions/exec` is not a dependency.

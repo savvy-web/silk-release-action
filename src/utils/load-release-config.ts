@@ -3,7 +3,6 @@ import { join } from "node:path";
 import { ActionInput } from "@effected/github-actions";
 import { Jsonc } from "@effected/jsonc";
 import { Config, Effect, Result, Schema } from "effect";
-import type { SchemaError } from "effect/SchemaError";
 import { SilkReleaseConfig } from "../schema/silk-release-config.js";
 import type { ReleaseConfig, SBOMMetadataConfig } from "../types/sbom-config.js";
 
@@ -46,11 +45,11 @@ function detectUnwrappedSBOMFields(config: Record<string, unknown>): string[] {
  * Format a Schema decode error as a human-readable message.
  *
  * @remarks
- * v4's {@link SchemaError} renders its structured issue tree — including the
+ * v4's `Schema.SchemaError` renders its structured issue tree — including the
  * path to each failing key and the expected type — through its `message`
  * getter, so the finding consumer still sees exactly which key was wrong.
  */
-function formatDecodeError(error: SchemaError): string {
+function formatDecodeError(error: Schema.SchemaError): string {
 	return error.message;
 }
 

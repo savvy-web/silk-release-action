@@ -5,13 +5,15 @@
  * Written against the kit's `layerTest` seams. Two properties are load-bearing:
  * the whole stage is **non-fatal** (its error channel is `never`), so a failed
  * close is recorded and reported rather than aborting the phase; and dry-run
- * must reach neither `comment` nor `close`.
+ * must reach neither `commentOnce` nor `close`.
  */
 
 import type { CheckRunOutput } from "@effected/github";
 import {
 	CheckRun,
 	CheckRunRef,
+	CommentOnceResult,
+	CommentRecord,
 	GitHubError,
 	GitHubGraphQLError,
 	GitHubIssue,
@@ -30,6 +32,7 @@ interface Recorder {
 	readonly created: Array<{ name: string; sha: string }>;
 	readonly completed: Array<{ id: number; conclusion: string; output?: CheckRunOutput | undefined }>;
 	readonly comments: Array<number>;
+	readonly markers: Array<string>;
 	readonly closed: Array<number>;
 	readonly outputs: Array<{ name: string; value: string }>;
 	readonly summaries: Array<string>;
@@ -39,6 +42,7 @@ const makeRecorder = (): Recorder => ({
 	created: [],
 	completed: [],
 	comments: [],
+	markers: [],
 	closed: [],
 	outputs: [],
 	summaries: [],
@@ -94,12 +98,16 @@ const makeLayer = (recorder: Recorder, options: Options) =>
 							}),
 						)
 					: Effect.succeed((options.issues ?? []).map((i) => linked(i.number, i.title, i.state))),
-			comment: (number) =>
+			commentOnce: (number, marker) =>
 				options.commentFails === true
-					? Effect.fail(GitHubError.rejected("GitHubIssue.comment", 403, "no permission"))
+					? Effect.fail(GitHubError.rejected("GitHubIssue.commentOnce", 403, "no permission"))
 					: Effect.sync(() => {
 							recorder.comments.push(number);
-							return 1;
+							recorder.markers.push(marker.html);
+							return CommentOnceResult.make({
+								wrote: true,
+								comment: CommentRecord.make({ id: 1, body: "posted", url: "https://x.test/comments/1" }),
+							});
 						}),
 			close: (number) =>
 				options.closeFails === true
@@ -133,6 +141,12 @@ describe("closeLinkedIssues", () => {
 		});
 
 		expect(recorder.comments).toEqual([1, 2]);
+		// The marker keys the comment to THIS release PR, so a re-run of the same
+		// release skips it while a later release PR can still comment.
+		expect(recorder.markers).toEqual([
+			"<!-- savvy-web:closed-by-release-42 -->",
+			"<!-- savvy-web:closed-by-release-42 -->",
+		]);
 		expect(recorder.closed).toEqual([1, 2]);
 		expect(result.closedCount).toBe(2);
 		expect(result.failedCount).toBe(0);

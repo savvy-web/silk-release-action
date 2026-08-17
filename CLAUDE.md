@@ -24,12 +24,11 @@ Two rules the fix established, both load-bearing: a degraded step contributes a 
 
 ### Vendored reference repos (`.repos/`)
 
-Two read-only submodules, managed via `savvy repos` (config in `.repos/config.json`, wiring in `.gitmodules`). Consult them before assuming an API shape; do not edit them. `node_modules` wins on any disagreement.
+One read-only submodule, managed via `savvy repos` (config in `.repos/config.json`, wiring in `.gitmodules`). Consult it before assuming an API shape; do not edit it. `node_modules` wins on any disagreement.
 
-- `.repos/effect` — `Effect-TS/effect` pinned to `effect@4.0.0-beta.107` (sparse: `packages/effect`, `packages/vitest`, `migration`, `ai-docs`, `LLMS.md`, `MIGRATION.md`). The authority on what v4 exports, the v3→v4 migration notes, and the `@effect/vitest` reference. Services/tags live in `Context.ts` — there is no `ServiceMap.ts`.
-- `.repos/effected` — `spencerbeggs/effected` pinned to `@effected/github-actions@0.6.0` (sparse: `packages`, `design`, `CLAUDE.md`). The authority on the `@effected/*` kit's export surface and the canonical action patterns this repo follows. Tags are per-package, not monorepo-wide.
+- `.repos/effect` — `Effect-TS/effect` pinned to `effect@4.0.0-rc.109`, matching the `catalog:effect` version (sparse: `packages/effect`, `packages/vitest`, `migration`, `ai-docs`, `LLMS.md`, `MIGRATION.md`). The authority on what v4 exports, the v3→v4 migration notes, and the `@effect/vitest` reference. Services/tags live in `Context.ts` — there is no `ServiceMap.ts`. Note the rc line: the standalone `effect/SchemaError` module is gone; `SchemaError` is exported from `effect/Schema`.
 
-(`.repos/effect-smol` is gone — v4 development moved back to the main Effect monorepo.)
+(`.repos/effect-smol` and `.repos/effected` are gone — v4 development moved back to the main Effect monorepo, and the effected pin was dropped in 880cb45. For the `@effected/*` kit's surface, consult `node_modules` or the sibling checkout at `../../spencerbeggs/effected`.)
 
 ## Silk Release Action
 

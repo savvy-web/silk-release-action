@@ -6,7 +6,7 @@
 // the input itself is still read exactly once, in `schema/inputs.ts`, which
 // composes this via `Config.mapOrFail`.
 
-import { Config, Effect, Redacted, SchemaError, SchemaIssue } from "effect";
+import { Config, Effect, Redacted, Schema, SchemaIssue } from "effect";
 
 /**
  * One parsed `custom-registries` line: a registry URL bound to its token.
@@ -36,7 +36,7 @@ export interface CustomRegistryAuth {
  * NUMBER and the registry, never the token.
  */
 const configFailure = (message: string): Effect.Effect<never, Config.ConfigError> =>
-	Effect.fail(new Config.ConfigError(new SchemaError.SchemaError(new SchemaIssue.InvalidValue({ message }))));
+	Effect.fail(new Config.ConfigError(new Schema.SchemaError(new SchemaIssue.InvalidValue({ message }))));
 
 /**
  * The accepted line shape: a registry URL immediately followed by an npmrc
