@@ -63,6 +63,8 @@ interface Options {
 	readonly linkedFails?: boolean;
 	readonly closeFails?: boolean;
 	readonly commentFails?: boolean;
+	/** The marker is already on the issue: `commentOnce` finds it and skips posting. */
+	readonly commentExists?: boolean;
 }
 
 const makeLayer = (recorder: Recorder, options: Options) =>
@@ -102,8 +104,16 @@ const makeLayer = (recorder: Recorder, options: Options) =>
 				options.commentFails === true
 					? Effect.fail(GitHubError.rejected("GitHubIssue.commentOnce", 403, "no permission"))
 					: Effect.sync(() => {
-							recorder.comments.push(number);
 							recorder.markers.push(marker.html);
+							// The duplicate branch: the marker is already on the issue, so no
+							// comment is created — only the lookup happened.
+							if (options.commentExists === true) {
+								return CommentOnceResult.make({
+									wrote: false,
+									comment: CommentRecord.make({ id: 1, body: "existing", url: "https://x.test/comments/1" }),
+								});
+							}
+							recorder.comments.push(number);
 							return CommentOnceResult.make({
 								wrote: true,
 								comment: CommentRecord.make({ id: 1, body: "posted", url: "https://x.test/comments/1" }),
@@ -255,6 +265,20 @@ describe("closeLinkedIssues", () => {
 			const result = await run(recorder, { issues: [{ number: 1, title: "a" }], commentFails: true });
 
 			expect(recorder.closed).toEqual([1]);
+			expect(result.closedCount).toBe(1);
+			expect(result.failedCount).toBe(0);
+		});
+
+		it("should skip posting when the marker is already on the issue (wrote: false)", async () => {
+			const recorder = makeRecorder();
+
+			// The commentOnce duplicate branch: the marker lookup finds an existing
+			// comment, so nothing is posted and the issue still counts as closed.
+			const result = await run(recorder, { issues: [{ number: 1, title: "a" }], commentExists: true });
+
+			expect(recorder.closed).toEqual([1]);
+			expect(recorder.markers).toEqual(["<!-- savvy-web:closed-by-release-42 -->"]);
+			expect(recorder.comments).toEqual([]);
 			expect(result.closedCount).toBe(1);
 			expect(result.failedCount).toBe(0);
 		});

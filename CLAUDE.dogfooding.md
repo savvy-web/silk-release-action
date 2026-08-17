@@ -37,7 +37,7 @@ Library edits ship separately on their own repo's branch and release with its ne
 
 ## Currently active
 
-**No dogfood link or override is active.** Everything is pinned to published versions: `@savvy-web/silk-effects ^5.9.2`, `@effected/git ^0.9.0`, `@effected/github-actions ^0.9.0`, `@effected/workspaces ^0.14.0`, `@effected/npm ^0.10.0`, `@effected/commands ^0.5.0`, `@effected/github ^0.6.0`, `@effected/sbom ^0.4.0`, `@effected/package-json ^0.10.0`, `@effected/markdown ^0.6.0`, `@effected/semver ^0.5.0`, `@effected/yaml ^0.10.0`, `@effected/jsonc ^0.7.0`; dev: `@savvy-web/github-action-builder ^2.2.7`, `@savvy-web/silk ^3.7.9`, `@effected/schemastore ^0.4.0`. `effect`, `@effect/platform-node` and `@effect/vitest` resolve via `catalog:effect` (**4.0.0-rc.109**, injected by the `@effected/pnpm-plugin-effect` config dependency in `pnpm-workspace.yaml`).
+**No dogfood link or override is active.** Everything is declared against published versions (caret ranges; the lockfile pins the resolved installs): `@savvy-web/silk-effects ^5.9.2`, `@effected/git ^0.9.0`, `@effected/github-actions ^0.9.0`, `@effected/workspaces ^0.14.0`, `@effected/npm ^0.10.0`, `@effected/commands ^0.5.0`, `@effected/github ^0.6.0`, `@effected/sbom ^0.4.0`, `@effected/package-json ^0.10.0`, `@effected/markdown ^0.6.0`, `@effected/semver ^0.5.0`, `@effected/yaml ^0.10.0`, `@effected/jsonc ^0.7.0`; dev: `@savvy-web/github-action-builder ^2.2.7`, `@savvy-web/silk ^3.7.9`, `@effected/schemastore ^0.4.0`. `effect`, `@effect/platform-node` and `@effect/vitest` resolve via `catalog:effect` (**4.0.0-rc.109**, injected by the `@effected/pnpm-plugin-effect` config dependency in `pnpm-workspace.yaml`).
 
 ## What the dependency line buys
 
