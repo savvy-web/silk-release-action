@@ -50,7 +50,7 @@
 		"@effected/package-json": "^0.10.2",
 		"@effected/sbom": "^0.4.1",
 		"@effected/semver": "^0.5.0",
-		"@effected/workspaces": "^0.16.0",
+		"@effected/workspaces": "^0.17.0",
 		"@effected/yaml": "^0.10.0",
 		"@savvy-web/silk-effects": "^5.9.3",
 		"effect": "catalog:effect"

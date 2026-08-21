@@ -98,8 +98,8 @@ importers:
         specifier: ^0.5.0
         version: 0.5.0(effect@4.0.0-rc.109)
       '@effected/workspaces':
-        specifier: ^0.16.0
-        version: 0.16.0(@effected/jsonc@0.7.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109)
+        specifier: ^0.17.0
+        version: 0.17.0(@effected/jsonc@0.7.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109)
       '@effected/yaml':
         specifier: ^0.10.0
         version: 0.10.0(effect@4.0.0-rc.109)
@@ -510,12 +510,12 @@ packages:
       '@effected/yaml': ^0.10.0
       effect: 4.0.0-rc.109
 
-  '@effected/lockfiles@0.6.1':
-    resolution: {integrity: sha512-KVl75PmGt3gmUkcJILvaTAu4js5h51nA50kSwzphP5HsE4FYJVAx1IuyiZDAiMaKNKQvJKyUyWJO5aBvyw9unA==}
+  '@effected/lockfiles@0.6.2':
+    resolution: {integrity: sha512-LPIIfmE3LoF03DLoLUH6rcRVreaud43AeqRIc2L4Lpe/NFZybxxHw7E2gIA0ccvAlmQQNZ341hz7q2dDVY/QXQ==}
     engines: {node: '>=24.11.0'}
     peerDependencies:
       '@effected/jsonc': ^0.7.0
-      '@effected/npm': ^0.11.0
+      '@effected/npm': ^0.11.1
       '@effected/semver': ^0.5.0
       '@effected/yaml': ^0.10.0
       effect: 4.0.0-rc.109
@@ -600,6 +600,12 @@ packages:
 
   '@effected/workspaces@0.16.0':
     resolution: {integrity: sha512-BlwiKzuScsIOVWAELkmCoa4PjpBefe/fCMQe10CraY6ZbKhNfJnI2iKFqiMqsnamPHKpj1Q2OW0P5FhHC6YmIw==}
+    engines: {node: '>=24.11.0'}
+    peerDependencies:
+      effect: 4.0.0-rc.109
+
+  '@effected/workspaces@0.17.0':
+    resolution: {integrity: sha512-zHFpkt393D+yXNUkRO4QFkXaIeVjWfhobumJgI+xlbhsMUQ79Ey8mi6gk66O17uh+tfwiamen9t8wXr2NTSHnw==}
     engines: {node: '>=24.11.0'}
     peerDependencies:
       effect: 4.0.0-rc.109
@@ -3852,7 +3858,7 @@ snapshots:
       '@effected/yaml': 0.10.0(effect@4.0.0-rc.109)
       effect: 4.0.0-rc.109
 
-  '@effected/lockfiles@0.6.1(@effected/jsonc@0.7.0(effect@4.0.0-rc.109))(@effected/npm@0.11.1(@effected/semver@0.5.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109))(@effected/semver@0.5.0(effect@4.0.0-rc.109))(@effected/yaml@0.10.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109)':
+  '@effected/lockfiles@0.6.2(@effected/jsonc@0.7.0(effect@4.0.0-rc.109))(@effected/npm@0.11.1(@effected/semver@0.5.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109))(@effected/semver@0.5.0(effect@4.0.0-rc.109))(@effected/yaml@0.10.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109)':
     dependencies:
       '@effected/jsonc': 0.7.0(effect@4.0.0-rc.109)
       '@effected/npm': 0.11.1(@effected/semver@0.5.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109)
@@ -3944,7 +3950,26 @@ snapshots:
       '@effected/commands': 0.5.0(effect@4.0.0-rc.109)
       '@effected/git': 0.9.0(effect@4.0.0-rc.109)
       '@effected/glob': 0.4.0(effect@4.0.0-rc.109)
-      '@effected/lockfiles': 0.6.1(@effected/jsonc@0.7.0(effect@4.0.0-rc.109))(@effected/npm@0.11.1(@effected/semver@0.5.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109))(@effected/semver@0.5.0(effect@4.0.0-rc.109))(@effected/yaml@0.10.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109)
+      '@effected/lockfiles': 0.6.2(@effected/jsonc@0.7.0(effect@4.0.0-rc.109))(@effected/npm@0.11.1(@effected/semver@0.5.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109))(@effected/semver@0.5.0(effect@4.0.0-rc.109))(@effected/yaml@0.10.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109)
+      '@effected/npm': 0.11.1(@effected/semver@0.5.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109)
+      '@effected/package-json': 0.10.2(effect@4.0.0-rc.109)
+      '@effected/semver': 0.5.0(effect@4.0.0-rc.109)
+      '@effected/walker': 0.5.0(@effected/glob@0.4.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109)
+      '@effected/yaml': 0.10.0(effect@4.0.0-rc.109)
+      '@pnpm/catalogs.config': 1100.0.5
+      '@pnpm/catalogs.protocol-parser': 1100.0.1
+      '@pnpm/catalogs.resolver': 1100.0.1
+      '@pnpm/catalogs.types': 1100.0.1
+      effect: 4.0.0-rc.109
+    transitivePeerDependencies:
+      - '@effected/jsonc'
+
+  '@effected/workspaces@0.17.0(@effected/jsonc@0.7.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109)':
+    dependencies:
+      '@effected/commands': 0.5.0(effect@4.0.0-rc.109)
+      '@effected/git': 0.9.0(effect@4.0.0-rc.109)
+      '@effected/glob': 0.4.0(effect@4.0.0-rc.109)
+      '@effected/lockfiles': 0.6.2(@effected/jsonc@0.7.0(effect@4.0.0-rc.109))(@effected/npm@0.11.1(@effected/semver@0.5.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109))(@effected/semver@0.5.0(effect@4.0.0-rc.109))(@effected/yaml@0.10.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109)
       '@effected/npm': 0.11.1(@effected/semver@0.5.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109)
       '@effected/package-json': 0.10.2(effect@4.0.0-rc.109)
       '@effected/semver': 0.5.0(effect@4.0.0-rc.109)
