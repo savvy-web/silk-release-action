@@ -50,6 +50,7 @@ export const INPUT_NAMES = [
 	"strict-warnings",
 	"sbom-config",
 	"custom-registries",
+	"on-build",
 ] as const;
 
 /**
@@ -139,6 +140,18 @@ export interface Inputs extends BranchRefs {
 	/** SBOM metadata JSON. Empty when omitted. */
 	readonly sbomConfig: string;
 	/**
+	 * Optional command run after the validation build, or `None` when unset.
+	 *
+	 * @remarks
+	 * `Option` rather than a bare string because the blank case is not a command:
+	 * a caller plumbing an unset workflow input through writes
+	 * `on-build: ${{ inputs.on-build }}`, which passes `""`. Modelling that as
+	 * `Some("")` would spawn an empty command on every release in every repo that
+	 * plumbs the input through, so the trim-to-none happens once here rather than
+	 * at each call site.
+	 */
+	readonly onBuild: Option.Option<string>;
+	/**
 	 * Custom registry auth, parsed: one registry URL + `Redacted` token per line.
 	 *
 	 * @remarks
@@ -187,6 +200,13 @@ const loadInputs: Config.Config<Inputs> = Config.all({
 	npmToken: ActionInput.string("npm-token").pipe(Config.withDefault("")),
 	strictWarnings: ActionInput.boolean("strict-warnings").pipe(Config.withDefault(false)),
 	sbomConfig: ActionInput.string("sbom-config").pipe(Config.withDefault("")),
+	onBuild: ActionInput.string("on-build").pipe(
+		Config.withDefault(""),
+		Config.map((raw) => {
+			const value = raw.trim();
+			return value === "" ? Option.none<string>() : Option.some(value);
+		}),
+	),
 	customRegistries: ActionInput.lines("custom-registries").pipe(
 		Config.withDefault([]),
 		Config.mapOrFail(parseCustomRegistries),
