@@ -337,6 +337,42 @@ describe("validateBuilds", () => {
 			expect(f.completed[0].conclusion).toBe("failure");
 		});
 
+		it("carries a gate diagnostic written to STDOUT into errors", async () => {
+			// THE PAIR-LEVEL CASE. A gate command chooses its own streams, and many
+			// CLIs put the primary report on stdout — rolldown's `--check` prints
+			// "Catalog drift detected" there and reserves stderr for resolution
+			// failures. Capturing stderr alone fails the release with a finding that
+			// does not say what drifted.
+			const f = makeFixtures();
+
+			const { result } = await runStage(f, {
+				onBuild: Option.some("catalog-check"),
+				script: (command) =>
+					command === "pnpm"
+						? { exit: 0, stdout: "Build complete\n", stderr: "" }
+						: { exit: 1, stdout: "Catalog drift detected: @scope/pkg\n", stderr: "" },
+			});
+
+			expect(result.success).toBe(false);
+			expect(result.errors).toContain("Catalog drift detected: @scope/pkg");
+		});
+
+		it("carries both streams into errors when the gate writes to each", async () => {
+			const f = makeFixtures();
+
+			const { result } = await runStage(f, {
+				onBuild: Option.some("catalog-check"),
+				script: (command) =>
+					command === "pnpm"
+						? { exit: 0, stdout: "Build complete\n", stderr: "" }
+						: { exit: 1, stdout: "drift on stdout\n", stderr: "resolution failed on stderr\n" },
+			});
+
+			expect(result.success).toBe(false);
+			expect(result.errors).toContain("drift on stdout");
+			expect(result.errors).toContain("resolution failed on stderr");
+		});
+
 		it("passes a gate that exits zero while printing the word error", async () => {
 			// THE DISCRIMINATING CASE. `success` for the BUILD is exit code AND a
 			// stderr grep for "error"/"ERROR". Folding the gate into that grep — as

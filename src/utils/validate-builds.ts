@@ -211,7 +211,14 @@ export const validateBuilds = (
 					if (gate.success.stderr !== "") process.stderr.write(gate.success.stderr);
 					// EXIT CODE ONLY — see the remarks on this function.
 					if (gate.success.exitCode !== 0) {
-						gateFailure = `on-build gate failed (exit ${String(gate.success.exitCode)}): ${gateCommand}\n${gate.success.stderr}`;
+						// BOTH STREAMS. A gate runs an arbitrary repo-supplied command and
+						// cannot know which stream that command reports on: plenty of CLIs
+						// put the primary report on stdout and reserve stderr for
+						// infrastructure failures. Capturing stderr alone drops the whole
+						// diagnostic for those, failing the release with a finding that
+						// does not say what went wrong.
+						const output = [gate.success.stdout, gate.success.stderr].filter((stream) => stream !== "").join("\n");
+						gateFailure = `on-build gate failed (exit ${String(gate.success.exitCode)}): ${gateCommand}${output === "" ? "" : `\n${output}`}`;
 					}
 				} else {
 					// A gate that cannot be spawned is a failed gate, not a defect: this
