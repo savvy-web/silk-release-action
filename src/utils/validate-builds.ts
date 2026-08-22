@@ -16,7 +16,7 @@ import { Annotation, CheckRun, CheckRunOutput } from "@effected/github";
 import type { ActionEnvironmentError, ActionOutputError } from "@effected/github-actions";
 import { ActionEnvironment, ActionOutputs, DryRun } from "@effected/github-actions";
 import type { Config, FileSystem } from "effect";
-import { Cause, Effect } from "effect";
+import { Cause, Effect, Option } from "effect";
 import type { ChildProcessSpawner } from "effect/unstable/process";
 import { ChildProcess } from "effect/unstable/process";
 import { summaryWriter } from "./summary-writer.js";
@@ -106,10 +106,29 @@ const parseAnnotations = (buildError: string): Annotation[] => {
 /**
  * Run the build-validation stage.
  *
+ * @param packageManager - The detected package manager, for the build argv.
+ * @param onBuild - The optional `on-build` gate command. `None` is a total
+ * no-op: nothing spawns, nothing is logged, and the result is byte-identical
+ * to a run without the input.
+ *
+ * @remarks
+ * The gate is **strictly exit-code-driven**, which is the one place it
+ * deliberately differs from the build above it. `success` for the build is
+ * `exitCode === 0` AND a substring grep over stderr, because a build tool can
+ * exit zero while printing errors. That reasoning does not extend to a gate
+ * whose entire advertised contract IS its exit code: a checker printing
+ * `0 errors found` and exiting 0 must pass, and folding it into the grep would
+ * fail every release in every repo that set it.
+ *
+ * The gate is also **pure** — it runs a command and reads an integer. It never
+ * pushes, commits, or mutates the repository, so setting it cannot require the
+ * calling job's permissions to widen.
+ *
  * @public
  */
 export const validateBuilds = (
 	packageManager: string,
+	onBuild: Option.Option<string>,
 ): Effect.Effect<
 	BuildValidationResult,
 	| ActionEnvironmentError
@@ -163,6 +182,46 @@ export const validateBuilds = (
 			yield* Effect.logInfo(`[DRY RUN] Would run: ${buildCmd} ${buildArgs.join(" ")}`);
 		}
 
+		// The BUILD's verdict: exit code AND the stderr grep. Split out from the
+		// combined `success` below so the gate can be conditioned on it — a gate
+		// that inspects build output is meaningless after a failed build, and
+		// running it anyway stacks a confusing second error on the real one.
+		const buildSucceeded = buildExitCode === 0 && !buildError.includes("error") && !buildError.includes("ERROR");
+
+		// The `on-build` gate. `null` means "did not fail" — which covers unset,
+		// dry-run, a skipped run after a failed build, and a clean exit 0.
+		let gateFailure: string | null = null;
+		if (Option.isSome(onBuild)) {
+			const gateCommand = onBuild.value;
+			if (dryRun) {
+				// Matches the build's dry-run line. Executing a repo-supplied command
+				// during a rehearsal, while the build it gates was skipped, is a side
+				// effect with no signal.
+				yield* Effect.logInfo(`[DRY RUN] Would run on-build gate: ${gateCommand}`);
+			} else if (!buildSucceeded) {
+				yield* Effect.logInfo("Skipping on-build gate: the build did not succeed");
+			} else {
+				yield* Effect.logInfo(`Running on-build gate: ${gateCommand}`);
+				// `shell: true` because the input is a command LINE, not an argv — a
+				// repo writes `pnpm catalog:check`, and splitting that by hand would
+				// mis-handle quoting and operators.
+				const gate = yield* Effect.result(Run.collect(ChildProcess.make(gateCommand, [], { shell: true })));
+				if (gate._tag === "Success") {
+					if (gate.success.stdout !== "") process.stdout.write(gate.success.stdout);
+					if (gate.success.stderr !== "") process.stderr.write(gate.success.stderr);
+					// EXIT CODE ONLY — see the remarks on this function.
+					if (gate.success.exitCode !== 0) {
+						gateFailure = `on-build gate failed (exit ${String(gate.success.exitCode)}): ${gateCommand}\n${gate.success.stderr}`;
+					}
+				} else {
+					// A gate that cannot be spawned is a failed gate, not a defect: this
+					// stage's caller degrades on a `never` channel and must keep doing so.
+					gateFailure = `on-build gate could not be run: ${gateCommand}\n${gate.failure.message}`;
+				}
+				yield* Effect.logInfo(gateFailure === null ? "✅ on-build gate — passed" : "❌ on-build gate — failed");
+			}
+		}
+
 		// Surface turbo cache behaviour when this was a turbo-summarize build.
 		// Strictly non-fatal — never gates build-validation success.
 		let turboSection: string | null = null;
@@ -192,21 +251,32 @@ export const validateBuilds = (
 			);
 		}
 
-		const success = buildExitCode === 0 && !buildError.includes("error") && !buildError.includes("ERROR");
+		const success = buildSucceeded && gateFailure === null;
 
-		const annotations = !success && buildError !== "" ? parseAnnotations(buildError) : [];
+		// Annotations come from the BUILD's stderr only; a gate failure is a single
+		// reported command, not a set of file positions.
+		const annotations = !buildSucceeded && buildError !== "" ? parseAnnotations(buildError) : [];
 		if (annotations.length > 0) yield* Effect.logInfo(`Parsed ${annotations.length} error annotations`);
 
 		const checkTitle = dryRun ? "🧪 Build Validation (Dry Run)" : "Build Validation";
-		const checkSummary = success ? "All packages built successfully" : "Build failed with errors";
+		const checkSummary = success
+			? "All packages built successfully"
+			: gateFailure !== null
+				? "The on-build gate failed"
+				: "Build failed with errors";
+		// A gate failure is reported VERBATIM rather than grepped: the grep exists
+		// to pull error lines out of a noisy build log, and the gate's output is
+		// already exactly the thing that needs reading.
 		const errorSummary =
-			!success && buildError !== ""
-				? buildError
-						.split("\n")
-						.filter((line) => line.includes("error") || line.includes("ERROR"))
-						.slice(0, 20)
-						.join("\n")
-				: "";
+			gateFailure !== null
+				? gateFailure
+				: !buildSucceeded && buildError !== ""
+					? buildError
+							.split("\n")
+							.filter((line) => line.includes("error") || line.includes("ERROR"))
+							.slice(0, 20)
+							.join("\n")
+					: "";
 
 		const resultsTable = summaryWriter.table(
 			["Status", "Details"],
@@ -225,7 +295,7 @@ export const validateBuilds = (
 		}
 		if (!success && errorSummary !== "") {
 			checkSections.push({
-				heading: "Build Errors",
+				heading: gateFailure !== null ? "On-Build Gate" : "Build Errors",
 				level: 3,
 				content: summaryWriter.codeBlock(errorSummary, "text"),
 			});
@@ -266,7 +336,7 @@ export const validateBuilds = (
 		}
 		if (!success && errorSummary !== "") {
 			jobSections.push({
-				heading: "Build Errors",
+				heading: gateFailure !== null ? "On-Build Gate" : "Build Errors",
 				level: 3,
 				content: summaryWriter.codeBlock(errorSummary, "text"),
 			});
@@ -276,5 +346,9 @@ export const validateBuilds = (
 		}
 		yield* outputs.summary(summaryWriter.build(jobSections));
 
-		return { success, errors: buildError, checkId: checkRun.id, htmlUrl: checkRun.url };
+		// `errors` is load-bearing: the check derivation renders it as the build
+		// finding's message and falls back to a generic string only when blank. A
+		// gate failure whose output was dropped would produce a red check with no
+		// explanation of what drifted.
+		return { success, errors: gateFailure ?? buildError, checkId: checkRun.id, htmlUrl: checkRun.url };
 	});

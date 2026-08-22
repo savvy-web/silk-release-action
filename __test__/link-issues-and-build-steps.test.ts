@@ -11,7 +11,7 @@
 // one degradation is honest and the other is invisible.
 
 import { ActionLogger } from "@effected/github-actions";
-import { Effect, Logger } from "effect";
+import { Effect, Logger, Option } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const linkIssuesFromCommits = vi.hoisted(() => vi.fn());
@@ -154,7 +154,7 @@ describe("buildValidation", () => {
 	it("returns what the validator found, inside its own log group", async () => {
 		const passed = { success: true, errors: "", checkId: 9, htmlUrl: "https://gh/build" };
 		validateBuilds.mockReturnValue(Effect.succeed(passed));
-		const { result, groups } = await run(buildValidation("pnpm"));
+		const { result, groups } = await run(buildValidation("pnpm", Option.none()));
 
 		expect(result).toEqual(passed);
 		expect(groups).toEqual(["Validate builds"]);
@@ -162,22 +162,31 @@ describe("buildValidation", () => {
 
 	it("passes the package manager through", async () => {
 		validateBuilds.mockReturnValue(Effect.succeed({ success: true, errors: "", checkId: 0, htmlUrl: "" }));
-		await run(buildValidation("yarn"));
+		await run(buildValidation("yarn", Option.none()));
 
-		expect(validateBuilds).toHaveBeenCalledWith("yarn");
+		expect(validateBuilds).toHaveBeenCalledWith("yarn", Option.none());
+	});
+
+	it("passes the on-build gate through", async () => {
+		validateBuilds.mockReturnValue(Effect.succeed({ success: true, errors: "", checkId: 0, htmlUrl: "" }));
+		await run(buildValidation("pnpm", Option.some("pnpm catalog:check")));
+
+		// The step is a pass-through for the gate; the execution lives one layer
+		// down in `validateBuilds`.
+		expect(validateBuilds).toHaveBeenCalledWith("pnpm", Option.some("pnpm catalog:check"));
 	});
 
 	it("branches the summary line on the outcome", async () => {
 		validateBuilds.mockReturnValue(Effect.succeed({ success: true, errors: "", checkId: 0, htmlUrl: "" }));
-		expect((await run(buildValidation("pnpm"))).text).toContain("✅ Build validation — passed");
+		expect((await run(buildValidation("pnpm", Option.none()))).text).toContain("✅ Build validation — passed");
 
 		validateBuilds.mockReturnValue(Effect.succeed({ success: false, errors: "nope", checkId: 0, htmlUrl: "" }));
-		expect((await run(buildValidation("pnpm"))).text).toContain("❌ Build validation — failed");
+		expect((await run(buildValidation("pnpm", Option.none()))).text).toContain("❌ Build validation — failed");
 	});
 
 	it("degrades a crash to a FAILED result, carrying the cause", async () => {
 		validateBuilds.mockReturnValue(Effect.fail(new Error("spawn ENOENT")));
-		const { result, text } = await run(buildValidation("pnpm"));
+		const { result, text } = await run(buildValidation("pnpm", Option.none()));
 
 		expect(result.success).toBe(false);
 		expect(result.errors).toContain("spawn ENOENT");
@@ -193,7 +202,7 @@ describe("the two degradations are NOT symmetric", () => {
 
 	it("a crashed BUILD validation reports red downstream", async () => {
 		validateBuilds.mockReturnValue(Effect.fail(new Error("spawn ENOENT")));
-		const { result } = await run(buildValidation("pnpm"));
+		const { result } = await run(buildValidation("pnpm", Option.none()));
 
 		const checks = deriveValidationChecks({
 			linkedIssueCount: 0,
