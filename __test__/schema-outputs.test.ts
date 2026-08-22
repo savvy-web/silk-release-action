@@ -91,13 +91,14 @@ describe("action.yml ↔ src/ output writes", () => {
 });
 
 describe("emitMainScalarOutputs", () => {
-	it("should write every main scalar output exactly once", () =>
+	it.effect("should write every main scalar output exactly once", () =>
 		Effect.gen(function* () {
 			const sets: Array<{ name: string; value: string }> = [];
 			yield* emitMainScalarOutputs(recordingOutputs(sets), initialMainScalarOutputs);
 			expect(sets.map((entry) => entry.name).sort()).toEqual([...MAIN_SCALAR_OUTPUT_NAMES].sort());
 			expect(sets.length).toBe(MAIN_SCALAR_OUTPUT_NAMES.length);
-		}));
+		}),
+	);
 
 	it.effect("should render the all-disabled baseline as a documented no-op", () =>
 		Effect.gen(function* () {
