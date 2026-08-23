@@ -278,6 +278,9 @@ const workspaceDiscoveryLayer = Layer.succeed(WorkspaceDiscovery, {
 	resolveFile: () => Effect.succeed(Option.none()),
 	resolveFiles: () => Effect.succeed([]),
 	refresh: () => Effect.void,
+	infoIn: () => Effect.die(new Error("infoIn() not stubbed")),
+	listPackagesIn: () => Effect.die(new Error("listPackagesIn() not stubbed")),
+	refreshIn: () => Effect.void,
 });
 
 /** Everything `runReleases` needs that no individual test varies. */

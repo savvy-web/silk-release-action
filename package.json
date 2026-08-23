@@ -37,7 +37,6 @@
 		"validate": "github-action-builder validate"
 	},
 	"dependencies": {
-		"@changesets/changelog-git": "1.0.0",
 		"@effect/platform-node": "catalog:effect",
 		"@effected/commands": "catalog:effected",
 		"@effected/git": "catalog:effected",
@@ -52,7 +51,7 @@
 		"@effected/semver": "catalog:effected",
 		"@effected/workspaces": "catalog:effected",
 		"@effected/yaml": "catalog:effected",
-		"@savvy-web/silk-effects": "^7.0.1",
+		"@savvy-web/silk-effects": "^7.1.0",
 		"effect": "catalog:effect"
 	},
 	"devDependencies": {

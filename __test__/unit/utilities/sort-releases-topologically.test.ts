@@ -38,6 +38,9 @@ const makeDiscoveryLayer = (packages: ReadonlyArray<WorkspacePackage>): Layer.La
 		resolveFile: () => Effect.die("not implemented"),
 		resolveFiles: () => Effect.die("not implemented"),
 		refresh: () => Effect.void,
+		infoIn: () => Effect.die("not implemented"),
+		listPackagesIn: () => Effect.die("not implemented"),
+		refreshIn: () => Effect.void,
 	});
 
 describe("sortReleasesTopologically", () => {

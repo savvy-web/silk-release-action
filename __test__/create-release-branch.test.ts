@@ -72,6 +72,9 @@ const workspaceDiscoveryStub = Layer.succeed(WorkspaceDiscovery, {
 	resolveFile: () => Effect.succeed(Option.none()),
 	resolveFiles: () => Effect.succeed([]),
 	refresh: () => Effect.void,
+	infoIn: () => Effect.die(new Error("infoIn() not stubbed")),
+	listPackagesIn: () => Effect.die(new Error("listPackagesIn() not stubbed")),
+	refreshIn: () => Effect.void,
 });
 
 const publishabilityDetectorStub = Layer.succeed(PublishabilityDetector, { detect: () => Effect.succeed([]) });

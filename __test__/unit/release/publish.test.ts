@@ -112,6 +112,9 @@ const makeWorkspaceDiscoveryLayer = (packages: WorkspacePackage[]): Layer.Layer<
 		resolveFile: () => Effect.succeed(Option.none()),
 		resolveFiles: () => Effect.succeed([] as ReadonlyArray<WorkspacePackage>),
 		refresh: () => Effect.void,
+		infoIn: () => Effect.die(new Error("infoIn() not stubbed")),
+		listPackagesIn: () => Effect.die(new Error("listPackagesIn() not stubbed")),
+		refreshIn: () => Effect.void,
 	});
 
 /** Build a PublishabilityDetector test layer returning targets per package name. */
