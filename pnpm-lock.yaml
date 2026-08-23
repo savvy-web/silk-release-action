@@ -44,6 +44,49 @@ catalogs:
     effect:
       specifier: 4.0.0-rc.109
       version: 4.0.0-rc.109
+  effected:
+    '@effected/commands':
+      specifier: ^0.5.0
+      version: 0.5.0
+    '@effected/git':
+      specifier: ^0.9.0
+      version: 0.9.0
+    '@effected/github':
+      specifier: ^0.7.0
+      version: 0.7.0
+    '@effected/github-actions':
+      specifier: ^0.9.2
+      version: 0.9.2
+    '@effected/github-references':
+      specifier: ^0.1.0
+      version: 0.1.0
+    '@effected/jsonc':
+      specifier: ^0.7.0
+      version: 0.7.0
+    '@effected/markdown':
+      specifier: ^0.6.0
+      version: 0.6.0
+    '@effected/npm':
+      specifier: ^0.11.1
+      version: 0.11.1
+    '@effected/package-json':
+      specifier: ^0.10.2
+      version: 0.10.2
+    '@effected/sbom':
+      specifier: ^0.4.1
+      version: 0.4.1
+    '@effected/schemastore':
+      specifier: ^0.4.0
+      version: 0.4.0
+    '@effected/semver':
+      specifier: ^0.5.0
+      version: 0.5.0
+    '@effected/workspaces':
+      specifier: ^0.17.1
+      version: 0.17.1
+    '@effected/yaml':
+      specifier: ^0.10.0
+      version: 0.10.0
   silk:
     tsx:
       specifier: ^4.23.12
@@ -65,47 +108,47 @@ importers:
         specifier: catalog:effect
         version: 4.0.0-rc.109(effect@4.0.0-rc.109)(redis@6.2.1)
       '@effected/commands':
-        specifier: ^0.5.0
+        specifier: catalog:effected
         version: 0.5.0(effect@4.0.0-rc.109)
       '@effected/git':
-        specifier: ^0.9.0
+        specifier: catalog:effected
         version: 0.9.0(effect@4.0.0-rc.109)
       '@effected/github':
-        specifier: ^0.7.0
+        specifier: catalog:effected
         version: 0.7.0(effect@4.0.0-rc.109)
       '@effected/github-actions':
-        specifier: ^0.9.2
+        specifier: catalog:effected
         version: 0.9.2(@effect/platform-node@4.0.0-rc.109(effect@4.0.0-rc.109)(redis@6.2.1))(@effected/jsonc@0.7.0(effect@4.0.0-rc.109))(@effected/semver@0.5.0(effect@4.0.0-rc.109))(@effected/toml@0.5.0(effect@4.0.0-rc.109))(@effected/yaml@0.10.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109)(supports-color@7.2.0)
       '@effected/github-references':
-        specifier: ^0.1.0
+        specifier: catalog:effected
         version: 0.1.0(effect@4.0.0-rc.109)
       '@effected/jsonc':
-        specifier: ^0.7.0
+        specifier: catalog:effected
         version: 0.7.0(effect@4.0.0-rc.109)
       '@effected/markdown':
-        specifier: ^0.6.0
+        specifier: catalog:effected
         version: 0.6.0(@effected/jsonc@0.7.0(effect@4.0.0-rc.109))(@effected/toml@0.5.0(effect@4.0.0-rc.109))(@effected/yaml@0.10.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109)
       '@effected/npm':
-        specifier: ^0.11.1
+        specifier: catalog:effected
         version: 0.11.1(@effected/semver@0.5.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109)
       '@effected/package-json':
-        specifier: ^0.10.2
+        specifier: catalog:effected
         version: 0.10.2(effect@4.0.0-rc.109)
       '@effected/sbom':
-        specifier: ^0.4.1
+        specifier: catalog:effected
         version: 0.4.1(effect@4.0.0-rc.109)(supports-color@7.2.0)
       '@effected/semver':
-        specifier: ^0.5.0
+        specifier: catalog:effected
         version: 0.5.0(effect@4.0.0-rc.109)
       '@effected/workspaces':
-        specifier: ^0.17.1
+        specifier: catalog:effected
         version: 0.17.1(@effected/jsonc@0.7.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109)
       '@effected/yaml':
-        specifier: ^0.10.0
+        specifier: catalog:effected
         version: 0.10.0(effect@4.0.0-rc.109)
       '@savvy-web/silk-effects':
-        specifier: ^5.9.3
-        version: 5.9.3(effect@4.0.0-rc.109)(supports-color@7.2.0)
+        specifier: ^7.0.0
+        version: 7.0.0(@effected/commands@0.5.0(effect@4.0.0-rc.109))(@effected/git@0.9.0(effect@4.0.0-rc.109))(@effected/workspaces@0.17.1(@effected/jsonc@0.7.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109))(effect@4.0.0-rc.109)(supports-color@7.2.0)
       effect:
         specifier: catalog:effect
         version: 4.0.0-rc.109
@@ -114,7 +157,7 @@ importers:
         specifier: catalog:effect
         version: 4.0.0-rc.109(effect@4.0.0-rc.109)(vitest@4.1.11)
       '@effected/schemastore':
-        specifier: ^0.4.0
+        specifier: catalog:effected
         version: 0.4.0(effect@4.0.0-rc.109)
       '@savvy-web/github-action-builder':
         specifier: ^2.2.7
@@ -500,16 +543,6 @@ packages:
     peerDependencies:
       effect: 4.0.0-rc.109
 
-  '@effected/lockfiles@0.5.1':
-    resolution: {integrity: sha512-1XbC4DAnieHtg5BnwVc/5k0fzebNAyPieoTWe2MlCyZgCEhCKgtQ4ACY084xvaXWkrusmGNI5SRQgRWyWuj3xA==}
-    engines: {node: '>=24.11.0'}
-    peerDependencies:
-      '@effected/jsonc': ^0.7.0
-      '@effected/npm': ^0.11.0
-      '@effected/semver': ^0.5.0
-      '@effected/yaml': ^0.10.0
-      effect: 4.0.0-rc.109
-
   '@effected/lockfiles@0.6.2':
     resolution: {integrity: sha512-LPIIfmE3LoF03DLoLUH6rcRVreaud43AeqRIc2L4Lpe/NFZybxxHw7E2gIA0ccvAlmQQNZ341hz7q2dDVY/QXQ==}
     engines: {node: '>=24.11.0'}
@@ -590,12 +623,6 @@ packages:
     engines: {node: '>=24.11.0'}
     peerDependencies:
       '@effected/glob': ^0.4.0
-      effect: 4.0.0-rc.109
-
-  '@effected/workspaces@0.14.2':
-    resolution: {integrity: sha512-NNHFwmD1Zw3cBtoU/FJ2txYUrFJcdpT+sJ83NVZqou4vWzE1PdmGEo48xlqvoDnXwQYcSppPbHX0XjKqGASmpg==}
-    engines: {node: '>=24.11.0'}
-    peerDependencies:
       effect: 4.0.0-rc.109
 
   '@effected/workspaces@0.17.1':
@@ -1219,11 +1246,6 @@ packages:
   '@savvy-web/mcp@2.5.1':
     resolution: {integrity: sha512-M9n2OZidOHjiezpRO59VBdLQlmRmSifrNf7BkPqY3+Vecr7L4iTAnRK/QLnB1WWMeLSFdrYtzPrYKnkZt826Hw==}
     hasBin: true
-
-  '@savvy-web/silk-effects@5.9.3':
-    resolution: {integrity: sha512-sQsXX/z/82MPOQ4UYR+CiYdyKzijl0xLI9dbXoRBixfVaHvTWhjBfKfN/wuIUd0Qk6OLRZ/PMTcOuDg3MwWCIQ==}
-    peerDependencies:
-      effect: 4.0.0-rc.109
 
   '@savvy-web/silk-effects@7.0.0':
     resolution: {integrity: sha512-C/ZxZYOeq5eG2uPKej11DqCGWAI8GTkSFBwM/MGvzl9zU3GAMPJF8tmF+aWtmfIXNqgYxxddxFVj/uOCzF2HJA==}
@@ -3851,14 +3873,6 @@ snapshots:
     dependencies:
       effect: 4.0.0-rc.109
 
-  '@effected/lockfiles@0.5.1(@effected/jsonc@0.7.0(effect@4.0.0-rc.109))(@effected/npm@0.11.1(@effected/semver@0.5.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109))(@effected/semver@0.5.0(effect@4.0.0-rc.109))(@effected/yaml@0.10.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109)':
-    dependencies:
-      '@effected/jsonc': 0.7.0(effect@4.0.0-rc.109)
-      '@effected/npm': 0.11.1(@effected/semver@0.5.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109)
-      '@effected/semver': 0.5.0(effect@4.0.0-rc.109)
-      '@effected/yaml': 0.10.0(effect@4.0.0-rc.109)
-      effect: 4.0.0-rc.109
-
   '@effected/lockfiles@0.6.2(@effected/jsonc@0.7.0(effect@4.0.0-rc.109))(@effected/npm@0.11.1(@effected/semver@0.5.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109))(@effected/semver@0.5.0(effect@4.0.0-rc.109))(@effected/yaml@0.10.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109)':
     dependencies:
       '@effected/jsonc': 0.7.0(effect@4.0.0-rc.109)
@@ -3926,25 +3940,6 @@ snapshots:
     dependencies:
       '@effected/glob': 0.4.0(effect@4.0.0-rc.109)
       effect: 4.0.0-rc.109
-
-  '@effected/workspaces@0.14.2(@effected/jsonc@0.7.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109)':
-    dependencies:
-      '@effected/commands': 0.5.0(effect@4.0.0-rc.109)
-      '@effected/git': 0.9.0(effect@4.0.0-rc.109)
-      '@effected/glob': 0.4.0(effect@4.0.0-rc.109)
-      '@effected/lockfiles': 0.5.1(@effected/jsonc@0.7.0(effect@4.0.0-rc.109))(@effected/npm@0.11.1(@effected/semver@0.5.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109))(@effected/semver@0.5.0(effect@4.0.0-rc.109))(@effected/yaml@0.10.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109)
-      '@effected/npm': 0.11.1(@effected/semver@0.5.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109)
-      '@effected/package-json': 0.10.2(effect@4.0.0-rc.109)
-      '@effected/semver': 0.5.0(effect@4.0.0-rc.109)
-      '@effected/walker': 0.5.0(@effected/glob@0.4.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109)
-      '@effected/yaml': 0.10.0(effect@4.0.0-rc.109)
-      '@pnpm/catalogs.config': 1100.0.5
-      '@pnpm/catalogs.protocol-parser': 1100.0.1
-      '@pnpm/catalogs.resolver': 1100.0.1
-      '@pnpm/catalogs.types': 1100.0.1
-      effect: 4.0.0-rc.109
-    transitivePeerDependencies:
-      - '@effected/jsonc'
 
   '@effected/workspaces@0.17.1(@effected/jsonc@0.7.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109)':
     dependencies:
@@ -4458,35 +4453,6 @@ snapshots:
       - redis
       - supports-color
       - utf-8-validate
-
-  '@savvy-web/silk-effects@5.9.3(effect@4.0.0-rc.109)(supports-color@7.2.0)':
-    dependencies:
-      '@changesets/apply-release-plan': 8.0.0
-      '@changesets/config': 4.0.0
-      '@changesets/get-github-info': 1.0.0
-      '@changesets/get-release-plan': 5.0.0
-      '@effected/commands': 0.5.0(effect@4.0.0-rc.109)
-      '@effected/git': 0.9.0(effect@4.0.0-rc.109)
-      '@effected/glob': 0.4.0(effect@4.0.0-rc.109)
-      '@effected/jsonc': 0.7.0(effect@4.0.0-rc.109)
-      '@effected/package-json': 0.10.2(effect@4.0.0-rc.109)
-      '@effected/templates': 0.4.0(effect@4.0.0-rc.109)
-      '@effected/walker': 0.5.0(@effected/glob@0.4.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109)
-      '@effected/workspaces': 0.14.2(@effected/jsonc@0.7.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109)
-      '@effected/yaml': 0.10.0(effect@4.0.0-rc.109)
-      '@manypkg/get-packages': 3.1.0
-      effect: 4.0.0-rc.109
-      mdast-util-heading-range: 4.0.0
-      mdast-util-to-string: 4.0.0
-      remark-gfm: 4.0.1(supports-color@7.2.0)
-      remark-parse: 11.0.0(supports-color@7.2.0)
-      remark-stringify: 11.0.0
-      shell-quote: 1.10.0
-      unified: 11.0.5
-      unified-lint-rule: 3.0.1
-      unist-util-visit: 5.1.0
-    transitivePeerDependencies:
-      - supports-color
 
   '@savvy-web/silk-effects@7.0.0(@effected/commands@0.5.0(effect@4.0.0-rc.109))(@effected/git@0.9.0(effect@4.0.0-rc.109))(@effected/workspaces@0.17.1(@effected/jsonc@0.7.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109))(effect@4.0.0-rc.109)(supports-color@7.2.0)':
     dependencies:
