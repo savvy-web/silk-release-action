@@ -25,6 +25,9 @@ const makeDiscoveryLayer = (packages: WsPkgStub[]): Layer.Layer<WorkspaceDiscove
 		resolveFile: () => Effect.die("not implemented"),
 		resolveFiles: () => Effect.die("not implemented"),
 		refresh: () => Effect.void,
+		infoIn: () => Effect.die(new Error("infoIn() not stubbed")),
+		listPackagesIn: () => Effect.die(new Error("listPackagesIn() not stubbed")),
+		refreshIn: () => Effect.void,
 	});
 
 /**
