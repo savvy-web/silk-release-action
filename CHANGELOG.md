@@ -1,5 +1,20 @@
 # @savvy-web/silk-release-action
 
+## 4.6.7
+
+### Dependencies
+
+* | Dependency              | Type       | Action  | From    | To      |                                                                              |
+  | ----------------------- | ---------- | ------- | ------- | ------- | ---------------------------------------------------------------------------- |
+  | @effected/markdown      | dependency | updated | ^0.6.1  | ^0.6.2  |                                                                              |
+  | @effected/workspaces    | dependency | updated | ^0.17.1 | ^0.17.2 |                                                                              |
+  | @effected/yaml          | dependency | updated | ^0.10.0 | ^0.11.0 |                                                                              |
+  | @savvy-web/silk-effects | dependency | updated | ^7.0.0  | ^7.0.1  | [#295][#295] Thanks [@savvy-web-bot](https://github.com/apps/savvy-web-bot)! |
+
+### Patch Changes
+
+[#295]: https://github.com/savvy-web/silk-release-action/pull/295
+
 ## 4.6.6
 
 ### Dependencies
