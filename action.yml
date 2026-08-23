@@ -152,6 +152,24 @@ inputs:
       A GitHub App token cannot access GitHub Packages at all.
     required: false
     default: ""
+  on-build:
+    description: |
+      Optional command run after the validation build. A non-zero exit fails the
+      validation phase.
+
+      Purely a gate: it runs a command and reads an exit code. It must not push,
+      commit, or otherwise mutate the repository, and the calling job's
+      permissions are unchanged whether it is set or not.
+
+      Gating is strictly on the exit code -- unlike the build itself, the
+      command's stderr is not inspected, so a gate may print the word "error"
+      and still pass by exiting 0.
+
+      Skipped in dry-run, along with the build it gates.
+
+      Unset is a total no-op: no execution, no output change, no new log group.
+    required: false
+    default: ""
 outputs:
   token:
     description: Generated GitHub App installation token (for use in subsequent steps)

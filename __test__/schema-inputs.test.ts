@@ -102,7 +102,7 @@ describe("action.yml ↔ src/ input reads", () => {
 describe("readInputs", () => {
 	const provide = (env: Record<string, string>) => ActionInput.layer({ ...CREDENTIALS, ...env });
 
-	it("should apply action.yml defaults when everything optional is absent", () =>
+	it.effect("should apply action.yml defaults when everything optional is absent", () =>
 		Effect.gen(function* () {
 			const inputs = yield* readInputs.pipe(Effect.provide(provide({})));
 			expect(inputs.releaseBranch).toBe("changeset-release/main");
@@ -115,7 +115,9 @@ describe("readInputs", () => {
 			expect(inputs.customRegistries).toEqual([]);
 			expect(Option.isNone(inputs.autoMerge)).toBe(true);
 			expect(Option.isNone(inputs.phase)).toBe(true);
-		}));
+			expect(Option.isNone(inputs.onBuild)).toBe(true);
+		}),
+	);
 
 	it.effect("should decode supplied values", () =>
 		Effect.gen(function* () {
@@ -144,13 +146,35 @@ describe("readInputs", () => {
 		}),
 	);
 
-	it("should fail rather than silently defaulting on a malformed boolean", () =>
+	it.effect("should fail rather than silently defaulting on a malformed boolean", () =>
 		Effect.gen(function* () {
 			// `Config.withDefault` reads the ISSUE, not the combinator: a malformed
 			// value must not be classified as missing data and defaulted to a REAL run.
 			const exit = yield* Effect.exit(readInputs.pipe(Effect.provide(provide({ "dry-run": "yes" }))));
 			expect(exit._tag).toBe("Failure");
-		}));
+		}),
+	);
+
+	it.effect("should treat a blank on-build as absent, not as an empty command", () =>
+		Effect.gen(function* () {
+			// A caller plumbing an unset workflow input through writes
+			// `on-build: ${{ inputs.on-build }}`, which passes "" — not an absent
+			// variable. `Option.some("")` here would spawn an empty command on
+			// every release in every repo that plumbs the input through.
+			const blank = yield* readInputs.pipe(Effect.provide(provide({ "on-build": "" })));
+			expect(Option.isNone(blank.onBuild)).toBe(true);
+
+			const whitespace = yield* readInputs.pipe(Effect.provide(provide({ "on-build": "   " })));
+			expect(Option.isNone(whitespace.onBuild)).toBe(true);
+		}),
+	);
+
+	it.effect("should carry the on-build command when set", () =>
+		Effect.gen(function* () {
+			const inputs = yield* readInputs.pipe(Effect.provide(provide({ "on-build": "pnpm catalog:check" })));
+			expect(inputs.onBuild).toEqual(Option.some("pnpm catalog:check"));
+		}),
+	);
 
 	it.effect("should fail on an unrecognised phase rather than routing to the no-op arm", () =>
 		Effect.gen(function* () {

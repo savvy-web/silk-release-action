@@ -103,7 +103,7 @@ export const runValidation = (inputs: Inputs) =>
 				// named fallback rather than failing; only the build one is visible
 				// downstream. See each module.
 				const issuesResult = yield* linkIssues(inputs);
-				const buildResult = yield* buildValidation(packageManager);
+				const buildResult = yield* buildValidation(packageManager, inputs.onBuild);
 
 				// Steps 3-5 — publish / release-notes / SBOM validation.
 				//

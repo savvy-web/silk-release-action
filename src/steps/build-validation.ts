@@ -17,7 +17,7 @@
 
 import type { CheckRun, Repo } from "@effected/github";
 import type { ActionEnvironment, ActionLogger, ActionOutputs, DryRun } from "@effected/github-actions";
-import type { FileSystem } from "effect";
+import type { FileSystem, Option } from "effect";
 import { Effect } from "effect";
 import type { ChildProcessSpawner } from "effect/unstable/process";
 import { grouped } from "../utils/grouped.js";
@@ -70,17 +70,19 @@ export type BuildValidationServices =
  * Run the build validation inside a collapsible log group.
  *
  * @param packageManager - The detected package manager, for the script argv.
+ * @param onBuild - The optional `on-build` gate command; `None` is a no-op.
  * @returns The build result, or {@link buildValidationFailed}. Never fails.
  *
  * @public
  */
 export const buildValidation = (
 	packageManager: string,
+	onBuild: Option.Option<string>,
 ): Effect.Effect<BuildValidationResult, never, BuildValidationServices> =>
 	Effect.gen(function* () {
 		const result = yield* grouped(
 			"Validate builds",
-			validateBuilds(packageManager).pipe(
+			validateBuilds(packageManager, onBuild).pipe(
 				Effect.catch((e) =>
 					Effect.gen(function* () {
 						// `logError`, not `logWarning` — the level matches the consequence.

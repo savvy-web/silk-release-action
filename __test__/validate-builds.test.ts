@@ -23,7 +23,7 @@ import { ScriptedSpawner } from "@effected/commands";
 import type { CheckRunOutput } from "@effected/github";
 import { CheckRun, CheckRunRef, Repo, RepoRef } from "@effected/github";
 import { ActionEnvironment, ActionOutputs, DryRun } from "@effected/github-actions";
-import { Effect, Layer, Logger } from "effect";
+import { Effect, Layer, Logger, Option } from "effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BuildValidationResult } from "../src/utils/validate-builds.js";
 import { validateBuilds } from "../src/utils/validate-builds.js";
@@ -89,6 +89,8 @@ interface RunOpts {
 	/** Answers the build spawn. Defaults to a clean exit 0. */
 	script?: (command: string, args: ReadonlyArray<string>) => ScriptResult;
 	dryRun?: boolean;
+	/** The `on-build` gate command, or `None` for the unset no-op. */
+	onBuild?: Option.Option<string>;
 }
 
 const runStage = async (
@@ -105,7 +107,7 @@ const runStage = async (
 	// could set (undeclared in `action.yml`, now removed), and `dry-run` comes
 	// from the `DryRun` service rather than being re-read here.
 	const result = await Effect.runPromise(
-		validateBuilds("pnpm").pipe(
+		validateBuilds("pnpm", opts.onBuild ?? Option.none()).pipe(
 			Effect.provide(Layer.mergeAll(githubLayers(f), spawner.layer, NodeFileSystem.layer)),
 			Effect.provide(Logger.layer([])),
 			Effect.provide(DryRun.layerFrom(opts.dryRun === true)),
@@ -285,5 +287,148 @@ describe("validateBuilds", () => {
 			process.chdir(originalCwd);
 			rmSync(scratchDir, { recursive: true, force: true });
 		}
+	});
+
+	describe("the on-build gate", () => {
+		/** Answers the build with exit 0 and the gate with `gateExit`. */
+		const buildThenGate =
+			(gateExit: number, gateStderr = "") =>
+			(command: string): ScriptResult =>
+				command === "pnpm"
+					? { exit: 0, stdout: "Build complete\n", stderr: "" }
+					: { exit: gateExit, stderr: gateStderr };
+
+		it("spawns nothing extra and passes when no gate is configured", async () => {
+			const f = makeFixtures();
+
+			const { result, spawner } = await runStage(f, { script: () => ({ exit: 0 }) });
+
+			expect(result.success).toBe(true);
+			// The build only. An unset input is a total no-op.
+			expect(spawner.spawns).toHaveLength(1);
+		});
+
+		it("passes the phase when the gate exits zero", async () => {
+			const f = makeFixtures();
+
+			const { result, spawner } = await runStage(f, {
+				onBuild: Option.some("catalog-check"),
+				script: buildThenGate(0),
+			});
+
+			expect(result.success).toBe(true);
+			expect(spawner.spawns).toHaveLength(2);
+			expect(spawner.spawns[1].command).toBe("catalog-check");
+		});
+
+		it("fails the phase when the gate exits non-zero", async () => {
+			const f = makeFixtures();
+
+			const { result } = await runStage(f, {
+				onBuild: Option.some("catalog-check"),
+				script: buildThenGate(1, "catalog drift in @scope/pkg\n"),
+			});
+
+			expect(result.success).toBe(false);
+			// `errors` is load-bearing: the check derivation renders it as the
+			// finding message, so the gate's own output has to survive into it.
+			expect(result.errors).toContain("catalog-check");
+			expect(result.errors).toContain("catalog drift in @scope/pkg");
+			expect(f.completed[0].conclusion).toBe("failure");
+		});
+
+		it("carries a gate diagnostic written to STDOUT into errors", async () => {
+			// THE PAIR-LEVEL CASE. A gate command chooses its own streams, and many
+			// CLIs put the primary report on stdout — rolldown's `--check` prints
+			// "Catalog drift detected" there and reserves stderr for resolution
+			// failures. Capturing stderr alone fails the release with a finding that
+			// does not say what drifted.
+			const f = makeFixtures();
+
+			const { result } = await runStage(f, {
+				onBuild: Option.some("catalog-check"),
+				script: (command) =>
+					command === "pnpm"
+						? { exit: 0, stdout: "Build complete\n", stderr: "" }
+						: { exit: 1, stdout: "Catalog drift detected: @scope/pkg\n", stderr: "" },
+			});
+
+			expect(result.success).toBe(false);
+			expect(result.errors).toContain("Catalog drift detected: @scope/pkg");
+		});
+
+		it("carries both streams into errors when the gate writes to each", async () => {
+			const f = makeFixtures();
+
+			const { result } = await runStage(f, {
+				onBuild: Option.some("catalog-check"),
+				script: (command) =>
+					command === "pnpm"
+						? { exit: 0, stdout: "Build complete\n", stderr: "" }
+						: { exit: 1, stdout: "drift on stdout\n", stderr: "resolution failed on stderr\n" },
+			});
+
+			expect(result.success).toBe(false);
+			expect(result.errors).toContain("drift on stdout");
+			expect(result.errors).toContain("resolution failed on stderr");
+		});
+
+		it("passes a gate that exits zero while printing the word error", async () => {
+			// THE DISCRIMINATING CASE. `success` for the BUILD is exit code AND a
+			// stderr grep for "error"/"ERROR". Folding the gate into that grep — as
+			// an earlier design did — would fail every release whose checker printed
+			// "0 errors found" and exited 0. The gate's contract is its exit code
+			// alone.
+			const f = makeFixtures();
+
+			const { result } = await runStage(f, {
+				onBuild: Option.some("catalog-check"),
+				script: buildThenGate(0, "0 errors found\nERROR: none\n"),
+			});
+
+			expect(result.success).toBe(true);
+		});
+
+		it("does not run the gate when the build already failed", async () => {
+			const f = makeFixtures();
+
+			const { result, spawner } = await runStage(f, {
+				onBuild: Option.some("catalog-check"),
+				script: () => ({ exit: 1, stderr: "error TS1005\n" }),
+			});
+
+			expect(result.success).toBe(false);
+			// Gating on a build that failed produces a confusing second error on top
+			// of the real one.
+			expect(spawner.spawns).toHaveLength(1);
+		});
+
+		it("does not run the gate in dry-run, along with the build it gates", async () => {
+			const f = makeFixtures();
+
+			const { result, spawner } = await runStage(f, {
+				dryRun: true,
+				onBuild: Option.some("catalog-check"),
+			});
+
+			// A rehearsal that executes a repo-supplied command while skipping the
+			// build it gates is a side effect with no signal.
+			expect(spawner.spawns).toHaveLength(0);
+			expect(result.success).toBe(true);
+		});
+
+		it("reports success: false rather than failing when the gate cannot be spawned", async () => {
+			const f = makeFixtures();
+
+			const { result } = await runStage(f, {
+				onBuild: Option.some("no-such-binary"),
+				script: (command) =>
+					command === "pnpm" ? { exit: 0, stdout: "", stderr: "" } : ScriptedSpawner.notFound(command),
+			});
+
+			// The step's error channel is `never` and must stay that way.
+			expect(result.success).toBe(false);
+			expect(result.errors).toContain("no-such-binary");
+		});
 	});
 });
