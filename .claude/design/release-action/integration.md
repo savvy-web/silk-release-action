@@ -4,8 +4,8 @@ category: integration
 status: current
 completeness: 92
 created: 2026-02-07
-updated: 2026-08-06
-last-synced: 2026-08-17
+updated: 2026-08-23
+last-synced: 2026-08-23
 module: release-action
 related:
   - architecture.md
@@ -83,6 +83,7 @@ Authentication and publishing are handled by `@effected/npm` services in Phase 3
 - **`PackagePublish`** — `pack(directory, opts)` runs npm pack once per build directory; `publishTarball(path, opts)` publishes the pre-packed tarball; `dryRun(directory, opts)` runs `npm publish --dry-run`; `setupAuth({ registry, token, npmrcPath })` writes auth to the npmrc. Every npm invocation dispatches through `LocalExec`, whose launcher is built by `Workspaces.localExecLayer()` in `src/release/layers.ts` from the **detected** package manager — so `NpmExecutor.dlx` resolves to `pnpm dlx npm@11` in a pnpm workspace and the npm equivalent elsewhere, and a Phase-2 dry-run validates against the exact npm the Phase-3 publish runs. The predecessor's static `LocalExec.layerFor("pnpm", …)` asserted pnpm regardless of the workspace; a dlx executor with no launcher now fails typed rather than silently falling back to the runner's bundled npm 10.x, which cannot do OIDC trusted publishing. The dlx-fetched npm is pinned to `npm@11`: it lands OIDC trusted publishing (Node 24 ships npm 10.x, which lacks it) while avoiding npm 12.0.0, which changed `pack --json` from an entry array to a name-keyed object — every publish failed `npm pack returned empty result` when npm 12 took the `latest` tag on 2026-07-08 — and whose `publish` throws `MODULE_NOT_FOUND: sigstore` (npm/cli#9722). `@effected/npm` reads both `pack --json` shapes and refuses a manifest carrying `catalog:`/`workspace:` specifiers or a zero-file tarball; the action consumes that. OIDC for npm and JSR is handled inside `PackagePublish.publishTarball`.
 - **`NpmRegistry`** — `version(name, version, opts)` probes a registry for an existing version's tarball digest. Returns an absent value when the version is not published, the digest when it is. This is an **HTTP read carrying its own token**, not an `npm view` subprocess, which is why it no longer needs an npmrc. Used by `publishDirectoryGroup` before deciding whether to publish, skip, or abort.
 - **`classifyRegistry`** — the single classification (`npm` | `github-packages` | `jsr` | `custom`) behind `pickToken` and the token-auth decision below.
+- **`registryShortLabel` / `registryDisplayName` / `registryHost`** — the registry label vocabulary behind the `⬆` rows in the publish and validation log trees and the registry names in report prose. These were local (`src/utils/registry-label.ts`) until effected#196 carried them upstream verbatim; that file is deleted and the four importers (`release/{publish,validation,report,releases}.ts`) now take them from the kit. No rendered string changed — `npm`/`github`/`jsr` short, `npm`/`GitHub Packages`/`JSR` display, hostname (port preserved) for a custom registry.
 
 ##### Token-auth publishing fallback
 
@@ -251,7 +252,6 @@ Packing once ensures every registry receives identical content with the same SHA
 | `src/release/meta-archive.ts` | tarMetaFolder: packs a bundler `meta/` folder into a `…<group>.meta.tgz` doc bundle |
 | `src/utils/group-id.ts` | getGroupId, insertGroupToken — byte-group asset naming |
 | `src/utils/detect-package-manager.ts` | `PackageManagerDetector` delegate; `devEngines`-aware (replaced normalize-package-manager.ts) |
-| `src/utils/registry-label.ts` | registryShortLabel / registryHost — ⬆ row labels (publish + validation log trees) |
 | `src/utils/npm-cache.ts` | ensureNpmCacheEnv — runner-writable npm cache, set before any npm command |
 | `src/release/layers.ts` | WorkspacesLive / LocalExecLive / NativeVersioningLive / ReleaseLive composition |
 | `src/layers/app.ts` | MainLive; requires LocalExec, Git and PackageManagerDetector rather than rebuilding them |

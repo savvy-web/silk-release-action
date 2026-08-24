@@ -48,7 +48,7 @@ An **already-closed** linked issue is no longer skipped outright (issue #259): `
 
 ### Subprocesses and Git
 
-Use `@effected/git` for **every** git operation. All 17 raw `ChildProcess.make("git", …)` spawns were deleted — do not reintroduce one. For other subprocesses use `LocalExec` / `ToolDiscovery` from `@effected/commands`, and `PackagePublish` / `NpmRegistry` from `@effected/npm` for npm. `@actions/exec` is not a dependency.
+Use `@effected/git` for **every** git operation. All 17 raw `ChildProcess.make("git", …)` spawns were deleted — do not reintroduce one. For other subprocesses use `LocalExec` / `ToolDiscovery` from `@effected/commands`, and `PackagePublish` / `NpmRegistry` from `@effected/npm` for npm. The registry label vocabulary (`registryShortLabel`, `registryDisplayName`, `registryHost`) is kit-owned too since effected#196 absorbed `utils/registry-label.ts` verbatim — import it, do not re-localise it. `@actions/exec` is not a dependency.
 
 ### Error Handling
 

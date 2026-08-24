@@ -4,8 +4,8 @@ category: testing
 status: current
 completeness: 90
 created: 2026-02-07
-updated: 2026-08-15
-last-synced: 2026-08-17
+updated: 2026-08-23
+last-synced: 2026-08-23
 module: release-action
 related:
   - architecture.md
@@ -317,7 +317,7 @@ Inject inputs via the `ActionInput` layer, not by mutating `process.env` between
 | `__test__/load-release-config.test.ts` | `utils/load-release-config.ts` | Infra |
 | `__test__/summary-writer.test.ts` | `utils/summary-writer.ts` | Infra |
 | `__test__/github-urls.test.ts` | `utils/github-urls.ts` | Infra |
-| `__test__/registry-label.test.ts` | `utils/registry-label.ts` | Infra |
+| `__test__/registry-label.test.ts` | `@effected/npm` registry labels — **adoption guard**, not a unit test of local code; it pins the exact strings the kit must keep returning after effected#196 absorbed `src/utils/registry-label.ts` | Infra |
 | `__test__/update-sticky-comment.test.ts` | `utils/update-sticky-comment.ts` | Infra |
 | `__test__/unit/utils/count-changesets.test.ts` | `utils/count-changesets.ts` | Infra |
 | `__test__/unit/utils/npm-cache.test.ts` | `utils/npm-cache.ts` | Infra |

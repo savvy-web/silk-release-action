@@ -93,7 +93,7 @@ We author nearly every runtime dependency, so a bug or missing API can be fixed 
 **For the link/override mechanisms, the full procedure, and the installed dependency line:**
 → `@./CLAUDE.dogfooding.md`
 
-Load before linking a local library build, when a duplicate copy shows up in the bundle, or to check which dependency version a behaviour comes from. **Currently no link or override is active.** `@savvy-web/github-action-effects` is **dead** — replaced wholesale by the `@effected/*` kit in [#191](https://github.com/savvy-web/silk-release-action/pull/191).
+Load before linking a local library build, when a duplicate copy shows up in the bundle, or to check which dependency version a behaviour comes from. **Currently no link or override is active.** When one is, an override on a sibling repo's build must also be `injected` — otherwise a second `effect` instance enters the process and the failures are runtime, not type errors. `@savvy-web/github-action-effects` is **dead** — replaced wholesale by the `@effected/*` kit in [#191](https://github.com/savvy-web/silk-release-action/pull/191).
 
 ## Development & Release Cycle
 

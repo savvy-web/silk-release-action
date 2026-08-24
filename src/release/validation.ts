@@ -14,7 +14,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
 import { ActionLogger } from "@effected/github-actions";
-import { PackagePublish, classifyRegistry } from "@effected/npm";
+import { PackagePublish, classifyRegistry, registryShortLabel } from "@effected/npm";
 import { Package } from "@effected/package-json";
 import type { Component, SbomMetadataOptions } from "@effected/sbom";
 import { Contact, NtiaReport, Sbom, SbomMetadata, SbomMetadataSource, Supplier } from "@effected/sbom";
@@ -27,7 +27,6 @@ import { extractReleaseNotes } from "../utils/extract-release-notes.js";
 import { getGroupId } from "../utils/group-id.js";
 import type { ConfigSource } from "../utils/load-release-config.js";
 import { loadSBOMConfig } from "../utils/load-release-config.js";
-import { registryShortLabel } from "../utils/registry-label.js";
 import { sortReleasesTopologically } from "../utils/sort-releases-topologically.js";
 import { ChangesetConfig } from "./changeset-config.js";
 import { ValidationError } from "./errors.js";

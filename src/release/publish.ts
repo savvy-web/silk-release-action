@@ -20,7 +20,15 @@ import {
 	ActionState,
 	Secret,
 } from "@effected/github-actions";
-import { NpmExecutor, NpmRegistry, PackagePublish, classifyRegistry } from "@effected/npm";
+import type { RegistryCredential } from "@effected/npm";
+import {
+	NpmExecutor,
+	NpmRegistry,
+	PackagePublish,
+	classifyRegistry,
+	registryHost,
+	registryShortLabel,
+} from "@effected/npm";
 import type { SigstoreSigner } from "@effected/sbom";
 import { CYCLONEDX_BOM_PREDICATE, Sbom, SbomMetadataSource, SlsaProvenance } from "@effected/sbom";
 import { PublishabilityDetector, WorkspaceDiscovery, WorkspacePackage } from "@effected/workspaces";
@@ -32,7 +40,6 @@ import { ChildProcess } from "effect/unstable/process";
 import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
 import type { CustomRegistryAuth } from "../utils/custom-registries.js";
 import { getGroupId } from "../utils/group-id.js";
-import { registryHost, registryShortLabel } from "../utils/registry-label.js";
 import { sortReleasesTopologically } from "../utils/sort-releases-topologically.js";
 import { attestSubject, buildProvenancePredicate } from "./attest-helpers.js";
 import { ChangesetConfig } from "./changeset-config.js";
@@ -678,17 +685,28 @@ const publishDirectoryGroup = (
 				continue;
 			}
 
+			// Bearer on this path: every token that reaches here is an `_authToken`
+			// value. The basic (`_auth`) arm exists for the `custom-registries`
+			// line shape this action does not yet re-accept — see the
+			// `BASIC_AUTH_LINE` rejection in `utils/custom-registries.ts`.
+			//
+			// One credential, both calls, on purpose: `setupAuth` writes the npmrc
+			// key and the probe picks its HTTP scheme from the same value, so the
+			// read and the publish cannot authenticate differently against one
+			// registry.
 			const redactedToken = token === null ? null : Redacted.make(token);
-			if (redactedToken !== null) {
+			const credential: RegistryCredential | null =
+				redactedToken === null ? null : { kind: "token", token: redactedToken };
+			if (credential !== null) {
 				yield* publishSvc
-					.setupAuth({ registry: t.registry, token: redactedToken, npmrcPath })
+					.setupAuth({ registry: t.registry, credential, npmrcPath })
 					.pipe(Effect.catch((e) => Effect.logWarning(`setupAuth failed for ${t.registry}: ${e.message}`)));
 			}
 
 			const probe = yield* registrySvc
 				.version(packResult.name, packResult.version, {
 					registry: t.registry,
-					...(redactedToken !== null ? { token: redactedToken } : {}),
+					...(credential !== null ? { credential } : {}),
 				})
 				.pipe(
 					Effect.map((value) => ({ ok: true as const, value })),

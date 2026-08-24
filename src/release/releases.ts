@@ -17,7 +17,7 @@ import type { Attestation, GitHubError, ReleaseInfo as GitHubReleaseInfo } from 
 import { ArtifactMetadata, GitHubRelease, GitTag, Repo, StorageRecordInput } from "@effected/github";
 import type { OidcTokenIssuer } from "@effected/github-actions";
 import { ActionEnvironment, ActionLogger } from "@effected/github-actions";
-import { classifyRegistry } from "@effected/npm";
+import { classifyRegistry, registryDisplayName } from "@effected/npm";
 import type { SigstoreSigner } from "@effected/sbom";
 import { SlsaProvenance } from "@effected/sbom";
 import { WorkspaceDiscovery } from "@effected/workspaces";
@@ -27,7 +27,6 @@ import type { ChildProcessSpawner } from "effect/unstable/process";
 import { extractVersionReleaseNotes } from "../utils/extract-release-notes.js";
 import { packageArtifactUrl, releaseTagUrl, resolveServerUrl } from "../utils/github-urls.js";
 import { getGroupId, insertGroupToken } from "../utils/group-id.js";
-import { registryDisplayName } from "../utils/registry-label.js";
 import { attestSubject, buildProvenancePredicate } from "./attest-helpers.js";
 import { ReleasesError } from "./errors.js";
 import { tarMetaFolder } from "./meta-archive.js";
