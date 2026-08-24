@@ -377,14 +377,20 @@ const makePackagePublishLayer = (
 ) => {
 	const packCalls: string[] = [];
 	const publishTarballCalls: Array<{ tarballPath: string; options: PublishOptions }> = [];
-	const setupAuthCalls: Array<{ registry: string; npmrcPath: string; token: string }> = [];
+	// `kind` is recorded alongside the value: the credential's arm picks BOTH the
+	// npmrc key and the probe's HTTP scheme, so a publish that wrote the right
+	// secret under the wrong spelling would authenticate as nobody. This action
+	// only ever issues the bearer arm today — asserting the arm is what makes a
+	// silent switch to `_auth` fail here.
+	const setupAuthCalls: Array<{ registry: string; npmrcPath: string; kind: string; token: string }> = [];
 
 	const shape: PackagePublishShape = {
 		setupAuth: (input) => {
 			setupAuthCalls.push({
 				registry: input.registry,
 				npmrcPath: input.npmrcPath,
-				token: Redacted.value(input.token),
+				kind: input.credential.kind,
+				token: Redacted.value(input.credential.kind === "token" ? input.credential.token : input.credential.encoded),
 			});
 			return Effect.void;
 		},
@@ -1166,6 +1172,7 @@ describe("runPublishTargets", () => {
 
 				expect(pub.setupAuthCalls).toHaveLength(1);
 				expect(pub.setupAuthCalls[0]?.registry).toBe("https://npm.pkg.github.com/");
+				expect(pub.setupAuthCalls[0]?.kind).toBe("token");
 				expect(pub.setupAuthCalls[0]?.token).toBe("ghp-test-token");
 				expect(pub.setupAuthCalls[0]?.npmrcPath).toBe(userNpmrcPath());
 			}),
@@ -1202,6 +1209,7 @@ describe("runPublishTargets", () => {
 				// The configured token reached the npmrc write for the custom host…
 				expect(pub.setupAuthCalls).toHaveLength(1);
 				expect(pub.setupAuthCalls[0]?.registry).toBe(CUSTOM_REGISTRY);
+				expect(pub.setupAuthCalls[0]?.kind).toBe("token");
 				expect(pub.setupAuthCalls[0]?.token).toBe("custom-registry-token");
 				expect(pub.setupAuthCalls[0]?.npmrcPath).toBe(userNpmrcPath());
 				// …and the publish itself proceeded against that registry.
