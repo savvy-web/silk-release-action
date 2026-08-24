@@ -1,10 +1,9 @@
 import { GitHubMarkdown } from "@effected/github-actions";
-import { classifyRegistry } from "@effected/npm";
+import { classifyRegistry, registryDisplayName } from "@effected/npm";
 import type { SbomMetadata } from "@effected/sbom";
 import type { ValidationOutput } from "../schema/release-output.js";
 import { DEFAULT_SERVER_URL, orgPackagePageUrl } from "../utils/github-urls.js";
 import type { ConfigSource } from "../utils/load-release-config.js";
-import { registryDisplayName } from "../utils/registry-label.js";
 
 /**
  * The `validation` payload of a {@link ValidationOutput} — the single

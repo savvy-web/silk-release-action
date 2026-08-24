@@ -20,7 +20,14 @@ import {
 	ActionState,
 	Secret,
 } from "@effected/github-actions";
-import { NpmExecutor, NpmRegistry, PackagePublish, classifyRegistry } from "@effected/npm";
+import {
+	NpmExecutor,
+	NpmRegistry,
+	PackagePublish,
+	classifyRegistry,
+	registryHost,
+	registryShortLabel,
+} from "@effected/npm";
 import type { SigstoreSigner } from "@effected/sbom";
 import { CYCLONEDX_BOM_PREDICATE, Sbom, SbomMetadataSource, SlsaProvenance } from "@effected/sbom";
 import { PublishabilityDetector, WorkspaceDiscovery, WorkspacePackage } from "@effected/workspaces";
@@ -32,7 +39,6 @@ import { ChildProcess } from "effect/unstable/process";
 import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
 import type { CustomRegistryAuth } from "../utils/custom-registries.js";
 import { getGroupId } from "../utils/group-id.js";
-import { registryHost, registryShortLabel } from "../utils/registry-label.js";
 import { sortReleasesTopologically } from "../utils/sort-releases-topologically.js";
 import { attestSubject, buildProvenancePredicate } from "./attest-helpers.js";
 import { ChangesetConfig } from "./changeset-config.js";

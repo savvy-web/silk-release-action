@@ -93,7 +93,7 @@ We author nearly every runtime dependency, so a bug or missing API can be fixed 
 **For the link/override mechanisms, the full procedure, and the installed dependency line:**
 → `@./CLAUDE.dogfooding.md`
 
-Load before linking a local library build, when a duplicate copy shows up in the bundle, or to check which dependency version a behaviour comes from. **Currently no link or override is active.** `@savvy-web/github-action-effects` is **dead** — replaced wholesale by the `@effected/*` kit in [#191](https://github.com/savvy-web/silk-release-action/pull/191).
+Load before linking a local library build, when a duplicate copy shows up in the bundle, or to check which dependency version a behaviour comes from. **A link IS currently active** — `@effected/npm` and `@effected/github-actions` are `file:` overrides on the sibling `spencerbeggs/effected` build, and both must stay `injected: true` or a second `effect` instance enters the process; read the dogfooding doc before touching either. `@savvy-web/github-action-effects` is **dead** — replaced wholesale by the `@effected/*` kit in [#191](https://github.com/savvy-web/silk-release-action/pull/191).
 
 ## Development & Release Cycle
 

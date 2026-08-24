@@ -2,6 +2,12 @@
  * Tests for registry labelling.
  *
  * @remarks
+ * The three functions now come from `@effected/npm` (effected#196) — our local
+ * `src/utils/registry-label.ts` was deleted and the kit carries our vocabulary
+ * verbatim. This suite stays as an ADOPTION GUARD: it pins the strings we
+ * depend on against upstream drift, so a changed label breaks here rather than
+ * in a release log tree.
+ *
  * These labels are cosmetic, but the classification underneath them is not:
  * `classifyRegistry` decides whether a token is sent and whether `--provenance`
  * is requested. The look-alike-host cases below are the reason this module
@@ -9,8 +15,8 @@
  * formatting one.
  */
 
+import { registryDisplayName, registryHost, registryShortLabel } from "@effected/npm";
 import { describe, expect, it } from "vitest";
-import { registryDisplayName, registryHost, registryShortLabel } from "../src/utils/registry-label.js";
 
 describe("registryShortLabel", () => {
 	it("should label the public npm registry", () => {

@@ -4,8 +4,8 @@ category: architecture
 status: current
 completeness: 95
 created: 2026-02-07
-updated: 2026-08-17
-last-synced: 2026-08-17
+updated: 2026-08-23
+last-synced: 2026-08-23
 module: release-action
 related:
   - integration.md
@@ -71,7 +71,7 @@ The action automates the full release lifecycle: detecting pending changes, mana
 | `@effected/github-actions` | `Action.run`, `ActionInput`, `ActionOutputs`, `ActionState`, `ActionEnvironment`, `ActionLogger`, `GitHubToken`, `OidcTokenIssuer`, `DryRun`, `GitHubMarkdown`, `ActionsProvenance`, `Secret` |
 | `@effected/github` | `GitHubClient` (REST + GraphQL), `Repo`, `CheckRun`, `GitBranch`, `GitCommit`, `GitHubCommit`, `GitHubContent`, `GitHubIssue` (incl. `commentOnce` + `CommentMarker` for marker-keyed idempotent comments), `GitHubRelease`, `GitHubRepository`, `GitTag`, `PullRequest`, `PullRequestComment`, `ArtifactMetadata`, `Attestation`, `GitHubApp`, `harvestIssueReferences` (the closing-keyword issue-reference grammar) |
 | `@effected/git` | Every git operation — `status`, `clean`, `restore`, `branchCreate`, `branchDelete`, `isShallow`, `fetchUnshallow`, log/diff reads |
-| `@effected/npm` | `PackagePublish` (pack / publish / dry-run / auth), `NpmRegistry` (HTTP registry reads), `classifyRegistry` |
+| `@effected/npm` | `PackagePublish` (pack / publish / dry-run / auth), `NpmRegistry` (HTTP registry reads), `classifyRegistry`, the registry label helpers (`registryShortLabel` / `registryDisplayName` / `registryHost`, adopted from the deleted `src/utils/registry-label.ts` via effected#196) |
 | `@effected/sbom` | SBOM generation, `SigstoreSigner` |
 | `@effected/commands` | `LocalExec`, `ToolDiscovery` — the subprocess and tool-probe seams |
 | `@effected/workspaces` | `Workspaces.layerWithGit()`, `WorkspaceDiscovery`, `PublishabilityDetector`, `DependencyGraph`, `PackageManagerDetector` |
@@ -426,7 +426,7 @@ main.ts  (guard + Action.run only)
         |         +-- release/resolve-targets.ts (resolvePublishableTargets, pickToken)
         |         +-- release/changeset-config.ts (ChangesetConfig service)
         |         +-- utils/sort-releases-topologically.ts (DependencyGraph.sortSubset)
-        |         +-- utils/registry-label.ts, utils/count-changesets.ts
+        |         +-- utils/count-changesets.ts
         |         +-- utils/extract-release-notes.ts, utils/load-release-config.ts
         |         +-- PackagePublish.dryRun (@effected/npm) + SBOM (@effected/sbom)
         |     release/validation-checks.ts (deriveValidationChecks, applyCheckUrls — PURE)
@@ -737,7 +737,6 @@ Registry reads go through `NpmRegistry` over `FetchHttpClient` (HTTP, not `npm v
 | `src/utils/native-version.ts` | `runNativeVersion`, `CHANGELOG_MODULES`, token scoping, reset-then-retry |
 | `src/utils/npm-cache.ts` | `ensureNpmCacheEnv` — runner-writable npm cache |
 | `src/utils/porcelain-changes.ts` | `git status --porcelain -z` → Git Data API `FileChange` set |
-| `src/utils/registry-label.ts` | `registryShortLabel` / `registryHost` — `⬆` row labels |
 | `src/utils/release-plan.ts` | Pure projection of the release plan into Phase-1 reporting |
 | `src/utils/release-summary-helpers.ts` | `listPublishablePackages`, `getReleasingPackages`, `resolveReleasePrTitle`, `formatReleasePackageList` |
 | `src/utils/release-table.ts` | The shared "what will be released" table (Phase 1 + Phase 2) |
