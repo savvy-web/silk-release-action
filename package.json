@@ -58,7 +58,7 @@
 		"@effect/vitest": "catalog:effect",
 		"@effected/schemastore": "catalog:effected",
 		"@savvy-web/github-action-builder": "^2.2.9",
-		"@savvy-web/silk": "^3.10.4",
+		"@savvy-web/silk": "^3.10.5",
 		"@vitest-agent/plugin": "^2.4.9",
 		"tsx": "catalog:silk"
 	},
