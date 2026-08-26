@@ -1,5 +1,23 @@
 # @savvy-web/silk-release-action
 
+## 4.6.13
+
+### Dependencies
+
+| Dependency | Type | Action | From | To |
+| --- | --- | --- | --- | --- |
+| @effected/package-json | dependency | updated | ^0.12.0 | ^0.13.0 |
+| @effected/sbom | dependency | updated | ^0.4.3 | ^0.4.4 |
+| @effected/workspaces | dependency | updated | ^0.18.2 | ^0.18.3 |
+
+[#320][#320]
+
+### Thanks
+
+Thanks to [@savvy-web-bot](https://github.com/apps/savvy-web-bot) for their contributions!
+
+[#320]: https://github.com/savvy-web/silk-release-action/pull/320
+
 ## 4.6.12
 
 ### Dependencies
