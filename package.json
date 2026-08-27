@@ -21,7 +21,7 @@
 		"ci:build": "CI=\"true\" turbo run build:prod --log-order=grouped --output-logs=full",
 		"ci:test": "node scripts/check-test-collection.mjs && CI=\"true\" vitest run --coverage",
 		"ci:version": "savvy changeset version && biome format --write .",
-		"claude": "claude --plugin-dir=../../spencerbeggs/effected/plugin",
+		"claude": "claude --plugin-dir=../../spencerbeggs/effected/plugins/claude-code",
 		"generate-schema": "tsx lib/scripts/generate-schema.ts",
 		"lint": "biome check --max-diagnostics=none",
 		"lint:fix": "biome check --write --max-diagnostics=none",
