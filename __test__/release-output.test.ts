@@ -116,6 +116,7 @@ describe("ReleaseOutput schema", () => {
 			githubOnly: 0,
 			githubWithPackages: 1,
 			checksPassed: 1,
+			checksWarning: 0,
 			checksFailed: 0,
 			errorFindings: 0,
 			warningFindings: 0,

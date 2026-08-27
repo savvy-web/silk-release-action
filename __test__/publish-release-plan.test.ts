@@ -49,8 +49,22 @@ const STAMPED_AT = "2026-01-01T00:00:00.000Z";
  * the release table exists to make visible.
  */
 const PACKAGES: ReadonlyArray<PlannedPackage> = [
-	{ name: "@scope/zulu", bumpType: "minor", changesetCount: 1, oldVersion: "1.4.0", newVersion: "1.5.0" },
-	{ name: "@scope/alpha", bumpType: "patch", changesetCount: 0, oldVersion: "2.0.3", newVersion: "2.0.4" },
+	{
+		name: "@scope/zulu",
+		bumpType: "minor",
+		changesetCount: 1,
+		oldVersion: "1.4.0",
+		newVersion: "1.5.0",
+		targetCount: 1,
+	},
+	{
+		name: "@scope/alpha",
+		bumpType: "patch",
+		changesetCount: 0,
+		oldVersion: "2.0.3",
+		newVersion: "2.0.4",
+		targetCount: 1,
+	},
 ];
 
 /** Every comment write the reporting made, in order. */

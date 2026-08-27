@@ -421,6 +421,16 @@
 						}
 					]
 				},
+				"checksWarning": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				},
 				"checksFailed": {
 					"anyOf": [
 						{
@@ -457,6 +467,7 @@
 				"githubOnly",
 				"githubWithPackages",
 				"checksPassed",
+				"checksWarning",
 				"checksFailed",
 				"errorFindings",
 				"warningFindings"
@@ -1109,6 +1120,7 @@
 						"githubOnly": 0,
 						"githubWithPackages": 1,
 						"checksPassed": 5,
+						"checksWarning": 0,
 						"checksFailed": 0,
 						"errorFindings": 0,
 						"warningFindings": 0

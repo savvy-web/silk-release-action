@@ -258,8 +258,13 @@ export const toValidationOutput = (input: ValidationInput): ValidationOutput => 
 		workspaces: input.packageCount,
 		githubOnly: kinds.githubRelease,
 		githubWithPackages: kinds.registry,
-		checksPassed: input.checks.filter((c) => c.outcome === "success").length,
-		checksFailed: input.checks.filter((c) => c.outcome === "failure").length,
+		// `status`, NOT `outcome`. `outcome` is the human sentence shown in the
+		// check table ("Build passed", "No targets"); `status` is the verdict.
+		// Counting `outcome === "success"` matched nothing, so a run with five
+		// passing checks reported `0 check(s) passed`.
+		checksPassed: input.checks.filter((c) => c.status === "pass").length,
+		checksWarning: input.checks.filter((c) => c.status === "warning").length,
+		checksFailed: input.checks.filter((c) => c.status === "error").length,
 		errorFindings,
 		warningFindings,
 	};

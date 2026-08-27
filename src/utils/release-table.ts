@@ -66,17 +66,22 @@ export const releaseTable = GitHubMarkdown.tableFor(ReleaseRow, {
  * @public
  */
 export const RELEASE_TABLE_LEGEND =
-	"Legend: ✅ Ready · ⏳ Pending · ⏭️ Skipped · ⚠️ Warning · ❌ Failed · 🔴 major · 🟡 minor · 🟢 patch";
+	"Legend: ✅ Ready · ⏳ Pending · 🏷️ GitHub release only · ⏭️ Skipped · ⚠️ Warning · ❌ Failed · " +
+	"🔴 major · 🟡 minor · 🟢 patch";
 
 /**
  * The release plan as table rows, with publish-readiness left pending.
  *
  * @remarks
- * Phase 1's projection. `targets` is the one column the release plan cannot
- * answer — validation has not run — so it renders as pending rather than as a
- * guess or a blank. A blank would be indistinguishable from "no targets".
+ * Phase 1's projection. The `targets` column carries the RESOLVED target shape,
+ * not a placeholder: publishability is declared in `package.json`, so what a
+ * package publishes to is knowable before anything is built. Only how many
+ * targets are READY needs the build, which is what Phase 2 replaces this cell
+ * with. Rendering both facts as `pending` hid a decided one behind an undecided
+ * one, and made a package that publishes nowhere indistinguishable from one
+ * nobody had looked at yet.
  *
- * The word alone, with no icon: the status column already carries the hourglass
+ * No icon on a count: the status column already carries the hourglass
  * for the row, and repeating it here both duplicated the signal and widened the
  * column enough to unsettle the table's layout.
  *
@@ -92,6 +97,7 @@ export const toPendingReleaseRows = (
 		readonly changesetCount: number;
 		readonly oldVersion: string;
 		readonly newVersion: string;
+		readonly targetCount: number;
 	}>,
 ): ReadonlyArray<ReleaseRow> =>
 	packages.map((pkg) => ({
@@ -100,7 +106,13 @@ export const toPendingReleaseRows = (
 		versions: `${pkg.oldVersion} → ${pkg.newVersion}`,
 		bump: pkg.bumpType,
 		changesetCount: pkg.changesetCount,
-		targets: "pending",
+		// Phase 1 knows WHAT will be published without building anything —
+		// publishability is declared in `package.json`, not discovered by
+		// compiling. Only READINESS needs the build, so this column carries the
+		// resolved shape now and Phase 2 replaces it with `n/m ready`. It read
+		// `pending` for both facts before, which hid a decided one behind an
+		// undecided one.
+		targets: pkg.targetCount === 0 ? releaseKindCell("github-only") : `${pkg.targetCount} target(s)`,
 	}));
 
 /**

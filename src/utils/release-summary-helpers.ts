@@ -1,8 +1,9 @@
 import { relative, sep } from "node:path";
-import type { PublishabilityDetector, WorkspaceDiscovery } from "@effected/workspaces";
+import type { PublishabilityDetector } from "@effected/workspaces";
+import { WorkspaceDiscovery } from "@effected/workspaces";
 import type { PublishablePackage } from "@savvy-web/silk-effects";
 import { SilkPublishability } from "@savvy-web/silk-effects";
-import type { Effect } from "effect";
+import { Effect } from "effect";
 
 export type { PublishablePackage };
 
@@ -15,6 +16,41 @@ export const listPublishablePackages = (
 	workspaceRoot: string,
 ): Effect.Effect<ReadonlyArray<PublishablePackage>, never, WorkspaceDiscovery | PublishabilityDetector> =>
 	SilkPublishability.listPublishable(workspaceRoot);
+
+/**
+ * Every workspace package, as the title decision needs to see it.
+ *
+ * @remarks
+ * **Deliberately not the publishable subset.** A private tracking package —
+ * one that exists only to give changesets something to version, publishing to
+ * no registry — is not publishable, so it is absent from
+ * {@link listPublishablePackages}. Titling from that subset therefore could
+ * not name the very packages a `github-only` release consists of.
+ *
+ * `targetCount` is filled in from the publishable set where the package
+ * appears, and is `0` otherwise — absent from that set means it publishes
+ * nowhere, which is exactly what `0` says.
+ *
+ * @param workspaceRoot - Absolute path to the workspace root.
+ * @returns Every workspace package with its resolved target count.
+ *
+ * @public
+ */
+export const listAllPackages = (
+	workspaceRoot: string,
+): Effect.Effect<ReadonlyArray<PublishablePackage>, never, WorkspaceDiscovery | PublishabilityDetector> =>
+	Effect.gen(function* () {
+		const discovery = yield* WorkspaceDiscovery;
+		const publishable = yield* listPublishablePackages(workspaceRoot);
+		const targetCounts = new Map(publishable.map((p) => [p.name, p.targetCount] as const));
+		const all = yield* discovery.listPackages().pipe(Effect.catch(() => Effect.succeed([] as ReadonlyArray<never>)));
+		return all.map((pkg) => ({
+			name: pkg.name,
+			version: pkg.version,
+			path: pkg.path,
+			targetCount: targetCounts.get(pkg.name) ?? 0,
+		}));
+	});
 
 /**
  * The publishable packages whose `package.json` changed in this version bump —

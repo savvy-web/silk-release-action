@@ -214,6 +214,7 @@ export const summarizeValidation = (args: {
 		readonly githubOnly: number;
 		readonly githubWithPackages: number;
 		readonly checksPassed: number;
+		readonly checksWarning: number;
 		readonly checksFailed: number;
 		readonly errorFindings: number;
 		readonly warningFindings: number;
@@ -226,7 +227,10 @@ export const summarizeValidation = (args: {
 		case "build-failed":
 			return `Build failed across ${t.workspaces} workspace(s); the publish dry-runs did not run.`;
 		case "checks-failed":
-			return `${t.checksPassed}/${t.checksPassed + t.checksFailed} check(s) passed · ${t.errorFindings} error finding(s)`;
+			return (
+				`${t.checksPassed}/${t.checksPassed + t.checksWarning + t.checksFailed} check(s) passed · ` +
+				`${t.errorFindings} error finding(s)`
+			);
 		case "validated":
 			return (
 				`${t.workspaces} workspace(s) validated · ` +

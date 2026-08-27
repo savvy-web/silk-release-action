@@ -751,8 +751,19 @@ export const ValidationOutput = Schema.Struct({
 			title: "Registry-publishing workspaces",
 			description: "Workspaces that resolved at least one publish target.",
 		}),
-		checksPassed: Schema.Number.annotate({ title: "Checks passed", description: "Validation checks that succeeded." }),
-		checksFailed: Schema.Number.annotate({ title: "Checks failed", description: "Validation checks that failed." }),
+		checksPassed: Schema.Number.annotate({
+			title: "Checks passed",
+			description: "Validation checks whose status is `pass`.",
+		}),
+		checksWarning: Schema.Number.annotate({
+			title: "Checks with warnings",
+			description:
+				"Validation checks whose status is `warning` — neither passed nor failed. Carried so the three counts sum to the number of checks; folding warnings into either bucket loses them.",
+		}),
+		checksFailed: Schema.Number.annotate({
+			title: "Checks failed",
+			description: "Validation checks whose status is `error`.",
+		}),
 		errorFindings: Schema.Number.annotate({
 			title: "Error findings",
 			description: "Findings of `error` severity. Any of these makes `success` false.",
@@ -787,6 +798,7 @@ export const ValidationOutput = Schema.Struct({
 				githubOnly: 0,
 				githubWithPackages: 1,
 				checksPassed: 5,
+				checksWarning: 0,
 				checksFailed: 0,
 				errorFindings: 0,
 				warningFindings: 0,

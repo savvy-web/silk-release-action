@@ -53,7 +53,7 @@ import {
 	NOTHING_TO_RELEASE_TITLE,
 	formatReleasePackageList,
 	getReleasingPackages,
-	listPublishablePackages,
+	listAllPackages,
 	resolveReleasePrTitle,
 } from "./release-summary-helpers.js";
 import { summaryWriter } from "./summary-writer.js";
@@ -336,9 +336,19 @@ export const updateReleaseBranch = (
 			// <version>`; an independent multi-package release lists name@version
 			// (collapsing to a count when long); a single-package repo with nothing
 			// publishable falls back to the root version. Otherwise the prefix.
-			const publishablePackages = yield* listPublishablePackages(process.cwd());
-			const detectedReleasing = getReleasingPackages(publishablePackages, changedFiles, process.cwd());
-			const releasingPackages = detectedReleasing.length > 0 ? detectedReleasing : publishablePackages;
+			// Detect over EVERY workspace package, not just the publishable subset.
+			// A private tracking package is not publishable, so titling from that
+			// subset could not name the packages a `github-only` release consists
+			// of — detection found nothing and the old fallback then claimed the
+			// ENTIRE publishable set was releasing, which is how a two-package
+			// wave was titled `release: 31 packages`.
+			const allPackages = yield* listAllPackages(process.cwd());
+			const releasingPackages = getReleasingPackages(allPackages, changedFiles, process.cwd());
+			if (releasingPackages.length === 0) {
+				// No fallback. An empty detection means no package.json moved, which
+				// is honestly "nothing to release" — never "everything".
+				yield* Effect.logWarning("No package.json changed in the version bump; PR title falls back to pending");
+			}
 			let singlePackageRepoVersion: string | undefined;
 			if (releasingPackages.length === 0 && isSinglePackage()) {
 				const readResult = yield* Effect.result(fs.readFileString("package.json"));
@@ -357,7 +367,7 @@ export const updateReleaseBranch = (
 			prTitle = resolveReleasePrTitle({
 				releasingPackages,
 				perPackageVersioning: yield* isMonorepoForTagging(process.cwd()),
-				releasablePackages: publishablePackages,
+				releasablePackages: allPackages,
 				singlePackageRepoVersion,
 			});
 			if (prTitle !== NOTHING_TO_RELEASE_TITLE) {
