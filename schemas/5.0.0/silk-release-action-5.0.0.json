@@ -1,21 +1,76 @@
 {
 	"$schema": "http://json-schema.org/draft-07/schema#",
-	"$id": "https://raw.githubusercontent.com/savvy-web/silk-release-action/main/silk-release-action.output.schema.json",
+	"$id": "https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.0.0/silk-release-action-5.0.0.json",
 	"$ref": "#/$defs/ReleaseOutput",
 	"$defs": {
 		"Literal_": {
 			"type": "string",
 			"enum": [
-				"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/silk-release-action.output.schema.json"
+				"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.0.0/silk-release-action-5.0.0.json"
 			],
 			"title": "JSON Schema URL",
 			"description": "URL of the hosted JSON Schema this output conforms to. Editors and json-schema-aware consumers use this for hover docs and validation."
 		},
-		"ReleaseStatus": {
+		"BranchManagementOutcome": {
 			"type": "string",
-			"enum": ["no-op", "success", "partial", "failed"],
-			"title": "Release status",
-			"description": "Coarse human-readable status label, derived from the machine flags. `no-op`: nothing to do this run; `success`: the phase completed cleanly; `partial`: the phase completed but with at least one failure; `failed`: the phase did not succeed and did not produce partial results. Consumers needing failure granularity should read `succeeded`/`hasFailures` and the phase payload instead."
+			"enum": ["nothing-to-release", "branch-created", "branch-updated", "branch-unchanged", "conflicted"],
+			"title": "Phase outcome",
+			"description": "`nothing-to-release` — no changesets were found, so no branch or PR work was needed. A SUCCESS: nothing failed. `branch-created` — the release branch and its PR were created. `branch-updated` — an existing release branch and PR were brought up to date. `branch-unchanged` — the release branch already matched the plan and needed no push. `conflicted` — the release branch could not be updated because the merge conflicted; the only failing outcome for this phase."
+		},
+		"BranchManagementFailureStage": {
+			"type": "string",
+			"enum": ["plan", "branch", "pull-request"],
+			"title": "Failure stage",
+			"description": "WHEN the phase failed. `plan` — the release plan could not be read; `branch` — the release branch could not be created or updated (a merge conflict is the usual cause); `pull-request` — the release PR could not be opened or updated."
+		},
+		"BranchManagementFailure": {
+			"type": "object",
+			"properties": {
+				"stage": {
+					"$ref": "#/$defs/BranchManagementFailureStage"
+				},
+				"reason": {
+					"type": "string",
+					"title": "Failure reason",
+					"description": "WHAT went wrong, as a single-line summary."
+				}
+			},
+			"required": ["stage", "reason"],
+			"additionalProperties": false,
+			"title": "Failure"
+		},
+		"Union_": {
+			"type": "string",
+			"enum": ["Infinity", "-Infinity", "NaN"]
+		},
+		"BranchManagementTotals": {
+			"type": "object",
+			"properties": {
+				"changesetFiles": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				},
+				"workspaces": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				}
+			},
+			"required": ["changesetFiles", "workspaces"],
+			"additionalProperties": false,
+			"title": "Totals",
+			"description": "Aggregate counts, so a consumer does not have to reduce the changeset list."
 		},
 		"BranchManagementReleaseBranch": {
 			"type": "object",
@@ -193,28 +248,38 @@
 					"title": "Phase discriminator",
 					"description": "`branch-management` identifies this as a Phase 1 output."
 				},
-				"status": {
-					"$ref": "#/$defs/ReleaseStatus"
-				},
-				"noop": {
-					"type": "boolean",
-					"title": "No-op",
-					"description": "True when no changesets were found and no release-branch updates were necessary; the phase exits without touching the branch or opening a PR."
-				},
-				"succeeded": {
+				"success": {
 					"type": "boolean",
 					"title": "Succeeded",
-					"description": "True when the phase completed cleanly with no failures."
+					"description": "The one boolean a consumer should gate on. True when the phase completed with nothing failed — including a run that had nothing to do, which is a success because nothing failed. Read `outcome` for what specifically happened."
 				},
-				"hasFailures": {
-					"type": "boolean",
-					"title": "Has failures",
-					"description": "True when at least one operation in the phase failed. Set on any failure, including partial ones."
+				"outcome": {
+					"$ref": "#/$defs/BranchManagementOutcome"
+				},
+				"summary": {
+					"type": "string",
+					"title": "Summary",
+					"description": "One human-readable sentence describing the run. Derived from the structured fields beside it and never authored independently, so the prose cannot drift from the data."
 				},
 				"dryRun": {
 					"type": "boolean",
 					"title": "Dry run",
 					"description": "True when the action ran with `dry-run: true`. Phase 3 publishes nothing in dry-run mode; Phases 1 and 2 still observe and report, but mutations (branch updates, PR creation/updating) are suppressed."
+				},
+				"failure": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/BranchManagementFailure"
+						},
+						{
+							"type": "null"
+						}
+					],
+					"title": "Failure",
+					"description": "Why and where the phase failed. Null when `success` is true."
+				},
+				"totals": {
+					"$ref": "#/$defs/BranchManagementTotals"
 				},
 				"branchManagement": {
 					"$ref": "#/$defs/BranchManagementPayload"
@@ -224,11 +289,12 @@
 				"$schema",
 				"schemaVersion",
 				"phase",
-				"status",
-				"noop",
-				"succeeded",
-				"hasFailures",
+				"success",
+				"outcome",
+				"summary",
 				"dryRun",
+				"failure",
+				"totals",
 				"branchManagement"
 			],
 			"additionalProperties": false,
@@ -236,13 +302,17 @@
 			"description": "The structured `result` output emitted when the action runs in the branch-management phase (Phase 1). Triggered by a push to the target branch; ensures/creates the release branch and the release PR.",
 			"examples": [
 				{
-					"$schema": "https://raw.githubusercontent.com/savvy-web/silk-release-action/main/silk-release-action.output.schema.json",
+					"$schema": "https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.0.0/silk-release-action-5.0.0.json",
 					"schemaVersion": "2",
 					"phase": "branch-management",
-					"status": "success",
-					"noop": false,
-					"succeeded": true,
-					"hasFailures": false,
+					"success": true,
+					"outcome": "branch-created",
+					"summary": "1 changeset file · 1 workspace to version · release PR created",
+					"failure": null,
+					"totals": {
+						"changesetFiles": 1,
+						"workspaces": 1
+					},
 					"dryRun": false,
 					"branchManagement": {
 						"releaseBranch": {
@@ -279,6 +349,121 @@
 					}
 				}
 			]
+		},
+		"ValidationOutcome": {
+			"type": "string",
+			"enum": ["validated", "nothing-to-release", "build-failed", "checks-failed"],
+			"title": "Phase outcome",
+			"description": "`validated` — every build passed and no check raised an error finding. `nothing-to-release` — no workspace had a version difference against the target branch, so there was nothing to validate; a SUCCESS, because nothing failed. It usually means the release already merged, or Phase 1 did not commit the expected bumps, and a warning-severity finding is emitted alongside it. `build-failed` — a build failed, so the publish dry-runs never ran and their check rows report the cascade rather than a result of their own. `checks-failed` — builds passed but at least one check produced an error finding."
+		},
+		"ValidationFailureStage": {
+			"type": "string",
+			"enum": ["build", "publish-validation", "sbom", "release-notes"],
+			"title": "Failure stage",
+			"description": "WHEN validation failed. `build` — a workspace build failed, which cascades to every downstream check; `publish-validation` — a publish dry-run failed or could not be completed; `sbom` — SBOM generation or its NTIA check failed; `release-notes` — the release-notes preview could not be produced."
+		},
+		"ValidationFailure": {
+			"type": "object",
+			"properties": {
+				"stage": {
+					"$ref": "#/$defs/ValidationFailureStage"
+				},
+				"reason": {
+					"type": "string",
+					"title": "Failure reason",
+					"description": "WHAT went wrong, as a single-line summary."
+				}
+			},
+			"required": ["stage", "reason"],
+			"additionalProperties": false,
+			"title": "Failure"
+		},
+		"ValidationTotals": {
+			"type": "object",
+			"properties": {
+				"workspaces": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				},
+				"githubOnly": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				},
+				"githubWithPackages": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				},
+				"checksPassed": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				},
+				"checksFailed": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				},
+				"errorFindings": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				},
+				"warningFindings": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				}
+			},
+			"required": [
+				"workspaces",
+				"githubOnly",
+				"githubWithPackages",
+				"checksPassed",
+				"checksFailed",
+				"errorFindings",
+				"warningFindings"
+			],
+			"additionalProperties": false,
+			"title": "Totals",
+			"description": "Aggregate counts, so a consumer does not have to reduce the package, check and finding arrays."
 		},
 		"ValidationBuildValidation": {
 			"type": "object",
@@ -858,28 +1043,38 @@
 					"title": "Phase discriminator",
 					"description": "`validation` identifies this as a Phase 2 output."
 				},
-				"status": {
-					"$ref": "#/$defs/ReleaseStatus"
-				},
-				"noop": {
-					"type": "boolean",
-					"title": "No-op",
-					"description": "True when no packages had version differences against the target branch — either the release has already merged into the target branch, or Phase 1 did not commit the expected version bumps. A run with only version-only packages is NOT a noop; those packages still appear in `publish.packages` with empty `builds`. When this flag is true, a warning-severity finding is also emitted on the `Publish Validation` check so the situation is surfaced to reviewers."
-				},
-				"succeeded": {
+				"success": {
 					"type": "boolean",
 					"title": "Succeeded",
-					"description": "True when the phase completed cleanly with no failures."
+					"description": "The one boolean a consumer should gate on. True when the phase completed with nothing failed — including a run that had nothing to do, which is a success because nothing failed. Read `outcome` for what specifically happened."
 				},
-				"hasFailures": {
-					"type": "boolean",
-					"title": "Has failures",
-					"description": "True when at least one operation in the phase failed. Set on any failure, including partial ones."
+				"outcome": {
+					"$ref": "#/$defs/ValidationOutcome"
+				},
+				"summary": {
+					"type": "string",
+					"title": "Summary",
+					"description": "One human-readable sentence describing the run. Derived from the structured fields beside it and never authored independently, so the prose cannot drift from the data."
 				},
 				"dryRun": {
 					"type": "boolean",
 					"title": "Dry run",
 					"description": "True when the action ran with `dry-run: true`. Phase 3 publishes nothing in dry-run mode; Phases 1 and 2 still observe and report, but mutations (branch updates, PR creation/updating) are suppressed."
+				},
+				"failure": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/ValidationFailure"
+						},
+						{
+							"type": "null"
+						}
+					],
+					"title": "Failure",
+					"description": "Why and where validation failed. Null when `success` is true."
+				},
+				"totals": {
+					"$ref": "#/$defs/ValidationTotals"
 				},
 				"validation": {
 					"$ref": "#/$defs/ValidationPayload"
@@ -889,11 +1084,12 @@
 				"$schema",
 				"schemaVersion",
 				"phase",
-				"status",
-				"noop",
-				"succeeded",
-				"hasFailures",
+				"success",
+				"outcome",
+				"summary",
 				"dryRun",
+				"failure",
+				"totals",
 				"validation"
 			],
 			"additionalProperties": false,
@@ -901,13 +1097,22 @@
 			"description": "The structured `result` output emitted when the action runs in the validation phase (Phase 2). Triggered by a push to the release branch; runs build validation, publish dry-runs, release-notes extraction, and emits the unified Release Validation Summary check-run.",
 			"examples": [
 				{
-					"$schema": "https://raw.githubusercontent.com/savvy-web/silk-release-action/main/silk-release-action.output.schema.json",
+					"$schema": "https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.0.0/silk-release-action-5.0.0.json",
 					"schemaVersion": "2",
 					"phase": "validation",
-					"status": "success",
-					"noop": false,
-					"succeeded": true,
-					"hasFailures": false,
+					"success": true,
+					"outcome": "validated",
+					"summary": "1 workspace validated · builds passed · 0 error findings",
+					"failure": null,
+					"totals": {
+						"workspaces": 1,
+						"githubOnly": 0,
+						"githubWithPackages": 1,
+						"checksPassed": 5,
+						"checksFailed": 0,
+						"errorFindings": 0,
+						"warningFindings": 0
+					},
 					"dryRun": false,
 					"validation": {
 						"buildValidation": {
@@ -1039,10 +1244,6 @@
 			"additionalProperties": false,
 			"title": "Failure",
 			"description": "Why the phase did not complete cleanly, and where it stopped. Null on a clean run. This is the only place the abort reason appears — it is not duplicated onto individual workspaces, which report only that they were `blocked`."
-		},
-		"Union_": {
-			"type": "string",
-			"enum": ["Infinity", "-Infinity", "NaN"]
 		},
 		"PublishTotals": {
 			"type": "object",

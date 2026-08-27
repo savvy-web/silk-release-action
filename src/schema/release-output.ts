@@ -13,9 +13,22 @@
 
 import { Schema } from "effect";
 
-/** Hosted JSON Schema URL; the emitted `result` carries this as `$schema`. */
+/**
+ * Hosted JSON Schema URL; the emitted `result` carries this as `$schema`.
+ *
+ * @remarks
+ * **Versioned, and it has to stay that way.** Every payload the action emits
+ * carries this URL, so it must keep resolving to the shape that payload was
+ * written against long after the schema has moved on. An unversioned URL would
+ * silently re-point old payloads at a newer contract.
+ *
+ * Kept in step with `SCHEMA_SEMVER` in `lib/scripts/generate-schema.ts`, which
+ * derives the file name from the same label. When SchemaStore hosts the
+ * document, this becomes its `schemastore.org` URL and the raw GitHub path
+ * stays as the fallback origin.
+ */
 export const SCHEMA_URL =
-	"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/silk-release-action.output.schema.json";
+	"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.0.0/silk-release-action-5.0.0.json";
 
 /**
  * In-band schema version. Bumped only on a breaking JSON-shape change
@@ -23,52 +36,12 @@ export const SCHEMA_URL =
  *
  * @remarks
  * `"2"` reshaped the publish phase (Phase 3) around the WORKSPACE rather than
- * the package, replaced the `status`/`noop`/`succeeded`/`hasFailures` flag set
- * with the `success` + `outcome` pair, and added `failure`, `totals` and
- * `summary`. Phases 1 and 2 still carry the older flags and are scheduled to
- * follow; the version is one number for the whole document, so it moves when
- * any member of the union does.
+ * the package, and replaced the `status`/`noop`/`succeeded`/`hasFailures` flag
+ * set with the `success` + `outcome` pair across ALL THREE phases, adding
+ * `summary`, `failure` and `totals` to each. The version is one number for the
+ * whole document, so it moves when any member of the union does.
  */
 export const SCHEMA_VERSION = "2";
-
-const StatusLiteral = Schema.Literals(["no-op", "success", "partial", "failed"]).annotate({
-	identifier: "ReleaseStatus",
-	title: "Release status",
-	description:
-		"Coarse human-readable status label, derived from the machine flags. `no-op`: nothing to do this run; `success`: the phase completed cleanly; `partial`: the phase completed but with at least one failure; `failed`: the phase did not succeed and did not produce partial results. Consumers needing failure granularity should read `succeeded`/`hasFailures` and the phase payload instead.",
-});
-
-/** The three orthogonal machine flags every phase derives. */
-export interface ReleaseFlags {
-	readonly noop: boolean;
-	readonly succeeded: boolean;
-	readonly hasFailures: boolean;
-}
-
-/** Human-readable status label — derived from the flags, never the contract. */
-export type ReleaseStatus = Schema.Schema.Type<typeof StatusLiteral>;
-
-/**
- * Derive the human-readable `status` label from the machine flags.
- *
- * @remarks
- * Precedence: no-op wins, then success, then partial, then failed. `status` is
- * a coarse label for logs and summaries only — the three flags (`noop`,
- * `succeeded`, `hasFailures`) are the machine contract.
- *
- * Because the projections set `hasFailures` on *any* failure, `"partial"`
- * here means "completed with failures" — it does not distinguish a fully
- * failed run from a mixed one (the three booleans carry no "some work landed"
- * signal). The `"failed"` arm is therefore a defensive fallthrough that the
- * current projections never reach; a consumer that needs failure granularity
- * should read `succeeded`/`hasFailures` and the phase payload, not `status`.
- */
-export const deriveStatus = (flags: ReleaseFlags): ReleaseStatus => {
-	if (flags.noop) return "no-op";
-	if (flags.succeeded) return "success";
-	if (flags.hasFailures) return "partial";
-	return "failed";
-};
 
 // --- shared top-level field annotations ----------------------------------
 
@@ -92,14 +65,29 @@ const annotatedSchemaVersionField = Schema.Literal(SCHEMA_VERSION).annotate({
 		"In-band schema version. Bumped only on a breaking JSON-shape change (removed/renamed field, changed type) — additive fields do not bump it.",
 });
 
-const annotatedSucceededField = Schema.Boolean.annotate({
+/**
+ * The boolean gate every phase carries.
+ *
+ * @remarks
+ * Deliberately paired with a per-phase `outcome` enum rather than standing
+ * alone. `success` answers "did this work?"; `outcome` answers "what
+ * specifically happened?". Keeping them separate means a consumer filtering on
+ * `success` keeps working when a new outcome member is added — which is what
+ * the old four-field flag set (`status`, `noop`, `succeeded`, `hasFailures`)
+ * could not offer, because answering either question meant recombining
+ * several booleans whose definitions had already drifted from their docs.
+ */
+const annotatedSuccessField = Schema.Boolean.annotate({
 	title: "Succeeded",
-	description: "True when the phase completed cleanly with no failures.",
+	description:
+		"The one boolean a consumer should gate on. True when the phase completed with nothing failed — including a run that had nothing to do, which is a success because nothing failed. Read `outcome` for what specifically happened.",
 });
 
-const annotatedHasFailuresField = Schema.Boolean.annotate({
-	title: "Has failures",
-	description: "True when at least one operation in the phase failed. Set on any failure, including partial ones.",
+/** The derived one-line account every phase carries. */
+const annotatedSummaryField = Schema.String.annotate({
+	title: "Summary",
+	description:
+		"One human-readable sentence describing the run. Derived from the structured fields beside it and never authored independently, so the prose cannot drift from the data.",
 });
 
 const annotatedDryRunField = Schema.Boolean.annotate({
@@ -225,15 +213,54 @@ export const BranchManagementOutput = Schema.Struct({
 		title: "Phase discriminator",
 		description: "`branch-management` identifies this as a Phase 1 output.",
 	}),
-	status: StatusLiteral,
-	noop: Schema.Boolean.annotate({
-		title: "No-op",
+	success: annotatedSuccessField,
+	outcome: Schema.Literals([
+		"nothing-to-release",
+		"branch-created",
+		"branch-updated",
+		"branch-unchanged",
+		"conflicted",
+	]).annotate({
+		identifier: "BranchManagementOutcome",
+		title: "Phase outcome",
 		description:
-			"True when no changesets were found and no release-branch updates were necessary; the phase exits without touching the branch or opening a PR.",
+			"`nothing-to-release` — no changesets were found, so no branch or PR work was needed. A SUCCESS: nothing failed. `branch-created` — the release branch and its PR were created. `branch-updated` — an existing release branch and PR were brought up to date. `branch-unchanged` — the release branch already matched the plan and needed no push. `conflicted` — the release branch could not be updated because the merge conflicted; the only failing outcome for this phase.",
 	}),
-	succeeded: annotatedSucceededField,
-	hasFailures: annotatedHasFailuresField,
+	summary: annotatedSummaryField,
 	dryRun: annotatedDryRunField,
+	failure: Schema.NullOr(
+		Schema.Struct({
+			stage: Schema.Literals(["plan", "branch", "pull-request"]).annotate({
+				identifier: "BranchManagementFailureStage",
+				title: "Failure stage",
+				description:
+					"WHEN the phase failed. `plan` — the release plan could not be read; `branch` — the release branch could not be created or updated (a merge conflict is the usual cause); `pull-request` — the release PR could not be opened or updated.",
+			}),
+			reason: Schema.String.annotate({
+				title: "Failure reason",
+				description: "WHAT went wrong, as a single-line summary.",
+			}),
+		}).annotate({ identifier: "BranchManagementFailure", title: "Failure" }),
+	).annotate({
+		title: "Failure",
+		description: "Why and where the phase failed. Null when `success` is true.",
+	}),
+	totals: Schema.Struct({
+		changesetFiles: Schema.Number.annotate({
+			title: "Changeset files",
+			description:
+				"Changeset files observed in `.changeset/`. NOT the workspace count — one file may name several workspaces, and two files may name the same one, so the two diverge in both directions.",
+		}),
+		workspaces: Schema.Number.annotate({
+			title: "Workspaces",
+			description:
+				"Workspaces the release plan versions. Includes those pulled in only because a dependency moved, which name no changeset of their own.",
+		}),
+	}).annotate({
+		identifier: "BranchManagementTotals",
+		title: "Totals",
+		description: "Aggregate counts, so a consumer does not have to reduce the changeset list.",
+	}),
 	branchManagement: BranchManagementPayload,
 }).annotate({
 	identifier: "BranchManagementOutput",
@@ -245,10 +272,11 @@ export const BranchManagementOutput = Schema.Struct({
 			$schema: SCHEMA_URL,
 			schemaVersion: SCHEMA_VERSION,
 			phase: "branch-management",
-			status: "success",
-			noop: false,
-			succeeded: true,
-			hasFailures: false,
+			success: true,
+			outcome: "branch-created",
+			summary: "1 changeset file · 1 workspace to version · release PR created",
+			failure: null,
+			totals: { changesetFiles: 1, workspaces: 1 },
 			dryRun: false,
 			branchManagement: {
 				releaseBranch: {
@@ -683,15 +711,62 @@ export const ValidationOutput = Schema.Struct({
 		title: "Phase discriminator",
 		description: "`validation` identifies this as a Phase 2 output.",
 	}),
-	status: StatusLiteral,
-	noop: Schema.Boolean.annotate({
-		title: "No-op",
+	success: annotatedSuccessField,
+	outcome: Schema.Literals(["validated", "nothing-to-release", "build-failed", "checks-failed"]).annotate({
+		identifier: "ValidationOutcome",
+		title: "Phase outcome",
 		description:
-			"True when no packages had version differences against the target branch — either the release has already merged into the target branch, or Phase 1 did not commit the expected version bumps. A run with only version-only packages is NOT a noop; those packages still appear in `publish.packages` with empty `builds`. When this flag is true, a warning-severity finding is also emitted on the `Publish Validation` check so the situation is surfaced to reviewers.",
+			"`validated` — every build passed and no check raised an error finding. `nothing-to-release` — no workspace had a version difference against the target branch, so there was nothing to validate; a SUCCESS, because nothing failed. It usually means the release already merged, or Phase 1 did not commit the expected bumps, and a warning-severity finding is emitted alongside it. `build-failed` — a build failed, so the publish dry-runs never ran and their check rows report the cascade rather than a result of their own. `checks-failed` — builds passed but at least one check produced an error finding.",
 	}),
-	succeeded: annotatedSucceededField,
-	hasFailures: annotatedHasFailuresField,
+	summary: annotatedSummaryField,
 	dryRun: annotatedDryRunField,
+	failure: Schema.NullOr(
+		Schema.Struct({
+			stage: Schema.Literals(["build", "publish-validation", "sbom", "release-notes"]).annotate({
+				identifier: "ValidationFailureStage",
+				title: "Failure stage",
+				description:
+					"WHEN validation failed. `build` — a workspace build failed, which cascades to every downstream check; `publish-validation` — a publish dry-run failed or could not be completed; `sbom` — SBOM generation or its NTIA check failed; `release-notes` — the release-notes preview could not be produced.",
+			}),
+			reason: Schema.String.annotate({
+				title: "Failure reason",
+				description: "WHAT went wrong, as a single-line summary.",
+			}),
+		}).annotate({ identifier: "ValidationFailure", title: "Failure" }),
+	).annotate({
+		title: "Failure",
+		description: "Why and where validation failed. Null when `success` is true.",
+	}),
+	totals: Schema.Struct({
+		workspaces: Schema.Number.annotate({
+			title: "Workspaces",
+			description: "Workspaces with a version difference against the target branch.",
+		}),
+		githubOnly: Schema.Number.annotate({
+			title: "GitHub-only workspaces",
+			description:
+				"Workspaces that resolved no publish target — versioned, tagged and released, publishing to no registry. Zero builds is their steady state, not a failure.",
+		}),
+		githubWithPackages: Schema.Number.annotate({
+			title: "Registry-publishing workspaces",
+			description: "Workspaces that resolved at least one publish target.",
+		}),
+		checksPassed: Schema.Number.annotate({ title: "Checks passed", description: "Validation checks that succeeded." }),
+		checksFailed: Schema.Number.annotate({ title: "Checks failed", description: "Validation checks that failed." }),
+		errorFindings: Schema.Number.annotate({
+			title: "Error findings",
+			description: "Findings of `error` severity. Any of these makes `success` false.",
+		}),
+		warningFindings: Schema.Number.annotate({
+			title: "Warning findings",
+			description:
+				"Findings of `warning` severity. These do NOT make `success` false unless the run set `strict-warnings`.",
+		}),
+	}).annotate({
+		identifier: "ValidationTotals",
+		title: "Totals",
+		description: "Aggregate counts, so a consumer does not have to reduce the package, check and finding arrays.",
+	}),
 	validation: ValidationPayload,
 }).annotate({
 	identifier: "ValidationOutput",
@@ -703,10 +778,19 @@ export const ValidationOutput = Schema.Struct({
 			$schema: SCHEMA_URL,
 			schemaVersion: SCHEMA_VERSION,
 			phase: "validation",
-			status: "success",
-			noop: false,
-			succeeded: true,
-			hasFailures: false,
+			success: true,
+			outcome: "validated",
+			summary: "1 workspace validated · builds passed · 0 error findings",
+			failure: null,
+			totals: {
+				workspaces: 1,
+				githubOnly: 0,
+				githubWithPackages: 1,
+				checksPassed: 5,
+				checksFailed: 0,
+				errorFindings: 0,
+				warningFindings: 0,
+			},
 			dryRun: false,
 			validation: {
 				buildValidation: { passed: true, packageCount: 1 },

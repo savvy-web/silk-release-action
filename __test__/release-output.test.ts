@@ -6,41 +6,19 @@
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import type { ValidationOutput } from "../src/schema/release-output.js";
-import { ReleaseOutput, SCHEMA_URL, SCHEMA_VERSION, deriveStatus } from "../src/schema/release-output.js";
-
-describe("deriveStatus", () => {
-	it("returns no-op when noop is set, regardless of other flags", () => {
-		expect(deriveStatus({ noop: true, succeeded: true, hasFailures: false })).toBe("no-op");
-		expect(deriveStatus({ noop: true, succeeded: false, hasFailures: true })).toBe("no-op");
-	});
-
-	it("returns success when succeeded and not noop", () => {
-		expect(deriveStatus({ noop: false, succeeded: true, hasFailures: false })).toBe("success");
-	});
-
-	it("returns success when succeeded even if hasFailures is set", () => {
-		expect(deriveStatus({ noop: false, succeeded: true, hasFailures: true })).toBe("success");
-	});
-
-	it("returns partial when hasFailures and not succeeded or noop", () => {
-		expect(deriveStatus({ noop: false, succeeded: false, hasFailures: true })).toBe("partial");
-	});
-
-	it("returns failed as the fallthrough", () => {
-		expect(deriveStatus({ noop: false, succeeded: false, hasFailures: false })).toBe("failed");
-	});
-});
+import { ReleaseOutput, SCHEMA_URL, SCHEMA_VERSION } from "../src/schema/release-output.js";
 
 describe("ReleaseOutput schema", () => {
 	const branchSample: ReleaseOutput = {
 		$schema: SCHEMA_URL,
 		schemaVersion: SCHEMA_VERSION,
 		phase: "branch-management",
-		status: "success",
-		noop: false,
-		succeeded: true,
-		hasFailures: false,
+		success: true,
+		outcome: "branch-created",
+		summary: "1 changeset file(s) · 1 workspace(s) to version · release PR #1 created",
 		dryRun: false,
+		failure: null,
+		totals: { changesetFiles: 1, workspaces: 1 },
 		branchManagement: {
 			releaseBranch: {
 				name: "changeset-release/main",
@@ -128,11 +106,20 @@ describe("ReleaseOutput schema", () => {
 		$schema: SCHEMA_URL,
 		schemaVersion: SCHEMA_VERSION,
 		phase: "validation",
-		status: "success",
-		noop: false,
-		succeeded: true,
-		hasFailures: false,
+		success: true,
+		outcome: "validated",
+		summary: "1 workspace(s) validated",
 		dryRun: false,
+		failure: null,
+		totals: {
+			workspaces: 1,
+			githubOnly: 0,
+			githubWithPackages: 1,
+			checksPassed: 1,
+			checksFailed: 0,
+			errorFindings: 0,
+			warningFindings: 0,
+		},
 		validation: {
 			buildValidation: { passed: true, packageCount: 1 },
 			checks: [{ name: "Build Validation", status: "pass", outcome: "Build passed", url: null }],

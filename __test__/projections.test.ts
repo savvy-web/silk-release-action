@@ -32,10 +32,10 @@ describe("toBranchManagementOutput", () => {
 		expect(output.phase).toBe("branch-management");
 		expect(output.$schema).toBe(SCHEMA_URL);
 		expect(output.schemaVersion).toBe(SCHEMA_VERSION);
-		expect(output.noop).toBe(false);
-		expect(output.succeeded).toBe(true);
-		expect(output.hasFailures).toBe(false);
-		expect(output.status).toBe("success");
+		expect(output.success).toBe(true);
+		expect(output.outcome).toBe("branch-updated");
+		expect(output.failure).toBeNull();
+		expect(output.totals).toEqual({ changesetFiles: 1, workspaces: 1 });
 		expect(output.dryRun).toBe(false);
 		expect(output.branchManagement.changesets.count).toBe(1);
 		expect(output.branchManagement.releaseBranch.name).toBe("changeset-release/main");
@@ -46,7 +46,10 @@ describe("toBranchManagementOutput", () => {
 		]);
 	});
 
-	it("marks a run with no changesets as a no-op", () => {
+	// `nothing-to-release` is a SUCCESS: nothing failed. The old `noop` flag
+	// reported the same run in a way that read as an absence of work rather
+	// than a correct, complete run with nothing to do.
+	it("reports a run with no changesets as nothing-to-release, and as a success", () => {
 		const output = toBranchManagementOutput({
 			releaseBranchName: "changeset-release/main",
 			existed: false,
@@ -59,8 +62,10 @@ describe("toBranchManagementOutput", () => {
 			dryRun: false,
 		});
 
-		expect(output.noop).toBe(true);
-		expect(output.status).toBe("no-op");
+		expect(output.outcome).toBe("nothing-to-release");
+		expect(output.success).toBe(true);
+		expect(output.failure).toBeNull();
+		expect(output.totals.workspaces).toBe(0);
 		expect(output.branchManagement.releasePr).toBe(null);
 	});
 
@@ -79,9 +84,12 @@ describe("toBranchManagementOutput", () => {
 			dryRun: true,
 		});
 
-		expect(output.hasFailures).toBe(true);
-		expect(output.succeeded).toBe(false);
-		expect(output.status).toBe("partial");
+		expect(output.success).toBe(false);
+		expect(output.outcome).toBe("conflicted");
+		// The failure names WHERE it stopped and WHY, rather than leaving a
+		// consumer to infer it from a boolean.
+		expect(output.failure?.stage).toBe("branch");
+		expect(output.failure?.reason).toContain("merge conflicted");
 		expect(output.dryRun).toBe(true);
 	});
 });
@@ -149,10 +157,11 @@ describe("toValidationOutput", () => {
 		});
 
 		expect(output.phase).toBe("validation");
-		expect(output.noop).toBe(false);
-		expect(output.succeeded).toBe(true);
-		expect(output.hasFailures).toBe(false);
-		expect(output.status).toBe("success");
+		expect(output.success).toBe(true);
+		expect(output.outcome).toBe("validated");
+		expect(output.failure).toBeNull();
+		expect(output.totals.workspaces).toBe(2);
+		expect(output.totals.errorFindings).toBe(0);
 		expect(output.$schema).toBe(SCHEMA_URL);
 		expect(output.schemaVersion).toBe(SCHEMA_VERSION);
 		expect(output.dryRun).toBe(false);
@@ -213,8 +222,12 @@ describe("toValidationOutput", () => {
 			dryRun: false,
 		});
 
-		expect(output.noop).toBe(true);
-		expect(output.status).toBe("no-op");
+		// A run with nothing to validate is a SUCCESS. The old flags reported it
+		// as `succeeded: false`, because `succeeded` was `!noop && ...` — the same
+		// conflation of "empty" with "failed" that `noop` carried elsewhere.
+		expect(output.outcome).toBe("nothing-to-release");
+		expect(output.success).toBe(true);
+		expect(output.failure).toBeNull();
 		expect(output.validation.publish.packages).toEqual([]);
 		expect(output.validation.checkRun).toBeNull();
 	});
@@ -328,9 +341,11 @@ describe("toValidationOutput", () => {
 			dryRun: true,
 		});
 
-		expect(output.hasFailures).toBe(true);
-		expect(output.succeeded).toBe(false);
-		expect(output.status).toBe("partial");
+		expect(output.success).toBe(false);
+		// A failed build cascades: the publish dry-runs never ran, so naming the
+		// build is more useful than reporting the checks it took down with it.
+		expect(output.outcome).toBe("build-failed");
+		expect(output.failure?.stage).toBe("build");
 		expect(output.dryRun).toBe(true);
 		expect(output.validation.buildValidation.passed).toBe(false);
 		expect(output.validation.publish.npmReady).toBe(false);
@@ -379,10 +394,12 @@ describe("toValidationOutput", () => {
 			dryRun: false,
 		});
 
-		// A warning finding does not fail the run.
-		expect(output.succeeded).toBe(true);
-		expect(output.hasFailures).toBe(false);
-		expect(output.status).toBe("success");
+		// A warning finding does not fail the run — only an `error` finding does.
+		expect(output.success).toBe(true);
+		expect(output.outcome).toBe("validated");
+		expect(output.failure).toBeNull();
+		expect(output.totals.warningFindings).toBe(1);
+		expect(output.totals.errorFindings).toBe(0);
 	});
 });
 

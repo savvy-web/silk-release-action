@@ -21,9 +21,15 @@ import type {
 	ValidationFinding,
 	ValidationPackageResult,
 } from "../release/types.js";
-import { summarizeReleaseWave, summarizeWorkspace } from "../utils/release-kind.js";
-import type { BranchManagementOutput, PublishOutput, ReleaseFlags, ValidationOutput } from "./release-output.js";
-import { SCHEMA_URL, SCHEMA_VERSION, deriveStatus } from "./release-output.js";
+import {
+	summarizeBranchManagement,
+	summarizeReleaseWave,
+	summarizeValidation,
+	summarizeWorkspace,
+	tallyReleaseKinds,
+} from "../utils/release-kind.js";
+import type { BranchManagementOutput, PublishOutput, ValidationOutput } from "./release-output.js";
+import { SCHEMA_URL, SCHEMA_VERSION } from "./release-output.js";
 
 /** Input for {@link toBranchManagementOutput}. */
 export interface BranchManagementInput {
@@ -63,20 +69,37 @@ export interface BranchManagementInput {
  * @returns The phase-discriminated branch-management output struct.
  */
 export const toBranchManagementOutput = (input: BranchManagementInput): BranchManagementOutput => {
-	const flags: ReleaseFlags = {
-		noop: input.changesets.length === 0,
-		succeeded: !input.hasConflicts,
-		hasFailures: input.hasConflicts,
-	};
+	// A conflicted branch is the phase's one failure mode; everything else is a
+	// success with a different shape. `nothing-to-release` in particular is a
+	// SUCCESS — the old `noop` flag reported it in a way that read as an absence
+	// of work rather than a correct, complete run with nothing to do.
+	const outcome: BranchManagementOutput["outcome"] = input.hasConflicts
+		? "conflicted"
+		: input.changesets.length === 0
+			? "nothing-to-release"
+			: input.created
+				? "branch-created"
+				: input.updated
+					? "branch-updated"
+					: "branch-unchanged";
+	const success = outcome !== "conflicted";
 	return {
 		$schema: SCHEMA_URL,
 		schemaVersion: SCHEMA_VERSION,
 		phase: "branch-management",
-		status: deriveStatus(flags),
-		noop: flags.noop,
-		succeeded: flags.succeeded,
-		hasFailures: flags.hasFailures,
+		success,
+		outcome,
+		summary: summarizeBranchManagement({
+			outcome,
+			changesetFiles: input.changesetFileCount,
+			workspaces: input.changesets.length,
+			prNumber: input.releasePr?.number ?? null,
+		}),
 		dryRun: input.dryRun,
+		failure: input.hasConflicts
+			? { stage: "branch", reason: "The release branch could not be updated — the merge conflicted." }
+			: null,
+		totals: { changesetFiles: input.changesetFileCount, workspaces: input.changesets.length },
 		branchManagement: {
 			releaseBranch: {
 				name: input.releaseBranchName,
@@ -214,24 +237,47 @@ const toValidationPublishPackage = (
  * @returns The phase-discriminated validation output struct.
  */
 export const toValidationOutput = (input: ValidationInput): ValidationOutput => {
-	const noop = input.packageCount === 0;
-	const publishOk = !input.findings.some((f) => f.severity === "error");
-	// The three flags are orthogonal by design — noop does not clamp hasFailures;
-	// deriveStatus precedence resolves the human-facing label.
-	const flags: ReleaseFlags = {
-		noop,
-		succeeded: !noop && input.buildsPassed && publishOk,
-		hasFailures: !input.buildsPassed || !publishOk,
+	const errorFindings = input.findings.filter((f) => f.severity === "error").length;
+	const warningFindings = input.findings.filter((f) => f.severity === "warning").length;
+	// A build failure cascades: the publish dry-runs never ran, so naming the
+	// build is more useful than reporting the downstream checks it took with it.
+	const outcome: ValidationOutput["outcome"] = !input.buildsPassed
+		? "build-failed"
+		: errorFindings > 0
+			? "checks-failed"
+			: input.packageCount === 0
+				? "nothing-to-release"
+				: "validated";
+	// `nothing-to-release` is a SUCCESS. The old `succeeded` flag was
+	// `!noop && buildsPassed && publishOk`, which reported a clean run with
+	// nothing to validate as NOT succeeded — the same conflation of "empty" with
+	// "failed" that `noop` carried on the publish phase.
+	const success = outcome === "validated" || outcome === "nothing-to-release";
+	const kinds = tallyReleaseKinds(input.validationPackages.map((pkg) => pkg.builds.length));
+	const totals = {
+		workspaces: input.packageCount,
+		githubOnly: kinds.githubRelease,
+		githubWithPackages: kinds.registry,
+		checksPassed: input.checks.filter((c) => c.outcome === "success").length,
+		checksFailed: input.checks.filter((c) => c.outcome === "failure").length,
+		errorFindings,
+		warningFindings,
 	};
 	return {
 		$schema: SCHEMA_URL,
 		schemaVersion: SCHEMA_VERSION,
 		phase: "validation",
-		status: deriveStatus(flags),
-		noop: flags.noop,
-		succeeded: flags.succeeded,
-		hasFailures: flags.hasFailures,
+		success,
+		outcome,
+		summary: summarizeValidation({ outcome, totals }),
 		dryRun: input.dryRun,
+		failure:
+			outcome === "build-failed"
+				? { stage: "build", reason: `${input.packageCount} workspace(s) checked; at least one build failed.` }
+				: outcome === "checks-failed"
+					? { stage: "publish-validation", reason: `${errorFindings} error finding(s) across the validation checks.` }
+					: null,
+		totals,
 		validation: {
 			buildValidation: { passed: input.buildsPassed, packageCount: input.packageCount },
 			checks: input.checks.map((c) => ({ name: c.name, status: c.status, outcome: c.outcome, url: c.url })),

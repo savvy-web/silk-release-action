@@ -181,12 +181,16 @@ outputs:
     description: |
       Structured JSON describing what the run did. A phase-discriminated object
       validated by
-      https://raw.githubusercontent.com/savvy-web/silk-release-action/main/silk-release-action.output.schema.json.
+      https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.0.0/silk-release-action-5.0.0.json.
       Parse it for the full contract; the scalars below mirror the common facts.
   phase:
-    description: "Phase that ran: branch-management, validation, or publishing"
+    description: "Phase that ran: branch-management, validation, or publish"
   status:
-    description: "Human-readable run status: no-op, success, partial, or failed"
+    description: |
+      The phase's own outcome label. Branch management: nothing-to-release,
+      branch-created, branch-updated, branch-unchanged, conflicted. Validation:
+      validated, nothing-to-release, build-failed, checks-failed. Publish:
+      released, nothing-to-release, partial, failed, blocked.
   succeeded:
     description: Whether all intended work completed (or correctly did nothing)
   package-count:

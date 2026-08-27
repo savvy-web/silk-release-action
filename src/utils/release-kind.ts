@@ -175,3 +175,64 @@ export const summarizeWorkspace = (args: {
 			return "Never attempted — the publish phase aborted before this workspace was reached.";
 	}
 };
+
+/**
+ * The one-line account of a branch-management (Phase 1) run.
+ *
+ * @param args - The run's outcome and counts.
+ * @returns One sentence.
+ *
+ * @public
+ */
+export const summarizeBranchManagement = (args: {
+	readonly outcome: "nothing-to-release" | "branch-created" | "branch-updated" | "branch-unchanged" | "conflicted";
+	readonly changesetFiles: number;
+	readonly workspaces: number;
+	readonly prNumber: number | null;
+}): string => {
+	if (args.outcome === "nothing-to-release")
+		return "No changesets found — nothing to version, and no release branch work needed.";
+	if (args.outcome === "conflicted") return "The release branch could not be updated — the merge conflicted.";
+	const pr = args.prNumber === null ? "no release PR" : `release PR #${args.prNumber}`;
+	const verb =
+		args.outcome === "branch-created" ? "created" : args.outcome === "branch-updated" ? "updated" : "already current";
+	return `${args.changesetFiles} changeset file(s) · ${args.workspaces} workspace(s) to version · ${pr} ${verb}`;
+};
+
+/**
+ * The one-line account of a validation (Phase 2) run.
+ *
+ * @param args - The run's outcome and totals.
+ * @returns One sentence.
+ *
+ * @public
+ */
+export const summarizeValidation = (args: {
+	readonly outcome: "validated" | "nothing-to-release" | "build-failed" | "checks-failed";
+	readonly totals: {
+		readonly workspaces: number;
+		readonly githubOnly: number;
+		readonly githubWithPackages: number;
+		readonly checksPassed: number;
+		readonly checksFailed: number;
+		readonly errorFindings: number;
+		readonly warningFindings: number;
+	};
+}): string => {
+	const t = args.totals;
+	switch (args.outcome) {
+		case "nothing-to-release":
+			return "No workspace has a version difference against the target branch — nothing to validate.";
+		case "build-failed":
+			return `Build failed across ${t.workspaces} workspace(s); the publish dry-runs did not run.`;
+		case "checks-failed":
+			return `${t.checksPassed}/${t.checksPassed + t.checksFailed} check(s) passed · ${t.errorFindings} error finding(s)`;
+		case "validated":
+			return (
+				`${t.workspaces} workspace(s) validated · ` +
+				`${t.githubWithPackages} publishing to a registry, ${t.githubOnly} ${releaseKindLabel("github-only")} · ` +
+				`${t.checksPassed} check(s) passed` +
+				(t.warningFindings > 0 ? ` · ${t.warningFindings} warning(s)` : "")
+			);
+	}
+};
