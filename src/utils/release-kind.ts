@@ -22,16 +22,16 @@
  * Whether a released package publishes to a registry or is release-only.
  *
  * @remarks
- * - `registry` — the package resolved at least one publish target, so merging
+ * - `github-with-packages` — the workspace resolved at least one publish target, so merging
  *   the release PR uploads a tarball somewhere.
- * - `github-release` — the package resolved no publish targets. It is
+ * - `github-only` — the workspace resolved no publish targets. It is
  *   versioned, changelogged, tagged and given a GitHub release, and nothing is
  *   uploaded to any registry. This is the intended steady state for a private
  *   tracking package, **not** a degraded one.
  *
  * @public
  */
-export type ReleaseKind = "registry" | "github-release";
+export type ReleaseKind = "github-with-packages" | "github-only";
 
 /**
  * Classify a package by how many publish targets it resolved.
@@ -41,7 +41,8 @@ export type ReleaseKind = "registry" | "github-release";
  *
  * @public
  */
-export const releaseKindOf = (targetCount: number): ReleaseKind => (targetCount > 0 ? "registry" : "github-release");
+export const releaseKindOf = (targetCount: number): ReleaseKind =>
+	targetCount > 0 ? "github-with-packages" : "github-only";
 
 /**
  * The short human label for a release kind.
@@ -52,7 +53,7 @@ export const releaseKindOf = (targetCount: number): ReleaseKind => (targetCount 
  * @public
  */
 export const releaseKindLabel = (kind: ReleaseKind): string =>
-	kind === "registry" ? "Registry publish" : "GitHub release only";
+	kind === "github-with-packages" ? "Registry publish" : "GitHub release only";
 
 /**
  * The icon for a release kind.
@@ -66,7 +67,8 @@ export const releaseKindLabel = (kind: ReleaseKind): string =>
  *
  * @public
  */
-export const releaseKindIcon = (kind: ReleaseKind): string => (kind === "registry" ? "\u{1F4E6}" : "\u{1F3F7}️");
+export const releaseKindIcon = (kind: ReleaseKind): string =>
+	kind === "github-with-packages" ? "\u{1F4E6}" : "\u{1F3F7}️";
 
 /**
  * The icon and label together, as one cell.
@@ -102,7 +104,7 @@ export const tallyReleaseKinds = (targetCounts: Iterable<number>): ReleaseKindTa
 	let registry = 0;
 	let githubRelease = 0;
 	for (const count of targetCounts) {
-		if (releaseKindOf(count) === "registry") registry++;
+		if (releaseKindOf(count) === "github-with-packages") registry++;
 		else githubRelease++;
 	}
 	return { registry, githubRelease };
@@ -125,13 +127,51 @@ export const tallyReleaseKinds = (targetCounts: Iterable<number>): ReleaseKindTa
  * @public
  */
 export const summarizeReleaseWave = (args: {
-	/** Packages that were versioned this wave. */
-	readonly versioned: number;
-	/** Publish targets successfully uploaded to a registry. */
-	readonly publishedTargets: number;
+	/** Workspaces versioned this wave. */
+	readonly workspaces: number;
+	/** Package publications successfully uploaded to a registry. */
+	readonly packagesPublished: number;
 	/** GitHub releases created. */
-	readonly githubReleases: number;
+	readonly releases: number;
 }): string =>
-	`${args.versioned} package(s) versioned · ` +
-	`${args.publishedTargets} published to a registry · ` +
-	`${args.githubReleases} GitHub release(s) created`;
+	`${args.workspaces} workspace(s) versioned · ` +
+	`${args.packagesPublished} package(s) published to a registry · ` +
+	`${args.releases} GitHub release(s) created`;
+
+/**
+ * The one-line account of what happened to a single workspace.
+ *
+ * @remarks
+ * Derived from the workspace's own structured fields and never authored
+ * independently, so the prose on the wire cannot drift from the enums beside
+ * it. That is the whole contract: a reader (or an LLM) can trust `summary`
+ * precisely because nothing can set it to something the data does not say.
+ *
+ * @param args - The workspace's kind, outcome and counts.
+ * @returns One sentence.
+ *
+ * @public
+ */
+export const summarizeWorkspace = (args: {
+	readonly kind: ReleaseKind;
+	readonly outcome: "released" | "published" | "recovered" | "partial" | "failed" | "blocked";
+	readonly packages: number;
+	readonly released: boolean;
+}): string => {
+	switch (args.outcome) {
+		case "released":
+			return "Tagged and released on GitHub; no registry target.";
+		case "published":
+			return `Tagged and released on GitHub; published ${args.packages} package(s) to a registry.`;
+		case "recovered":
+			return `Already on every registry at an identical digest; ${args.packages} package(s) recovered, nothing re-uploaded.`;
+		case "partial":
+			return `Published some packages and failed others across ${args.packages} target(s).`;
+		case "failed":
+			return args.kind === "github-only"
+				? "Tag or GitHub release could not be created."
+				: `Failed to publish ${args.packages} package(s).`;
+		case "blocked":
+			return "Never attempted — the publish phase aborted before this workspace was reached.";
+	}
+};

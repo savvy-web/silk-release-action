@@ -59,42 +59,68 @@ describe("ReleaseOutput schema", () => {
 		},
 	};
 
-	const publishingSample: ReleaseOutput = {
+	const publishSample: ReleaseOutput = {
 		$schema: SCHEMA_URL,
 		schemaVersion: SCHEMA_VERSION,
-		phase: "publishing",
-		status: "success",
-		noop: false,
-		succeeded: true,
-		hasFailures: false,
+		phase: "publish",
+		success: true,
+		outcome: "released",
+		summary: "1 workspace(s) versioned · 1 package(s) published to a registry · 1 GitHub release(s) created",
 		dryRun: false,
-		publishing: {
-			packages: [
-				{
-					name: "@savvy-web/foo",
+		failure: null,
+		totals: {
+			workspaces: 1,
+			githubOnly: 0,
+			githubWithPackages: 1,
+			blocked: 0,
+			packagesResolved: 1,
+			packagesPublished: 1,
+			packagesRecovered: 0,
+			packagesFailed: 0,
+			tagsCreated: 1,
+			releasesCreated: 1,
+		},
+		publish: {
+			order: ["@savvy-web/foo"],
+			workspaces: {
+				"@savvy-web/foo": {
 					version: "1.2.0",
-					status: "published",
-					skipReason: null,
-					targets: [
+					kind: "github-with-packages",
+					success: true,
+					outcome: "published",
+					summary: "Tagged and released on GitHub; published 1 package(s) to a registry.",
+					packages: [
 						{
-							registry: "https://npm.pkg.github.com/",
-							status: "published",
-							skipReason: null,
-							recovery: null,
-							registryUrl: null,
+							name: "@savvy-web/foo",
+							version: "1.2.0",
+							success: true,
+							outcome: "published",
+							registry: {
+								name: "GitHub Packages",
+								type: "github-packages",
+								url: "https://npm.pkg.github.com/",
+							},
+							url: "https://github.com/orgs/savvy-web/packages/npm/package/foo",
 							error: null,
-							attestationRecovered: null,
-							sbomAttestationRecovered: null,
+							recovery: null,
+							tarballDigest: "sha512-abc",
+							attestations: {
+								provenanceUrl: null,
+								sbomUrl: null,
+								githubAttestationUrl: null,
+								provenanceRecovered: null,
+								sbomRecovered: null,
+							},
 						},
 					],
-					attestations: { provenanceUrl: null, sbomUrl: null, githubAttestationUrl: null },
-					tarballDigest: "sha256:abc",
+					tag: { name: "@savvy-web/foo@1.2.0", sha: "abc123" },
+					release: {
+						id: 7,
+						url: "https://github.com/savvy-web/foo/releases/tag/v1.2.0",
+						assets: [],
+					},
 				},
-			],
-			tags: [{ name: "@savvy-web/foo@1.2.0", sha: "abc123", packageName: "@savvy-web/foo" }],
-			releases: [
-				{ tag: "@savvy-web/foo@1.2.0", url: "https://example.com/r/1", id: 999, packageName: "@savvy-web/foo" },
-			],
+			},
 		},
 	};
 
@@ -162,9 +188,9 @@ describe("ReleaseOutput schema", () => {
 		expect(decoded).toEqual(validationSample);
 	});
 
-	it("decodes a publishing instance and keeps the phase block", () => {
-		const decoded = Schema.decodeUnknownSync(ReleaseOutput)(publishingSample);
-		expect(decoded.phase).toBe("publishing");
+	it("decodes a publish instance and keeps the phase block", () => {
+		const decoded = Schema.decodeUnknownSync(ReleaseOutput)(publishSample);
+		expect(decoded.phase).toBe("publish");
 	});
 
 	it("decodes a validation instance and keeps the phase block", () => {
@@ -181,7 +207,7 @@ describe("ReleaseOutput schema", () => {
 	});
 
 	it("rejects a struct whose phase block does not match its phase literal", () => {
-		const bad = { ...branchSample, phase: "publishing" };
+		const bad = { ...branchSample, phase: "publish" };
 		expect(() => Schema.decodeUnknownSync(ReleaseOutput)(bad)).toThrow();
 	});
 

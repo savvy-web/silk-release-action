@@ -157,13 +157,13 @@ export const toValidatedReleaseRows = (packages: ReadonlyArray<ValidatedPackage>
 		// package that had been passed over. Nothing is skipped here.
 		const targetsCell =
 			targets.length === 0
-				? releaseKindCell("github-release")
+				? releaseKindCell("github-only")
 				: failed > 0
 					? `❌ ${failed}/${targets.length} failed`
 					: `✅ ${ready}/${targets.length} ready`;
 
 		return {
-			status: failed > 0 ? "❌" : targets.length === 0 ? releaseKindIcon("github-release") : "✅",
+			status: failed > 0 ? "❌" : targets.length === 0 ? releaseKindIcon("github-only") : "✅",
 			name: pkg.name,
 			versions: `${pkg.baseVersion ?? "new"} → ${pkg.version}`,
 			// The bump is derived from the versions rather than carried: by Phase 2

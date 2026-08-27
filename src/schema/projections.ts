@@ -10,15 +10,19 @@
  * normalising per-target status) happens here.
  */
 
+import { classifyRegistry, registryDisplayName } from "@effected/npm";
 import type {
 	PackagePublishResult,
+	PublishFailureInput,
 	PublishPackagesResult,
+	PublishWorkspacePlan,
 	ReleaseInfo,
 	TagInfo,
 	ValidationFinding,
 	ValidationPackageResult,
 } from "../release/types.js";
-import type { BranchManagementOutput, PublishingOutput, ReleaseFlags, ValidationOutput } from "./release-output.js";
+import { summarizeReleaseWave, summarizeWorkspace } from "../utils/release-kind.js";
+import type { BranchManagementOutput, PublishOutput, ReleaseFlags, ValidationOutput } from "./release-output.js";
 import { SCHEMA_URL, SCHEMA_VERSION, deriveStatus } from "./release-output.js";
 
 /** Input for {@link toBranchManagementOutput}. */
@@ -249,137 +253,225 @@ export const toValidationOutput = (input: ValidationInput): ValidationOutput => 
 	};
 };
 
-/** Input for {@link toPublishingOutput}. */
-export interface PublishingInput {
+/** Input for {@link toPublishOutput}. */
+export interface PublishInput {
+	/** Every workspace in the wave, in dependency-first order. */
+	readonly plan: ReadonlyArray<PublishWorkspacePlan>;
 	readonly publishResult: PublishPackagesResult;
 	readonly tags: ReadonlyArray<TagInfo>;
 	readonly releases: ReadonlyArray<ReleaseInfo>;
 	/** Resolved tag-name → commit SHA, keyed by `TagInfo.name`. */
 	readonly tagShas: Readonly<Record<string, string>>;
 	readonly dryRun: boolean;
+	/** Null on a clean run. */
+	readonly failure: PublishFailureInput | null;
 }
 
-type TargetStatus = "published" | "skipped" | "failed";
+type PackageOutcome = "published" | "recovered" | "failed" | "blocked";
 
-/** Classify one internal target result into the published/skipped/failed enum. */
-const classifyTarget = (t: PackagePublishResult["targets"][number]): TargetStatus => {
-	// Prefer the explicit `status` field when the orchestrator set it.
-	if (t.status !== undefined) return t.status;
-	// Content mismatch is a failure, never a skip (curation rule 1).
+/**
+ * Classify one target result into a package outcome.
+ *
+ * @remarks
+ * `recovered` is the rename of what the internal model calls a `skipped`
+ * already-published-identical target. It is a SUCCESS: the version is on the
+ * registry at the digest this run would have uploaded. Calling it "skipped"
+ * made a successful recovery indistinguishable from work that was declined.
+ *
+ * A digest MISMATCH is `failed`, never `recovered` — the registry has
+ * different bytes under this version, which is the one case where "already
+ * published" must not be treated as done.
+ */
+const classifyPackage = (t: PackagePublishResult["targets"][number]): PackageOutcome => {
+	if (t.status === "failed") return "failed";
 	if (t.alreadyPublished === true && t.alreadyPublishedReason === "different") return "failed";
-	if (t.alreadyPublished === true) return "skipped";
+	if (t.status === "skipped" || t.alreadyPublished === true) return "recovered";
+	if (t.status === "published") return "published";
 	return t.success ? "published" : "failed";
 };
 
-/** Pick the first non-empty string a target yields, scanning targets in order. */
-const firstNonEmpty = (
-	targets: PackagePublishResult["targets"],
-	pick: (t: PackagePublishResult["targets"][number]) => string | undefined,
-): string | null => targets.map(pick).find((u) => u !== undefined && u !== "") ?? null;
+/** Map an internal target result onto one published-package entry. */
+const toPublishedPackage = (
+	workspaceVersion: string,
+	t: PackagePublishResult["targets"][number],
+): PublishOutput["publish"]["workspaces"][string]["packages"][number] => {
+	const outcome = classifyPackage(t);
+	const registry = t.target.registry ?? "jsr";
+	return {
+		// The name on the TARGET, not the workspace — a workspace may publish
+		// under a different name per registry.
+		name: t.target.name,
+		version: workspaceVersion,
+		success: outcome === "published" || outcome === "recovered",
+		outcome,
+		registry: {
+			name: registryDisplayName(registry),
+			type: classifyRegistry(registry),
+			url: registry,
+		},
+		url: t.registryUrl ?? null,
+		error: outcome === "failed" ? (t.error ?? null) : null,
+		recovery:
+			t.recovery !== undefined ? { localDigest: t.recovery.localDigest, remoteDigest: t.recovery.remoteDigest } : null,
+		tarballDigest: t.tarballDigest ?? null,
+		attestations: {
+			provenanceUrl: t.attestationUrl ?? null,
+			sbomUrl: t.sbomAttestationUrl ?? null,
+			githubAttestationUrl: null,
+			provenanceRecovered: t.recovered !== undefined ? t.recovered.provenance : null,
+			sbomRecovered: t.recovered !== undefined ? t.recovered.sbom : null,
+		},
+	};
+};
 
 /**
- * Project a publishing run into a {@link PublishingOutput}.
+ * Project a publish run into a {@link PublishOutput}.
  *
  * @remarks
- * Each emitted tag carries its `packageName` from the internal `TagInfo`
- * (a single name, or a comma-joined list for fixed/linked groups). Each
- * release inherits the `packageName` of the tag it shares a name with; a
- * release with no matching tag falls back to `null`, which the schema's
- * `packageName: NullOr(string)` admits.
+ * The **workspace** is the unit, not the package. A workspace is what a
+ * changeset names, what gets a version, a tag and a GitHub release; the
+ * packages it puts on registries are artifacts beneath it. One workspace can
+ * publish the same version under several names to several registries, and a
+ * private tracking workspace publishes none at all — neither is expressible
+ * with the package as the top level.
  *
- * @param input - The publishing run results to project.
- * @returns The phase-discriminated publishing output struct.
+ * Every level carries two orthogonal fields: `success` (the boolean gate) and
+ * `outcome` (what specifically happened). A recovered publish and a fresh
+ * upload are both `success: true`.
+ *
+ * @param input - The publish run results to project.
+ * @returns The phase-discriminated publish output struct.
  */
-export const toPublishingOutput = (input: PublishingInput): PublishingOutput => {
-	const packages = input.publishResult.packages.map((pkg) => {
-		const targets = pkg.targets.map((t) => {
-			const status = classifyTarget(t);
-			// Per-target skip reason: only the "already-published-identical"
-			// literal is on the wire today. The orchestrator may set it
-			// directly (`t.skipReason`); legacy results infer it from the
-			// `alreadyPublishedReason: "identical"` field.
-			const skipReason: "already-published-identical" | null =
-				status === "skipped" &&
-				(t.skipReason === "already-published-identical" || t.alreadyPublishedReason === "identical")
-					? "already-published-identical"
-					: null;
-			const recovery =
-				t.recovery !== undefined
-					? { localDigest: t.recovery.localDigest, remoteDigest: t.recovery.remoteDigest }
-					: null;
-			// `recovered: undefined` → both fields null (no attestation step
-			// ran for this group). `recovered: { provenance, sbom }` →
-			// project each leg verbatim onto its scalar schema field.
-			const attestationRecovered = t.recovered !== undefined ? t.recovered.provenance : null;
-			const sbomAttestationRecovered = t.recovered !== undefined ? t.recovered.sbom : null;
-			return {
-				registry: t.target.registry ?? "jsr",
-				status,
-				skipReason,
-				recovery,
-				registryUrl: t.registryUrl ?? null,
-				error: status === "failed" ? (t.error ?? null) : null,
-				attestationRecovered,
-				sbomAttestationRecovered,
-			};
-		});
-		// Package status: failed if any target failed; skipped if every target
-		// skipped; published otherwise (including version-only, targets === []).
-		const anyFailed = targets.some((t) => t.status === "failed");
-		const allSkipped = targets.length > 0 && targets.every((t) => t.status === "skipped");
-		const status: TargetStatus = anyFailed ? "failed" : allSkipped ? "skipped" : "published";
-		// skipReason only when the package is skipped; "identical" maps to the
-		// identical reason, every other skip reason to "unknown" (curation rules 2/3).
-		const skipReason =
-			status === "skipped"
-				? pkg.targets.some(
-						(t) => t.skipReason === "already-published-identical" || t.alreadyPublishedReason === "identical",
-					)
-					? ("already-published-identical" as const)
-					: ("already-published-unknown" as const)
-				: null;
-		// Attestation URLs: the internal model carries them per target; take the
-		// first non-empty across targets, plus the package-level GitHub attestation.
-		return {
-			name: pkg.name,
-			version: pkg.version,
-			status,
-			skipReason,
-			targets,
-			attestations: {
-				provenanceUrl: firstNonEmpty(pkg.targets, (t) => t.attestationUrl),
-				sbomUrl: firstNonEmpty(pkg.targets, (t) => t.sbomAttestationUrl),
-				githubAttestationUrl: pkg.githubAttestationUrl ?? null,
-			},
-			tarballDigest: firstNonEmpty(pkg.targets, (t) => t.tarballDigest),
-		};
-	});
+export const toPublishOutput = (input: PublishInput): PublishOutput => {
+	const resultByName = new Map(input.publishResult.packages.map((p) => [p.name, p] as const));
 
-	const flags: ReleaseFlags = {
-		noop: input.publishResult.totalPackages === 0,
-		succeeded: input.publishResult.success === true && !packages.some((p) => p.status === "failed"),
-		hasFailures: packages.some((p) => p.status === "failed"),
+	// Tag lookup: per-package tags carry the workspace name. A single shared
+	// tag names no package, so it is the tag for every workspace in the wave.
+	const sharedTag = input.tags.length === 1 && input.tags[0]?.packageName === "" ? input.tags[0] : undefined;
+	const tagByWorkspace = new Map(
+		input.tags.filter((t) => t.packageName !== "").map((t) => [t.packageName, t] as const),
+	);
+	const releaseByTag = new Map(input.releases.map((r) => [r.tag, r] as const));
+
+	const workspaces: Record<string, PublishOutput["publish"]["workspaces"][string]> = {};
+
+	for (const ws of input.plan) {
+		const result = resultByName.get(ws.name);
+		const packages = result === undefined ? [] : result.targets.map((t) => toPublishedPackage(ws.version, t));
+
+		const tag = tagByWorkspace.get(ws.name) ?? sharedTag;
+		const releaseInfo = tag === undefined ? undefined : releaseByTag.get(tag.name);
+		// Tag and release are recorded independently. `runReleases` creates the
+		// tag first and the GitHub release second, so a failure between them
+		// leaves a real tag and no release — a state the output has to be able
+		// to express.
+		const tagEntry = tag === undefined ? null : { name: tag.name, sha: input.tagShas[tag.name] ?? "" };
+		const release =
+			releaseInfo === undefined
+				? null
+				: {
+						id: releaseInfo.id,
+						url: releaseInfo.url,
+						assets: releaseInfo.assets.map((a) => ({ name: a.name, url: a.downloadUrl, size: a.size })),
+					};
+
+		// `blocked` is "never attempted", NOT "attempted and failed". A workspace
+		// missing from the publish result never reached the publish step — the
+		// phase aborted first — and it did nothing wrong.
+		const attempted = result !== undefined;
+		const failed = packages.filter((p) => !p.success).length;
+		const succeeded = packages.filter((p) => p.success).length;
+
+		const outcome: PublishOutput["publish"]["workspaces"][string]["outcome"] = !attempted
+			? "blocked"
+			: ws.kind === "github-only"
+				? // Nothing was meant to be uploaded, so the release IS the outcome.
+					release !== null
+					? "released"
+					: "failed"
+				: failed > 0 && succeeded > 0
+					? "partial"
+					: failed > 0
+						? "failed"
+						: packages.every((p) => p.outcome === "recovered")
+							? "recovered"
+							: "published";
+
+		const success = outcome === "released" || outcome === "published" || outcome === "recovered";
+
+		workspaces[ws.name] = {
+			version: ws.version,
+			kind: ws.kind,
+			success,
+			outcome,
+			summary: summarizeWorkspace({ kind: ws.kind, outcome, packages: packages.length, released: release !== null }),
+			packages,
+			tag: tagEntry,
+			release,
+		};
+	}
+
+	// Derived from the PLAN, not from a filtered copy of the entries. Filtering
+	// first and then indexing back into `plan` by the filtered position named
+	// the wrong workspaces whenever the blocked ones were not a prefix — it
+	// only looked right because an aborted build blocks every workspace, so
+	// filtered and unfiltered indices happened to agree.
+	const blockedNames = input.plan.filter((w) => workspaces[w.name]?.outcome === "blocked").map((w) => w.name);
+	const entries = Object.values(workspaces);
+	const allPackages = entries.flatMap((w) => w.packages);
+	const totals: PublishOutput["totals"] = {
+		workspaces: input.plan.length,
+		githubOnly: input.plan.filter((w) => w.kind === "github-only").length,
+		githubWithPackages: input.plan.filter((w) => w.kind === "github-with-packages").length,
+		blocked: blockedNames.length,
+		packagesResolved: input.plan.reduce((n, w) => n + w.resolvedPackages, 0),
+		packagesPublished: allPackages.filter((p) => p.outcome === "published").length,
+		packagesRecovered: allPackages.filter((p) => p.outcome === "recovered").length,
+		packagesFailed: allPackages.filter((p) => p.outcome === "failed").length,
+		tagsCreated: input.tags.length,
+		releasesCreated: input.releases.length,
 	};
+
+	// Phase outcome. `nothing-to-release` is the ONLY empty case and it is a
+	// success — nothing failed. This is what replaces `noop`, which claimed
+	// "nothing happened" for a wave that had cut tags and created releases.
+	const okCount = entries.filter((w) => w.success).length;
+	const outcome: PublishOutput["outcome"] =
+		input.plan.length === 0
+			? "nothing-to-release"
+			: okCount === entries.length
+				? "released"
+				: okCount > 0
+					? "partial"
+					: totals.blocked === entries.length
+						? "blocked"
+						: "failed";
+	const success = outcome === "released" || outcome === "nothing-to-release";
 
 	return {
 		$schema: SCHEMA_URL,
 		schemaVersion: SCHEMA_VERSION,
-		phase: "publishing",
-		status: deriveStatus(flags),
-		noop: flags.noop,
-		succeeded: flags.succeeded,
-		hasFailures: flags.hasFailures,
+		phase: "publish",
+		success,
+		outcome,
+		summary: summarizeReleaseWave({
+			workspaces: totals.workspaces,
+			packagesPublished: totals.packagesPublished,
+			releases: totals.releasesCreated,
+		}),
 		dryRun: input.dryRun,
-		publishing: {
-			packages,
-			// `TagInfo` carries the per-tag package association (a single name, or
-			// a comma-joined list for fixed/linked groups). Releases key on the tag
-			// name, so each release inherits its tag's `packageName` via that join.
-			tags: input.tags.map((t) => ({ name: t.name, sha: input.tagShas[t.name] ?? "", packageName: t.packageName })),
-			releases: input.releases.map((r) => {
-				const matchingTag = input.tags.find((t) => t.name === r.tag);
-				return { tag: r.tag, url: r.url, id: r.id, packageName: matchingTag?.packageName ?? null };
-			}),
+		failure:
+			input.failure === null
+				? null
+				: {
+						stage: input.failure.stage,
+						reason: input.failure.reason,
+						blockedWorkspaces: blockedNames,
+					},
+		totals,
+		publish: {
+			order: input.plan.map((w) => w.name),
+			workspaces,
 		},
 	};
 };

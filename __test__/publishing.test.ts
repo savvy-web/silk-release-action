@@ -24,6 +24,7 @@ import type { PublishPackagesResult } from "../src/release/types.js";
 import type { Inputs } from "../src/schema/inputs.js";
 
 const detectReleasesMock = vi.hoisted(() => vi.fn());
+const planWorkspacesMock = vi.hoisted(() => vi.fn());
 const runBuildAndSbomMock = vi.hoisted(() => vi.fn());
 const runPublishTargetsMock = vi.hoisted(() => vi.fn());
 const runReleasesMock = vi.hoisted(() => vi.fn());
@@ -32,6 +33,7 @@ const revParseMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../src/release/publish.js", () => ({
 	detectReleases: detectReleasesMock,
+	planWorkspaces: planWorkspacesMock,
 	runBuildAndSbom: runBuildAndSbomMock,
 	runPublishTargets: runPublishTargetsMock,
 }));
@@ -66,6 +68,7 @@ const PUBLISH_RESULT: PublishPackagesResult = {
 			targets: [
 				{
 					target: {
+						name: "@test/pkg",
 						protocol: "npm",
 						registry: "https://registry.npmjs.org",
 						directory: "/tmp/alpha",
@@ -142,8 +145,17 @@ const run = async (): Promise<RunCapture> => {
 beforeEach(() => {
 	vi.clearAllMocks();
 	detectReleasesMock.mockReturnValue(Effect.succeed([{ name: "@scope/alpha", version: "1.2.3", path: "/tmp/alpha" }]));
+	planWorkspacesMock.mockReturnValue(
+		Effect.succeed([{ name: "@scope/alpha", version: "1.2.3", kind: "github-with-packages", resolvedPackages: 1 }]),
+	);
 	runBuildAndSbomMock.mockReturnValue(
-		Effect.succeed({ ok: true, sbomFailures: [], packageCount: 1, sbomPaths: new Map<string, string>() }),
+		Effect.succeed({
+			ok: true,
+			sbomFailures: [],
+			sbomSkipped: [],
+			packageCount: 1,
+			sbomPaths: new Map<string, string>(),
+		}),
 	);
 	runPublishTargetsMock.mockReturnValue(Effect.succeed(PUBLISH_RESULT));
 	runReleasesMock.mockReturnValue(Effect.succeed({ success: true, releases: [], errors: [] }));
@@ -173,7 +185,7 @@ describe("runPublishing — happy path", () => {
 		// releases as three separate counts, so a wave that publishes nothing to a
 		// registry is legible instead of reading as an empty run.
 		expect(text).toContain(
-			"Release publishing: ✅ 1 package(s) versioned · 1 published to a registry · 1 GitHub release(s) created",
+			"Release publishing: ✅ 1 workspace(s) versioned · 1 package(s) published to a registry · 1 GitHub release(s) created",
 		);
 	});
 });
@@ -202,11 +214,16 @@ describe("runPublishing — a runReleases failure fails the phase", () => {
 		const { result, scalars } = await run();
 
 		expect(result).toBeDefined();
-		// `PublishingOutput` nests the run under a `publishing` payload key.
-		const payload = result?.publishing as { packages: ReadonlyArray<{ name: string; version: string }> };
-		const packages = payload.packages;
-		expect(packages.map((p) => p.name)).toEqual(["@scope/alpha"]);
-		expect(packages[0]?.version).toBe("1.2.3");
+		// `PublishOutput` keys workspaces by name under a `publish` payload.
+		const payload = result?.publish as {
+			order: ReadonlyArray<string>;
+			workspaces: Record<string, { version: string; outcome: string }>;
+		};
+		expect(payload.order).toEqual(["@scope/alpha"]);
+		expect(payload.workspaces["@scope/alpha"]?.version).toBe("1.2.3");
+		// The publish itself succeeded — only the release housekeeping failed —
+		// so the workspace reports what actually landed on the registry.
+		expect(payload.workspaces["@scope/alpha"]?.outcome).toBe("published");
 		expect(scalars["package-count"]).toBe("1");
 		expect(scalars["release-pr-number"]).toBe("42");
 	});
@@ -224,9 +241,16 @@ describe("runPublishing — a runReleases failure fails the phase", () => {
 		const { result } = await run();
 
 		expect(revParseMock).toHaveBeenCalled();
-		const payload = result?.publishing as { tags: ReadonlyArray<{ sha: string | null }> };
-		expect(payload.tags.length).toBeGreaterThan(0);
-		expect(payload.tags[0]?.sha).toBe("abc1234");
+		// The tag SHA now rides on the workspace's own release, so a consumer
+		// reads it without cross-referencing a separate tags array.
+		// The tag rides on the workspace as a SIBLING of `release`, so a run whose
+		// release creation failed — which is exactly this case — still reports the
+		// tag it did cut.
+		const payload = result?.publish as {
+			workspaces: Record<string, { tag: { sha: string } | null; release: unknown }>;
+		};
+		expect(payload.workspaces["@scope/alpha"]?.tag?.sha).toBe("abc1234");
+		expect(payload.workspaces["@scope/alpha"]?.release).toBeNull();
 	});
 
 	it("carries the re-run contract and the error detail in the annotation", async () => {

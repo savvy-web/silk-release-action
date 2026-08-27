@@ -23,34 +23,34 @@ import {
 
 describe("releaseKindOf", () => {
 	it("classifies a package with at least one target as a registry publish", () => {
-		expect(releaseKindOf(1)).toBe("registry");
-		expect(releaseKindOf(7)).toBe("registry");
+		expect(releaseKindOf(1)).toBe("github-with-packages");
+		expect(releaseKindOf(7)).toBe("github-with-packages");
 	});
 
 	// The case the whole module exists for: zero targets is not a degraded
 	// registry publish, it is a different kind of release.
 	it("classifies a package with no targets as GitHub-release-only", () => {
-		expect(releaseKindOf(0)).toBe("github-release");
+		expect(releaseKindOf(0)).toBe("github-only");
 	});
 });
 
 describe("releaseKindLabel / releaseKindIcon / releaseKindCell", () => {
 	it("labels the two kinds distinctly", () => {
-		expect(releaseKindLabel("registry")).toBe("Registry publish");
-		expect(releaseKindLabel("github-release")).toBe("GitHub release only");
+		expect(releaseKindLabel("github-with-packages")).toBe("Registry publish");
+		expect(releaseKindLabel("github-only")).toBe("GitHub release only");
 	});
 
 	// `⏭️` is the glyph this replaced. It reads as "passed over", which is the
 	// opposite of what a private tracking package's release is.
 	it("uses a tag rather than the skip glyph for the release-only kind", () => {
-		expect(releaseKindIcon("github-release")).toBe("\u{1F3F7}️");
-		expect(releaseKindIcon("github-release")).not.toBe("⏭️");
-		expect(releaseKindIcon("registry")).toBe("\u{1F4E6}");
+		expect(releaseKindIcon("github-only")).toBe("\u{1F3F7}️");
+		expect(releaseKindIcon("github-only")).not.toBe("⏭️");
+		expect(releaseKindIcon("github-with-packages")).toBe("\u{1F4E6}");
 	});
 
 	it("joins the icon and label into one cell", () => {
-		expect(releaseKindCell("github-release")).toBe("\u{1F3F7}️ GitHub release only");
-		expect(releaseKindCell("registry")).toBe("\u{1F4E6} Registry publish");
+		expect(releaseKindCell("github-only")).toBe("\u{1F3F7}️ GitHub release only");
+		expect(releaseKindCell("github-with-packages")).toBe("\u{1F4E6} Registry publish");
 	});
 });
 
@@ -72,8 +72,8 @@ describe("tallyReleaseKinds", () => {
 
 describe("summarizeReleaseWave", () => {
 	it("reports versioning, registry publishing and GitHub releases as three separate counts", () => {
-		expect(summarizeReleaseWave({ versioned: 3, publishedTargets: 5, githubReleases: 3 })).toBe(
-			"3 package(s) versioned · 5 published to a registry · 3 GitHub release(s) created",
+		expect(summarizeReleaseWave({ workspaces: 3, packagesPublished: 5, releases: 3 })).toBe(
+			"3 workspace(s) versioned · 5 package(s) published to a registry · 3 GitHub release(s) created",
 		);
 	});
 
@@ -81,9 +81,9 @@ describe("summarizeReleaseWave", () => {
 	// target(s)` was true and uninformative; this must still say that two
 	// packages were versioned and two releases were created.
 	it("still reports the versioning and the releases when nothing publishes to a registry", () => {
-		const line = summarizeReleaseWave({ versioned: 2, publishedTargets: 0, githubReleases: 2 });
-		expect(line).toBe("2 package(s) versioned · 0 published to a registry · 2 GitHub release(s) created");
-		expect(line).toContain("2 package(s) versioned");
+		const line = summarizeReleaseWave({ workspaces: 2, packagesPublished: 0, releases: 2 });
+		expect(line).toBe("2 workspace(s) versioned · 0 package(s) published to a registry · 2 GitHub release(s) created");
+		expect(line).toContain("2 workspace(s) versioned");
 		expect(line).toContain("2 GitHub release(s) created");
 	});
 });

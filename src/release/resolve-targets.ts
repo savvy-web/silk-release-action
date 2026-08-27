@@ -152,6 +152,17 @@ export function pickToken(
  * @public
  */
 export interface TargetSpec {
+	/**
+	 * The package name as it will be published.
+	 *
+	 * @remarks
+	 * NOT necessarily the workspace's own name. `PublishTarget.name` is "the
+	 * package name being published", and a workspace may publish under a
+	 * different name per target. Carried here because the release output
+	 * reports what was actually put on each registry, and dropping it made a
+	 * renamed publication unreportable.
+	 */
+	readonly name: string;
 	readonly registry: string;
 	readonly directory: string;
 	readonly access: "public" | "restricted";
@@ -229,6 +240,7 @@ export const resolvePublishTargetSpecs = (
 				continue;
 			}
 			targets.push({
+				name: t.name,
 				registry: t.registry,
 				directory,
 				access: t.access,

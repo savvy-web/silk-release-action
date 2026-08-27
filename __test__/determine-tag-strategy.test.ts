@@ -90,6 +90,7 @@ describe("determine-tag-strategy", () => {
 					targets: [
 						{
 							target: {
+								name: "@test/pkg",
 								protocol: "npm",
 								registry: "https://registry.npmjs.org/",
 								directory: "/path/to/pkg-a",
@@ -120,6 +121,7 @@ describe("determine-tag-strategy", () => {
 					targets: [
 						{
 							target: {
+								name: "@test/pkg",
 								protocol: "npm",
 								registry: "https://registry.npmjs.org/",
 								directory: "/path/to/pkg-a",
@@ -155,6 +157,7 @@ describe("determine-tag-strategy", () => {
 					targets: [
 						{
 							target: {
+								name: "@test/pkg",
 								protocol: "npm",
 								registry: "https://registry.npmjs.org/",
 								directory: "/path/to/pkg-a",
@@ -173,6 +176,7 @@ describe("determine-tag-strategy", () => {
 					targets: [
 						{
 							target: {
+								name: "@test/pkg",
 								protocol: "npm",
 								registry: "https://registry.npmjs.org/",
 								directory: "/path/to/pkg-b",
@@ -205,6 +209,7 @@ describe("determine-tag-strategy", () => {
 					targets: [
 						{
 							target: {
+								name: "@test/pkg",
 								protocol: "npm",
 								registry: "https://registry.npmjs.org/",
 								directory: "/path/to/pkg-a",
@@ -223,6 +228,7 @@ describe("determine-tag-strategy", () => {
 					targets: [
 						{
 							target: {
+								name: "@test/pkg",
 								protocol: "npm",
 								registry: "https://registry.npmjs.org/",
 								directory: "/path/to/pkg-b",
@@ -254,6 +260,7 @@ describe("determine-tag-strategy", () => {
 					targets: [
 						{
 							target: {
+								name: "@test/pkg",
 								protocol: "npm",
 								registry: "https://registry.npmjs.org/",
 								directory: "/path/to/pkg-a",
@@ -272,6 +279,7 @@ describe("determine-tag-strategy", () => {
 					targets: [
 						{
 							target: {
+								name: "@test/pkg",
 								protocol: "npm",
 								registry: "https://registry.npmjs.org/",
 								directory: "/path/to/pkg-b",
@@ -300,6 +308,7 @@ describe("determine-tag-strategy", () => {
 					targets: [
 						{
 							target: {
+								name: "@test/pkg",
 								protocol: "npm",
 								registry: "https://registry.npmjs.org/",
 								directory: "/path/to/pkg-a",
@@ -318,6 +327,7 @@ describe("determine-tag-strategy", () => {
 					targets: [
 						{
 							target: {
+								name: "@test/pkg",
 								protocol: "npm",
 								registry: "https://registry.npmjs.org/",
 								directory: "/path/to/pkg-b",
@@ -350,6 +360,7 @@ describe("determine-tag-strategy", () => {
 					targets: [
 						{
 							target: {
+								name: "@test/pkg",
 								protocol: "npm",
 								registry: "https://registry.npmjs.org/",
 								directory: "/path/to/pkg-a",

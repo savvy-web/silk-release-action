@@ -4,8 +4,13 @@
  */
 
 import { describe, expect, it } from "vitest";
-import type { PackagePublishResult, ValidationPackageResult } from "../src/release/types.js";
-import { toBranchManagementOutput, toPublishingOutput, toValidationOutput } from "../src/schema/projections.js";
+import type {
+	PackagePublishResult,
+	PublishPackagesResult,
+	PublishWorkspacePlan,
+	ValidationPackageResult,
+} from "../src/release/types.js";
+import { toBranchManagementOutput, toPublishOutput, toValidationOutput } from "../src/schema/projections.js";
 import { SCHEMA_URL, SCHEMA_VERSION } from "../src/schema/release-output.js";
 
 describe("toBranchManagementOutput", () => {
@@ -382,9 +387,13 @@ describe("toValidationOutput", () => {
 });
 
 /** Minimal TargetPublishResult fixture — only the fields the projection reads. */
-const target = (over: Record<string, unknown>): PackagePublishResult["targets"][number] =>
+const target = ({
+	targetName,
+	...over
+}: Record<string, unknown> & { targetName?: string }): PackagePublishResult["targets"][number] =>
 	({
 		target: {
+			name: targetName ?? "@savvy-web/foo",
 			protocol: "npm",
 			registry: "https://npm.pkg.github.com/",
 			directory: "/x",
@@ -398,8 +407,25 @@ const target = (over: Record<string, unknown>): PackagePublishResult["targets"][
 		// biome-ignore lint/suspicious/noExplicitAny: minimal TargetPublishResult fixture
 	}) as any;
 
-describe("toPublishingOutput", () => {
-	it("projects a clean publish", () => {
+describe("toPublishOutput", () => {
+	/** A one-workspace plan of the given kind. */
+	const planOf = (
+		name: string,
+		version: string,
+		kind: "github-with-packages" | "github-only",
+		resolvedPackages: number,
+	): PublishWorkspacePlan[] => [{ name, version, kind, resolvedPackages }];
+
+	const emptyResult: PublishPackagesResult = {
+		success: true,
+		packages: [],
+		totalPackages: 0,
+		successfulPackages: 0,
+		totalTargets: 0,
+		successfulTargets: 0,
+	};
+
+	it("projects a clean publish, keyed by workspace name", () => {
 		const pkg: PackagePublishResult = {
 			name: "@savvy-web/foo",
 			version: "1.2.0",
@@ -407,16 +433,14 @@ describe("toPublishingOutput", () => {
 				target({
 					success: true,
 					registryUrl: "https://github.com/foo/pkgs",
-					attestationUrl: "https://example.com/prov/1",
-					sbomAttestationUrl: "https://example.com/sbom/1",
 					tarballDigest: "sha256:deadbeef",
 				}),
 			],
-			githubAttestationUrl: "https://example.com/att/1",
 		};
-		const output = toPublishingOutput({
+		const output = toPublishOutput({
+			plan: planOf("@savvy-web/foo", "1.2.0", "github-with-packages", 1),
 			publishResult: {
-				success: true,
+				...emptyResult,
 				packages: [pkg],
 				totalPackages: 1,
 				successfulPackages: 1,
@@ -424,63 +448,71 @@ describe("toPublishingOutput", () => {
 				successfulTargets: 1,
 			},
 			tags: [{ name: "@savvy-web/foo@1.2.0", packageName: "@savvy-web/foo", version: "1.2.0" }],
-			releases: [{ tag: "@savvy-web/foo@1.2.0", url: "https://example.com/r/1", id: 999, assets: [] }],
+			releases: [{ tag: "@savvy-web/foo@1.2.0", url: "https://example.com/r", id: 7, assets: [] }],
 			tagShas: { "@savvy-web/foo@1.2.0": "abc123" },
 			dryRun: false,
+			failure: null,
 		});
 
-		expect(output.phase).toBe("publishing");
-		expect(output.succeeded).toBe(true);
-		expect(output.hasFailures).toBe(false);
-		expect(output.publishing.packages[0]?.status).toBe("published");
-		expect(output.publishing.packages[0]?.targets[0]?.registry).toBe("https://npm.pkg.github.com/");
-		expect(output.publishing.packages[0]?.attestations.githubAttestationUrl).toBe("https://example.com/att/1");
-		expect(output.publishing.tags[0]).toEqual({
-			name: "@savvy-web/foo@1.2.0",
-			sha: "abc123",
-			packageName: "@savvy-web/foo",
-		});
-		expect(output.dryRun).toBe(false);
-		expect(output.publishing.releases[0]).toEqual({
-			tag: "@savvy-web/foo@1.2.0",
-			url: "https://example.com/r/1",
-			id: 999,
-			packageName: "@savvy-web/foo",
-		});
-		expect(output.publishing.packages[0]?.attestations.provenanceUrl).toBe("https://example.com/prov/1");
-		expect(output.publishing.packages[0]?.attestations.sbomUrl).toBe("https://example.com/sbom/1");
-		expect(output.publishing.packages[0]?.tarballDigest).toBe("sha256:deadbeef");
+		expect(output.phase).toBe("publish");
+		expect(output.success).toBe(true);
+		expect(output.outcome).toBe("released");
+		expect(output.failure).toBeNull();
+
+		// The map is keyed by name — a consumer looks a workspace up directly
+		// instead of scanning an array and cross-referencing two more.
+		const ws = output.publish.workspaces["@savvy-web/foo"];
+		expect(ws?.outcome).toBe("published");
+		expect(ws?.success).toBe(true);
+		expect(ws?.tag).toEqual({ name: "@savvy-web/foo@1.2.0", sha: "abc123" });
+		expect(output.publish.order).toEqual(["@savvy-web/foo"]);
 	});
 
-	it("treats an identical already-published target as skipped", () => {
+	// `recovered` and `published` are BOTH successes. Splitting `success` from
+	// `outcome` is what lets a consumer gate on the boolean while still being
+	// able to tell the two apart.
+	it("reports an already-published-identical target as recovered, and still a success", () => {
 		const pkg: PackagePublishResult = {
 			name: "@savvy-web/foo",
 			version: "1.2.0",
-			targets: [target({ success: true, alreadyPublished: true, alreadyPublishedReason: "identical" })],
+			targets: [
+				target({
+					success: true,
+					alreadyPublished: true,
+					alreadyPublishedReason: "identical",
+					recovery: { localDigest: "sha512-x", remoteDigest: "sha512-x" },
+				}),
+			],
 		};
-		const output = toPublishingOutput({
+		const output = toPublishOutput({
+			plan: planOf("@savvy-web/foo", "1.2.0", "github-with-packages", 1),
 			publishResult: {
-				success: true,
+				...emptyResult,
 				packages: [pkg],
 				totalPackages: 1,
 				successfulPackages: 1,
 				totalTargets: 1,
 				successfulTargets: 1,
 			},
-			tags: [],
-			releases: [],
+			tags: [{ name: "@savvy-web/foo@1.2.0", packageName: "@savvy-web/foo", version: "1.2.0" }],
+			releases: [{ tag: "@savvy-web/foo@1.2.0", url: "https://example.com/r", id: 7, assets: [] }],
 			tagShas: {},
 			dryRun: false,
+			failure: null,
 		});
 
-		expect(output.publishing.packages[0]?.status).toBe("skipped");
-		expect(output.publishing.packages[0]?.skipReason).toBe("already-published-identical");
-		expect(output.publishing.packages[0]?.targets[0]?.status).toBe("skipped");
-		expect(output.succeeded).toBe(true);
-		expect(output.hasFailures).toBe(false);
+		const ws = output.publish.workspaces["@savvy-web/foo"];
+		expect(ws?.outcome).toBe("recovered");
+		expect(ws?.success).toBe(true);
+		expect(ws?.packages[0]?.outcome).toBe("recovered");
+		expect(ws?.packages[0]?.success).toBe(true);
+		expect(output.totals.packagesRecovered).toBe(1);
+		expect(output.success).toBe(true);
 	});
 
-	it("treats a content-mismatch (different) target as failed, not skipped", () => {
+	// A digest MISMATCH is the one "already published" case that must not be
+	// treated as done — the registry holds different bytes under this version.
+	it("reports a content-mismatch target as failed, never recovered", () => {
 		const pkg: PackagePublishResult = {
 			name: "@savvy-web/foo",
 			version: "1.2.0",
@@ -489,108 +521,212 @@ describe("toPublishingOutput", () => {
 					success: false,
 					alreadyPublished: true,
 					alreadyPublishedReason: "different",
-					error: "content mismatch",
+					error: "integrity mismatch",
 				}),
 			],
 		};
-		const output = toPublishingOutput({
-			publishResult: {
-				success: false,
-				packages: [pkg],
-				totalPackages: 1,
-				successfulPackages: 0,
-				totalTargets: 1,
-				successfulTargets: 0,
-			},
+		const output = toPublishOutput({
+			plan: planOf("@savvy-web/foo", "1.2.0", "github-with-packages", 1),
+			publishResult: { ...emptyResult, success: false, packages: [pkg], totalPackages: 1, totalTargets: 1 },
 			tags: [],
 			releases: [],
 			tagShas: {},
 			dryRun: false,
+			failure: { stage: "publish", reason: "integrity mismatch" },
 		});
 
-		expect(output.publishing.packages[0]?.status).toBe("failed");
-		expect(output.publishing.packages[0]?.skipReason).toBe(null);
-		expect(output.publishing.packages[0]?.targets[0]?.status).toBe("failed");
-		expect(output.publishing.packages[0]?.targets[0]?.error).toBe("content mismatch");
-		expect(output.hasFailures).toBe(true);
+		const ws = output.publish.workspaces["@savvy-web/foo"];
+		expect(ws?.packages[0]?.outcome).toBe("failed");
+		expect(ws?.packages[0]?.success).toBe(false);
+		expect(ws?.packages[0]?.error).toBe("integrity mismatch");
+		expect(output.outcome).toBe("failed");
+		expect(output.success).toBe(false);
 	});
 
-	it("projects a version-only package as published with no targets", () => {
-		const pkg: PackagePublishResult = { name: "@savvy-web/foo", version: "1.2.0", targets: [] };
-		const output = toPublishingOutput({
+	// The effected shape: a private tracking workspace. It publishes nothing and
+	// that is the intended, complete outcome — not a degraded registry publish.
+	it("reports a github-only workspace as released, with no packages", () => {
+		const output = toPublishOutput({
+			plan: planOf("@effected/claude-code-plugin", "0.14.0", "github-only", 0),
 			publishResult: {
-				success: true,
-				packages: [pkg],
+				...emptyResult,
+				packages: [{ name: "@effected/claude-code-plugin", version: "0.14.0", targets: [] }],
 				totalPackages: 1,
 				successfulPackages: 1,
-				totalTargets: 0,
-				successfulTargets: 0,
 			},
-			tags: [{ name: "@savvy-web/foo@1.2.0", packageName: "@savvy-web/foo", version: "1.2.0" }],
+			tags: [
+				{ name: "@effected/claude-code-plugin@0.14.0", packageName: "@effected/claude-code-plugin", version: "0.14.0" },
+			],
+			releases: [{ tag: "@effected/claude-code-plugin@0.14.0", url: "https://example.com/r", id: 42, assets: [] }],
+			tagShas: { "@effected/claude-code-plugin@0.14.0": "abc123" },
+			dryRun: false,
+			failure: null,
+		});
+
+		const ws = output.publish.workspaces["@effected/claude-code-plugin"];
+		expect(ws?.kind).toBe("github-only");
+		expect(ws?.outcome).toBe("released");
+		expect(ws?.success).toBe(true);
+		expect(ws?.packages).toEqual([]);
+		expect(ws?.release?.id).toBe(42);
+		expect(ws?.summary).toBe("Tagged and released on GitHub; no registry target.");
+
+		// The whole run is a SUCCESS that published nothing to a registry — the
+		// case the old `noop` flag reported as "nothing happened" despite a tag
+		// and a release having been created.
+		expect(output.success).toBe(true);
+		expect(output.outcome).toBe("released");
+		expect(output.totals.githubOnly).toBe(1);
+		expect(output.totals.packagesPublished).toBe(0);
+		expect(output.totals.releasesCreated).toBe(1);
+		expect(output.summary).toBe(
+			"1 workspace(s) versioned · 0 package(s) published to a registry · 1 GitHub release(s) created",
+		);
+	});
+
+	// The aborted run. Every workspace must still be present, carrying the kind
+	// it was going to have — this is what the old output could not do at all,
+	// because it emitted `packages: []` and dropped the build error entirely.
+	it("keeps every workspace on the wire when the phase aborts at the build gate", () => {
+		const output = toPublishOutput({
+			plan: [
+				{ name: "@effected/claude-code-plugin", version: "0.14.0", kind: "github-only", resolvedPackages: 0 },
+				{ name: "@savvy-web/foo", version: "1.2.0", kind: "github-with-packages", resolvedPackages: 2 },
+			],
+			publishResult: { ...emptyResult, success: false, totalPackages: 2 },
+			tags: [],
 			releases: [],
 			tagShas: {},
 			dryRun: false,
+			failure: { stage: "build", reason: "tsc --noEmit: 3 errors" },
 		});
 
-		expect(output.publishing.packages[0]?.status).toBe("published");
-		expect(output.publishing.packages[0]?.targets).toEqual([]);
-		expect(output.publishing.tags[0]).toEqual({ name: "@savvy-web/foo@1.2.0", sha: "", packageName: "@savvy-web/foo" });
+		expect(output.outcome).toBe("blocked");
+		expect(output.success).toBe(false);
+		expect(output.failure?.stage).toBe("build");
+		expect(output.failure?.reason).toBe("tsc --noEmit: 3 errors");
+
+		// Both workspaces are present, with their intended kind intact...
+		expect(output.publish.order).toEqual(["@effected/claude-code-plugin", "@savvy-web/foo"]);
+		expect(output.publish.workspaces["@effected/claude-code-plugin"]?.kind).toBe("github-only");
+		expect(output.publish.workspaces["@savvy-web/foo"]?.kind).toBe("github-with-packages");
+
+		// ...and both are `blocked`, which is NOT `failed`: they were never
+		// attempted, and they did nothing wrong.
+		for (const name of output.publish.order) {
+			const ws = output.publish.workspaces[name];
+			expect(ws?.outcome).toBe("blocked");
+			expect(ws?.success).toBe(false);
+			expect(ws?.release).toBeNull();
+			expect(ws?.packages).toEqual([]);
+		}
+		expect(output.totals.blocked).toBe(2);
+		// The intent survives the abort: two publications were going to happen.
+		expect(output.totals.packagesResolved).toBe(2);
 	});
 
-	it("falls back to the 'jsr' string when a target registry is null", () => {
+	// The discriminating case for how `blockedWorkspaces` is derived: the
+	// blocked workspaces are NOT a prefix of the plan. Filtering the entries and
+	// then indexing back into the plan by the filtered position names the wrong
+	// workspace here, while agreeing with the correct answer whenever every
+	// workspace is blocked — which is what an aborted build produces, and why
+	// the bug survived the abort test.
+	it("names the blocked workspaces correctly when they are not a prefix of the plan", () => {
+		const ok: PackagePublishResult = {
+			name: "@savvy-web/first",
+			version: "1.0.0",
+			targets: [target({ success: true })],
+		};
+		const output = toPublishOutput({
+			plan: [
+				{ name: "@savvy-web/first", version: "1.0.0", kind: "github-with-packages", resolvedPackages: 1 },
+				{ name: "@savvy-web/second", version: "1.0.0", kind: "github-with-packages", resolvedPackages: 1 },
+				{ name: "@savvy-web/third", version: "1.0.0", kind: "github-with-packages", resolvedPackages: 1 },
+			],
+			// Only the FIRST workspace reached the publish step; the other two
+			// never did, so they are blocked at positions 1 and 2.
+			publishResult: { ...emptyResult, success: false, packages: [ok], totalPackages: 3, totalTargets: 1 },
+			tags: [],
+			releases: [],
+			tagShas: {},
+			dryRun: false,
+			failure: { stage: "publish", reason: "aborted" },
+		});
+
+		expect(output.failure?.blockedWorkspaces).toEqual(["@savvy-web/second", "@savvy-web/third"]);
+		expect(output.failure?.blockedWorkspaces).not.toContain("@savvy-web/first");
+		expect(output.totals.blocked).toBe(2);
+	});
+
+	it("reports a mixed wave as partial", () => {
+		const ok: PackagePublishResult = {
+			name: "@savvy-web/ok",
+			version: "1.0.0",
+			targets: [target({ success: true })],
+		};
+		const bad: PackagePublishResult = {
+			name: "@savvy-web/bad",
+			version: "1.0.0",
+			targets: [target({ success: false, status: "failed", error: "boom" })],
+		};
+		const output = toPublishOutput({
+			plan: [
+				{ name: "@savvy-web/ok", version: "1.0.0", kind: "github-with-packages", resolvedPackages: 1 },
+				{ name: "@savvy-web/bad", version: "1.0.0", kind: "github-with-packages", resolvedPackages: 1 },
+			],
+			publishResult: { ...emptyResult, success: false, packages: [ok, bad], totalPackages: 2, totalTargets: 2 },
+			tags: [],
+			releases: [],
+			tagShas: {},
+			dryRun: false,
+			failure: { stage: "publish", reason: "Published 1/2 target(s)" },
+		});
+
+		expect(output.outcome).toBe("partial");
+		expect(output.success).toBe(false);
+		expect(output.publish.workspaces["@savvy-web/bad"]?.outcome).toBe("failed");
+		expect(output.totals.packagesFailed).toBe(1);
+		expect(output.totals.packagesPublished).toBe(1);
+	});
+
+	// `nothing-to-release` is the ONLY empty case, and it is a success —
+	// nothing failed. This is what replaces `noop`.
+	it("reports an empty wave as nothing-to-release, and as a success", () => {
+		const output = toPublishOutput({
+			plan: [],
+			publishResult: emptyResult,
+			tags: [],
+			releases: [],
+			tagShas: {},
+			dryRun: false,
+			failure: null,
+		});
+
+		expect(output.outcome).toBe("nothing-to-release");
+		expect(output.success).toBe(true);
+		expect(output.totals.workspaces).toBe(0);
+		expect(output.publish.workspaces).toEqual({});
+		expect(output.publish.order).toEqual([]);
+	});
+
+	it("carries the published name from the target, not the workspace", () => {
 		const pkg: PackagePublishResult = {
-			name: "@savvy-web/foo",
-			version: "1.2.0",
-			targets: [
-				target({
-					target: {
-						protocol: "jsr",
-						registry: null,
-						directory: "/x",
-						access: "public",
-						provenance: true,
-						tag: "latest",
-						tokenEnv: null,
-					},
-					success: true,
-				}),
-			],
+			name: "@savvy-web/workspace-name",
+			version: "1.0.0",
+			targets: [target({ success: true, targetName: "@savvy-web/published-under-another-name" })],
 		};
-		const output = toPublishingOutput({
-			publishResult: {
-				success: true,
-				packages: [pkg],
-				totalPackages: 1,
-				successfulPackages: 1,
-				totalTargets: 1,
-				successfulTargets: 1,
-			},
+		const output = toPublishOutput({
+			plan: planOf("@savvy-web/workspace-name", "1.0.0", "github-with-packages", 1),
+			publishResult: { ...emptyResult, packages: [pkg], totalPackages: 1, totalTargets: 1, successfulTargets: 1 },
 			tags: [],
 			releases: [],
 			tagShas: {},
 			dryRun: false,
+			failure: null,
 		});
 
-		expect(output.publishing.packages[0]?.targets[0]?.registry).toBe("jsr");
-	});
-
-	it("reports a no-op when nothing was released", () => {
-		const output = toPublishingOutput({
-			publishResult: {
-				success: true,
-				packages: [],
-				totalPackages: 0,
-				successfulPackages: 0,
-				totalTargets: 0,
-				successfulTargets: 0,
-			},
-			tags: [],
-			releases: [],
-			tagShas: {},
-			dryRun: false,
-		});
-
-		expect(output.noop).toBe(true);
-		expect(output.status).toBe("no-op");
+		expect(output.publish.workspaces["@savvy-web/workspace-name"]?.packages[0]?.name).toBe(
+			"@savvy-web/published-under-another-name",
+		);
 	});
 });

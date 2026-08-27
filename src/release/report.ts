@@ -356,7 +356,7 @@ export function buildReleaseTotals(publish: ValidationPublish): string {
 	if (targets === 0) {
 		const kinds = tallyReleaseKinds(publish.packages.map((pkg) => pkg.builds.flatMap((b) => b.targets).length));
 		return (
-			`**Totals:** ${releaseKindCell("github-release")} — ` +
+			`**Totals:** ${releaseKindCell("github-only")} — ` +
 			`${kinds.githubRelease} package(s) tagged and released on GitHub, nothing published to a registry`
 		);
 	}
@@ -714,12 +714,12 @@ export function buildPublishValidationSummary(validation: ValidationPayload): st
 		publish.packages.length === 0
 			? "**Nothing to release** — no package has a version difference against the target branch."
 			: kinds.registry === 0
-				? `**${kinds.githubRelease} package(s)** — every one is ${releaseKindCell("github-release")}. ` +
+				? `**${kinds.githubRelease} package(s)** — every one is ${releaseKindCell("github-only")}. ` +
 					"Nothing publishes to a registry."
 				: kinds.githubRelease === 0
 					? `**${kinds.registry} package(s)** publishing to a registry.`
 					: `**${kinds.registry} package(s)** publishing to a registry · ` +
-						`**${kinds.githubRelease}** ${releaseKindCell("github-release")}.`;
+						`**${kinds.githubRelease}** ${releaseKindCell("github-only")}.`;
 
 	const totals =
 		`${shape}\n\n` +
@@ -741,7 +741,7 @@ export function buildPublishValidationSummary(validation: ValidationPayload): st
 
 		if (pkg.builds.length === 0) {
 			sections.push(
-				`${releaseKindCell("github-release")} — versioned, tagged and released on GitHub. ` +
+				`${releaseKindCell("github-only")} — versioned, tagged and released on GitHub. ` +
 					"No registry target, so nothing is packed or uploaded.",
 			);
 			continue;

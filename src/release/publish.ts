@@ -48,7 +48,12 @@ import { ChangesetConfig } from "./changeset-config.js";
 import { humanizeSize } from "./report.js";
 import type { TargetSpec } from "./resolve-targets.js";
 import { pickToken, resolvePublishTargetSpecs } from "./resolve-targets.js";
-import type { PackagePublishResult, PublishPackagesResult, TargetPublishResult } from "./types.js";
+import type {
+	PackagePublishResult,
+	PublishPackagesResult,
+	PublishWorkspacePlan,
+	TargetPublishResult,
+} from "./types.js";
 
 // ─── Public interfaces ────────────────────────────────────────────────────────
 
@@ -314,6 +319,7 @@ const detectFromCommit = (): Effect.Effect<
 
 /** Build the legacy `ResolvedTarget` shape we carry on every `TargetPublishResult`. */
 const toLegacyTarget = (target: TargetSpec, protocol: "npm" | "jsr" = "npm") => ({
+	name: target.name,
 	protocol,
 	registry: target.registry,
 	directory: target.directory,
@@ -1033,6 +1039,45 @@ const resolveWorkspacePackage = (
 		),
 	);
 
+/**
+ * Resolve every detected workspace's publish plan, before anything is built.
+ *
+ * @remarks
+ * **Deliberately ahead of the Build &amp; SBOM gate.** Target resolution reads
+ * package manifests and nothing else, so it is cheap and cannot fail the run —
+ * which means it can happen before the first thing that CAN. Doing it here is
+ * what lets an aborted phase still report which workspaces were in flight and
+ * what each was going to do. Resolving inside the publish step instead left an
+ * aborted run with an empty package list and no way to say what it had
+ * intended.
+ *
+ * The `kind` this produces therefore describes INTENT, not result, and stays
+ * correct no matter where the phase later stops.
+ *
+ * @param detected - The released workspaces, in dependency-first order.
+ * @returns One plan entry per workspace, order preserved.
+ *
+ * @public
+ */
+export const planWorkspaces = (
+	detected: ReadonlyArray<DetectedRelease>,
+): Effect.Effect<ReadonlyArray<PublishWorkspacePlan>, never, PublishabilityDetector | WorkspaceDiscovery> =>
+	Effect.gen(function* () {
+		const discovery = yield* WorkspaceDiscovery;
+		const plan: PublishWorkspacePlan[] = [];
+		for (const rel of detected) {
+			const wsPkg = yield* resolveWorkspacePackage(discovery, rel);
+			const resolved = yield* resolvePublishTargetSpecs(wsPkg);
+			plan.push({
+				name: rel.name,
+				version: rel.version,
+				kind: releaseKindOf(resolved.targets.length),
+				resolvedPackages: resolved.targets.length,
+			});
+		}
+		return plan;
+	});
+
 // ─── runBuildAndSbom ───────────────────────────────────────────────────────────
 
 /**
@@ -1236,10 +1281,10 @@ export const runBuildAndSbom = (
 					// set of packages skipped here is exactly the set that publishes
 					// nothing.
 					const resolved = yield* resolvePublishTargetSpecs(wsPkg);
-					if (releaseKindOf(resolved.targets.length) === "github-release") {
+					if (releaseKindOf(resolved.targets.length) === "github-only") {
 						sbomSkipped.push(rel.name);
 						yield* Effect.logInfo(
-							`  \u{1F3F7}\uFE0F sbom · ${rel.name}: skipped — ${releaseKindLabel("github-release")}, no artifact to describe`,
+							`  \u{1F3F7}\uFE0F sbom · ${rel.name}: skipped — ${releaseKindLabel("github-only")}, no artifact to describe`,
 						);
 						continue;
 					}
@@ -1281,7 +1326,7 @@ export const runBuildAndSbom = (
 				const kinds = tallyReleaseKinds(detected.map((rel) => (sbomSkipped.includes(rel.name) ? 0 : 1)));
 				yield* Effect.logInfo(
 					`  ✅ ${detected.length} package(s) ready — ${kinds.registry} registry, ` +
-						`${kinds.githubRelease} ${releaseKindLabel("github-release")}`,
+						`${kinds.githubRelease} ${releaseKindLabel("github-only")}`,
 				);
 				// `ok: true` — an SBOM WRITE failure is not a release-blocking event.
 				//
@@ -1553,6 +1598,11 @@ export const runPublishTargets = (
 				targets: [
 					{
 						target: {
+							// The workspace name is the best available answer here: this is
+							// the synthetic target for a package whose publish threw before
+							// any real target result existed, so no per-target name was ever
+							// resolved.
+							name,
 							protocol: "npm" as const,
 							registry: null,
 							directory: "",
