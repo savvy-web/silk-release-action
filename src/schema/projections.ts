@@ -197,30 +197,44 @@ const toValidationWorkspace = (pkg: ValidationPackageResult): ValidationOutput["
 		bumpType: deriveBumpType(pkg.baseVersion, pkg.version),
 		changesetCount: pkg.changesetCount,
 		// A `github-only` workspace is ready by construction — it publishes
-		// nowhere, so there is no dry-run that could fail. One with builds is
-		// ready when every registry target of every build passed its probe.
-		ready: githubOnly || pkg.builds.every((b) => b.targets.every((t) => t.status !== "failed")),
+		// nowhere, so there is no dry-run that could fail. One with packages is
+		// ready when every publication passed its probe.
+		success: githubOnly || pkg.builds.every((b) => b.targets.every((t) => t.status !== "failed")),
 		kind: githubOnly ? "github-only" : "github-with-packages",
-		builds: pkg.builds.map((build) => ({
-			directory: build.directory,
-			packedBytes: build.packedBytes,
-			unpackedBytes: build.unpackedBytes,
-			fileCount: build.fileCount,
-			sbom:
+		// Flattened builds × targets into one entry per (package, registry)
+		// publication — the same unit the publish phase reports. The build
+		// metadata rides on each entry because several publications share one
+		// tarball, packed once; grouping by `directory` for display is the
+		// renderer's job, not a reason to nest the wire data.
+		packages: pkg.builds.flatMap((build) => {
+			const sbom =
 				build.sbom === null
 					? null
 					: {
 							componentCount: build.sbom.componentCount,
 							ntiaCompliant: build.sbom.ntiaCompliant,
 							missingNtiaFields: build.sbom.missingNtiaFields,
-						},
-			targets: build.targets.map((t) => ({
-				registry: t.registry,
-				status: t.status,
+						};
+			return build.targets.map((t) => ({
+				name: t.name,
+				version: pkg.version,
+				registry: {
+					name: registryDisplayName(t.registry),
+					type: classifyRegistry(t.registry),
+					url: t.registry,
+				},
+				success: t.status === "ready",
+				outcome: t.status,
+				error: t.status === "failed" ? (t.error ?? null) : null,
 				access: t.access,
 				provenance: t.provenance,
-			})),
-		})),
+				directory: build.directory,
+				packedBytes: build.packedBytes,
+				unpackedBytes: build.unpackedBytes,
+				fileCount: build.fileCount,
+				sbom,
+			}));
+		}),
 		releaseNotes: pkg.releaseNotes,
 	};
 };
@@ -238,35 +252,6 @@ const findingsOfSeverity = (
 			scope: f.scope === null ? null : { package: f.scope.package, directory: f.scope.directory },
 			message: f.message,
 		}));
-
-/**
- * Tally publish targets per registry type.
- *
- * @remarks
- * **A registry with no targets is absent from the result**, which is the whole
- * point: the `npmReady`/`githubPackagesReady` booleans this replaces both
- * started `true` and only flipped on a failure, so a wave with no npm target
- * reported `npmReady: true` — a green verdict on a check that never ran. An
- * absent key cannot be misread that way.
- */
-const tallyRegistries = (
-	packages: ReadonlyArray<ValidationPackageResult>,
-): ValidationOutput["validation"]["registries"] => {
-	const out: Record<string, { resolved: number; ready: number }> = {};
-	for (const pkg of packages) {
-		for (const build of pkg.builds) {
-			for (const target of build.targets) {
-				const key = classifyRegistry(target.registry);
-				out[key] ??= { resolved: 0, ready: 0 };
-				const entry = out[key];
-				if (entry === undefined) continue;
-				entry.resolved++;
-				if (target.status === "ready") entry.ready++;
-			}
-		}
-	}
-	return out;
-};
 
 /**
  * Project a validation run into a {@link ValidationOutput}.
@@ -335,7 +320,6 @@ export const toValidationOutput = (input: ValidationInput): ValidationOutput => 
 			workspaces: Object.fromEntries(
 				input.validationPackages.map((pkg) => [pkg.name, toValidationWorkspace(pkg)] as const),
 			),
-			registries: tallyRegistries(input.validationPackages),
 			checkRun: input.checkRun,
 		},
 	};

@@ -127,30 +127,29 @@ describe("ReleaseOutput schema", () => {
 			errors: [],
 			warnings: [],
 			order: ["@savvy-web/foo"],
-			registries: { npm: { resolved: 1, ready: 1 } },
 			workspaces: {
 				"@savvy-web/foo": {
 					version: "1.2.0",
 					baseVersion: "1.1.0",
 					bumpType: "minor",
 					changesetCount: 1,
-					ready: true,
+					success: true,
 					kind: "github-with-packages",
-					builds: [
+					packages: [
 						{
+							name: "@savvy-web/foo",
+							version: "1.2.0",
+							registry: { name: "npm", type: "npm", url: "https://registry.npmjs.org/" },
+							success: true,
+							outcome: "ready",
+							error: null,
+							access: "public",
+							provenance: false,
 							directory: "/repo/dist/npm",
 							packedBytes: 700,
 							unpackedBytes: 2300,
 							fileCount: 5,
 							sbom: { componentCount: 3, ntiaCompliant: true, missingNtiaFields: [] },
-							targets: [
-								{
-									registry: "https://registry.npmjs.org/",
-									status: "ready",
-									access: "public",
-									provenance: false,
-								},
-							],
 						},
 					],
 					releaseNotes: { status: "found", content: "### Minor Changes\n\n- something" },

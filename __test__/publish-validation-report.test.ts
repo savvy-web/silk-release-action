@@ -57,7 +57,15 @@ const PACKAGE: ValidationPackageResult = {
 			unpackedBytes: 2300,
 			fileCount: 5,
 			sbom: { componentCount: 3, ntiaCompliant: true, missingNtiaFields: [] },
-			targets: [{ registry: "https://registry.npmjs.org/", status: "ready", access: "public", provenance: false }],
+			targets: [
+				{
+					name: "@savvy-web/foo",
+					registry: "https://registry.npmjs.org/",
+					status: "ready",
+					access: "public",
+					provenance: false,
+				},
+			],
 		},
 	],
 	releaseNotes: { status: "found", content: "### Minor Changes\n\n- something" },

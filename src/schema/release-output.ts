@@ -398,6 +398,37 @@ const ValidationFinding = Schema.Struct({
 });
 
 /** The SBOM preview for one build directory. */
+/**
+ * How a registry is classified.
+ *
+ * @remarks
+ * Shared by BOTH the validation and publish phases, deliberately. Validation
+ * dry-runs exactly what publish will upload, so the two describe the same
+ * publications and must not describe them differently — one definition is what
+ * makes that structural rather than a convention someone has to maintain.
+ */
+const PublishRegistry = Schema.Struct({
+	name: Schema.String.annotate({
+		title: "Registry display name",
+		description: "Human-readable registry name, e.g. `npm`, `GitHub Packages`, or the host of a custom registry.",
+		examples: ["npm", "GitHub Packages", "JSR"],
+	}),
+	type: Schema.Literals(["npm", "github-packages", "jsr", "custom"]).annotate({
+		title: "Registry type",
+		description:
+			"`npm` — the public npm registry; `github-packages` — GitHub Packages; `jsr` — the JSR registry; `custom` — any other registry configured through the `custom-registries` input. A custom registry usually speaks the npm protocol, but is reported as `custom` rather than `npm` so it is never mistaken for the public registry.",
+	}),
+	url: Schema.String.annotate({
+		title: "Registry URL",
+		description: "The registry endpoint this package was published to.",
+		examples: ["https://registry.npmjs.org/", "https://npm.pkg.github.com/"],
+	}),
+}).annotate({
+	identifier: "PublishRegistry",
+	title: "Registry",
+	description: "The registry a package was published to, classified and named.",
+});
+
 const ValidationBuildSbom = Schema.Struct({
 	componentCount: Schema.Finite.annotate({
 		title: "Component count",
@@ -422,69 +453,94 @@ const ValidationBuildSbom = Schema.Struct({
 });
 
 /** A single registry target under a build — its per-registry publish readiness. */
-const ValidationBuildTarget = Schema.Struct({
-	registry: Schema.String.annotate({
-		title: "Registry URL",
-		description: "The registry endpoint this target would publish to.",
-		examples: ["https://registry.npmjs.org/", "https://npm.pkg.github.com/", "https://jsr.io"],
-	}),
-	status: Schema.Literals(["ready", "skipped", "failed"]).annotate({
-		title: "Target readiness",
+/**
+ * One package a workspace would publish, to one registry.
+ *
+ * @remarks
+ * **The same unit the publish phase reports**, deliberately: validation
+ * dry-runs exactly what publish uploads, so one entry here corresponds to one
+ * entry in `publish.workspaces[name].packages`. A workspace publishing the
+ * same version to three registries produces three entries in both phases, and
+ * they may not all share a name.
+ *
+ * The build metadata (`directory`, sizes, `sbom`) rides on the package rather
+ * than on a `builds` array above it. Several packages sharing one output
+ * directory share those values — the tarball is packed once and reused — so
+ * grouping by `directory` for display is a rendering concern, not a reason to
+ * shape the wire data around it. The previous `builds[].targets[]` nesting had
+ * to be flattened by every consumer before it could be compared with what
+ * publish reported.
+ */
+const ValidationPackage = Schema.Struct({
+	name: Schema.String.annotate({
+		title: "Published package name",
 		description:
-			"`ready` — the dry-run publish probe succeeded and the target is ready to publish; `skipped` — the target was intentionally not probed (e.g. unconfigured or filtered out); `failed` — the dry-run probe failed and the target would not publish.",
+			"The package name as it would be published. NOT necessarily the workspace's own name — a workspace may publish under a different name per target.",
 	}),
+	version: Schema.String.annotate({
+		title: "Version",
+		description: "The version this publication would carry.",
+	}),
+	registry: PublishRegistry,
+	success: Schema.Boolean.annotate({
+		title: "Succeeded",
+		description:
+			"The boolean gate, true only for `outcome: ready`. Named to match the publish phase's package entry, so one filter works across both.",
+	}),
+	outcome: Schema.Literals(["ready", "skipped", "failed"]).annotate({
+		identifier: "ValidationPackageOutcome",
+		title: "Outcome",
+		description:
+			"`ready` — the dry-run publish probe succeeded; `skipped` — the target was intentionally not probed (unconfigured, or filtered out); `failed` — the probe failed and this publication would not land; see `error`. The VALUES differ from the publish phase's (`published`/`recovered`/`failed`/`blocked`) because a probe and an upload have different outcomes — but the field pair is the same, so `success` gates both.",
+	}),
+	error: Schema.NullOr(
+		Schema.String.annotate({
+			title: "Error message",
+			description: "Why the dry-run failed. Non-null only when `status` is `failed`.",
+		}),
+	),
 	access: Schema.Literals(["public", "restricted"]).annotate({
 		title: "Access level",
 		description:
-			"`public` — the package would publish publicly; `restricted` — the package would publish privately (scoped, restricted access).",
+			"`public` — would publish publicly; `restricted` — would publish privately (scoped, restricted access).",
 	}),
 	provenance: Schema.Boolean.annotate({
 		title: "Provenance",
-		description: "True when the target supports and would emit npm OIDC sigstore provenance attestations.",
+		description: "True when this target supports and would emit npm OIDC sigstore provenance attestations.",
 	}),
-}).annotate({
-	identifier: "ValidationBuildTarget",
-	title: "Publish target",
-	description:
-		"Per-registry publish readiness for a single build directory: `ready` / `skipped` / `failed`, plus access level and provenance support.",
-});
-
-/** A build — one per unique target directory of a released package. */
-const ValidationBuild = Schema.Struct({
 	directory: Schema.String.annotate({
 		title: "Build directory",
 		description:
-			"Package-relative path to the build's output directory. One build is produced per unique output directory; the tarball is packed once and shared across all targets publishing this directory.",
+			"Package-relative path to the output directory this publication packs from. Packages sharing a directory share one tarball, packed once.",
 		examples: ["dist/npm", "dist/jsr"],
 	}),
 	packedBytes: Schema.NullOr(
 		Schema.Finite.annotate({
 			title: "Packed size (bytes)",
-			description: "Size of the packed tarball in bytes. Null when the dry-run did not report it.",
+			description: "Size of the packed tarball. Null when the dry-run did not report it.",
 		}),
 	),
 	unpackedBytes: Schema.NullOr(
 		Schema.Finite.annotate({
 			title: "Unpacked size (bytes)",
-			description: "Size of the unpacked contents in bytes. Null when the dry-run did not report it.",
+			description: "Size of the unpacked contents. Null when the dry-run did not report it.",
 		}),
 	),
 	fileCount: Schema.NullOr(
 		Schema.Finite.annotate({
 			title: "File count",
-			description: "Number of files in the packed tarball. Null when the dry-run did not report it.",
+			description: "Files in the packed tarball. Null when the dry-run did not report it.",
 		}),
 	),
-	sbom: Schema.NullOr(ValidationBuildSbom),
-	targets: Schema.Array(ValidationBuildTarget).annotate({
-		title: "Publish targets",
-		description: "The registry targets this build would publish to, with per-target readiness.",
+	sbom: Schema.NullOr(ValidationBuildSbom).annotate({
+		title: "SBOM preview",
+		description: "The SBOM that would be generated for this build. Null when generation failed or none applies.",
 	}),
 }).annotate({
-	identifier: "ValidationBuild",
-	title: "Build",
+	identifier: "ValidationPackage",
+	title: "Package to publish",
 	description:
-		"One unique output directory of a released package. The tarball is packed once and shared across all registry targets publishing this directory; per-target readiness is enumerated in `targets`.",
+		"One package a workspace would publish to one registry, mirroring the publish phase's per-package entry so the two phases describe the same publications the same way.",
 });
 
 /**
@@ -585,9 +641,10 @@ const ValidationWorkspace = Schema.Struct({
 			description: "Number of changesets contributing to this package's bump. Null when unknown.",
 		}),
 	),
-	ready: Schema.Boolean.annotate({
-		title: "Ready",
-		description: "True when every publish target for this package's builds passed its dry-run probe.",
+	success: Schema.Boolean.annotate({
+		title: "Succeeded",
+		description:
+			"True when every publication this workspace would make passed its dry-run probe. True by construction for a `github-only` workspace, which makes none. Named to match the publish phase's workspace entry.",
 	}),
 	kind: Schema.Literals(["github-only", "github-with-packages"]).annotate({
 		identifier: "ValidationWorkspaceKind",
@@ -595,9 +652,10 @@ const ValidationWorkspace = Schema.Struct({
 		description:
 			"The same vocabulary the publish phase reports, so one word means one thing across the whole run. `github-only` — the workspace resolved no publish target; its release is a version bump, a git tag and a GitHub release. This is the steady state for a private tracking package, not a degraded `github-with-packages`. `github-with-packages` — it resolved at least one publish target. Replaces the old `versionOnly` boolean, which named the same fact in a vocabulary the publish phase did not share.",
 	}),
-	builds: Schema.Array(ValidationBuild).annotate({
-		title: "Builds",
-		description: "The unique output directories this package produces, one entry per build.",
+	packages: Schema.Array(ValidationPackage).annotate({
+		title: "Packages to publish",
+		description:
+			"One entry per (package, registry) publication this workspace would make — the same unit and shape the publish phase reports, so the two can be compared directly. **Always an empty array for a `github-only` workspace**, and never null. Replaces the `builds[].targets[]` nesting, which every consumer had to flatten before it could line up with what publish reported.",
 	}),
 	// Optional in the machine-readable output: the full CHANGELOG content is rendered in the
 	// dedicated Release Notes Preview check, not duplicated into the `result` payload / the
@@ -610,23 +668,6 @@ const ValidationWorkspace = Schema.Struct({
 	title: "Released workspace",
 	description:
 		"A workspace being released this run, with its bump type, kind, builds, per-target readiness, and the extracted release notes. Keyed by workspace name in `validation.workspaces`, so the name is the key rather than a field.",
-});
-
-/** Per-registry target counts for the wave. */
-const ValidationRegistry = Schema.Struct({
-	resolved: Schema.Finite.annotate({
-		title: "Targets resolved",
-		description: "Publish targets resolved for this registry across every workspace.",
-	}),
-	ready: Schema.Finite.annotate({
-		title: "Targets ready",
-		description: "Of those, how many passed their dry-run probe.",
-	}),
-}).annotate({
-	identifier: "ValidationRegistry",
-	title: "Registry readiness",
-	description:
-		'Resolved and ready target counts for one registry. Counts rather than booleans, deliberately: the `npmReady`/`githubPackagesReady` flags this replaces were "nothing of this kind FAILED" booleans that both started true, so a wave with no npm target at all reported `npmReady: true` — asserting a readiness nothing had tested. A registry with no targets is simply absent from the map.',
 });
 
 const ValidationPayload = Schema.Struct({
@@ -675,11 +716,6 @@ const ValidationPayload = Schema.Struct({
 		title: "Workspaces",
 		description:
 			"Every workspace with a version difference against the target branch, keyed by workspace name — so a consumer looks one up directly rather than scanning an array. Empty object only when nothing had a version difference; a wave of only `github-only` workspaces still populates this, each with empty `builds`.",
-	}),
-	registries: Schema.Record(Schema.String, ValidationRegistry).annotate({
-		title: "Registries",
-		description:
-			"Per-registry target counts, keyed by registry type (`npm`, `github-packages`, `jsr`, `custom`). **A registry with no targets is absent from this map** — which is how a wave that publishes nowhere is told apart from one whose targets all passed. The `npmReady`/`githubPackagesReady` booleans this replaces could not make that distinction: both started `true` and only flipped on a failure, so an all-private wave reported them green.",
 	}),
 	checkRun: Schema.NullOr(
 		Schema.Struct({
@@ -847,40 +883,46 @@ export const ValidationOutput = Schema.Struct({
 				errors: [],
 				warnings: [],
 				order: ["@savvy-web/example"],
-				registries: { npm: { resolved: 2, ready: 2 } },
 				workspaces: {
 					"@savvy-web/example": {
 						version: "1.2.0",
 						baseVersion: "1.1.0",
 						bumpType: "minor",
 						changesetCount: 1,
-						ready: true,
+						success: true,
 						kind: "github-with-packages",
-						builds: [
+						packages: [
 							{
+								name: "@savvy-web/example",
+								version: "1.2.0",
+								registry: { name: "npm", type: "npm", url: "https://registry.npmjs.org/" },
+								success: true,
+								outcome: "ready",
+								error: null,
+								access: "public",
+								provenance: true,
 								directory: "dist/npm",
 								packedBytes: 716,
 								unpackedBytes: 2300,
 								fileCount: 5,
-								sbom: {
-									componentCount: 3,
-									ntiaCompliant: true,
-									missingNtiaFields: [],
-								},
-								targets: [
-									{
-										registry: "https://registry.npmjs.org/",
-										status: "ready",
-										access: "public",
-										provenance: true,
-									},
-									{
-										registry: "https://npm.pkg.github.com/",
-										status: "ready",
-										access: "public",
-										provenance: false,
-									},
-								],
+								sbom: { componentCount: 3, ntiaCompliant: true, missingNtiaFields: [] },
+							},
+							{
+								name: "@savvy-web/example",
+								version: "1.2.0",
+								registry: { name: "GitHub Packages", type: "github-packages", url: "https://npm.pkg.github.com/" },
+								success: true,
+								outcome: "ready",
+								error: null,
+								access: "public",
+								provenance: false,
+								// Same directory as the entry above: one tarball, packed once,
+								// published to two registries.
+								directory: "dist/npm",
+								packedBytes: 716,
+								unpackedBytes: 2300,
+								fileCount: 5,
+								sbom: { componentCount: 3, ntiaCompliant: true, missingNtiaFields: [] },
 							},
 						],
 						releaseNotes: {
@@ -924,29 +966,6 @@ export type ValidationOutput = Schema.Schema.Type<typeof ValidationOutput>;
 // A recovered publish and a fresh upload are both `success: true` and are
 // told apart by `outcome`. Keeping them separate means a consumer filtering
 // on `success` keeps working when a new `outcome` member is added.
-
-/** How a registry is classified. */
-const PublishRegistry = Schema.Struct({
-	name: Schema.String.annotate({
-		title: "Registry display name",
-		description: "Human-readable registry name, e.g. `npm`, `GitHub Packages`, or the host of a custom registry.",
-		examples: ["npm", "GitHub Packages", "JSR"],
-	}),
-	type: Schema.Literals(["npm", "github-packages", "jsr", "custom"]).annotate({
-		title: "Registry type",
-		description:
-			"`npm` — the public npm registry; `github-packages` — GitHub Packages; `jsr` — the JSR registry; `custom` — any other registry configured through the `custom-registries` input. A custom registry usually speaks the npm protocol, but is reported as `custom` rather than `npm` so it is never mistaken for the public registry.",
-	}),
-	url: Schema.String.annotate({
-		title: "Registry URL",
-		description: "The registry endpoint this package was published to.",
-		examples: ["https://registry.npmjs.org/", "https://npm.pkg.github.com/"],
-	}),
-}).annotate({
-	identifier: "PublishRegistry",
-	title: "Registry",
-	description: "The registry a package was published to, classified and named.",
-});
 
 const PublishRecoveryDigests = Schema.Struct({
 	localDigest: Schema.String.annotate({

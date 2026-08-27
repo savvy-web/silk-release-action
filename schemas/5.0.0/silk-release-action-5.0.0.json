@@ -618,6 +618,39 @@
 			"title": "Workspace kind",
 			"description": "The same vocabulary the publish phase reports, so one word means one thing across the whole run. `github-only` — the workspace resolved no publish target; its release is a version bump, a git tag and a GitHub release. This is the steady state for a private tracking package, not a degraded `github-with-packages`. `github-with-packages` — it resolved at least one publish target. Replaces the old `versionOnly` boolean, which named the same fact in a vocabulary the publish phase did not share."
 		},
+		"PublishRegistry": {
+			"type": "object",
+			"properties": {
+				"name": {
+					"type": "string",
+					"title": "Registry display name",
+					"description": "Human-readable registry name, e.g. `npm`, `GitHub Packages`, or the host of a custom registry.",
+					"examples": ["npm", "GitHub Packages", "JSR"]
+				},
+				"type": {
+					"type": "string",
+					"enum": ["npm", "github-packages", "jsr", "custom"],
+					"title": "Registry type",
+					"description": "`npm` — the public npm registry; `github-packages` — GitHub Packages; `jsr` — the JSR registry; `custom` — any other registry configured through the `custom-registries` input. A custom registry usually speaks the npm protocol, but is reported as `custom` rather than `npm` so it is never mistaken for the public registry."
+				},
+				"url": {
+					"type": "string",
+					"title": "Registry URL",
+					"description": "The registry endpoint this package was published to.",
+					"examples": ["https://registry.npmjs.org/", "https://npm.pkg.github.com/"]
+				}
+			},
+			"required": ["name", "type", "url"],
+			"additionalProperties": false,
+			"title": "Registry",
+			"description": "The registry a package was published to, classified and named."
+		},
+		"ValidationPackageOutcome": {
+			"type": "string",
+			"enum": ["ready", "skipped", "failed"],
+			"title": "Outcome",
+			"description": "`ready` — the dry-run publish probe succeeded; `skipped` — the target was intentionally not probed (unconfigured, or filtered out); `failed` — the probe failed and this publication would not land; see `error`. The VALUES differ from the publish phase's (`published`/`recovered`/`failed`/`blocked`) because a probe and an upload have different outcomes — but the field pair is the same, so `success` gates both."
+		},
 		"ValidationBuildSbom": {
 			"type": "object",
 			"properties": {
@@ -650,45 +683,57 @@
 			"title": "SBOM preview",
 			"description": "Per-build SBOM preview: component count, NTIA minimum-elements compliance, and the list of missing NTIA fields when not compliant."
 		},
-		"ValidationBuildTarget": {
+		"ValidationPackage": {
 			"type": "object",
 			"properties": {
-				"registry": {
+				"name": {
 					"type": "string",
-					"title": "Registry URL",
-					"description": "The registry endpoint this target would publish to.",
-					"examples": ["https://registry.npmjs.org/", "https://npm.pkg.github.com/", "https://jsr.io"]
+					"title": "Published package name",
+					"description": "The package name as it would be published. NOT necessarily the workspace's own name — a workspace may publish under a different name per target."
 				},
-				"status": {
+				"version": {
 					"type": "string",
-					"enum": ["ready", "skipped", "failed"],
-					"title": "Target readiness",
-					"description": "`ready` — the dry-run publish probe succeeded and the target is ready to publish; `skipped` — the target was intentionally not probed (e.g. unconfigured or filtered out); `failed` — the dry-run probe failed and the target would not publish."
+					"title": "Version",
+					"description": "The version this publication would carry."
+				},
+				"registry": {
+					"$ref": "#/$defs/PublishRegistry"
+				},
+				"success": {
+					"type": "boolean",
+					"title": "Succeeded",
+					"description": "The boolean gate, true only for `outcome: ready`. Named to match the publish phase's package entry, so one filter works across both."
+				},
+				"outcome": {
+					"$ref": "#/$defs/ValidationPackageOutcome"
+				},
+				"error": {
+					"anyOf": [
+						{
+							"type": "string",
+							"title": "Error message",
+							"description": "Why the dry-run failed. Non-null only when `status` is `failed`."
+						},
+						{
+							"type": "null"
+						}
+					]
 				},
 				"access": {
 					"type": "string",
 					"enum": ["public", "restricted"],
 					"title": "Access level",
-					"description": "`public` — the package would publish publicly; `restricted` — the package would publish privately (scoped, restricted access)."
+					"description": "`public` — would publish publicly; `restricted` — would publish privately (scoped, restricted access)."
 				},
 				"provenance": {
 					"type": "boolean",
 					"title": "Provenance",
-					"description": "True when the target supports and would emit npm OIDC sigstore provenance attestations."
-				}
-			},
-			"required": ["registry", "status", "access", "provenance"],
-			"additionalProperties": false,
-			"title": "Publish target",
-			"description": "Per-registry publish readiness for a single build directory: `ready` / `skipped` / `failed`, plus access level and provenance support."
-		},
-		"ValidationBuild": {
-			"type": "object",
-			"properties": {
+					"description": "True when this target supports and would emit npm OIDC sigstore provenance attestations."
+				},
 				"directory": {
 					"type": "string",
 					"title": "Build directory",
-					"description": "Package-relative path to the build's output directory. One build is produced per unique output directory; the tarball is packed once and shared across all targets publishing this directory.",
+					"description": "Package-relative path to the output directory this publication packs from. Packages sharing a directory share one tarball, packed once.",
 					"examples": ["dist/npm", "dist/jsr"]
 				},
 				"packedBytes": {
@@ -698,7 +743,7 @@
 							"allOf": [
 								{
 									"title": "Packed size (bytes)",
-									"description": "Size of the packed tarball in bytes. Null when the dry-run did not report it."
+									"description": "Size of the packed tarball. Null when the dry-run did not report it."
 								}
 							]
 						},
@@ -714,7 +759,7 @@
 							"allOf": [
 								{
 									"title": "Unpacked size (bytes)",
-									"description": "Size of the unpacked contents in bytes. Null when the dry-run did not report it."
+									"description": "Size of the unpacked contents. Null when the dry-run did not report it."
 								}
 							]
 						},
@@ -730,7 +775,7 @@
 							"allOf": [
 								{
 									"title": "File count",
-									"description": "Number of files in the packed tarball. Null when the dry-run did not report it."
+									"description": "Files in the packed tarball. Null when the dry-run did not report it."
 								}
 							]
 						},
@@ -747,21 +792,29 @@
 						{
 							"type": "null"
 						}
-					]
-				},
-				"targets": {
-					"type": "array",
-					"title": "Publish targets",
-					"description": "The registry targets this build would publish to, with per-target readiness.",
-					"items": {
-						"$ref": "#/$defs/ValidationBuildTarget"
-					}
+					],
+					"title": "SBOM preview",
+					"description": "The SBOM that would be generated for this build. Null when generation failed or none applies."
 				}
 			},
-			"required": ["directory", "packedBytes", "unpackedBytes", "fileCount", "sbom", "targets"],
+			"required": [
+				"name",
+				"version",
+				"registry",
+				"success",
+				"outcome",
+				"error",
+				"access",
+				"provenance",
+				"directory",
+				"packedBytes",
+				"unpackedBytes",
+				"fileCount",
+				"sbom"
+			],
 			"additionalProperties": false,
-			"title": "Build",
-			"description": "One unique output directory of a released package. The tarball is packed once and shared across all registry targets publishing this directory; per-target readiness is enumerated in `targets`."
+			"title": "Package to publish",
+			"description": "One package a workspace would publish to one registry, mirroring the publish phase's per-package entry so the two phases describe the same publications the same way."
 		},
 		"ReleaseNotesFound": {
 			"type": "object",
@@ -896,20 +949,20 @@
 						}
 					]
 				},
-				"ready": {
+				"success": {
 					"type": "boolean",
-					"title": "Ready",
-					"description": "True when every publish target for this package's builds passed its dry-run probe."
+					"title": "Succeeded",
+					"description": "True when every publication this workspace would make passed its dry-run probe. True by construction for a `github-only` workspace, which makes none. Named to match the publish phase's workspace entry."
 				},
 				"kind": {
 					"$ref": "#/$defs/ValidationWorkspaceKind"
 				},
-				"builds": {
+				"packages": {
 					"type": "array",
-					"title": "Builds",
-					"description": "The unique output directories this package produces, one entry per build.",
+					"title": "Packages to publish",
+					"description": "One entry per (package, registry) publication this workspace would make — the same unit and shape the publish phase reports, so the two can be compared directly. **Always an empty array for a `github-only` workspace**, and never null. Replaces the `builds[].targets[]` nesting, which every consumer had to flatten before it could line up with what publish reported.",
 					"items": {
-						"$ref": "#/$defs/ValidationBuild"
+						"$ref": "#/$defs/ValidationPackage"
 					}
 				},
 				"releaseNotes": {
@@ -923,37 +976,10 @@
 					]
 				}
 			},
-			"required": ["version", "baseVersion", "bumpType", "changesetCount", "ready", "kind", "builds"],
+			"required": ["version", "baseVersion", "bumpType", "changesetCount", "success", "kind", "packages"],
 			"additionalProperties": false,
 			"title": "Released workspace",
 			"description": "A workspace being released this run, with its bump type, kind, builds, per-target readiness, and the extracted release notes. Keyed by workspace name in `validation.workspaces`, so the name is the key rather than a field."
-		},
-		"ValidationRegistry": {
-			"type": "object",
-			"properties": {
-				"resolved": {
-					"type": "number",
-					"allOf": [
-						{
-							"title": "Targets resolved",
-							"description": "Publish targets resolved for this registry across every workspace."
-						}
-					]
-				},
-				"ready": {
-					"type": "number",
-					"allOf": [
-						{
-							"title": "Targets ready",
-							"description": "Of those, how many passed their dry-run probe."
-						}
-					]
-				}
-			},
-			"required": ["resolved", "ready"],
-			"additionalProperties": false,
-			"title": "Registry readiness",
-			"description": "Resolved and ready target counts for one registry. Counts rather than booleans, deliberately: the `npmReady`/`githubPackagesReady` flags this replaces were \"nothing of this kind FAILED\" booleans that both started true, so a wave with no npm target at all reported `npmReady: true` — asserting a readiness nothing had tested. A registry with no targets is simply absent from the map."
 		},
 		"ValidationCheckRun": {
 			"type": "object",
@@ -1022,14 +1048,6 @@
 					"title": "Workspaces",
 					"description": "Every workspace with a version difference against the target branch, keyed by workspace name — so a consumer looks one up directly rather than scanning an array. Empty object only when nothing had a version difference; a wave of only `github-only` workspaces still populates this, each with empty `builds`."
 				},
-				"registries": {
-					"type": "object",
-					"additionalProperties": {
-						"$ref": "#/$defs/ValidationRegistry"
-					},
-					"title": "Registries",
-					"description": "Per-registry target counts, keyed by registry type (`npm`, `github-packages`, `jsr`, `custom`). **A registry with no targets is absent from this map** — which is how a wave that publishes nowhere is told apart from one whose targets all passed. The `npmReady`/`githubPackagesReady` booleans this replaces could not make that distinction: both started `true` and only flipped on a failure, so an all-private wave reported them green."
-				},
 				"checkRun": {
 					"anyOf": [
 						{
@@ -1041,7 +1059,7 @@
 					]
 				}
 			},
-			"required": ["buildValidation", "checks", "errors", "warnings", "order", "workspaces", "registries", "checkRun"],
+			"required": ["buildValidation", "checks", "errors", "warnings", "order", "workspaces", "checkRun"],
 			"additionalProperties": false,
 			"title": "Validation payload",
 			"description": "Phase 2 outcome — the build-validation result, the Validation Checks table, every non-pass finding, the build-centric publish preview (per-package, per-build, per-target readiness), and the unified Release Validation Summary check-run URL."
@@ -1176,22 +1194,28 @@
 						"errors": [],
 						"warnings": [],
 						"order": ["@savvy-web/example"],
-						"registries": {
-							"npm": {
-								"resolved": 2,
-								"ready": 2
-							}
-						},
 						"workspaces": {
 							"@savvy-web/example": {
 								"version": "1.2.0",
 								"baseVersion": "1.1.0",
 								"bumpType": "minor",
 								"changesetCount": 1,
-								"ready": true,
+								"success": true,
 								"kind": "github-with-packages",
-								"builds": [
+								"packages": [
 									{
+										"name": "@savvy-web/example",
+										"version": "1.2.0",
+										"registry": {
+											"name": "npm",
+											"type": "npm",
+											"url": "https://registry.npmjs.org/"
+										},
+										"success": true,
+										"outcome": "ready",
+										"error": null,
+										"access": "public",
+										"provenance": true,
 										"directory": "dist/npm",
 										"packedBytes": 716,
 										"unpackedBytes": 2300,
@@ -1200,21 +1224,30 @@
 											"componentCount": 3,
 											"ntiaCompliant": true,
 											"missingNtiaFields": []
+										}
+									},
+									{
+										"name": "@savvy-web/example",
+										"version": "1.2.0",
+										"registry": {
+											"name": "GitHub Packages",
+											"type": "github-packages",
+											"url": "https://npm.pkg.github.com/"
 										},
-										"targets": [
-											{
-												"registry": "https://registry.npmjs.org/",
-												"status": "ready",
-												"access": "public",
-												"provenance": true
-											},
-											{
-												"registry": "https://npm.pkg.github.com/",
-												"status": "ready",
-												"access": "public",
-												"provenance": false
-											}
-										]
+										"success": true,
+										"outcome": "ready",
+										"error": null,
+										"access": "public",
+										"provenance": false,
+										"directory": "dist/npm",
+										"packedBytes": 716,
+										"unpackedBytes": 2300,
+										"fileCount": 5,
+										"sbom": {
+											"componentCount": 3,
+											"ntiaCompliant": true,
+											"missingNtiaFields": []
+										}
 									}
 								],
 								"releaseNotes": {
@@ -1405,33 +1438,6 @@
 			"enum": ["published", "recovered", "failed", "blocked"],
 			"title": "Package outcome",
 			"description": "`published` — new bytes were uploaded to this registry; `recovered` — the version was already present with an identical tarball digest, so nothing was re-uploaded and the run treated it as done; `failed` — the upload was attempted and did not land (see `error`); `blocked` — the upload was never attempted because the phase aborted first (see the phase-level `failure`)."
-		},
-		"PublishRegistry": {
-			"type": "object",
-			"properties": {
-				"name": {
-					"type": "string",
-					"title": "Registry display name",
-					"description": "Human-readable registry name, e.g. `npm`, `GitHub Packages`, or the host of a custom registry.",
-					"examples": ["npm", "GitHub Packages", "JSR"]
-				},
-				"type": {
-					"type": "string",
-					"enum": ["npm", "github-packages", "jsr", "custom"],
-					"title": "Registry type",
-					"description": "`npm` — the public npm registry; `github-packages` — GitHub Packages; `jsr` — the JSR registry; `custom` — any other registry configured through the `custom-registries` input. A custom registry usually speaks the npm protocol, but is reported as `custom` rather than `npm` so it is never mistaken for the public registry."
-				},
-				"url": {
-					"type": "string",
-					"title": "Registry URL",
-					"description": "The registry endpoint this package was published to.",
-					"examples": ["https://registry.npmjs.org/", "https://npm.pkg.github.com/"]
-				}
-			},
-			"required": ["name", "type", "url"],
-			"additionalProperties": false,
-			"title": "Registry",
-			"description": "The registry a package was published to, classified and named."
 		},
 		"PublishRecoveryDigests": {
 			"type": "object",

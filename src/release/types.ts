@@ -214,6 +214,17 @@ export interface BuildSbom {
  * @public
  */
 export interface BuildTargetResult {
+	/**
+	 * The package name as it will be published to this target.
+	 *
+	 * @remarks
+	 * NOT necessarily the workspace's own name — `PublishTarget.name` is the
+	 * name on the tarball, and a workspace may publish under a different name
+	 * per target. Carried for the same reason the publish path's `TargetSpec`
+	 * carries it: the two phases describe the same publications, so validation
+	 * has to be able to name what publish will.
+	 */
+	readonly name: string;
 	/** Registry URL the target publishes to. */
 	readonly registry: string;
 	/** Per-registry publish readiness. */

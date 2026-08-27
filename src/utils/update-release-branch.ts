@@ -54,6 +54,7 @@ import {
 	formatReleasePackageList,
 	getReleasingPackages,
 	listAllPackages,
+	listPublishablePackages,
 	resolveReleasePrTitle,
 } from "./release-summary-helpers.js";
 import { summaryWriter } from "./summary-writer.js";
@@ -344,6 +345,19 @@ export const updateReleaseBranch = (
 			// wave was titled `release: 31 packages`.
 			const allPackages = yield* listAllPackages(process.cwd());
 			const releasingPackages = getReleasingPackages(allPackages, changedFiles, process.cwd());
+			// The scope basis is the RELEASE-ELIGIBLE set, not every workspace package.
+			// `commonScope` omits a shared npm scope from the title for brevity, and
+			// widening the basis to every package pulled in the changeset-ignored ones
+			// (`docs`, `scratchpad`), whose differing scope made the set mixed and
+			// silently stopped the stripping — so a title that used to read
+			// `release: runtimes@0.4.4` came back fully qualified. Publishable packages
+			// already honour the changeset ignore list; the releasing ones are unioned
+			// in so a private tracking package still counts toward the shared scope.
+			const publishable = yield* listPublishablePackages(process.cwd());
+			const scopeBasis = [
+				...publishable,
+				...releasingPackages.filter((r) => !publishable.some((p) => p.name === r.name)),
+			];
 			if (releasingPackages.length === 0) {
 				// No fallback. An empty detection means no package.json moved, which
 				// is honestly "nothing to release" — never "everything".
@@ -367,7 +381,7 @@ export const updateReleaseBranch = (
 			prTitle = resolveReleasePrTitle({
 				releasingPackages,
 				perPackageVersioning: yield* isMonorepoForTagging(process.cwd()),
-				releasablePackages: allPackages,
+				releasablePackages: scopeBasis,
 				singlePackageRepoVersion,
 			});
 			if (prTitle !== NOTHING_TO_RELEASE_TITLE) {

@@ -102,7 +102,15 @@ describe("toValidationOutput", () => {
 		unpackedBytes: 2300,
 		fileCount: 5,
 		sbom: { componentCount: 3, ntiaCompliant: true, missingNtiaFields: [] },
-		targets: [{ registry: "https://registry.npmjs.org/", status: "ready", access: "public", provenance: false }],
+		targets: [
+			{
+				name: "@savvy-web/foo",
+				registry: "https://registry.npmjs.org/",
+				status: "ready",
+				access: "public",
+				provenance: false,
+			},
+		],
 	};
 
 	it("projects a clean build-centric validation run as success", () => {
@@ -141,6 +149,7 @@ describe("toValidationOutput", () => {
 							sbom: { componentCount: 3, ntiaCompliant: false, missingNtiaFields: ["Supplier"] },
 							targets: [
 								{
+									name: "@savvy-web/foo",
 									registry: "https://npm.pkg.github.com/",
 									status: "ready",
 									access: "public",
@@ -173,39 +182,41 @@ describe("toValidationOutput", () => {
 		expect(output.validation.errors).toEqual([]);
 		expect(output.validation.warnings).toEqual([]);
 		// Per-registry counts, not booleans: a registry with no target is ABSENT,
-		// which is what tells "nothing to publish" apart from "all targets passed".
-		// Split per registry, where `totalTargets: 2` lumped both together and
-		// could not say which registry either belonged to.
-		expect(output.validation.registries).toEqual({
-			npm: { resolved: 1, ready: 1 },
-			"github-packages": { resolved: 1, ready: 1 },
-		});
-
 		const [foo, bar] = output.validation.order.map((n) => output.validation.workspaces[n]);
 		expect(output.validation.order).toEqual(["@savvy-web/foo", "@savvy-web/bar"]);
-		// No `name` field — the map key carries it, so it cannot disagree.
+		// No `name` field on the workspace — the map key carries it, so the two
+		// cannot disagree. `packages` is one entry per (package, registry)
+		// publication, carrying its own registry and build metadata: the same
+		// unit and shape the publish phase reports.
 		expect(foo).toEqual({
 			version: "1.2.0",
 			baseVersion: "1.1.0",
 			bumpType: "minor",
 			changesetCount: 1,
-			ready: true,
+			success: true,
 			kind: "github-with-packages",
-			builds: [
+			packages: [
 				{
+					name: "@savvy-web/foo",
+					version: "1.2.0",
+					registry: { name: "npm", type: "npm", url: "https://registry.npmjs.org/" },
+					success: true,
+					outcome: "ready",
+					error: null,
+					access: "public",
+					provenance: false,
 					directory: "/repo/dist/npm",
 					packedBytes: 700,
 					unpackedBytes: 2300,
 					fileCount: 5,
 					sbom: { componentCount: 3, ntiaCompliant: true, missingNtiaFields: [] },
-					targets: [{ registry: "https://registry.npmjs.org/", status: "ready", access: "public", provenance: false }],
 				},
 			],
 			releaseNotes: { status: "found", content: "### Minor Changes\n\n- something" },
 		});
 		// A null base version is a brand-new package.
 		expect(bar?.bumpType).toBe("new");
-		expect(bar?.builds[0]?.sbom).toEqual({
+		expect(bar?.packages[0]?.sbom).toEqual({
 			componentCount: 3,
 			ntiaCompliant: false,
 			missingNtiaFields: ["Supplier"],
@@ -286,14 +297,29 @@ describe("toValidationOutput", () => {
 		expect(output.validation.order).toEqual(["@effected/claude-code-plugin", "@effected/copilot-plugin"]);
 		for (const name of output.validation.order) {
 			expect(output.validation.workspaces[name]?.kind).toBe("github-only");
-			expect(output.validation.workspaces[name]?.ready).toBe(true);
-			expect(output.validation.workspaces[name]?.builds).toEqual([]);
+			expect(output.validation.workspaces[name]?.success).toBe(true);
+			expect(output.validation.workspaces[name]?.packages).toEqual([]);
 		}
 
-		// No registry has a target, so the map is EMPTY rather than carrying two
-		// booleans that both read `true`. This is the misreport the map exists to
-		// make impossible.
-		expect(output.validation.registries).toEqual({});
+		// No publications at all, so no registry appears anywhere in the payload —
+		// there is nothing for a readiness verdict to be about. The booleans this
+		// replaced both read `true` here, asserting a check that never ran.
+		expect(output.validation.order.flatMap((n) => output.validation.workspaces[n]?.packages ?? [])).toEqual([]);
+
+		// The shape a consumer sees is the one the publish phase will use: a
+		// workspace map keyed by name, each carrying `kind` and a `packages`
+		// array of publications. Validation dry-runs exactly what publish
+		// uploads, so the two must be comparable field by field.
+		expect(output.validation.workspaces["@effected/claude-code-plugin"]).toEqual({
+			version: "0.14.0",
+			baseVersion: "0.13.1",
+			bumpType: "minor",
+			changesetCount: 1,
+			success: true,
+			kind: "github-only",
+			packages: [],
+			releaseNotes: { status: "no-changelog" },
+		});
 
 		// Split findings: both empty, and discriminable without a predicate.
 		expect(output.validation.errors).toEqual([]);
@@ -337,8 +363,8 @@ describe("toValidationOutput", () => {
 		// `versionOnly` boolean that named the same fact in a word only this
 		// phase understood.
 		expect(pkg?.kind).toBe("github-only");
-		expect(pkg?.ready).toBe(true);
-		expect(pkg?.builds).toEqual([]);
+		expect(pkg?.success).toBe(true);
+		expect(pkg?.packages).toEqual([]);
 		expect(pkg?.bumpType).toBe("patch");
 	});
 
@@ -405,6 +431,7 @@ describe("toValidationOutput", () => {
 							sbom: null,
 							targets: [
 								{
+									name: "@savvy-web/foo",
 									registry: "https://registry.npmjs.org/",
 									status: "failed",
 									access: "public",
@@ -427,8 +454,12 @@ describe("toValidationOutput", () => {
 		expect(output.failure?.stage).toBe("build");
 		expect(output.dryRun).toBe(true);
 		expect(output.validation.buildValidation.passed).toBe(false);
-		// The failed target is counted, not flattened into a boolean.
-		expect(output.validation.registries.npm).toEqual({ resolved: 1, ready: 0 });
+		// The failed publication carries its own registry and its own reason,
+		// rather than being flattened into a repo-wide boolean.
+		const failed = output.validation.order.flatMap((n) => output.validation.workspaces[n]?.packages ?? []);
+		expect(failed[0]?.registry.type).toBe("npm");
+		expect(failed[0]?.success).toBe(false);
+		expect(failed[0]?.outcome).toBe("failed");
 		expect(output.validation.warnings).toEqual([]);
 		expect(output.validation.errors).toEqual([
 			{
@@ -439,7 +470,7 @@ describe("toValidationOutput", () => {
 			},
 		]);
 		// A build with a failed target makes the package not ready.
-		expect(output.validation.order.map((n) => output.validation.workspaces[n])[0]?.ready).toBe(false);
+		expect(output.validation.order.map((n) => output.validation.workspaces[n])[0]?.success).toBe(false);
 		expect(output.validation.checkRun).toEqual({ url: "https://example.com/check/2", conclusion: "failure" });
 	});
 
