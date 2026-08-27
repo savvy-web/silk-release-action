@@ -169,7 +169,12 @@ describe("runPublishing — happy path", () => {
 		expect(exit._tag).toBe("Success");
 		expect(failedWith).toEqual([]);
 		expect(result).toBeDefined();
-		expect(text).toContain("Release publishing: ✅ 1 package(s), 1 release(s)");
+		// The closing line reports versioning, registry publishing and GitHub
+		// releases as three separate counts, so a wave that publishes nothing to a
+		// registry is legible instead of reading as an empty run.
+		expect(text).toContain(
+			"Release publishing: ✅ 1 package(s) versioned · 1 published to a registry · 1 GitHub release(s) created",
+		);
 	});
 });
 

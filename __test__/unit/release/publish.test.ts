@@ -13,7 +13,7 @@
  * that goes red because something was never scripted is a finding.
  */
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeServices } from "@effect/platform-node";
@@ -670,6 +670,7 @@ describe("runBuildAndSbom", () => {
 					loggerLayer,
 					NodeServices.layer,
 					makeWorkspaceDiscoveryLayer([pkg]),
+					makePublishabilityLayer(new Map([[pkg.name, [makeNpmTarget(pkg.name)]]])),
 					buildSpawner(1, "Build failed: compile error"),
 				);
 
@@ -715,6 +716,7 @@ describe("runBuildAndSbom", () => {
 						loggerLayer,
 						NodeServices.layer,
 						makeWorkspaceDiscoveryLayer([pkg]),
+						makePublishabilityLayer(new Map([[pkg.name, [makeNpmTarget(pkg.name)]]])),
 						failingSpawner(stdout, stderr),
 					);
 
@@ -815,6 +817,12 @@ describe("runBuildAndSbom", () => {
 					loggerLayer,
 					NodeServices.layer,
 					makeWorkspaceDiscoveryLayer([pkgA, pkgB]),
+					makePublishabilityLayer(
+						new Map([
+							[pkgA.name, [makeNpmTarget(pkgA.name, pkgA.path)]],
+							[pkgB.name, [makeNpmTarget(pkgB.name, pkgB.path)]],
+						]),
+					),
 					buildSpawner(0),
 				);
 
@@ -826,6 +834,55 @@ describe("runBuildAndSbom", () => {
 				expect(result.packageCount).toBe(detected.length);
 				expect(result.sbomPaths.get("@test/sbom-a")).toBe(join(pkgAPath, "sbom-a.sbom.json"));
 				expect(result.sbomPaths.get("@test/sbom-b")).toBe(join(pkgBPath, "sbom-b.sbom.json"));
+			}),
+		);
+
+		// A package that resolves no publish targets is `github-release` kind: it
+		// is versioned, tagged and released on GitHub, and nothing is uploaded.
+		// An SBOM describes a distributed artifact, and there is none — the
+		// release-asset upload is per-TARGET, so any document written for such a
+		// package was never attached to anything. It must be skipped, and the
+		// skip must be reported rather than left to look like a zero count.
+		it.effect("skips the SBOM for a package with no publish targets and names it in sbomSkipped", () =>
+			Effect.gen(function* () {
+				const tmpRoot = join(tmpdir(), `silk-sbom-kind-test-${Date.now()}`);
+				const registryPath = join(tmpRoot, "registry-pkg");
+				const trackingPath = join(tmpRoot, "tracking-pkg");
+				mkdirSync(registryPath, { recursive: true });
+				mkdirSync(trackingPath, { recursive: true });
+
+				const registryPkg = makeWsPkg("@test/registry-pkg", "1.0.0", registryPath);
+				const trackingPkg = makeWsPkg("@test/tracking-pkg", "0.1.0", trackingPath);
+				const detected: DetectedRelease[] = [
+					makeDetected("@test/registry-pkg", "1.0.0", registryPkg.path),
+					makeDetected("@test/tracking-pkg", "0.1.0", trackingPkg.path),
+				];
+
+				const layers = Layer.mergeAll(
+					loggerLayer,
+					NodeServices.layer,
+					makeWorkspaceDiscoveryLayer([registryPkg, trackingPkg]),
+					// The tracking package is absent from the map, so `detect` returns
+					// an empty array — exactly what a private package with no
+					// `publishConfig` produces in production.
+					makePublishabilityLayer(new Map([[registryPkg.name, [makeNpmTarget(registryPkg.name, registryPkg.path)]]])),
+					buildSpawner(0),
+				);
+
+				const result: BuildSbomResult = yield* runBuildAndSbom(detected, buildArgs).pipe(Effect.provide(layers));
+
+				// The build gate is unaffected: a release-only package is not a failure.
+				expect(result.ok).toBe(true);
+				expect(result.sbomFailures).toHaveLength(0);
+
+				// The registry package still gets its SBOM...
+				expect(result.sbomPaths.get("@test/registry-pkg")).toBe(join(registryPath, "registry-pkg.sbom.json"));
+				// ...and the tracking package gets none, reported as a SKIP rather
+				// than a failure — the distinction the caller renders.
+				expect(result.sbomSkipped).toEqual(["@test/tracking-pkg"]);
+				expect(result.sbomPaths.has("@test/tracking-pkg")).toBe(false);
+				// Nothing was written to disk for it either.
+				expect(existsSync(join(trackingPath, "tracking-pkg.sbom.json"))).toBe(false);
 			}),
 		);
 
@@ -853,6 +910,12 @@ describe("runBuildAndSbom", () => {
 					loggerLayer,
 					NodeServices.layer,
 					makeWorkspaceDiscoveryLayer([pkgGood, pkgBad]),
+					makePublishabilityLayer(
+						new Map([
+							[pkgGood.name, [makeNpmTarget(pkgGood.name, pkgGood.path)]],
+							[pkgBad.name, [makeNpmTarget(pkgBad.name, pkgBad.path)]],
+						]),
+					),
 					buildSpawner(0),
 				);
 

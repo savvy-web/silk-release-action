@@ -590,12 +590,15 @@ describe("buildPublishValidationSummary", () => {
 		expect(md).not.toContain("## 📦 Publish Validation");
 		expect(md).toContain("**Targets ready:** 1/1");
 		expect(md).toContain("**npm:** ✅");
-		expect(md).toContain("**GitHub Packages:** ✅");
+		// The default fixture has one npm target and no GitHub Packages target.
+		expect(md).toContain("**GitHub Packages:** — none");
+		// The wave's shape leads the section.
+		expect(md).toContain("**1 package(s)** publishing to a registry.");
 	});
 
 	it("renders one section per package with a header and a registry table per build", () => {
 		const md = buildPublishValidationSummary(validationOf({ publish: publishOf([pkg()]) }));
-		expect(md).toContain("### ✅ @savvy-web/linked-1@5.0.13");
+		expect(md).toContain("### ✅ 📦 @savvy-web/linked-1@5.0.13");
 		// The build headline + registry table both appear, without a <details>
 		// wrapper (flattened so the check-run page renders them expanded).
 		expect(md).toContain("`dist/npm`");
@@ -605,14 +608,43 @@ describe("buildPublishValidationSummary", () => {
 
 	it("renders a no-packages placeholder when nothing is being released", () => {
 		const md = buildPublishValidationSummary(validationOf({ publish: publishOf([]) }));
-		expect(md).toContain("_No packages with publish targets._");
+		expect(md).toContain("**Nothing to release**");
+		expect(md).toContain("_No packages have version differences against the target branch._");
+		// An empty wave must NOT be described as a wave of release-only packages.
+		expect(md).not.toContain("0 package(s)");
 	});
 
-	it("renders a version-only sub-section for a package with no builds", () => {
+	// A package with no builds is `github-release` kind. The copy must say that
+	// it IS released — tagged, and given a GitHub release — rather than describe
+	// it by what it lacks, which is how `no publish targets` read.
+	it("describes a package with no builds as GitHub-release-only, not as lacking targets", () => {
 		const versionOnly = pkg({ name: "@org/version-only", versionOnly: true, builds: [] });
 		const md = buildPublishValidationSummary(validationOf({ publish: publishOf([versionOnly]) }));
 		expect(md).toContain("@org/version-only");
-		expect(md).toContain("_Version-only package — no publish targets._");
+		expect(md).toContain("GitHub release only");
+		expect(md).toContain("tagged and released on GitHub");
+		// `⏭️` claims something was skipped. Nothing was.
+		expect(md).not.toContain("⏭️");
+	});
+
+	// The readiness flags are "nothing of this kind FAILED" booleans, so both are
+	// `true` for a wave with no targets at all. Rendering that as `✅` asserted a
+	// registry check that never ran — the misleading half of an all-private wave.
+	it("renders '— none' rather than ✅ for a registry the wave has no targets for", () => {
+		const versionOnly = pkg({ name: "@org/tracking", versionOnly: true, builds: [] });
+		const publish: ValidationPublish = {
+			...publishOf([versionOnly]),
+			npmReady: true,
+			githubPackagesReady: true,
+		};
+		const md = buildPublishValidationSummary(validationOf({ publish }));
+		expect(md).toContain("**npm:** — none");
+		expect(md).toContain("**GitHub Packages:** — none");
+		expect(md).not.toContain("**npm:** ✅");
+		expect(md).not.toContain("**GitHub Packages:** ✅");
+		// ...and the wave's shape is stated up front.
+		expect(md).toContain("every one is");
+		expect(md).toContain("Nothing publishes to a registry.");
 	});
 
 	it("renders ❌ npm / ❌ GitHub Packages flags when readiness is false", () => {
@@ -623,7 +655,20 @@ describe("buildPublishValidationSummary", () => {
 			githubPackagesReady: false,
 		};
 		const md = buildPublishValidationSummary(validationOf({ publish }));
+		// npm HAS a target and it failed, so ❌ is a real verdict.
 		expect(md).toContain("**npm:** ❌");
+		// GitHub Packages has no target in this wave, so it gets neither verdict.
+		expect(md).toContain("**GitHub Packages:** — none");
+	});
+
+	it("renders ❌ for GitHub Packages when the wave has a GitHub Packages target that failed", () => {
+		const failedBuild = build({ targets: [ghTarget({ status: "failed" })] });
+		const publish: ValidationPublish = {
+			...publishOf([pkg({ builds: [failedBuild] })]),
+			npmReady: true,
+			githubPackagesReady: false,
+		};
+		const md = buildPublishValidationSummary(validationOf({ publish }));
 		expect(md).toContain("**GitHub Packages:** ❌");
 	});
 
@@ -661,8 +706,8 @@ describe("buildPublishValidationSummary", () => {
 		const md = buildPublishValidationSummary(validationOf({ publish: publishOf([pkgA, pkgB]) }));
 
 		// Both per-package headers appear, in input order.
-		expect(md).toContain("### ✅ @org/pkg-a@1.2.3");
-		expect(md).toContain("### ✅ @org/pkg-b@2.0.0");
+		expect(md).toContain("### ✅ 📦 @org/pkg-a@1.2.3");
+		expect(md).toContain("### ✅ 📦 @org/pkg-b@2.0.0");
 		expect(md.indexOf("@org/pkg-a@1.2.3")).toBeLessThan(md.indexOf("@org/pkg-b@2.0.0"));
 
 		// Each package's build headline + registry sit under its own header.

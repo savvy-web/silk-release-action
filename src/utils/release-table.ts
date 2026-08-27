@@ -9,6 +9,7 @@
 
 import { GitHubMarkdown } from "@effected/github-actions";
 import { Schema } from "effect";
+import { releaseKindCell, releaseKindIcon } from "./release-kind.js";
 
 /**
  * One row of the release table.
@@ -125,10 +126,11 @@ export interface ValidatedPackage {
  * Fill in the column Phase 1 had to leave pending.
  *
  * @remarks
- * A package with **no builds** is version-only — it is versioned and
- * changelogged but publishes nothing — which is `⏭️ no targets`, not a failure
- * and not a zero-of-zero ready. Reporting `0/0 ready` would read as a problem
- * where there is none.
+ * A package with **no builds** is `github-release` kind — it is versioned,
+ * changelogged, tagged and given a GitHub release, and publishes to no
+ * registry — which is `🏷️ GitHub release only`, not a failure and not a
+ * zero-of-zero ready. Reporting `0/0 ready` would read as a problem where
+ * there is none, and the previous `⏭️ no targets` read as a skip.
  *
  * A **skipped** target counts as neither ready nor failed. It is most often
  * "already published, identical", which is a success for the release even
@@ -148,15 +150,20 @@ export const toValidatedReleaseRows = (packages: ReadonlyArray<ValidatedPackage>
 		const ready = targets.filter((t) => t.status === "ready").length;
 		const failed = targets.filter((t) => t.status === "failed").length;
 
+		// `🏷️ GitHub release only`, not `⏭️ no targets`. The old cell described
+		// the mechanism ("no targets") in the vocabulary of a skip, and `⏭️` in
+		// the status column reinforced it — so a private tracking package, whose
+		// entire release is a tag and a GitHub release BY DESIGN, read as a
+		// package that had been passed over. Nothing is skipped here.
 		const targetsCell =
 			targets.length === 0
-				? "⏭️ no targets"
+				? releaseKindCell("github-release")
 				: failed > 0
 					? `❌ ${failed}/${targets.length} failed`
 					: `✅ ${ready}/${targets.length} ready`;
 
 		return {
-			status: failed > 0 ? "❌" : targets.length === 0 ? "⏭️" : "✅",
+			status: failed > 0 ? "❌" : targets.length === 0 ? releaseKindIcon("github-release") : "✅",
 			name: pkg.name,
 			versions: `${pkg.baseVersion ?? "new"} → ${pkg.version}`,
 			// The bump is derived from the versions rather than carried: by Phase 2

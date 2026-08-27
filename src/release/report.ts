@@ -4,6 +4,7 @@ import type { SbomMetadata } from "@effected/sbom";
 import type { ValidationOutput } from "../schema/release-output.js";
 import { DEFAULT_SERVER_URL, orgPackagePageUrl } from "../utils/github-urls.js";
 import type { ConfigSource } from "../utils/load-release-config.js";
+import { releaseKindCell, releaseKindIcon, releaseKindOf, tallyReleaseKinds } from "../utils/release-kind.js";
 
 /**
  * The `validation` payload of a {@link ValidationOutput} — the single
@@ -155,6 +156,52 @@ function renderBumpCell(pkg: ValidationPublishPackage): string {
 }
 
 /**
+ * Count a wave's publish targets by registry class.
+ *
+ * @remarks
+ * The readiness flags on the payload (`npmReady`, `githubPackagesReady`) are
+ * "no target of this kind FAILED" booleans: both start `true` and only ever
+ * flip on a failure. That is a sound definition when the wave has npm targets
+ * and a misleading one when it has none — an all-private wave reported
+ * `npm: ✅` for a registry it never contacted, asserting a readiness nothing
+ * had tested. Rendering needs to know the difference between "every target
+ * passed" and "there were no targets", and only a count can tell it.
+ *
+ * @internal
+ */
+function countTargetsByRegistry(publish: ValidationPublish): { readonly npm: number; readonly githubPackages: number } {
+	let npm = 0;
+	let githubPackages = 0;
+	for (const pkg of publish.packages) {
+		for (const build of pkg.builds) {
+			for (const target of build.targets) {
+				const kind = classifyRegistry(target.registry);
+				if (kind === "npm") npm++;
+				else if (kind === "github-packages") githubPackages++;
+			}
+		}
+	}
+	return { npm, githubPackages };
+}
+
+/**
+ * Render one registry's readiness cell, distinguishing "none" from "all ready".
+ *
+ * @remarks
+ * `—` rather than `✅` or `❌` when the count is zero. A tick claims a
+ * successful check that never ran; a cross claims a failure that never
+ * happened. Neither is true of a wave that simply has no targets for that
+ * registry, which is the steady state for a release made only of private
+ * tracking packages.
+ *
+ * @internal
+ */
+function renderRegistryReadiness(count: number, ready: boolean): string {
+	if (count === 0) return "— none";
+	return ready ? "✅" : "❌";
+}
+
+/**
  * Classify the overall publish status for a package.
  */
 type PackageStatus = "success" | "skipped" | "partial" | "failed";
@@ -302,6 +349,18 @@ export function buildReleaseTotals(publish: ValidationPublish): string {
 			}
 		}
 	}
+	// A wave with no targets at all has nothing to total. Rendering
+	// `0 B packed · 0 B unpacked · 0 files · 0/0 targets ready` for a release
+	// made entirely of private tracking packages reads like a build that
+	// produced nothing, when in fact no build was ever meant to run.
+	if (targets === 0) {
+		const kinds = tallyReleaseKinds(publish.packages.map((pkg) => pkg.builds.flatMap((b) => b.targets).length));
+		return (
+			`**Totals:** ${releaseKindCell("github-release")} — ` +
+			`${kinds.githubRelease} package(s) tagged and released on GitHub, nothing published to a registry`
+		);
+	}
+
 	return (
 		`**Totals:** \u{1F4E6} ${humanizeSize(packed)} packed · ` +
 		`\u{1F4C2} ${humanizeSize(unpacked)} unpacked · ` +
@@ -644,13 +703,32 @@ export function buildPublishValidationSummary(validation: ValidationPayload): st
 
 	// The check-run page already renders the title; the body must not repeat
 	// a `## Publish Validation` heading underneath it.
+	const counts = countTargetsByRegistry(publish);
+	const kinds = tallyReleaseKinds(publish.packages.map((pkg) => pkg.builds.flatMap((b) => b.targets).length));
+
+	// The wave's SHAPE leads, because it is what makes the rest of the line
+	// readable. `Targets ready: 0/0 · npm: ✅` told a reader nothing about
+	// whether that was a wave with nothing to publish or a wave that failed to
+	// resolve anything.
+	const shape =
+		publish.packages.length === 0
+			? "**Nothing to release** — no package has a version difference against the target branch."
+			: kinds.registry === 0
+				? `**${kinds.githubRelease} package(s)** — every one is ${releaseKindCell("github-release")}. ` +
+					"Nothing publishes to a registry."
+				: kinds.githubRelease === 0
+					? `**${kinds.registry} package(s)** publishing to a registry.`
+					: `**${kinds.registry} package(s)** publishing to a registry · ` +
+						`**${kinds.githubRelease}** ${releaseKindCell("github-release")}.`;
+
 	const totals =
+		`${shape}\n\n` +
 		`**Targets ready:** ${publish.readyTargets}/${publish.totalTargets} · ` +
-		`**npm:** ${publish.npmReady ? "✅" : "❌"} · ` +
-		`**GitHub Packages:** ${publish.githubPackagesReady ? "✅" : "❌"}`;
+		`**npm:** ${renderRegistryReadiness(counts.npm, publish.npmReady)} · ` +
+		`**GitHub Packages:** ${renderRegistryReadiness(counts.githubPackages, publish.githubPackagesReady)}`;
 
 	if (publish.packages.length === 0) {
-		return `${totals}\n\n_No packages with publish targets._`;
+		return `${totals}\n\n_No packages have version differences against the target branch._`;
 	}
 
 	const sections: string[] = [totals];
@@ -658,10 +736,14 @@ export function buildPublishValidationSummary(validation: ValidationPayload): st
 	for (const pkg of publish.packages) {
 		const pkgStatus = getPackageStatus(pkg);
 		const statusIcon = getPackageStatusIcon(pkgStatus);
-		sections.push(`### ${statusIcon} ${pkg.name}@${pkg.version}`);
+		const kindIcon = releaseKindIcon(releaseKindOf(pkg.builds.flatMap((b) => b.targets).length));
+		sections.push(`### ${statusIcon} ${kindIcon} ${pkg.name}@${pkg.version}`);
 
 		if (pkg.builds.length === 0) {
-			sections.push("_Version-only package — no publish targets._");
+			sections.push(
+				`${releaseKindCell("github-release")} — versioned, tagged and released on GitHub. ` +
+					"No registry target, so nothing is packed or uploaded.",
+			);
 			continue;
 		}
 

@@ -5,12 +5,14 @@
 // Phase-3 publish use to decide what is actually publishable.
 
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { classifyRegistry } from "@effected/npm";
-import type { PublishTarget, PublishabilityDetector, WorkspacePackage } from "@effected/workspaces";
+import type { PublishTarget, WorkspacePackage } from "@effected/workspaces";
+import { PublishabilityDetector } from "@effected/workspaces";
 import type { PublishTargetBindingError } from "@savvy-web/silk-effects";
 import { SilkPublishability } from "@savvy-web/silk-effects";
-import type { Effect, FileSystem } from "effect";
+import type { FileSystem } from "effect";
+import { Effect } from "effect";
 
 /**
  * Report whether a built target directory's `package.json` is marked `private`.
@@ -138,3 +140,101 @@ export function pickToken(
 		}
 	}
 }
+
+/**
+ * One resolved publish target, flattened to the fields the publish path uses.
+ *
+ * @remarks
+ * `directory` is **absolute** — resolved against the package path here, unlike
+ * the package-relative `PublishTarget.directory` that
+ * {@link resolvePublishableTargets} passes through untouched.
+ *
+ * @public
+ */
+export interface TargetSpec {
+	readonly registry: string;
+	readonly directory: string;
+	readonly access: "public" | "restricted";
+	readonly provenance: boolean;
+}
+
+/**
+ * What {@link resolvePublishTargetSpecs} found for one package.
+ *
+ * @remarks
+ * The two skip lists are returned rather than logged because this module has
+ * no logger and should not acquire one — the caller owns how loudly a skip is
+ * reported, and Phase 2 and Phase 3 report them differently.
+ *
+ * @public
+ */
+export interface ResolvedPublishTargets {
+	/** Targets that will actually be published to, with absolute directories. */
+	readonly targets: ReadonlyArray<TargetSpec>;
+	/** Registry URLs of JSR targets, which this action cannot publish yet. */
+	readonly jsrSkipped: ReadonlyArray<string>;
+	/** Basenames of target directories dropped for a `private` built `package.json`. */
+	readonly privateSkipped: ReadonlyArray<string>;
+}
+
+/**
+ * Resolve the publish targets a package will actually be published to.
+ *
+ * @remarks
+ * **The single definition of "will this package publish anywhere".** It exists
+ * because Phase 3 asked that question twice, in two places, by two different
+ * routes: the publish step resolved targets and filtered them, while the
+ * Build &amp; SBOM gate never asked at all and generated an SBOM for every
+ * detected package — including private tracking packages that have no tarball
+ * to describe and no release asset to attach it to. Both now call this, so the
+ * SBOM gate and the publish step cannot disagree about which packages are
+ * registry packages.
+ *
+ * Three filters, in order:
+ *  1. `PublishabilityDetector.detect` — the package's own declaration of where
+ *     it publishes. Its error channel is `never`; an undetectable package
+ *     yields an empty array.
+ *  2. **JSR targets are removed**, because this action cannot publish to JSR
+ *     yet. They are reported in `jsrSkipped` so the caller can say so.
+ *  3. **Targets whose built `package.json` is `private` are removed** — the
+ *     build pipeline's "never publish" signal for dev-only outputs.
+ *
+ * A package that survives with zero targets is `github-release` kind — see
+ * `utils/release-kind.ts`. That is a legitimate outcome, not a failure.
+ *
+ * @param wsPkg - The workspace package to resolve targets for.
+ * @returns The surviving targets plus what was dropped and why.
+ *
+ * @public
+ */
+export const resolvePublishTargetSpecs = (
+	wsPkg: WorkspacePackage,
+): Effect.Effect<ResolvedPublishTargets, never, PublishabilityDetector> =>
+	Effect.gen(function* () {
+		const detector = yield* PublishabilityDetector;
+		const detected = yield* detector.detect(wsPkg);
+
+		const jsrSkipped: string[] = [];
+		const privateSkipped: string[] = [];
+		const targets: TargetSpec[] = [];
+
+		for (const t of detected) {
+			if (classifyRegistry(t.registry) === "jsr") {
+				jsrSkipped.push(t.registry);
+				continue;
+			}
+			const directory = isAbsolute(t.directory) ? t.directory : join(wsPkg.path, t.directory);
+			if (isTargetPrivate(directory)) {
+				privateSkipped.push(directory);
+				continue;
+			}
+			targets.push({
+				registry: t.registry,
+				directory,
+				access: t.access,
+				provenance: t.provenance ?? false,
+			});
+		}
+
+		return { targets, jsrSkipped, privateSkipped };
+	});

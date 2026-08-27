@@ -120,7 +120,7 @@ describe("releaseTable", () => {
 const target = (status: "ready" | "skipped" | "failed") => ({ status });
 
 describe("toValidatedReleaseRows", () => {
-	it("reports a version-only package as having no targets, not zero ready", () => {
+	it("reports a package with no builds as GitHub-release-only, not as skipped", () => {
 		const [row] = toValidatedReleaseRows([
 			{ name: "@scope/version-only", version: "1.1.0", baseVersion: "1.0.0", changesetCount: 1, builds: [] },
 		]);
@@ -128,8 +128,14 @@ describe("toValidatedReleaseRows", () => {
 
 		// `0/0 ready` would read as a problem for a package that is simply not
 		// published — versioned and changelogged, but with nothing to upload.
-		expect(rendered).toContain("⏭️ no targets");
 		expect(rendered).not.toContain("0/0");
+		// The cell must name what the package DOES get (a tag and a GitHub
+		// release), not what it lacks. `⏭️ no targets` said the opposite: the
+		// skip glyph reads as "this was passed over", and a private tracking
+		// package is not passed over — this is its whole release.
+		expect(rendered).toContain("🏷️ GitHub release only");
+		expect(rendered).not.toContain("⏭️");
+		expect(rendered).not.toContain("no targets");
 	});
 
 	it("counts ready targets across every build of a package", () => {

@@ -74,6 +74,7 @@ import type { TagInfo } from "../utils/determine-tag-strategy.js";
 import { determineTagStrategy, isMonorepoForTagging } from "../utils/determine-tag-strategy.js";
 import { ensureFullHistory } from "../utils/ensure-full-history.js";
 import { grouped } from "../utils/grouped.js";
+import { releaseKindLabel, summarizeReleaseWave, tallyReleaseKinds } from "../utils/release-kind.js";
 import { sortReleasesTopologically } from "../utils/sort-releases-topologically.js";
 
 /**
@@ -158,7 +159,7 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 					successfulTargets: 0,
 				};
 				yield* emitPublishing(empty, [], [], {});
-				yield* Effect.logInfo("Release publishing: ✅ nothing to publish");
+				yield* Effect.logInfo("Release publishing: ✅ no packages were versioned — nothing to tag, release or publish");
 				return;
 			}
 
@@ -236,7 +237,21 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 					}),
 				);
 			}
-			yield* Effect.logInfo(`✅ Published ${publishResult.successfulTargets}/${publishResult.totalTargets} target(s)`);
+			// Name the wave's shape, not just the ratio. `✅ Published 0/0 target(s)`
+			// is true of a release made entirely of private tracking packages and
+			// tells a reader nothing about whether that was the design or a
+			// resolution failure.
+			const publishKinds = tallyReleaseKinds(publishResult.packages.map((pkg) => pkg.targets.length));
+			yield* Effect.logInfo(
+				publishKinds.registry === 0
+					? `✅ No registry publishing — all ${publishKinds.githubRelease} package(s) are ` +
+							`${releaseKindLabel("github-release")}`
+					: `✅ Published ${publishResult.successfulTargets}/${publishResult.totalTargets} target(s) ` +
+							`across ${publishKinds.registry} package(s)` +
+							(publishKinds.githubRelease > 0
+								? `; ${publishKinds.githubRelease} ${releaseKindLabel("github-release")}`
+								: ""),
+			);
 
 			// ── Step 5: Create releases ────────────────────────────────────────────
 			// `runReleases` wraps itself in Step.withStep.
@@ -330,8 +345,15 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 				return yield* Effect.fail(new ReleasesError({ reason, message }));
 			}
 
+			// The closing line reports the three facts separately — versioned,
+			// published, released — so a zero in the middle is legible as the shape
+			// of the wave rather than as an absence of work.
 			yield* Effect.logInfo(
-				`Release publishing: ✅ ${publishResult.successfulPackages} package(s), ${releasesResult.releases.length} release(s)`,
+				`Release publishing: ✅ ${summarizeReleaseWave({
+					versioned: publishResult.successfulPackages,
+					publishedTargets: publishResult.successfulTargets,
+					githubReleases: releasesResult.releases.length,
+				})}`,
 			);
 		}),
 	);

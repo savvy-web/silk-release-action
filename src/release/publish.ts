@@ -7,7 +7,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { Run } from "@effected/commands";
 import type { GitHubError, Repo } from "@effected/github";
 import { Attestation, GitHubCommit, GitHubContent, PullRequest } from "@effected/github";
@@ -31,7 +31,8 @@ import {
 } from "@effected/npm";
 import type { SigstoreSigner } from "@effected/sbom";
 import { CYCLONEDX_BOM_PREDICATE, Sbom, SbomMetadataSource, SlsaProvenance } from "@effected/sbom";
-import { PublishabilityDetector, WorkspaceDiscovery, WorkspacePackage } from "@effected/workspaces";
+import type { PublishabilityDetector } from "@effected/workspaces";
+import { WorkspaceDiscovery, WorkspacePackage } from "@effected/workspaces";
 import type { FileSystem } from "effect";
 import { Config, Effect, Option, Redacted } from "effect";
 import type { ChildProcessSpawner } from "effect/unstable/process";
@@ -40,11 +41,13 @@ import { ChildProcess } from "effect/unstable/process";
 import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
 import type { CustomRegistryAuth } from "../utils/custom-registries.js";
 import { getGroupId } from "../utils/group-id.js";
+import { releaseKindLabel, releaseKindOf, tallyReleaseKinds } from "../utils/release-kind.js";
 import { sortReleasesTopologically } from "../utils/sort-releases-topologically.js";
 import { attestSubject, buildProvenancePredicate } from "./attest-helpers.js";
 import { ChangesetConfig } from "./changeset-config.js";
 import { humanizeSize } from "./report.js";
-import { isTargetPrivate, pickToken } from "./resolve-targets.js";
+import type { TargetSpec } from "./resolve-targets.js";
+import { pickToken, resolvePublishTargetSpecs } from "./resolve-targets.js";
 import type { PackagePublishResult, PublishPackagesResult, TargetPublishResult } from "./types.js";
 
 // ─── Public interfaces ────────────────────────────────────────────────────────
@@ -76,13 +79,6 @@ export interface DetectedRelease {
 }
 
 /** Resolved target shape used internally (subset of the legacy ResolvedTarget). */
-interface TargetSpec {
-	readonly registry: string;
-	readonly directory: string;
-	readonly access: "public" | "restricted";
-	readonly provenance: boolean;
-}
-
 /**
  * Which `npm` every pack and publish in this phase runs through.
  *
@@ -1005,6 +1001,38 @@ export const detectReleases = (
 		);
 	});
 
+/**
+ * Resolve a detected release's `WorkspacePackage`, synthesising a minimal one
+ * when discovery cannot find it.
+ *
+ * @remarks
+ * Discovery misses a package that the release removed from the workspace (a
+ * deleted monorepo member is the usual case). Both the Build & SBOM gate and
+ * the publish step need a `WorkspacePackage` and both had the same eight-line
+ * fallback inline; sharing it keeps the synthesised shape identical, which
+ * matters because the two now feed the same target resolver.
+ *
+ * @internal
+ */
+const resolveWorkspacePackage = (
+	discovery: WorkspaceDiscovery["Service"],
+	rel: DetectedRelease,
+): Effect.Effect<WorkspacePackage> =>
+	discovery.getPackage(rel.name).pipe(
+		Effect.catch(() =>
+			Effect.succeed(
+				WorkspacePackage.make({
+					name: rel.name,
+					version: rel.version,
+					path: rel.path,
+					packageJsonPath: join(rel.path, "package.json"),
+					relativePath: "",
+					workspaceRoot: process.cwd(),
+				}),
+			),
+		),
+	);
+
 // ─── runBuildAndSbom ───────────────────────────────────────────────────────────
 
 /**
@@ -1080,6 +1108,17 @@ export interface BuildSbomResult {
 	readonly buildError?: string;
 	/** Names of packages whose SBOM generation failed. */
 	readonly sbomFailures: ReadonlyArray<string>;
+	/**
+	 * Names of packages for which no SBOM was generated **by design** — they
+	 * resolved no publish targets, so they are `github-release` kind.
+	 *
+	 * @remarks
+	 * Distinct from {@link BuildSbomResult.sbomFailures} in the way that
+	 * matters: a skip is the correct outcome, a failure is not. Carried on the
+	 * result rather than only logged so a caller can say "0 SBOMs, 2 skipped"
+	 * instead of leaving a reader to infer why the count is zero.
+	 */
+	readonly sbomSkipped: ReadonlyArray<string>;
 	/** Number of in-scope packages. */
 	readonly packageCount: number;
 	/**
@@ -1116,7 +1155,11 @@ export const runBuildAndSbom = (
 ): Effect.Effect<
 	BuildSbomResult,
 	never,
-	ActionLogger | ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | WorkspaceDiscovery
+	| ActionLogger
+	| ChildProcessSpawner.ChildProcessSpawner
+	| FileSystem.FileSystem
+	| PublishabilityDetector
+	| WorkspaceDiscovery
 > =>
 	Effect.gen(function* () {
 		const logger = yield* ActionLogger;
@@ -1168,6 +1211,7 @@ export const runBuildAndSbom = (
 						ok: false,
 						buildError: buildErrorSummary(build.output, build.error),
 						sbomFailures: [],
+						sbomSkipped: [],
 						packageCount: detected.length,
 						sbomPaths: new Map<string, string>(),
 					} satisfies BuildSbomResult;
@@ -1175,25 +1219,30 @@ export const runBuildAndSbom = (
 
 				// ── SBOM generation (per package) ──────────────────────────────────
 				const sbomFailures: string[] = [];
+				const sbomSkipped: string[] = [];
 				const sbomPaths = new Map<string, string>();
 
 				for (const rel of detected) {
-					// Resolve the WorkspacePackage for its dependency map; synthesise a
-					// minimal one if discovery fails (e.g. a deleted monorepo member).
-					const wsPkg = yield* discovery.getPackage(rel.name).pipe(
-						Effect.catch(() =>
-							Effect.succeed(
-								WorkspacePackage.make({
-									name: rel.name,
-									version: rel.version,
-									path: rel.path,
-									packageJsonPath: join(rel.path, "package.json"),
-									relativePath: "",
-									workspaceRoot: process.cwd(),
-								}),
-							),
-						),
-					);
+					const wsPkg = yield* resolveWorkspacePackage(discovery, rel);
+
+					// An SBOM describes a distributed artifact. A package that resolves
+					// no publish targets has none — no tarball is packed, and the
+					// release-asset upload is per-target, so the document written here
+					// was never attached to anything. Generating it anyway cost a stray
+					// `<unscoped>.sbom.json` in the package directory and a log line
+					// announcing an artifact that went nowhere.
+					//
+					// Resolved through the SAME function the publish step uses, so the
+					// set of packages skipped here is exactly the set that publishes
+					// nothing.
+					const resolved = yield* resolvePublishTargetSpecs(wsPkg);
+					if (releaseKindOf(resolved.targets.length) === "github-release") {
+						sbomSkipped.push(rel.name);
+						yield* Effect.logInfo(
+							`  \u{1F3F7}\uFE0F sbom · ${rel.name}: skipped — ${releaseKindLabel("github-release")}, no artifact to describe`,
+						);
+						continue;
+					}
 
 					// Save the SBOM under the package's own directory as
 					// <unscoped>.sbom.json — the same naming convention runReleases
@@ -1226,7 +1275,14 @@ export const runBuildAndSbom = (
 					}
 				}
 
-				yield* Effect.logInfo(`  ✅ ${detected.length} package(s) ready`);
+				// Name both kinds in the one line a reader actually sees. A wave of
+				// only tracking packages otherwise closed on `2 package(s) ready`
+				// with no hint that nothing was packed.
+				const kinds = tallyReleaseKinds(detected.map((rel) => (sbomSkipped.includes(rel.name) ? 0 : 1)));
+				yield* Effect.logInfo(
+					`  ✅ ${detected.length} package(s) ready — ${kinds.registry} registry, ` +
+						`${kinds.githubRelease} ${releaseKindLabel("github-release")}`,
+				);
 				// `ok: true` — an SBOM WRITE failure is not a release-blocking event.
 				//
 				// This used to be `sbomFailures.length === 0`, which contradicted both
@@ -1241,6 +1297,7 @@ export const runBuildAndSbom = (
 				return {
 					ok: true,
 					sbomFailures,
+					sbomSkipped,
 					packageCount: detected.length,
 					sbomPaths,
 				} satisfies BuildSbomResult;
@@ -1287,7 +1344,6 @@ export const runPublishTargets = (
 > =>
 	Effect.gen(function* () {
 		const discovery = yield* WorkspaceDiscovery;
-		const detector = yield* PublishabilityDetector;
 		const state = yield* ActionState;
 		const logger = yield* ActionLogger;
 		const outputs = yield* ActionOutputs;
@@ -1353,65 +1409,34 @@ export const runPublishTargets = (
 		const targetsByPackage = new Map<string, PkgEntry>();
 
 		for (const rel of detected) {
-			const wsPkg = yield* discovery.getPackage(rel.name).pipe(
-				Effect.catch(() =>
-					Effect.succeed(
-						WorkspacePackage.make({
-							name: rel.name,
-							version: rel.version,
-							path: rel.path,
-							packageJsonPath: join(rel.path, "package.json"),
-							relativePath: "",
-							workspaceRoot: process.cwd(),
-						}),
-					),
-				),
-			);
+			const wsPkg = yield* resolveWorkspacePackage(discovery, rel);
 
-			// No `Effect.catch` here, deliberately. `PublishabilityDetectorShape.detect`
-			// is `Effect<ReadonlyArray<PublishTarget>>` — **`E` is `never`**, so the
-			// predecessor's "Failed to resolve targets for …" warning arm could not
-			// fire and is deleted rather than carried forward. An undetectable
-			// package yields an empty array, which the loop below already handles.
-			const publishTargets = yield* detector.detect(wsPkg);
+			// One call, shared with the Build & SBOM gate. Detection, the JSR
+			// filter and the private-built-`package.json` filter all live in
+			// `resolvePublishTargetSpecs` so Step 3 and Step 4 cannot disagree
+			// about which packages are registry packages — the disagreement that
+			// had Step 3 writing an SBOM for a package Step 4 then published
+			// nowhere.
+			const resolved = yield* resolvePublishTargetSpecs(wsPkg);
 
-			const jsrTargets = publishTargets.filter((t) => classifyRegistry(t.registry) === "jsr");
-			const npmTargets = publishTargets.filter((t) => classifyRegistry(t.registry) !== "jsr");
-
-			for (const t of jsrTargets) {
+			for (const registry of resolved.jsrSkipped) {
 				yield* Effect.logWarning(
-					`runPublishTargets: skipping JSR target ${t.registry} for ${rel.name} — JSR publishing is not yet supported`,
+					`runPublishTargets: skipping JSR target ${registry} for ${rel.name} — JSR publishing is not yet supported`,
 				);
 			}
-
-			// Resolve each target's directory to an absolute path, then drop any
-			// whose built `package.json` is `private` — the build pipeline keeps
-			// `private: true` on dev-only outputs as the "never publish" signal.
-			const resolvedTargets: TargetSpec[] = [];
-			let privateSkipped = 0;
-			for (const t of npmTargets) {
-				const directory = isAbsolute(t.directory) ? t.directory : join(wsPkg.path, t.directory);
-				if (isTargetPrivate(directory)) {
-					privateSkipped++;
-					yield* Effect.logInfo(
-						`⏭ ${rel.name} · ${basename(directory)} — package.json is private, not a publish target`,
-					);
-					continue;
-				}
-				resolvedTargets.push({
-					registry: t.registry,
-					directory,
-					access: t.access,
-					provenance: t.provenance ?? false,
-				});
+			for (const directory of resolved.privateSkipped) {
+				yield* Effect.logInfo(`⏭ ${rel.name} · ${basename(directory)} — package.json is private, not a publish target`);
 			}
 
-			targetsByPackage.set(rel.name, { version: rel.version, targets: resolvedTargets });
+			targetsByPackage.set(rel.name, { version: rel.version, targets: resolved.targets });
 
+			// Name the kind, not just the count. `0 target(s)` alone reads as a
+			// resolution failure; `GitHub release only` says it is the design.
 			yield* Effect.logDebug(
-				`runPublishTargets: ${rel.name}@${rel.version}: ${resolvedTargets.length} target(s)` +
-					(jsrTargets.length > 0 ? ` (${jsrTargets.length} JSR skipped)` : "") +
-					(privateSkipped > 0 ? ` (${privateSkipped} private skipped)` : ""),
+				`runPublishTargets: ${rel.name}@${rel.version}: ${resolved.targets.length} target(s) ` +
+					`(${releaseKindLabel(releaseKindOf(resolved.targets.length))})` +
+					(resolved.jsrSkipped.length > 0 ? ` (${resolved.jsrSkipped.length} JSR skipped)` : "") +
+					(resolved.privateSkipped.length > 0 ? ` (${resolved.privateSkipped.length} private skipped)` : ""),
 			);
 		}
 
