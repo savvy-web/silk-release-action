@@ -57,8 +57,8 @@
 	"devDependencies": {
 		"@effect/vitest": "catalog:effect",
 		"@effected/schemastore": "catalog:effected",
-		"@savvy-web/github-action-builder": "^2.2.9",
-		"@savvy-web/silk": "^3.10.6",
+		"@savvy-web/github-action-builder": "^2.2.10",
+		"@savvy-web/silk": "^3.10.7",
 		"@vitest-agent/plugin": "^2.5.0",
 		"tsx": "catalog:silk"
 	},
