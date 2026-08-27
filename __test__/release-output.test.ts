@@ -124,41 +124,37 @@ describe("ReleaseOutput schema", () => {
 		validation: {
 			buildValidation: { passed: true, packageCount: 1 },
 			checks: [{ name: "Build Validation", status: "pass", outcome: "Build passed", url: null }],
-			findings: [],
-			publish: {
-				npmReady: true,
-				githubPackagesReady: true,
-				totalTargets: 1,
-				readyTargets: 1,
-				packages: [
-					{
-						name: "@savvy-web/foo",
-						version: "1.2.0",
-						baseVersion: "1.1.0",
-						bumpType: "minor",
-						changesetCount: 1,
-						ready: true,
-						versionOnly: false,
-						builds: [
-							{
-								directory: "/repo/dist/npm",
-								packedBytes: 700,
-								unpackedBytes: 2300,
-								fileCount: 5,
-								sbom: { componentCount: 3, ntiaCompliant: true, missingNtiaFields: [] },
-								targets: [
-									{
-										registry: "https://registry.npmjs.org/",
-										status: "ready",
-										access: "public",
-										provenance: false,
-									},
-								],
-							},
-						],
-						releaseNotes: { status: "found", content: "### Minor Changes\n\n- something" },
-					},
-				],
+			errors: [],
+			warnings: [],
+			order: ["@savvy-web/foo"],
+			registries: { npm: { resolved: 1, ready: 1 } },
+			workspaces: {
+				"@savvy-web/foo": {
+					version: "1.2.0",
+					baseVersion: "1.1.0",
+					bumpType: "minor",
+					changesetCount: 1,
+					ready: true,
+					kind: "github-with-packages",
+					builds: [
+						{
+							directory: "/repo/dist/npm",
+							packedBytes: 700,
+							unpackedBytes: 2300,
+							fileCount: 5,
+							sbom: { componentCount: 3, ntiaCompliant: true, missingNtiaFields: [] },
+							targets: [
+								{
+									registry: "https://registry.npmjs.org/",
+									status: "ready",
+									access: "public",
+									provenance: false,
+								},
+							],
+						},
+					],
+					releaseNotes: { status: "found", content: "### Minor Changes\n\n- something" },
+				},
 			},
 			checkRun: { url: "https://example.com/check/1", conclusion: "success" },
 		},

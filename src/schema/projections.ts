@@ -187,20 +187,20 @@ const deriveBumpType = (
  * Project one build-centric {@link ValidationPackageResult} into the schema's
  * publish-package struct. A package with no builds is version-only.
  */
-const toValidationPublishPackage = (
-	pkg: ValidationPackageResult,
-): ValidationOutput["validation"]["publish"]["packages"][number] => {
-	const versionOnly = pkg.builds.length === 0;
+const toValidationWorkspace = (pkg: ValidationPackageResult): ValidationOutput["validation"]["workspaces"][string] => {
+	// No `name` field: the workspace map is keyed by name, so carrying it as a
+	// field too would be a second spelling of the key that can disagree with it.
+	const githubOnly = pkg.builds.length === 0;
 	return {
-		name: pkg.name,
 		version: pkg.version,
 		baseVersion: pkg.baseVersion,
 		bumpType: deriveBumpType(pkg.baseVersion, pkg.version),
 		changesetCount: pkg.changesetCount,
-		// A version-only package is ready; a package with builds is ready when
-		// every registry target of every build passed dry-run.
-		ready: versionOnly || pkg.builds.every((b) => b.targets.every((t) => t.status !== "failed")),
-		versionOnly,
+		// A `github-only` workspace is ready by construction — it publishes
+		// nowhere, so there is no dry-run that could fail. One with builds is
+		// ready when every registry target of every build passed its probe.
+		ready: githubOnly || pkg.builds.every((b) => b.targets.every((t) => t.status !== "failed")),
+		kind: githubOnly ? "github-only" : "github-with-packages",
 		builds: pkg.builds.map((build) => ({
 			directory: build.directory,
 			packedBytes: build.packedBytes,
@@ -223,6 +223,49 @@ const toValidationPublishPackage = (
 		})),
 		releaseNotes: pkg.releaseNotes,
 	};
+};
+
+/** Project the findings of one severity, preserving check order. */
+const findingsOfSeverity = (
+	findings: ValidationInput["findings"],
+	severity: "error" | "warning",
+): ValidationOutput["validation"]["errors"] =>
+	findings
+		.filter((f) => f.severity === severity)
+		.map((f) => ({
+			severity: f.severity,
+			check: f.check,
+			scope: f.scope === null ? null : { package: f.scope.package, directory: f.scope.directory },
+			message: f.message,
+		}));
+
+/**
+ * Tally publish targets per registry type.
+ *
+ * @remarks
+ * **A registry with no targets is absent from the result**, which is the whole
+ * point: the `npmReady`/`githubPackagesReady` booleans this replaces both
+ * started `true` and only flipped on a failure, so a wave with no npm target
+ * reported `npmReady: true` — a green verdict on a check that never ran. An
+ * absent key cannot be misread that way.
+ */
+const tallyRegistries = (
+	packages: ReadonlyArray<ValidationPackageResult>,
+): ValidationOutput["validation"]["registries"] => {
+	const out: Record<string, { resolved: number; ready: number }> = {};
+	for (const pkg of packages) {
+		for (const build of pkg.builds) {
+			for (const target of build.targets) {
+				const key = classifyRegistry(target.registry);
+				out[key] ??= { resolved: 0, ready: 0 };
+				const entry = out[key];
+				if (entry === undefined) continue;
+				entry.resolved++;
+				if (target.status === "ready") entry.ready++;
+			}
+		}
+	}
+	return out;
 };
 
 /**
@@ -286,19 +329,13 @@ export const toValidationOutput = (input: ValidationInput): ValidationOutput => 
 		validation: {
 			buildValidation: { passed: input.buildsPassed, packageCount: input.packageCount },
 			checks: input.checks.map((c) => ({ name: c.name, status: c.status, outcome: c.outcome, url: c.url })),
-			findings: input.findings.map((f) => ({
-				severity: f.severity,
-				check: f.check,
-				scope: f.scope === null ? null : { package: f.scope.package, directory: f.scope.directory },
-				message: f.message,
-			})),
-			publish: {
-				npmReady: input.npmReady,
-				githubPackagesReady: input.githubPackagesReady,
-				totalTargets: input.totalTargets,
-				readyTargets: input.readyTargets,
-				packages: input.validationPackages.map(toValidationPublishPackage),
-			},
+			errors: findingsOfSeverity(input.findings, "error"),
+			warnings: findingsOfSeverity(input.findings, "warning"),
+			order: input.validationPackages.map((pkg) => pkg.name),
+			workspaces: Object.fromEntries(
+				input.validationPackages.map((pkg) => [pkg.name, toValidationWorkspace(pkg)] as const),
+			),
+			registries: tallyRegistries(input.validationPackages),
 			checkRun: input.checkRun,
 		},
 	};

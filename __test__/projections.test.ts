@@ -170,21 +170,27 @@ describe("toValidationOutput", () => {
 			{ name: "Build Validation", status: "pass", outcome: "Build passed", url: "https://example.com/check/1" },
 			{ name: "Publish Validation", status: "pass", outcome: "2/2 target(s) ready", url: null },
 		]);
-		expect(output.validation.findings).toEqual([]);
-		expect(output.validation.publish.npmReady).toBe(true);
-		expect(output.validation.publish.githubPackagesReady).toBe(true);
-		expect(output.validation.publish.totalTargets).toBe(2);
-		expect(output.validation.publish.readyTargets).toBe(2);
+		expect(output.validation.errors).toEqual([]);
+		expect(output.validation.warnings).toEqual([]);
+		// Per-registry counts, not booleans: a registry with no target is ABSENT,
+		// which is what tells "nothing to publish" apart from "all targets passed".
+		// Split per registry, where `totalTargets: 2` lumped both together and
+		// could not say which registry either belonged to.
+		expect(output.validation.registries).toEqual({
+			npm: { resolved: 1, ready: 1 },
+			"github-packages": { resolved: 1, ready: 1 },
+		});
 
-		const [foo, bar] = output.validation.publish.packages;
+		const [foo, bar] = output.validation.order.map((n) => output.validation.workspaces[n]);
+		expect(output.validation.order).toEqual(["@savvy-web/foo", "@savvy-web/bar"]);
+		// No `name` field — the map key carries it, so it cannot disagree.
 		expect(foo).toEqual({
-			name: "@savvy-web/foo",
 			version: "1.2.0",
 			baseVersion: "1.1.0",
 			bumpType: "minor",
 			changesetCount: 1,
 			ready: true,
-			versionOnly: false,
+			kind: "github-with-packages",
 			builds: [
 				{
 					directory: "/repo/dist/npm",
@@ -228,8 +234,78 @@ describe("toValidationOutput", () => {
 		expect(output.outcome).toBe("nothing-to-release");
 		expect(output.success).toBe(true);
 		expect(output.failure).toBeNull();
-		expect(output.validation.publish.packages).toEqual([]);
+		expect(output.validation.workspaces).toEqual({});
+		expect(output.validation.order).toEqual([]);
 		expect(output.validation.checkRun).toBeNull();
+	});
+
+	// The effected shape, end to end: a wave whose every workspace is a private
+	// tracking package. This is the case the whole alignment exists for, so it
+	// asserts the full payload rather than one field — a regression in any one
+	// of `kind`, `registries`, `errors`/`warnings` or `order` reads as a
+	// different lie about the same wave.
+	it("projects an all-private wave the way the publish phase would describe it", () => {
+		const output = toValidationOutput({
+			buildsPassed: true,
+			packageCount: 2,
+			npmReady: true,
+			githubPackagesReady: true,
+			totalTargets: 0,
+			readyTargets: 0,
+			checks: [
+				{ name: "Build Validation", status: "pass", outcome: "Build passed", url: null },
+				{ name: "Publish Validation", status: "pass", outcome: "No targets", url: null },
+			],
+			findings: [],
+			validationPackages: [
+				{
+					name: "@effected/claude-code-plugin",
+					version: "0.14.0",
+					baseVersion: "0.13.1",
+					changesetCount: 1,
+					builds: [],
+					releaseNotes: { status: "no-changelog" },
+				},
+				{
+					name: "@effected/copilot-plugin",
+					version: "0.1.0",
+					baseVersion: "0.0.0",
+					changesetCount: 1,
+					builds: [],
+					releaseNotes: { status: "no-changelog" },
+				},
+			],
+			checkRun: null,
+			dryRun: false,
+		});
+
+		expect(output.success).toBe(true);
+		expect(output.outcome).toBe("validated");
+
+		// Both workspaces carry the publish phase's own word for what they are.
+		expect(output.validation.order).toEqual(["@effected/claude-code-plugin", "@effected/copilot-plugin"]);
+		for (const name of output.validation.order) {
+			expect(output.validation.workspaces[name]?.kind).toBe("github-only");
+			expect(output.validation.workspaces[name]?.ready).toBe(true);
+			expect(output.validation.workspaces[name]?.builds).toEqual([]);
+		}
+
+		// No registry has a target, so the map is EMPTY rather than carrying two
+		// booleans that both read `true`. This is the misreport the map exists to
+		// make impossible.
+		expect(output.validation.registries).toEqual({});
+
+		// Split findings: both empty, and discriminable without a predicate.
+		expect(output.validation.errors).toEqual([]);
+		expect(output.validation.warnings).toEqual([]);
+
+		// The check counts read `status`, not the human `outcome` sentence.
+		expect(output.totals.checksPassed).toBe(2);
+		expect(output.totals.checksFailed).toBe(0);
+		expect(output.totals).toMatchObject({ workspaces: 2, githubOnly: 2, githubWithPackages: 0 });
+		expect(output.summary).toContain("2 workspace(s) validated");
+		expect(output.summary).toContain("2 GitHub release only");
+		expect(output.summary).toContain("2 check(s) passed");
 	});
 
 	it("projects a version-only package with no builds", () => {
@@ -256,8 +332,11 @@ describe("toValidationOutput", () => {
 			dryRun: false,
 		});
 
-		const pkg = output.validation.publish.packages[0];
-		expect(pkg?.versionOnly).toBe(true);
+		const pkg = output.validation.order.map((n) => output.validation.workspaces[n])[0];
+		// `kind`, in the same vocabulary the publish phase uses, replacing the
+		// `versionOnly` boolean that named the same fact in a word only this
+		// phase understood.
+		expect(pkg?.kind).toBe("github-only");
 		expect(pkg?.ready).toBe(true);
 		expect(pkg?.builds).toEqual([]);
 		expect(pkg?.bumpType).toBe("patch");
@@ -288,7 +367,7 @@ describe("toValidationOutput", () => {
 			dryRun: false,
 		});
 
-		expect(output.validation.publish.packages[0]?.bumpType).toBe("unknown");
+		expect(output.validation.order.map((n) => output.validation.workspaces[n])[0]?.bumpType).toBe("unknown");
 	});
 
 	it("flags failed builds and an error finding as a failure", () => {
@@ -348,9 +427,10 @@ describe("toValidationOutput", () => {
 		expect(output.failure?.stage).toBe("build");
 		expect(output.dryRun).toBe(true);
 		expect(output.validation.buildValidation.passed).toBe(false);
-		expect(output.validation.publish.npmReady).toBe(false);
-		expect(output.validation.publish.githubPackagesReady).toBe(false);
-		expect(output.validation.findings).toEqual([
+		// The failed target is counted, not flattened into a boolean.
+		expect(output.validation.registries.npm).toEqual({ resolved: 1, ready: 0 });
+		expect(output.validation.warnings).toEqual([]);
+		expect(output.validation.errors).toEqual([
 			{
 				severity: "error",
 				check: "Publish Validation",
@@ -359,7 +439,7 @@ describe("toValidationOutput", () => {
 			},
 		]);
 		// A build with a failed target makes the package not ready.
-		expect(output.validation.publish.packages[0]?.ready).toBe(false);
+		expect(output.validation.order.map((n) => output.validation.workspaces[n])[0]?.ready).toBe(false);
 		expect(output.validation.checkRun).toEqual({ url: "https://example.com/check/2", conclusion: "failure" });
 	});
 

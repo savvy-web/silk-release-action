@@ -560,12 +560,8 @@ const ValidationReleaseNotes = Schema.Union([
 		"Discriminated outcome of reading the package's CHANGELOG.md (already populated by `changeset version`) and locating the section for the new version: `found`, `no-changelog`, `version-not-found`, or `error`.",
 });
 
-/** A released package and the builds it produces. */
-const ValidationPublishPackage = Schema.Struct({
-	name: Schema.String.annotate({
-		title: "Package name",
-		description: "The npm package name being released.",
-	}),
+/** One workspace being released, and the builds it produces. */
+const ValidationWorkspace = Schema.Struct({
 	version: Schema.String.annotate({
 		title: "New version",
 		description: "The new semver version this release would publish.",
@@ -593,10 +589,11 @@ const ValidationPublishPackage = Schema.Struct({
 		title: "Ready",
 		description: "True when every publish target for this package's builds passed its dry-run probe.",
 	}),
-	versionOnly: Schema.Boolean.annotate({
-		title: "Version-only",
+	kind: Schema.Literals(["github-only", "github-with-packages"]).annotate({
+		identifier: "ValidationWorkspaceKind",
+		title: "Workspace kind",
 		description:
-			"True when the package has no publish targets — only a GitHub release (and tag) is produced. Used for repos that version a package but don't publish it to a registry.",
+			"The same vocabulary the publish phase reports, so one word means one thing across the whole run. `github-only` — the workspace resolved no publish target; its release is a version bump, a git tag and a GitHub release. This is the steady state for a private tracking package, not a degraded `github-with-packages`. `github-with-packages` — it resolved at least one publish target. Replaces the old `versionOnly` boolean, which named the same fact in a vocabulary the publish phase did not share.",
 	}),
 	builds: Schema.Array(ValidationBuild).annotate({
 		title: "Builds",
@@ -609,10 +606,27 @@ const ValidationPublishPackage = Schema.Struct({
 	// serialization.
 	releaseNotes: Schema.optional(ValidationReleaseNotes),
 }).annotate({
-	identifier: "ValidationPublishPackage",
-	title: "Released package",
+	identifier: "ValidationWorkspace",
+	title: "Released workspace",
 	description:
-		"A package being released this run, with its bump type, builds, per-target readiness, and the extracted release notes.",
+		"A workspace being released this run, with its bump type, kind, builds, per-target readiness, and the extracted release notes. Keyed by workspace name in `validation.workspaces`, so the name is the key rather than a field.",
+});
+
+/** Per-registry target counts for the wave. */
+const ValidationRegistry = Schema.Struct({
+	resolved: Schema.Finite.annotate({
+		title: "Targets resolved",
+		description: "Publish targets resolved for this registry across every workspace.",
+	}),
+	ready: Schema.Finite.annotate({
+		title: "Targets ready",
+		description: "Of those, how many passed their dry-run probe.",
+	}),
+}).annotate({
+	identifier: "ValidationRegistry",
+	title: "Registry readiness",
+	description:
+		'Resolved and ready target counts for one registry. Counts rather than booleans, deliberately: the `npmReady`/`githubPackagesReady` flags this replaces were "nothing of this kind FAILED" booleans that both started true, so a wave with no npm target at all reported `npmReady: true` — asserting a readiness nothing had tested. A registry with no targets is simply absent from the map.',
 });
 
 const ValidationPayload = Schema.Struct({
@@ -637,38 +651,35 @@ const ValidationPayload = Schema.Struct({
 		description:
 			"The five-row Validation Checks table — one entry per validation step run this phase. Canonical names: 'Build Validation', 'Link Issues', 'Publish Validation', 'Release Notes Preview', 'SBOM Preview'.",
 	}),
-	findings: Schema.Array(ValidationFinding).annotate({
-		title: "Findings",
+	// `findings` split in two. The severity was already on every entry, but a
+	// consumer wanting only the blocking ones had to filter, and the two
+	// severities mean genuinely different things: an error fails the run, a
+	// warning does not (unless `strict-warnings`). Two arrays make that
+	// discriminable without a predicate, in jq and by eye.
+	errors: Schema.Array(ValidationFinding).annotate({
+		title: "Error findings",
 		description:
-			"Every non-pass outcome surfaced by the validation checks, projected for the release PR comment. Empty array when no checks produced an error or warning. Findings preserve the order the checks ran in; the comment renderer reorders errors-before-warnings for display.",
+			"Findings of `error` severity — any of these makes `success` false. Empty array when the run was clean; never null. Preserves the order the checks ran in.",
 	}),
-	publish: Schema.Struct({
-		npmReady: Schema.Boolean.annotate({
-			title: "npm ready",
-			description: "True when every npm publish target passed its dry-run probe.",
-		}),
-		githubPackagesReady: Schema.Boolean.annotate({
-			title: "GitHub Packages ready",
-			description: "True when every GitHub Packages publish target passed its dry-run probe.",
-		}),
-		totalTargets: Schema.Finite.annotate({
-			title: "Total targets",
-			description: "Total number of publish targets across every released package and every registry.",
-		}),
-		readyTargets: Schema.Finite.annotate({
-			title: "Ready targets",
-			description: "Number of publish targets that passed their dry-run probe.",
-		}),
-		packages: Schema.Array(ValidationPublishPackage).annotate({
-			title: "Released packages",
-			description:
-				"The packages being released this run, with their builds and per-target readiness. Empty array only when no packages had version differences against the target branch — in that case the run is a noop and a warning-severity finding is emitted to explain why. A release that bumps only private/version-only packages still populates this array, with empty `builds` per package.",
-		}),
-	}).annotate({
-		identifier: "ValidationPublish",
-		title: "Publish preview",
+	warnings: Schema.Array(ValidationFinding).annotate({
+		title: "Warning findings",
 		description:
-			"Build-centric publish preview — per-registry readiness rollup plus the full per-package, per-build, per-target breakdown.",
+			"Findings of `warning` severity. These do NOT make `success` false unless the run set `strict-warnings`. Empty array when the run was clean; never null.",
+	}),
+	order: Schema.Array(Schema.String).annotate({
+		title: "Workspace order",
+		description:
+			"Workspace names in the order they were validated. A JSON object has no guaranteed key order, so this preserves the sequence `workspaces` alone would lose — the same reason the publish phase carries `publish.order`.",
+	}),
+	workspaces: Schema.Record(Schema.String, ValidationWorkspace).annotate({
+		title: "Workspaces",
+		description:
+			"Every workspace with a version difference against the target branch, keyed by workspace name — so a consumer looks one up directly rather than scanning an array. Empty object only when nothing had a version difference; a wave of only `github-only` workspaces still populates this, each with empty `builds`.",
+	}),
+	registries: Schema.Record(Schema.String, ValidationRegistry).annotate({
+		title: "Registries",
+		description:
+			"Per-registry target counts, keyed by registry type (`npm`, `github-packages`, `jsr`, `custom`). **A registry with no targets is absent from this map** — which is how a wave that publishes nowhere is told apart from one whose targets all passed. The `npmReady`/`githubPackagesReady` booleans this replaces could not make that distinction: both started `true` and only flipped on a failure, so an all-private wave reported them green.",
 	}),
 	checkRun: Schema.NullOr(
 		Schema.Struct({
@@ -833,54 +844,50 @@ export const ValidationOutput = Schema.Struct({
 						url: "https://github.com/savvy-web/example-repo/runs/123",
 					},
 				],
-				findings: [],
-				publish: {
-					npmReady: true,
-					githubPackagesReady: true,
-					totalTargets: 2,
-					readyTargets: 2,
-					packages: [
-						{
-							name: "@savvy-web/example",
-							version: "1.2.0",
-							baseVersion: "1.1.0",
-							bumpType: "minor",
-							changesetCount: 1,
-							ready: true,
-							versionOnly: false,
-							builds: [
-								{
-									directory: "dist/npm",
-									packedBytes: 716,
-									unpackedBytes: 2300,
-									fileCount: 5,
-									sbom: {
-										componentCount: 3,
-										ntiaCompliant: true,
-										missingNtiaFields: [],
-									},
-									targets: [
-										{
-											registry: "https://registry.npmjs.org/",
-											status: "ready",
-											access: "public",
-											provenance: true,
-										},
-										{
-											registry: "https://npm.pkg.github.com/",
-											status: "ready",
-											access: "public",
-											provenance: false,
-										},
-									],
+				errors: [],
+				warnings: [],
+				order: ["@savvy-web/example"],
+				registries: { npm: { resolved: 2, ready: 2 } },
+				workspaces: {
+					"@savvy-web/example": {
+						version: "1.2.0",
+						baseVersion: "1.1.0",
+						bumpType: "minor",
+						changesetCount: 1,
+						ready: true,
+						kind: "github-with-packages",
+						builds: [
+							{
+								directory: "dist/npm",
+								packedBytes: 716,
+								unpackedBytes: 2300,
+								fileCount: 5,
+								sbom: {
+									componentCount: 3,
+									ntiaCompliant: true,
+									missingNtiaFields: [],
 								},
-							],
-							releaseNotes: {
-								status: "found",
-								content: "### Minor Changes\n\n- Added the springLaunch API.",
+								targets: [
+									{
+										registry: "https://registry.npmjs.org/",
+										status: "ready",
+										access: "public",
+										provenance: true,
+									},
+									{
+										registry: "https://npm.pkg.github.com/",
+										status: "ready",
+										access: "public",
+										provenance: false,
+									},
+								],
 							},
+						],
+						releaseNotes: {
+							status: "found",
+							content: "### Minor Changes\n\n- Added the springLaunch API.",
 						},
-					],
+					},
 				},
 				checkRun: {
 					url: "https://github.com/savvy-web/example-repo/runs/124",
