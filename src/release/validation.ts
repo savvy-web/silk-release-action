@@ -712,6 +712,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 							if (dryRunOutcome.success) {
 								readyTargets++;
 								targetResults.push({
+									name: target.name,
 									registry: target.registry,
 									status: "ready",
 									access: target.access,
@@ -724,6 +725,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 								if (kind === "github-packages") githubPackagesReadyAll = false;
 								const detail = (dryRunOutcome.output ?? "").trim() || "unknown error";
 								targetResults.push({
+									name: target.name,
 									registry: target.registry,
 									status: "failed",
 									access: target.access,

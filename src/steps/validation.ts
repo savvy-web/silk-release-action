@@ -57,10 +57,12 @@ const stripReleaseNotes = (output: ValidationOutput): ValidationOutput => ({
 	...output,
 	validation: {
 		...output.validation,
-		publish: {
-			...output.validation.publish,
-			packages: output.validation.publish.packages.map(({ releaseNotes: _omit, ...rest }) => rest),
-		},
+		workspaces: Object.fromEntries(
+			Object.entries(output.validation.workspaces).map(([name, ws]) => {
+				const { releaseNotes: _omit, ...rest } = ws;
+				return [name, rest] as const;
+			}),
+		),
 	},
 });
 /**

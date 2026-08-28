@@ -4,8 +4,8 @@ category: integration
 status: current
 completeness: 92
 created: 2026-02-07
-updated: 2026-08-23
-last-synced: 2026-08-23
+updated: 2026-08-27
+last-synced: 2026-08-27
 module: release-action
 related:
   - architecture.md
@@ -165,6 +165,8 @@ NTIA validation is `NtiaReport`, covering the 7 minimum elements: supplier name,
 
 `ValidationReport` carries `resolvedSbomConfig` (a per-package map of the `SbomMetadata` actually threaded onto each BOM) and `sbomConfigSource`, so a reader can see at a glance which source the action chose — invaluable when an NTIA warning fires. The Phase-2 SBOM preview and Phase-3 SBOM assets are built from the same generation output: Phase 2 generates and saves the SBOM to disk; Phase 3 reads it back for the release asset upload and attests it.
 
+**Phase 3 skips SBOM generation entirely for a `github-only` workspace** (`utils/release-kind.ts` — a workspace that resolved no publish target). An SBOM describes a distributed artifact; a `github-only` workspace packs no tarball and has no release-asset upload to attach a BOM to, so generating one anyway produced a stray, unattached `<unscoped>.sbom.json` and a log line announcing an artifact that went nowhere. `runBuildAndSbom` resolves targets through the same `resolvePublishTargetSpecs` the publish step uses (so the two cannot disagree about which packages are registry packages) and names every skip in `BuildSbomResult.sbomSkipped` — distinct from `sbomFailures`, since a skip here is the correct outcome and a failure is not.
+
 ### Release Assets (Group-Keyed)
 
 `runReleases` uploads release assets keyed by byte-group rather than the old directory-prefix naming (`getDirectoryPrefix` is gone). Per group it uploads `<name>-<version>.<group>.tgz` (the publish tarball), `<name>-<version>.<group>.sbom.json`, `<name>-<version>.<group>.api.json` and an unattested `<name>-<version>.<group>.meta.tgz` doc bundle. `src/utils/group-id.ts` (`getGroupId`, `insertGroupToken`) is the only naming authority. All uploads are idempotent — a re-run reuses an asset already attached to the release by name.
@@ -246,7 +248,7 @@ Packing once ensures every registry receives identical content with the same SHA
 | File | Description |
 | --- | --- |
 | `src/steps/publishing.ts` | The Phase-3 step body; raises `PublishError` rather than returning on a partial publish |
-| `src/release/publish.ts` | detectReleases, runBuildAndSbom, runPublishTargets, publishDirectoryGroup (token-auth fallback) |
+| `src/release/publish.ts` | detectReleases, planWorkspaces (pre-build target resolution + release-kind classification), runBuildAndSbom, runPublishTargets, publishDirectoryGroup (token-auth fallback) |
 | `src/release/releases.ts` | runReleases: tags, GitHub releases, group-keyed tarball/SBOM/API-doc/meta.tgz assets, attestations |
 | `src/release/attest-helpers.ts` | The sign (`@effected/sbom`) + store (`@effected/github`) assembly, shared by publish.ts and releases.ts |
 | `src/release/meta-archive.ts` | tarMetaFolder: packs a bundler `meta/` folder into a `…<group>.meta.tgz` doc bundle |

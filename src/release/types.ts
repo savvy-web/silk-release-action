@@ -11,6 +11,7 @@
  */
 
 import type { AlreadyPublishedReason, ResolvedTarget } from "../types/publish-config.js";
+import type { ReleaseKind } from "../utils/release-kind.js";
 
 /**
  * Result for a single target publish
@@ -213,6 +214,17 @@ export interface BuildSbom {
  * @public
  */
 export interface BuildTargetResult {
+	/**
+	 * The package name as it will be published to this target.
+	 *
+	 * @remarks
+	 * NOT necessarily the workspace's own name — `PublishTarget.name` is the
+	 * name on the tarball, and a workspace may publish under a different name
+	 * per target. Carried for the same reason the publish path's `TargetSpec`
+	 * carries it: the two phases describe the same publications, so validation
+	 * has to be able to name what publish will.
+	 */
+	readonly name: string;
 	/** Registry URL the target publishes to. */
 	readonly registry: string;
 	/** Per-registry publish readiness. */
@@ -386,3 +398,30 @@ export interface PreValidationDetails {
 }
 
 export type { TagInfo } from "../utils/determine-tag-strategy.js";
+
+/**
+ * One workspace as planned, resolved BEFORE any publishing is attempted.
+ *
+ * @remarks
+ * The plan is what makes an aborted run reportable. `kind` and the intended
+ * publication count are known once targets resolve, which now happens ahead of
+ * the build gate — so a run that dies at `ci:build` can still say which
+ * workspaces were in flight and what each was going to do. Driving the output
+ * off `publishResult.packages` alone could not: that array is empty on an
+ * abort, which is why the old output lost the wave's membership entirely.
+ *
+ * @public
+ */
+export interface PublishWorkspacePlan {
+	readonly name: string;
+	readonly version: string;
+	readonly kind: ReleaseKind;
+	/** Intended (package, registry) publications resolved before publishing began. */
+	readonly resolvedPackages: number;
+}
+
+/** Where the publish phase stopped, and why. */
+export interface PublishFailureInput {
+	readonly stage: "detect" | "build" | "sbom" | "publish" | "tags" | "releases" | "linked-issues";
+	readonly reason: string;
+}

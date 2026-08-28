@@ -1,0 +1,1907 @@
+{
+	"$schema": "http://json-schema.org/draft-07/schema#",
+	"$id": "https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.0.0/silk-release-action-5.0.0.json",
+	"$ref": "#/$defs/ReleaseOutput",
+	"$defs": {
+		"Literal_": {
+			"type": "string",
+			"enum": [
+				"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.0.0/silk-release-action-5.0.0.json"
+			],
+			"title": "JSON Schema URL",
+			"description": "URL of the hosted JSON Schema this output conforms to. Editors and json-schema-aware consumers use this for hover docs and validation."
+		},
+		"BranchManagementOutcome": {
+			"type": "string",
+			"enum": ["nothing-to-release", "branch-created", "branch-updated", "branch-unchanged", "conflicted"],
+			"title": "Phase outcome",
+			"description": "`nothing-to-release` — no changesets were found, so no branch or PR work was needed. A SUCCESS: nothing failed. `branch-created` — the release branch and its PR were created. `branch-updated` — an existing release branch and PR were brought up to date. `branch-unchanged` — the release branch already matched the plan and needed no push. `conflicted` — the release branch could not be updated because the merge conflicted; the only failing outcome for this phase."
+		},
+		"BranchManagementFailureStage": {
+			"type": "string",
+			"enum": ["plan", "branch", "pull-request"],
+			"title": "Failure stage",
+			"description": "WHEN the phase failed. `plan` — the release plan could not be read; `branch` — the release branch could not be created or updated (a merge conflict is the usual cause); `pull-request` — the release PR could not be opened or updated."
+		},
+		"BranchManagementFailure": {
+			"type": "object",
+			"properties": {
+				"stage": {
+					"$ref": "#/$defs/BranchManagementFailureStage"
+				},
+				"reason": {
+					"type": "string",
+					"title": "Failure reason",
+					"description": "WHAT went wrong, as a single-line summary."
+				}
+			},
+			"required": ["stage", "reason"],
+			"additionalProperties": false,
+			"title": "Failure"
+		},
+		"Union_": {
+			"type": "string",
+			"enum": ["Infinity", "-Infinity", "NaN"]
+		},
+		"BranchManagementTotals": {
+			"type": "object",
+			"properties": {
+				"changesetFiles": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				},
+				"workspaces": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				}
+			},
+			"required": ["changesetFiles", "workspaces"],
+			"additionalProperties": false,
+			"title": "Totals",
+			"description": "Aggregate counts, so a consumer does not have to reduce the changeset list."
+		},
+		"BranchManagementReleaseBranch": {
+			"type": "object",
+			"properties": {
+				"name": {
+					"type": "string",
+					"title": "Release branch name",
+					"description": "The git branch name the release PR targets and changeset versioning lands on.",
+					"examples": ["changeset-release/main"]
+				},
+				"existed": {
+					"type": "boolean",
+					"title": "Branch existed",
+					"description": "True when the release branch already existed before this run; false when it was just created."
+				},
+				"created": {
+					"type": "boolean",
+					"title": "Branch created",
+					"description": "True when this run created the release branch."
+				},
+				"updated": {
+					"type": "boolean",
+					"title": "Branch updated",
+					"description": "True when this run pushed new commits to the release branch (changeset version bumps, etc.)."
+				},
+				"hasConflicts": {
+					"type": "boolean",
+					"title": "Has conflicts",
+					"description": "True when the release branch could not be cleanly fast-forwarded over the target branch and a merge conflict was detected. When true, the release branch needs manual conflict resolution before subsequent runs can complete; the action will keep failing on this branch until the conflict is resolved."
+				}
+			},
+			"required": ["name", "existed", "created", "updated", "hasConflicts"],
+			"additionalProperties": false,
+			"title": "Release branch state",
+			"description": "The state of the release branch after Phase 1 — whether it existed, was created/updated, and any conflicts."
+		},
+		"BranchManagementReleasePr": {
+			"type": "object",
+			"properties": {
+				"number": {
+					"type": "number",
+					"allOf": [
+						{
+							"title": "Release PR number",
+							"description": "The GitHub PR number for the release PR."
+						}
+					]
+				},
+				"url": {
+					"type": "string",
+					"title": "Release PR URL",
+					"description": "The HTML URL of the release PR on GitHub.",
+					"examples": ["https://github.com/owner/repo/pull/123"]
+				},
+				"action": {
+					"type": "string",
+					"enum": ["created", "updated"],
+					"title": "Release PR action",
+					"description": "Whether this run created the release PR or updated an existing one."
+				}
+			},
+			"required": ["number", "url", "action"],
+			"additionalProperties": false,
+			"title": "Release PR state",
+			"description": "The release PR's number, URL, and the action this run took on it. Null when no PR was created (no changesets to release)."
+		},
+		"ChangesetsBumpType": {
+			"type": "string",
+			"enum": ["major", "minor", "patch"],
+			"title": "Changeset bump type",
+			"description": "The bump the release plan applies to this package: `major`, `minor`, or `patch`. The validation phase emits an extended set under `ValidationBumpType` that adds `new` and `unknown`."
+		},
+		"BranchManagementChangesetPackage": {
+			"type": "object",
+			"properties": {
+				"name": {
+					"type": "string",
+					"title": "Package name",
+					"description": "The npm package name this release covers."
+				},
+				"bumpType": {
+					"$ref": "#/$defs/ChangesetsBumpType"
+				},
+				"changesetCount": {
+					"type": "number",
+					"allOf": [
+						{
+							"title": "Changesets naming this package",
+							"description": "How many changeset files name this package. **Zero means the package releases only because a dependency did** — it still gets a version bump and a CHANGELOG entry, but no changeset asked for it, so it is invisible to a count of changeset files. Renders as the `—` in a release table's changeset column."
+						}
+					]
+				},
+				"oldVersion": {
+					"type": "string",
+					"title": "Current version",
+					"description": "The package's version before this release, as recorded in its `package.json` on the target branch."
+				},
+				"newVersion": {
+					"type": "string",
+					"title": "Next version",
+					"description": "The version this release will publish, after applying `bumpType`. Known in Phase 1 because it comes from the release plan rather than from the changeset files."
+				}
+			},
+			"required": ["name", "bumpType", "changesetCount", "oldVersion", "newVersion"],
+			"additionalProperties": false,
+			"title": "Changeset package",
+			"description": "One package the release plan covers, with its bump and whether a changeset asked for it."
+		},
+		"BranchManagementChangesets": {
+			"type": "object",
+			"properties": {
+				"count": {
+					"type": "number",
+					"allOf": [
+						{
+							"title": "Changeset count",
+							"description": "The number of changeset **files** observed in the `.changeset/` directory. Not the length of `packages`: one file may name several packages, and two files may name the same one, so the two numbers diverge in both directions."
+						}
+					]
+				},
+				"packages": {
+					"type": "array",
+					"title": "Changeset packages",
+					"description": "Every package this release will version, from the release plan — including packages bumped only because a dependency moved, which `changesetCount: 0` identifies. Empty array when there is nothing to release; the phase reports `outcome: \"nothing-to-release\"` in that case, which is a success — nothing failed.",
+					"items": {
+						"$ref": "#/$defs/BranchManagementChangesetPackage"
+					}
+				}
+			},
+			"required": ["count", "packages"],
+			"additionalProperties": false,
+			"title": "Changesets observed",
+			"description": "What this run will release — the number of changeset files, and every package the release plan versions with its bump and whether a changeset named it explicitly."
+		},
+		"BranchManagementPayload": {
+			"type": "object",
+			"properties": {
+				"releaseBranch": {
+					"$ref": "#/$defs/BranchManagementReleaseBranch"
+				},
+				"releasePr": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/BranchManagementReleasePr"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"changesets": {
+					"$ref": "#/$defs/BranchManagementChangesets"
+				}
+			},
+			"required": ["releaseBranch", "releasePr", "changesets"],
+			"additionalProperties": false,
+			"title": "Branch Management payload",
+			"description": "Phase 1 outcome — the release-branch ensure/create result, the release PR (created or updated, null when no changesets), and the changesets observed in `.changeset/` with their derived per-package bumps."
+		},
+		"BranchManagementOutput": {
+			"type": "object",
+			"properties": {
+				"$schema": {
+					"$ref": "#/$defs/Literal_"
+				},
+				"schemaVersion": {
+					"type": "string",
+					"enum": ["2"],
+					"title": "Schema version",
+					"description": "In-band schema version. Bumped only on a breaking JSON-shape change (removed/renamed field, changed type) — additive fields do not bump it."
+				},
+				"phase": {
+					"type": "string",
+					"enum": ["branch-management"],
+					"title": "Phase discriminator",
+					"description": "`branch-management` identifies this as a Phase 1 output."
+				},
+				"success": {
+					"type": "boolean",
+					"title": "Succeeded",
+					"description": "The one boolean a consumer should gate on. True when the phase completed with nothing failed — including a run that had nothing to do, which is a success because nothing failed. Read `outcome` for what specifically happened."
+				},
+				"outcome": {
+					"$ref": "#/$defs/BranchManagementOutcome"
+				},
+				"summary": {
+					"type": "string",
+					"title": "Summary",
+					"description": "One human-readable sentence describing the run. Derived from the structured fields beside it and never authored independently, so the prose cannot drift from the data."
+				},
+				"dryRun": {
+					"type": "boolean",
+					"title": "Dry run",
+					"description": "True when the action ran with `dry-run: true`. Phase 3 publishes nothing in dry-run mode; Phases 1 and 2 still observe and report, but mutations (branch updates, PR creation/updating) are suppressed."
+				},
+				"failure": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/BranchManagementFailure"
+						},
+						{
+							"type": "null"
+						}
+					],
+					"title": "Failure",
+					"description": "Why and where the phase failed. Null when `success` is true."
+				},
+				"totals": {
+					"$ref": "#/$defs/BranchManagementTotals"
+				},
+				"branchManagement": {
+					"$ref": "#/$defs/BranchManagementPayload"
+				}
+			},
+			"required": [
+				"$schema",
+				"schemaVersion",
+				"phase",
+				"success",
+				"outcome",
+				"summary",
+				"dryRun",
+				"failure",
+				"totals",
+				"branchManagement"
+			],
+			"additionalProperties": false,
+			"title": "Branch Management output (Phase 1)",
+			"description": "The structured `result` output emitted when the action runs in the branch-management phase (Phase 1). Triggered by a push to the target branch; ensures/creates the release branch and the release PR.",
+			"examples": [
+				{
+					"$schema": "https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.0.0/silk-release-action-5.0.0.json",
+					"schemaVersion": "2",
+					"phase": "branch-management",
+					"success": true,
+					"outcome": "branch-created",
+					"summary": "1 changeset file · 1 workspace to version · release PR created",
+					"failure": null,
+					"totals": {
+						"changesetFiles": 1,
+						"workspaces": 1
+					},
+					"dryRun": false,
+					"branchManagement": {
+						"releaseBranch": {
+							"name": "changeset-release/main",
+							"existed": true,
+							"created": false,
+							"updated": true,
+							"hasConflicts": false
+						},
+						"releasePr": {
+							"number": 42,
+							"url": "https://github.com/savvy-web/example-repo/pull/42",
+							"action": "updated"
+						},
+						"changesets": {
+							"count": 1,
+							"packages": [
+								{
+									"name": "@savvy-web/example",
+									"bumpType": "minor",
+									"changesetCount": 1,
+									"oldVersion": "1.4.0",
+									"newVersion": "1.5.0"
+								},
+								{
+									"name": "@savvy-web/example-consumer",
+									"bumpType": "patch",
+									"changesetCount": 0,
+									"oldVersion": "2.0.3",
+									"newVersion": "2.0.4"
+								}
+							]
+						}
+					}
+				}
+			]
+		},
+		"ValidationOutcome": {
+			"type": "string",
+			"enum": ["validated", "nothing-to-release", "build-failed", "checks-failed"],
+			"title": "Phase outcome",
+			"description": "`validated` — every build passed and no check raised an error finding. `nothing-to-release` — no workspace had a version difference against the target branch, so there was nothing to validate; a SUCCESS, because nothing failed. It usually means the release already merged, or Phase 1 did not commit the expected bumps, and a warning-severity finding is emitted alongside it. `build-failed` — a build failed, so the publish dry-runs never ran and their check rows report the cascade rather than a result of their own. `checks-failed` — builds passed but at least one check produced an error finding."
+		},
+		"ValidationFailureStage": {
+			"type": "string",
+			"enum": ["build", "publish-validation", "sbom", "release-notes"],
+			"title": "Failure stage",
+			"description": "WHEN validation failed. `build` — a workspace build failed, which cascades to every downstream check; `publish-validation` — a publish dry-run failed or could not be completed; `sbom` — SBOM generation or its NTIA check failed; `release-notes` — the release-notes preview could not be produced."
+		},
+		"ValidationFailure": {
+			"type": "object",
+			"properties": {
+				"stage": {
+					"$ref": "#/$defs/ValidationFailureStage"
+				},
+				"reason": {
+					"type": "string",
+					"title": "Failure reason",
+					"description": "WHAT went wrong, as a single-line summary."
+				}
+			},
+			"required": ["stage", "reason"],
+			"additionalProperties": false,
+			"title": "Failure"
+		},
+		"ValidationTotals": {
+			"type": "object",
+			"properties": {
+				"workspaces": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				},
+				"githubOnly": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				},
+				"githubWithPackages": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				},
+				"checksPassed": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				},
+				"checksWarning": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				},
+				"checksFailed": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				},
+				"errorFindings": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				},
+				"warningFindings": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				}
+			},
+			"required": [
+				"workspaces",
+				"githubOnly",
+				"githubWithPackages",
+				"checksPassed",
+				"checksWarning",
+				"checksFailed",
+				"errorFindings",
+				"warningFindings"
+			],
+			"additionalProperties": false,
+			"title": "Totals",
+			"description": "Aggregate counts, so a consumer does not have to reduce the package, check and finding arrays."
+		},
+		"ValidationBuildValidation": {
+			"type": "object",
+			"properties": {
+				"passed": {
+					"type": "boolean",
+					"title": "Build validation passed",
+					"description": "True when every released package built successfully."
+				},
+				"packageCount": {
+					"type": "number",
+					"allOf": [
+						{
+							"title": "Package count",
+							"description": "Number of packages built and validated."
+						}
+					]
+				}
+			},
+			"required": ["passed", "packageCount"],
+			"additionalProperties": false,
+			"title": "Build validation summary",
+			"description": "Summary of the build-validation step: whether every package built, and how many were built."
+		},
+		"ValidationCheck": {
+			"type": "object",
+			"properties": {
+				"name": {
+					"type": "string",
+					"title": "Check name",
+					"description": "Row label for the Validation Checks table. Canonical five-row set today: 'Build Validation', 'Link Issues', 'Publish Validation', 'Release Notes Preview', 'SBOM Preview'.",
+					"examples": ["Build Validation", "Link Issues", "Publish Validation", "Release Notes Preview", "SBOM Preview"]
+				},
+				"status": {
+					"type": "string",
+					"enum": ["pass", "warning", "error"],
+					"title": "Check status",
+					"description": "`pass` — the check passed; `warning` — the check raised a non-blocking warning; `error` — the check failed and blocks the release."
+				},
+				"outcome": {
+					"type": "string",
+					"title": "Outcome message",
+					"description": "Short human-readable summary of the check's outcome (e.g. counts, registry names, error class)."
+				},
+				"url": {
+					"anyOf": [
+						{
+							"type": "string",
+							"title": "Check URL",
+							"description": "URL pointing to detail for this check (a check-run URL or external report). Null when no URL applies."
+						},
+						{
+							"type": "null"
+						}
+					]
+				}
+			},
+			"required": ["name", "status", "outcome", "url"],
+			"additionalProperties": false,
+			"title": "Validation check row",
+			"description": "One row of the five-row Validation Checks table shown in the release PR comment and the unified check-run summary."
+		},
+		"ValidationFindingScope": {
+			"type": "object",
+			"properties": {
+				"package": {
+					"anyOf": [
+						{
+							"type": "string",
+							"title": "Package name",
+							"description": "The npm package name the finding concerns. When non-null, equals the `name` of an entry in `publish.packages[]`. When null, the finding is global to the validation run rather than tied to a specific package."
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"directory": {
+					"anyOf": [
+						{
+							"type": "string",
+							"title": "Build directory",
+							"description": "The build output directory the finding concerns, package-relative. When non-null, equals the `directory` of an entry in the owning package's `builds[]`. When null, the finding concerns the package as a whole rather than a specific build.",
+							"examples": ["dist/npm", "dist/jsr"]
+						},
+						{
+							"type": "null"
+						}
+					]
+				}
+			},
+			"required": ["package", "directory"],
+			"additionalProperties": false,
+			"title": "Validation finding scope",
+			"description": "What a non-pass finding concerns: which package and which of its build directories. `package` is null for global findings; `directory` is null for findings not tied to a specific build directory."
+		},
+		"ValidationFinding": {
+			"type": "object",
+			"properties": {
+				"severity": {
+					"type": "string",
+					"enum": ["error", "warning"],
+					"title": "Finding severity",
+					"description": "`error` — fails the validation phase; the release PR is blocked from merging until resolved. `warning` — advisory only and does not block the release; the comment surfaces it for the author to read."
+				},
+				"check": {
+					"type": "string",
+					"title": "Owning check",
+					"description": "The validation check that produced this finding (e.g. `Build Validation`, `Publish Validation`). Equal to the `name` of an entry in `checks[]`. Consumers can group findings under their owning check by joining on this value."
+				},
+				"scope": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/ValidationFindingScope"
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"message": {
+					"type": "string",
+					"title": "Finding message",
+					"description": "Human-readable description of the finding, suitable for direct display in the release PR comment."
+				}
+			},
+			"required": ["severity", "check", "scope", "message"],
+			"additionalProperties": false,
+			"title": "Validation finding",
+			"description": "Every non-pass validation outcome — `error` fails the check and blocks the release; `warning` is advisory. Findings are projected for the release PR comment and for downstream consumers of the `result` output."
+		},
+		"ValidationBumpType": {
+			"type": "string",
+			"enum": ["major", "minor", "patch", "new", "unknown"],
+			"title": "Bump type",
+			"description": "The validation phase's package bump type, derived by diffing the release-branch version against the target-branch version. A superset of `ChangesetsBumpType` (Phase 1 declared bumps): `major`/`minor`/`patch` are the standard semver bumps, and this enum adds `new` (no prior published version exists on the target branch) and `unknown` (could not be determined, typically when the prior version was a pre-release tag)."
+		},
+		"ValidationWorkspaceOutcome": {
+			"type": "string",
+			"enum": ["validated", "nothing-to-validate", "skipped", "partial", "failed"],
+			"title": "Workspace outcome",
+			"description": "`validated` — every publication passed its dry-run probe. `nothing-to-validate` — a `github-only` workspace: it publishes to no registry, so there is nothing to probe, and this is the complete, correct outcome rather than an absence of one. `skipped` — every publication was intentionally not probed. `partial` — some passed and at least one failed. `failed` — probes ran and none passed. Mirrors the publish phase's workspace `outcome` field; the VALUES differ because a dry-run probe and an upload have different results."
+		},
+		"ValidationWorkspaceKind": {
+			"type": "string",
+			"enum": ["github-only", "github-with-packages"],
+			"title": "Workspace kind",
+			"description": "The same vocabulary the publish phase reports, so one word means one thing across the whole run. `github-only` — the workspace resolved no publish target; its release is a version bump, a git tag and a GitHub release. This is the steady state for a private tracking package, not a degraded `github-with-packages`. `github-with-packages` — it resolved at least one publish target. Replaces the old `versionOnly` boolean, which named the same fact in a vocabulary the publish phase did not share."
+		},
+		"PublishRegistry": {
+			"type": "object",
+			"properties": {
+				"name": {
+					"type": "string",
+					"title": "Registry display name",
+					"description": "Human-readable registry name, e.g. `npm`, `GitHub Packages`, or the host of a custom registry.",
+					"examples": ["npm", "GitHub Packages", "JSR"]
+				},
+				"type": {
+					"type": "string",
+					"enum": ["npm", "github-packages", "jsr", "custom"],
+					"title": "Registry type",
+					"description": "`npm` — the public npm registry; `github-packages` — GitHub Packages; `jsr` — the JSR registry; `custom` — any other registry configured through the `custom-registries` input. A custom registry usually speaks the npm protocol, but is reported as `custom` rather than `npm` so it is never mistaken for the public registry."
+				},
+				"url": {
+					"type": "string",
+					"title": "Registry URL",
+					"description": "The registry endpoint this package was published to.",
+					"examples": ["https://registry.npmjs.org/", "https://npm.pkg.github.com/"]
+				}
+			},
+			"required": ["name", "type", "url"],
+			"additionalProperties": false,
+			"title": "Registry",
+			"description": "The registry a package was published to, classified and named."
+		},
+		"ValidationPackageOutcome": {
+			"type": "string",
+			"enum": ["ready", "skipped", "failed"],
+			"title": "Outcome",
+			"description": "`ready` — the dry-run publish probe succeeded; `skipped` — the target was intentionally not probed (unconfigured, or filtered out); `failed` — the probe failed and this publication would not land; see `error`. The VALUES differ from the publish phase's (`published`/`recovered`/`failed`/`blocked`) because a probe and an upload have different outcomes — but the field pair is the same, so `success` gates both."
+		},
+		"ValidationBuildSbom": {
+			"type": "object",
+			"properties": {
+				"componentCount": {
+					"type": "number",
+					"allOf": [
+						{
+							"title": "Component count",
+							"description": "Number of components (direct + transitive dependencies) in the BOM. 0 is legitimate for a dependency-free package."
+						}
+					]
+				},
+				"ntiaCompliant": {
+					"type": "boolean",
+					"title": "NTIA compliant",
+					"description": "True when the BOM satisfies every NTIA minimum-elements field. False when at least one field is missing — see `missingNtiaFields`."
+				},
+				"missingNtiaFields": {
+					"type": "array",
+					"title": "Missing NTIA fields",
+					"description": "Names of the NTIA minimum-elements fields the BOM is missing. Empty when `ntiaCompliant` is true.",
+					"examples": [["Supplier Name", "Author"], ["Timestamp"]],
+					"items": {
+						"type": "string"
+					}
+				}
+			},
+			"required": ["componentCount", "ntiaCompliant", "missingNtiaFields"],
+			"additionalProperties": false,
+			"title": "SBOM preview",
+			"description": "Per-build SBOM preview: component count, NTIA minimum-elements compliance, and the list of missing NTIA fields when not compliant."
+		},
+		"ValidationPackage": {
+			"type": "object",
+			"properties": {
+				"name": {
+					"type": "string",
+					"title": "Published package name",
+					"description": "The package name as it would be published. NOT necessarily the workspace's own name — a workspace may publish under a different name per target."
+				},
+				"version": {
+					"type": "string",
+					"title": "Version",
+					"description": "The version this publication would carry."
+				},
+				"registry": {
+					"$ref": "#/$defs/PublishRegistry"
+				},
+				"success": {
+					"type": "boolean",
+					"title": "Succeeded",
+					"description": "The boolean gate, true only for `outcome: ready`. Named to match the publish phase's package entry, so one filter works across both."
+				},
+				"outcome": {
+					"$ref": "#/$defs/ValidationPackageOutcome"
+				},
+				"error": {
+					"anyOf": [
+						{
+							"type": "string",
+							"title": "Error message",
+							"description": "Why the dry-run failed. Non-null only when `outcome` is `failed`."
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"access": {
+					"type": "string",
+					"enum": ["public", "restricted"],
+					"title": "Access level",
+					"description": "`public` — would publish publicly; `restricted` — would publish privately (scoped, restricted access)."
+				},
+				"provenance": {
+					"type": "boolean",
+					"title": "Provenance",
+					"description": "True when this target supports and would emit npm OIDC sigstore provenance attestations."
+				},
+				"directory": {
+					"type": "string",
+					"title": "Build directory",
+					"description": "Package-relative path to the output directory this publication packs from. Packages sharing a directory share one tarball, packed once.",
+					"examples": ["dist/npm", "dist/jsr"]
+				},
+				"packedBytes": {
+					"anyOf": [
+						{
+							"type": "number",
+							"allOf": [
+								{
+									"title": "Packed size (bytes)",
+									"description": "Size of the packed tarball. Null when the dry-run did not report it."
+								}
+							]
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"unpackedBytes": {
+					"anyOf": [
+						{
+							"type": "number",
+							"allOf": [
+								{
+									"title": "Unpacked size (bytes)",
+									"description": "Size of the unpacked contents. Null when the dry-run did not report it."
+								}
+							]
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"fileCount": {
+					"anyOf": [
+						{
+							"type": "number",
+							"allOf": [
+								{
+									"title": "File count",
+									"description": "Files in the packed tarball. Null when the dry-run did not report it."
+								}
+							]
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"sbom": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/ValidationBuildSbom"
+						},
+						{
+							"type": "null"
+						}
+					],
+					"title": "SBOM preview",
+					"description": "The SBOM that would be generated for this build. Null when generation failed or none applies."
+				}
+			},
+			"required": [
+				"name",
+				"version",
+				"registry",
+				"success",
+				"outcome",
+				"error",
+				"access",
+				"provenance",
+				"directory",
+				"packedBytes",
+				"unpackedBytes",
+				"fileCount",
+				"sbom"
+			],
+			"additionalProperties": false,
+			"title": "Package to publish",
+			"description": "One package a workspace would publish to one registry, mirroring the publish phase's per-package entry so the two phases describe the same publications the same way."
+		},
+		"ReleaseNotesFound": {
+			"type": "object",
+			"properties": {
+				"status": {
+					"type": "string",
+					"enum": ["found"],
+					"title": "Found",
+					"description": "The CHANGELOG.md was found and the section for the new version was successfully extracted."
+				},
+				"content": {
+					"type": "string",
+					"title": "Release notes content",
+					"description": "The extracted Markdown content of the CHANGELOG.md section for the new version."
+				}
+			},
+			"required": ["status", "content"],
+			"additionalProperties": false,
+			"title": "Release notes found",
+			"description": "The CHANGELOG.md exists and the section for the new version was located and extracted."
+		},
+		"ReleaseNotesNoChangelog": {
+			"type": "object",
+			"properties": {
+				"status": {
+					"type": "string",
+					"enum": ["no-changelog"],
+					"title": "No CHANGELOG.md",
+					"description": "The package has no CHANGELOG.md file — no release notes can be extracted."
+				}
+			},
+			"required": ["status"],
+			"additionalProperties": false,
+			"title": "Release notes — no CHANGELOG.md",
+			"description": "The package has no CHANGELOG.md file. This is non-fatal; the GitHub release is created with the version-bump summary instead."
+		},
+		"ReleaseNotesVersionNotFound": {
+			"type": "object",
+			"properties": {
+				"status": {
+					"type": "string",
+					"enum": ["version-not-found"],
+					"title": "Version not found",
+					"description": "The CHANGELOG.md exists but no section for the new version was found."
+				},
+				"reason": {
+					"type": "string",
+					"title": "Reason",
+					"description": "Human-readable explanation of why the version section was not located (e.g. parser couldn't find a matching heading)."
+				}
+			},
+			"required": ["status", "reason"],
+			"additionalProperties": false,
+			"title": "Release notes — version not found",
+			"description": "The CHANGELOG.md exists but no section for the new version was found."
+		},
+		"ReleaseNotesError": {
+			"type": "object",
+			"properties": {
+				"status": {
+					"type": "string",
+					"enum": ["error"],
+					"title": "Error",
+					"description": "An error occurred while attempting to read or parse the CHANGELOG.md."
+				},
+				"message": {
+					"type": "string",
+					"title": "Error message",
+					"description": "The error message from the failed read/parse operation."
+				}
+			},
+			"required": ["status", "message"],
+			"additionalProperties": false,
+			"title": "Release notes — error",
+			"description": "An error occurred while attempting to read or parse the CHANGELOG.md. Non-fatal — the release still proceeds; the GitHub Release body falls back to an auto-generated bump summary."
+		},
+		"ValidationReleaseNotes": {
+			"anyOf": [
+				{
+					"$ref": "#/$defs/ReleaseNotesFound"
+				},
+				{
+					"$ref": "#/$defs/ReleaseNotesNoChangelog"
+				},
+				{
+					"$ref": "#/$defs/ReleaseNotesVersionNotFound"
+				},
+				{
+					"$ref": "#/$defs/ReleaseNotesError"
+				}
+			],
+			"title": "Release notes extraction",
+			"description": "Discriminated outcome of reading the package's CHANGELOG.md (already populated by `changeset version`) and locating the section for the new version: `found`, `no-changelog`, `version-not-found`, or `error`."
+		},
+		"ValidationWorkspace": {
+			"type": "object",
+			"properties": {
+				"version": {
+					"type": "string",
+					"title": "New version",
+					"description": "The new semver version this release would publish.",
+					"examples": ["1.2.3", "0.4.0-beta.1"]
+				},
+				"baseVersion": {
+					"anyOf": [
+						{
+							"type": "string",
+							"title": "Base version",
+							"description": "The previously published version this release is bumped from. Null when this is the first publish."
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"bumpType": {
+					"$ref": "#/$defs/ValidationBumpType"
+				},
+				"changesetCount": {
+					"anyOf": [
+						{
+							"type": "number",
+							"allOf": [
+								{
+									"title": "Changeset count",
+									"description": "Number of changesets contributing to this package's bump. Null when unknown."
+								}
+							]
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"success": {
+					"type": "boolean",
+					"title": "Succeeded",
+					"description": "True when every publication this workspace would make passed its dry-run probe. True by construction for a `github-only` workspace, which makes none. Named to match the publish phase's workspace entry."
+				},
+				"outcome": {
+					"$ref": "#/$defs/ValidationWorkspaceOutcome"
+				},
+				"summary": {
+					"type": "string",
+					"title": "Summary",
+					"description": "One human-readable sentence describing this workspace's validation. Derived from the fields beside it and never authored independently, so it cannot drift from them — the same contract the publish phase's workspace `summary` carries.",
+					"examples": ["No registry target — nothing to validate; releases on GitHub only."]
+				},
+				"kind": {
+					"$ref": "#/$defs/ValidationWorkspaceKind"
+				},
+				"packages": {
+					"type": "array",
+					"title": "Packages to publish",
+					"description": "One entry per (package, registry) publication this workspace would make — the same unit and shape the publish phase reports, so the two can be compared directly. **Always an empty array for a `github-only` workspace**, and never null. Replaces the `builds[].targets[]` nesting, which every consumer had to flatten before it could line up with what publish reported.",
+					"items": {
+						"$ref": "#/$defs/ValidationPackage"
+					}
+				},
+				"releaseNotes": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/ValidationReleaseNotes"
+						},
+						{
+							"type": "null"
+						}
+					]
+				}
+			},
+			"required": [
+				"version",
+				"baseVersion",
+				"bumpType",
+				"changesetCount",
+				"success",
+				"outcome",
+				"summary",
+				"kind",
+				"packages"
+			],
+			"additionalProperties": false,
+			"title": "Released workspace",
+			"description": "A workspace being released this run, with its bump type, kind, builds, per-target readiness, and the extracted release notes. Keyed by workspace name in `validation.workspaces`, so the name is the key rather than a field."
+		},
+		"ValidationCheckRun": {
+			"type": "object",
+			"properties": {
+				"url": {
+					"type": "string",
+					"title": "Check-run URL",
+					"description": "The HTML URL of the unified Release Validation Summary check-run.",
+					"examples": ["https://github.com/owner/repo/runs/123456789"]
+				},
+				"conclusion": {
+					"type": "string",
+					"enum": ["success", "failure", "neutral", "cancelled", "skipped", "timed_out", "action_required"],
+					"title": "Check-run conclusion",
+					"description": "The GitHub check-run conclusion enum: `success`, `failure`, `neutral`, `cancelled`, `skipped`, `timed_out`, or `action_required`."
+				}
+			},
+			"required": ["url", "conclusion"],
+			"additionalProperties": false,
+			"title": "Validation check-run",
+			"description": "The unified Release Validation Summary check-run produced by the validation phase. Null when no check-run was created."
+		},
+		"ValidationPayload": {
+			"type": "object",
+			"properties": {
+				"buildValidation": {
+					"$ref": "#/$defs/ValidationBuildValidation"
+				},
+				"checks": {
+					"type": "array",
+					"title": "Validation checks",
+					"description": "The five-row Validation Checks table — one entry per validation step run this phase. Canonical names: 'Build Validation', 'Link Issues', 'Publish Validation', 'Release Notes Preview', 'SBOM Preview'.",
+					"items": {
+						"$ref": "#/$defs/ValidationCheck"
+					}
+				},
+				"errors": {
+					"type": "array",
+					"title": "Error findings",
+					"description": "Findings of `error` severity — any of these makes `success` false. Empty array when the run was clean; never null. Preserves the order the checks ran in.",
+					"items": {
+						"$ref": "#/$defs/ValidationFinding"
+					}
+				},
+				"warnings": {
+					"type": "array",
+					"title": "Warning findings",
+					"description": "Findings of `warning` severity. These do NOT make `success` false unless the run set `strict-warnings`. Empty array when the run was clean; never null.",
+					"items": {
+						"$ref": "#/$defs/ValidationFinding"
+					}
+				},
+				"order": {
+					"type": "array",
+					"title": "Workspace order",
+					"description": "Workspace names in the order they were validated. A JSON object has no guaranteed key order, so this preserves the sequence `workspaces` alone would lose — the same reason the publish phase carries `publish.order`.",
+					"items": {
+						"type": "string"
+					}
+				},
+				"workspaces": {
+					"type": "object",
+					"additionalProperties": {
+						"$ref": "#/$defs/ValidationWorkspace"
+					},
+					"title": "Workspaces",
+					"description": "Every workspace with a version difference against the target branch, keyed by workspace name — so a consumer looks one up directly rather than scanning an array. Empty object only when nothing had a version difference; a wave of only `github-only` workspaces still populates this, each with empty `builds`."
+				},
+				"checkRun": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/ValidationCheckRun"
+						},
+						{
+							"type": "null"
+						}
+					]
+				}
+			},
+			"required": ["buildValidation", "checks", "errors", "warnings", "order", "workspaces", "checkRun"],
+			"additionalProperties": false,
+			"title": "Validation payload",
+			"description": "Phase 2 outcome — the build-validation result, the Validation Checks table, every non-pass finding, the build-centric publish preview (per-package, per-build, per-target readiness), and the unified Release Validation Summary check-run URL."
+		},
+		"ValidationOutput": {
+			"type": "object",
+			"properties": {
+				"$schema": {
+					"$ref": "#/$defs/Literal_"
+				},
+				"schemaVersion": {
+					"type": "string",
+					"enum": ["2"],
+					"title": "Schema version",
+					"description": "In-band schema version. Bumped only on a breaking JSON-shape change (removed/renamed field, changed type) — additive fields do not bump it."
+				},
+				"phase": {
+					"type": "string",
+					"enum": ["validation"],
+					"title": "Phase discriminator",
+					"description": "`validation` identifies this as a Phase 2 output."
+				},
+				"success": {
+					"type": "boolean",
+					"title": "Succeeded",
+					"description": "The one boolean a consumer should gate on. True when the phase completed with nothing failed — including a run that had nothing to do, which is a success because nothing failed. Read `outcome` for what specifically happened."
+				},
+				"outcome": {
+					"$ref": "#/$defs/ValidationOutcome"
+				},
+				"summary": {
+					"type": "string",
+					"title": "Summary",
+					"description": "One human-readable sentence describing the run. Derived from the structured fields beside it and never authored independently, so the prose cannot drift from the data."
+				},
+				"dryRun": {
+					"type": "boolean",
+					"title": "Dry run",
+					"description": "True when the action ran with `dry-run: true`. Phase 3 publishes nothing in dry-run mode; Phases 1 and 2 still observe and report, but mutations (branch updates, PR creation/updating) are suppressed."
+				},
+				"failure": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/ValidationFailure"
+						},
+						{
+							"type": "null"
+						}
+					],
+					"title": "Failure",
+					"description": "Why and where validation failed. Null when `success` is true."
+				},
+				"totals": {
+					"$ref": "#/$defs/ValidationTotals"
+				},
+				"validation": {
+					"$ref": "#/$defs/ValidationPayload"
+				}
+			},
+			"required": [
+				"$schema",
+				"schemaVersion",
+				"phase",
+				"success",
+				"outcome",
+				"summary",
+				"dryRun",
+				"failure",
+				"totals",
+				"validation"
+			],
+			"additionalProperties": false,
+			"title": "Validation output (Phase 2)",
+			"description": "The structured `result` output emitted when the action runs in the validation phase (Phase 2). Triggered by a push to the release branch; runs build validation, publish dry-runs, release-notes extraction, and emits the unified Release Validation Summary check-run.",
+			"examples": [
+				{
+					"$schema": "https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.0.0/silk-release-action-5.0.0.json",
+					"schemaVersion": "2",
+					"phase": "validation",
+					"success": true,
+					"outcome": "validated",
+					"summary": "1 workspace validated · builds passed · 0 error findings",
+					"failure": null,
+					"totals": {
+						"workspaces": 1,
+						"githubOnly": 0,
+						"githubWithPackages": 1,
+						"checksPassed": 5,
+						"checksWarning": 0,
+						"checksFailed": 0,
+						"errorFindings": 0,
+						"warningFindings": 0
+					},
+					"dryRun": false,
+					"validation": {
+						"buildValidation": {
+							"passed": true,
+							"packageCount": 1
+						},
+						"checks": [
+							{
+								"name": "Build Validation",
+								"status": "pass",
+								"outcome": "1/1 package(s) built",
+								"url": null
+							},
+							{
+								"name": "Link Issues",
+								"status": "pass",
+								"outcome": "Linked 2 issue(s)",
+								"url": "https://github.com/savvy-web/example-repo/runs/123"
+							},
+							{
+								"name": "Publish Validation",
+								"status": "pass",
+								"outcome": "2/2 target(s) ready",
+								"url": "https://github.com/savvy-web/example-repo/runs/123"
+							},
+							{
+								"name": "Release Notes Preview",
+								"status": "pass",
+								"outcome": "Found release notes for 1 package(s)",
+								"url": "https://github.com/savvy-web/example-repo/runs/123"
+							},
+							{
+								"name": "SBOM Preview",
+								"status": "pass",
+								"outcome": "1/1 SBOM(s) NTIA-compliant",
+								"url": "https://github.com/savvy-web/example-repo/runs/123"
+							}
+						],
+						"errors": [],
+						"warnings": [],
+						"order": ["@savvy-web/example"],
+						"workspaces": {
+							"@savvy-web/example": {
+								"version": "1.2.0",
+								"baseVersion": "1.1.0",
+								"bumpType": "minor",
+								"changesetCount": 1,
+								"success": true,
+								"outcome": "validated",
+								"summary": "2 package(s) ready to publish.",
+								"kind": "github-with-packages",
+								"packages": [
+									{
+										"name": "@savvy-web/example",
+										"version": "1.2.0",
+										"registry": {
+											"name": "npm",
+											"type": "npm",
+											"url": "https://registry.npmjs.org/"
+										},
+										"success": true,
+										"outcome": "ready",
+										"error": null,
+										"access": "public",
+										"provenance": true,
+										"directory": "dist/npm",
+										"packedBytes": 716,
+										"unpackedBytes": 2300,
+										"fileCount": 5,
+										"sbom": {
+											"componentCount": 3,
+											"ntiaCompliant": true,
+											"missingNtiaFields": []
+										}
+									},
+									{
+										"name": "@savvy-web/example",
+										"version": "1.2.0",
+										"registry": {
+											"name": "GitHub Packages",
+											"type": "github-packages",
+											"url": "https://npm.pkg.github.com/"
+										},
+										"success": true,
+										"outcome": "ready",
+										"error": null,
+										"access": "public",
+										"provenance": false,
+										"directory": "dist/npm",
+										"packedBytes": 716,
+										"unpackedBytes": 2300,
+										"fileCount": 5,
+										"sbom": {
+											"componentCount": 3,
+											"ntiaCompliant": true,
+											"missingNtiaFields": []
+										}
+									}
+								],
+								"releaseNotes": {
+									"status": "found",
+									"content": "### Minor Changes\n\n- Added the springLaunch API."
+								}
+							}
+						},
+						"checkRun": {
+							"url": "https://github.com/savvy-web/example-repo/runs/124",
+							"conclusion": "success"
+						}
+					}
+				}
+			]
+		},
+		"PublishOutcome": {
+			"type": "string",
+			"enum": ["released", "nothing-to-release", "partial", "failed", "blocked"],
+			"title": "Phase outcome",
+			"description": "`released` — every workspace completed. `nothing-to-release` — no workspace had a version difference against the target branch; the only genuinely empty run, and a SUCCESS, because nothing failed. `partial` — some workspaces completed and at least one did not. `failed` — workspaces were attempted and none completed. `blocked` — the phase aborted before any workspace was attempted; see `failure` for the stage and reason."
+		},
+		"PublishFailureStage": {
+			"type": "string",
+			"enum": ["detect", "build", "sbom", "publish", "tags", "releases", "linked-issues"],
+			"title": "Failure stage",
+			"description": "WHEN the phase stopped or degraded, named by the step that failed. `detect` — released packages could not be determined; `build` — the `ci:build` gate failed, so nothing was packed; `sbom` — an SBOM could not be written (non-fatal; the release loses an asset); `publish` — at least one registry upload failed; `tags` — a git tag could not be created; `releases` — a GitHub release could not be created or updated; `linked-issues` — the post-release issue housekeeping failed. `build` and `detect` abort before any workspace is attempted, so every workspace is `blocked`."
+		},
+		"PublishFailure": {
+			"type": "object",
+			"properties": {
+				"stage": {
+					"$ref": "#/$defs/PublishFailureStage"
+				},
+				"reason": {
+					"type": "string",
+					"title": "Failure reason",
+					"description": "WHAT went wrong, as a single-line summary. For `build` this is the compiler or task diagnostic; the full transcript is in the job log, not here."
+				},
+				"blockedWorkspaces": {
+					"type": "array",
+					"title": "Blocked workspaces",
+					"description": "Names of workspaces that were never attempted because of this failure — the same set that carry `outcome: blocked`. Empty array when the failure happened after every workspace had been attempted.",
+					"items": {
+						"type": "string"
+					}
+				}
+			},
+			"required": ["stage", "reason", "blockedWorkspaces"],
+			"additionalProperties": false,
+			"title": "Failure",
+			"description": "Why the phase did not complete cleanly, and where it stopped. Null on a clean run. This is the only place the abort reason appears — it is not duplicated onto individual workspaces, which report only that they were `blocked`."
+		},
+		"PublishTotals": {
+			"type": "object",
+			"properties": {
+				"workspaces": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				},
+				"githubOnly": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				},
+				"githubWithPackages": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				},
+				"blocked": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				},
+				"packagesResolved": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				},
+				"packagesPublished": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				},
+				"packagesRecovered": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				},
+				"packagesFailed": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				},
+				"tagsCreated": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				},
+				"releasesCreated": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				}
+			},
+			"required": [
+				"workspaces",
+				"githubOnly",
+				"githubWithPackages",
+				"blocked",
+				"packagesResolved",
+				"packagesPublished",
+				"packagesRecovered",
+				"packagesFailed",
+				"tagsCreated",
+				"releasesCreated"
+			],
+			"additionalProperties": false,
+			"title": "Totals",
+			"description": "Aggregate counts, so no consumer has to reduce the workspace map to answer a question about scale. Every number here is derivable from `publish.workspaces`; it is duplicated deliberately."
+		},
+		"PublishWorkspaceKind": {
+			"type": "string",
+			"enum": ["github-only", "github-with-packages"],
+			"title": "Workspace kind",
+			"description": "What this workspace is *designed* to do, resolved before any publishing is attempted so it stays meaningful on an aborted run. `github-only` — it publishes to no registry; its release is a version bump, a git tag and a GitHub release. This is the steady state for a private tracking workspace and is NOT a degraded `github-with-packages`. `github-with-packages` — it resolved at least one publish target and is expected to put packages on a registry."
+		},
+		"PublishWorkspaceOutcome": {
+			"type": "string",
+			"enum": ["released", "published", "recovered", "partial", "failed", "blocked"],
+			"title": "Workspace outcome",
+			"description": "`released` — a `github-only` workspace was tagged and released; nothing was uploaded because nothing was meant to be. `published` — every package landed on its registry. `recovered` — every package was already present at an identical digest, so nothing was re-uploaded. `partial` — some packages landed and at least one failed. `failed` — the workspace was attempted and nothing landed. `blocked` — the workspace was never attempted because the phase aborted first; see the phase-level `failure`."
+		},
+		"PublishedPackageOutcome": {
+			"type": "string",
+			"enum": ["published", "recovered", "failed", "blocked"],
+			"title": "Package outcome",
+			"description": "`published` — new bytes were uploaded to this registry; `recovered` — the version was already present with an identical tarball digest, so nothing was re-uploaded and the run treated it as done; `failed` — the upload was attempted and did not land (see `error`); `blocked` — the upload was never attempted because the phase aborted first (see the phase-level `failure`)."
+		},
+		"PublishRecoveryDigests": {
+			"type": "object",
+			"properties": {
+				"localDigest": {
+					"type": "string",
+					"title": "Local digest",
+					"description": "Integrity digest of the locally-packed tarball, in npm's `dist.integrity` format (`sha512-<base64>`) — what this run would have uploaded."
+				},
+				"remoteDigest": {
+					"type": "string",
+					"title": "Remote digest",
+					"description": "Integrity digest the registry already had on file for this version, in npm's `dist.integrity` format. Equal to `localDigest` on a `recovered` outcome; different on a digest-mismatch `failed` outcome."
+				}
+			},
+			"required": ["localDigest", "remoteDigest"],
+			"additionalProperties": false,
+			"title": "Recovery digest pair",
+			"description": "The digest comparison behind a recovery decision. Present when the orchestrator probed the registry — on `recovered` and on a digest-mismatch `failed`; null when the publish went straight to upload."
+		},
+		"PublishedPackageAttestations": {
+			"type": "object",
+			"properties": {
+				"provenanceUrl": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					],
+					"title": "Provenance attestation URL",
+					"description": "The npm OIDC sigstore provenance attestation. Null when none was emitted."
+				},
+				"sbomUrl": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					],
+					"title": "SBOM attestation URL",
+					"description": "The CycloneDX SBOM attestation. Null when none was emitted."
+				},
+				"githubAttestationUrl": {
+					"anyOf": [
+						{
+							"type": "string"
+						},
+						{
+							"type": "null"
+						}
+					],
+					"title": "GitHub attestation URL",
+					"description": "The GitHub artifact-attestation (`gh attestation verify`). Null when none was emitted."
+				},
+				"provenanceRecovered": {
+					"anyOf": [
+						{
+							"type": "boolean"
+						},
+						{
+							"type": "null"
+						}
+					],
+					"title": "Provenance attestation recovered",
+					"description": "True when a provenance attestation already existed for this tarball's sha256 and was reused. False when one was written this run. Null when no attestation step ran."
+				},
+				"sbomRecovered": {
+					"anyOf": [
+						{
+							"type": "boolean"
+						},
+						{
+							"type": "null"
+						}
+					],
+					"title": "SBOM attestation recovered",
+					"description": "True when an SBOM attestation already existed for this tarball's sha256 and was reused. False when one was written this run. Null when no SBOM attestation ran."
+				}
+			},
+			"required": ["provenanceUrl", "sbomUrl", "githubAttestationUrl", "provenanceRecovered", "sbomRecovered"],
+			"additionalProperties": false,
+			"title": "Attestations",
+			"description": "Supply-chain anchors over this published tarball."
+		},
+		"PublishedPackage": {
+			"type": "object",
+			"properties": {
+				"name": {
+					"type": "string",
+					"title": "Published package name",
+					"description": "The package name as published. This is the name on the tarball, which is NOT necessarily the workspace's own name — a workspace may publish under a different name per target."
+				},
+				"version": {
+					"type": "string",
+					"title": "Published version",
+					"description": "The semver version published to this registry."
+				},
+				"success": {
+					"type": "boolean",
+					"title": "Succeeded",
+					"description": "True when this version is on this registry as a result of this run — whether newly uploaded (`published`) or confirmed already present at an identical digest (`recovered`). False for `failed` and `blocked`."
+				},
+				"outcome": {
+					"$ref": "#/$defs/PublishedPackageOutcome"
+				},
+				"registry": {
+					"$ref": "#/$defs/PublishRegistry"
+				},
+				"url": {
+					"anyOf": [
+						{
+							"type": "string",
+							"title": "Package URL",
+							"description": "Web URL of the published package version. Null when the registry exposes no such page."
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"error": {
+					"anyOf": [
+						{
+							"type": "string",
+							"title": "Error message",
+							"description": "Why the publish failed. Non-null only when `outcome` is `failed`."
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"recovery": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/PublishRecoveryDigests"
+						},
+						{
+							"type": "null"
+						}
+					],
+					"title": "Recovery digests",
+					"description": "The digest pair behind a `recovered` outcome or a digest-mismatch `failed`. Null otherwise."
+				},
+				"tarballDigest": {
+					"anyOf": [
+						{
+							"type": "string",
+							"title": "Tarball digest",
+							"description": "Integrity hash of the published tarball as `sha512-<base64>`. Null when nothing was uploaded.",
+							"examples": ["sha512-Vb1g8tXp4l8a9bC..."]
+						},
+						{
+							"type": "null"
+						}
+					]
+				},
+				"attestations": {
+					"$ref": "#/$defs/PublishedPackageAttestations"
+				}
+			},
+			"required": [
+				"name",
+				"version",
+				"success",
+				"outcome",
+				"registry",
+				"url",
+				"error",
+				"recovery",
+				"tarballDigest",
+				"attestations"
+			],
+			"additionalProperties": false,
+			"title": "Published package",
+			"description": "One package published to one registry. A workspace publishing the same version to three registries produces three entries here, and they may not all share a name."
+		},
+		"PublishTag": {
+			"type": "object",
+			"properties": {
+				"name": {
+					"type": "string",
+					"title": "Tag name",
+					"description": "The git tag created for this workspace.",
+					"examples": ["@effected/claude-code-plugin@0.14.0", "v1.2.0"]
+				},
+				"sha": {
+					"type": "string",
+					"title": "Tag SHA",
+					"description": "Commit SHA the tag points at. Empty string when the tag exists but the local clone could not resolve it — never null, so a consumer reading `.tag.sha` always gets a string."
+				}
+			},
+			"required": ["name", "sha"],
+			"additionalProperties": false,
+			"title": "Git tag",
+			"description": "The git tag cut for a workspace's release."
+		},
+		"PublishReleaseAsset": {
+			"type": "object",
+			"properties": {
+				"name": {
+					"type": "string",
+					"title": "Asset name",
+					"description": "File name of the release asset."
+				},
+				"url": {
+					"type": "string",
+					"title": "Download URL",
+					"description": "Browser download URL for the asset."
+				},
+				"size": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				}
+			},
+			"required": ["name", "url", "size"],
+			"additionalProperties": false,
+			"title": "Release asset",
+			"description": "A file attached to the GitHub release — a tarball, an SBOM, or an API report."
+		},
+		"PublishRelease": {
+			"type": "object",
+			"properties": {
+				"id": {
+					"anyOf": [
+						{
+							"type": "number"
+						},
+						{
+							"$ref": "#/$defs/Union_"
+						}
+					]
+				},
+				"url": {
+					"type": "string",
+					"title": "Release URL",
+					"description": "Web URL of the GitHub release."
+				},
+				"assets": {
+					"type": "array",
+					"title": "Release assets",
+					"description": "Files attached to the release. Empty array when none were uploaded — never null.",
+					"items": {
+						"$ref": "#/$defs/PublishReleaseAsset"
+					}
+				}
+			},
+			"required": ["id", "url", "assets"],
+			"additionalProperties": false,
+			"title": "GitHub release",
+			"description": "The GitHub release created for a workspace. The git tag is a SIBLING of this object, not a child: tags and releases are created by separate operations, so a tag can exist while release creation failed. Nesting the tag here would lose it in exactly that case."
+		},
+		"PublishWorkspace": {
+			"type": "object",
+			"properties": {
+				"version": {
+					"type": "string",
+					"title": "Released version",
+					"description": "The version this workspace was bumped to and released at."
+				},
+				"kind": {
+					"$ref": "#/$defs/PublishWorkspaceKind"
+				},
+				"success": {
+					"type": "boolean",
+					"title": "Succeeded",
+					"description": "True when this workspace's release completed as intended — every package that should have landed did (whether uploaded or recovered), and the tag and GitHub release were created. False for `partial`, `failed` and `blocked`."
+				},
+				"outcome": {
+					"$ref": "#/$defs/PublishWorkspaceOutcome"
+				},
+				"summary": {
+					"type": "string",
+					"title": "Summary",
+					"description": "One human-readable sentence describing this workspace's release. Derived from the structured fields on this object and never authored independently, so it cannot drift from them.",
+					"examples": ["Tagged and released on GitHub; no registry target."]
+				},
+				"packages": {
+					"type": "array",
+					"title": "Published packages",
+					"description": "One entry per (package, registry) publication. Always an empty array — never null — for a `github-only` workspace, and for any workspace whose publishing never ran.",
+					"items": {
+						"$ref": "#/$defs/PublishedPackage"
+					}
+				},
+				"tag": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/PublishTag"
+						},
+						{
+							"type": "null"
+						}
+					],
+					"title": "Git tag",
+					"description": "The git tag cut for this workspace. Null when no tag was created — the phase aborted before tagging, or tag creation itself failed. Deliberately a sibling of `release` rather than nested inside it: tagging and release creation are separate steps, and a tag can land while the release does not."
+				},
+				"release": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/PublishRelease"
+						},
+						{
+							"type": "null"
+						}
+					],
+					"title": "GitHub release",
+					"description": "The GitHub release created for this workspace. Null when none was created — either the phase aborted before releases ran (`outcome: blocked`) or release creation itself failed. Null therefore means *not present*, distinct from an empty `packages` array which means *none were meant to exist*."
+				}
+			},
+			"required": ["version", "kind", "success", "outcome", "summary", "packages", "tag", "release"],
+			"additionalProperties": false,
+			"title": "Workspace release",
+			"description": "Everything that happened to one workspace: what it is, whether it worked, the packages it put on registries, and the GitHub release it produced."
+		},
+		"PublishPayload": {
+			"type": "object",
+			"properties": {
+				"order": {
+					"type": "array",
+					"title": "Publish order",
+					"description": "Workspace names in the dependency-first order they were processed. A JSON object has no guaranteed key order, so this preserves the topological sequence that `workspaces` alone would lose.",
+					"items": {
+						"type": "string"
+					}
+				},
+				"workspaces": {
+					"type": "object",
+					"additionalProperties": {
+						"$ref": "#/$defs/PublishWorkspace"
+					},
+					"title": "Workspaces",
+					"description": "Every workspace in this release, keyed by workspace name — so a consumer looks one up directly rather than scanning an array. Populated even on an aborted run, where entries carry `outcome: blocked`."
+				}
+			},
+			"required": ["order", "workspaces"],
+			"additionalProperties": false,
+			"title": "Publish payload",
+			"description": "The per-workspace detail of the publish phase."
+		},
+		"PublishOutput": {
+			"type": "object",
+			"properties": {
+				"$schema": {
+					"$ref": "#/$defs/Literal_"
+				},
+				"schemaVersion": {
+					"type": "string",
+					"enum": ["2"],
+					"title": "Schema version",
+					"description": "In-band schema version. Bumped only on a breaking JSON-shape change (removed/renamed field, changed type) — additive fields do not bump it."
+				},
+				"phase": {
+					"type": "string",
+					"enum": ["publish"],
+					"title": "Phase discriminator",
+					"description": "`publish` identifies this as a Phase 3 output."
+				},
+				"success": {
+					"type": "boolean",
+					"title": "Succeeded",
+					"description": "The one boolean a consumer should gate on. True when the phase completed with nothing failed — including a run that had nothing to release, and a run whose every workspace was `github-only`. False when anything failed or the phase aborted. Read `outcome` for what specifically happened."
+				},
+				"outcome": {
+					"$ref": "#/$defs/PublishOutcome"
+				},
+				"summary": {
+					"type": "string",
+					"title": "Summary",
+					"description": "One human-readable sentence describing the whole run. Derived from `totals` and never authored independently, so it always agrees with the structured counts.",
+					"examples": ["2 workspaces versioned · 0 packages published to a registry · 2 GitHub releases created"]
+				},
+				"dryRun": {
+					"type": "boolean",
+					"title": "Dry run",
+					"description": "True when the action ran with `dry-run: true`. Phase 3 publishes nothing in dry-run mode; Phases 1 and 2 still observe and report, but mutations (branch updates, PR creation/updating) are suppressed."
+				},
+				"failure": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/PublishFailure"
+						},
+						{
+							"type": "null"
+						}
+					],
+					"title": "Failure",
+					"description": "Why and where the phase failed. Null when `success` is true."
+				},
+				"totals": {
+					"$ref": "#/$defs/PublishTotals"
+				},
+				"publish": {
+					"$ref": "#/$defs/PublishPayload"
+				}
+			},
+			"required": [
+				"$schema",
+				"schemaVersion",
+				"phase",
+				"success",
+				"outcome",
+				"summary",
+				"dryRun",
+				"failure",
+				"totals",
+				"publish"
+			],
+			"additionalProperties": false,
+			"title": "Publish output (Phase 3)",
+			"description": "The structured `result` output emitted when the action runs in the publish phase (Phase 3). Triggered by the merge of the release PR; publishes each workspace's packages to every configured registry, generates SBOM and provenance attestations, and creates git tags and GitHub releases."
+		},
+		"ReleaseOutput": {
+			"anyOf": [
+				{
+					"$ref": "#/$defs/BranchManagementOutput"
+				},
+				{
+					"$ref": "#/$defs/ValidationOutput"
+				},
+				{
+					"$ref": "#/$defs/PublishOutput"
+				}
+			],
+			"title": "Silk Release Action output",
+			"description": "The phase-discriminated release output contract. Use `phase` to discriminate to the right variant: `branch-management`, `validation` or `publish`. Every variant carries the same shared top-level fields — `$schema`, `schemaVersion`, `phase`, `success`, `outcome`, `summary`, `dryRun`, `failure`, `totals` — plus a phase-specific payload. **`success` and `outcome` are orthogonal, and that is the point.** `success` is the boolean gate a consumer should filter on; `outcome` is the taxonomy saying what specifically happened, drawn from a per-phase enum. Keeping them separate means a filter written against `success` keeps working when a new `outcome` member is added. A run that had nothing to do is a SUCCESS — nothing failed — and says so through its outcome (`nothing-to-release`) rather than through a separate flag. `summary` is one human-readable sentence derived from the structured fields beside it, never authored independently, so it cannot drift from them. `failure` is null unless the phase failed, and names both the stage it stopped at and why. This replaced the v1 contract's four overlapping signals (`status`, `noop`, `succeeded`, `hasFailures`), whose definitions had already drifted from their own documentation."
+		}
+	}
+}

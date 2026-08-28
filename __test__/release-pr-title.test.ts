@@ -78,6 +78,32 @@ describe("resolveReleasePrTitle", () => {
 		expect(title).toBe("release: a@1.2.0, b@3.4.0");
 	});
 
+	// The regression this pins: the scope basis was widened from the
+	// release-eligible set to EVERY workspace package, which pulled in the
+	// changeset-ignored ones (`docs`, `scratchpad`). Their differing scope made
+	// the set mixed, `commonScope` returned null, and a title that had read
+	// `release: runtimes@0.4.4` silently came back fully qualified. Nothing in
+	// the title logic changed — only what it was asked to consider.
+	it("omits the shared scope even when the workspace also holds differently-scoped packages", () => {
+		const title = resolveReleasePrTitle({
+			releasingPackages: [
+				pkg({ name: "@effected/claude-code-plugin", version: "0.14.0" }),
+				pkg({ name: "@effected/copilot-plugin", version: "0.1.0" }),
+			],
+			perPackageVersioning: true,
+			// The basis excludes `docs` and `scratchpad` — changeset-ignored, and
+			// never candidates for a release title.
+			releasablePackages: [
+				pkg({ name: "@effected/claude-code-plugin" }),
+				pkg({ name: "@effected/copilot-plugin" }),
+				pkg({ name: "@effected/runtimes" }),
+			],
+		});
+
+		expect(title).toBe("release: claude-code-plugin@0.14.0, copilot-plugin@0.1.0");
+		expect(title).not.toContain("@effected/");
+	});
+
 	it("keeps full names when the releasable packages do not share one scope", () => {
 		const title = resolveReleasePrTitle({
 			releasingPackages: [

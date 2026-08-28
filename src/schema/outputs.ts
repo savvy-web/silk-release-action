@@ -176,8 +176,15 @@ export const emitReleaseOutput = (
 				),
 			);
 		yield* outputs.set("phase", output.phase);
-		yield* outputs.set("status", output.status);
-		yield* outputs.set("succeeded", output.succeeded ? "true" : "false");
+		// The scalar `status`/`succeeded` outputs are a separate, coarser contract
+		// from the JSON `result` — they exist so a shell step can branch without
+		// jq, and `action.yml` declares them by those names. Every phase now
+		// carries the same `success` + `outcome` pair, so this reads one field per
+		// scalar with no per-phase branch: `status` carries the phase's own
+		// outcome vocabulary, which is strictly more informative than the four
+		// shared labels it replaced.
+		yield* outputs.set("status", output.outcome);
+		yield* outputs.set("succeeded", output.success ? "true" : "false");
 		yield* outputs.set("package-count", String(scalars.packageCount));
 		yield* outputs.set("release-pr-number", scalars.releasePrNumber === null ? "" : String(scalars.releasePrNumber));
 	});

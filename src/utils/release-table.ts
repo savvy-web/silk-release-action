@@ -9,6 +9,7 @@
 
 import { GitHubMarkdown } from "@effected/github-actions";
 import { Schema } from "effect";
+import { releaseKindCell, releaseKindIcon } from "./release-kind.js";
 
 /**
  * One row of the release table.
@@ -65,17 +66,22 @@ export const releaseTable = GitHubMarkdown.tableFor(ReleaseRow, {
  * @public
  */
 export const RELEASE_TABLE_LEGEND =
-	"Legend: ✅ Ready · ⏳ Pending · ⏭️ Skipped · ⚠️ Warning · ❌ Failed · 🔴 major · 🟡 minor · 🟢 patch";
+	"Legend: ✅ Ready · ⏳ Pending · 🏷️ GitHub release only · ⏭️ Skipped · ⚠️ Warning · ❌ Failed · " +
+	"🔴 major · 🟡 minor · 🟢 patch";
 
 /**
  * The release plan as table rows, with publish-readiness left pending.
  *
  * @remarks
- * Phase 1's projection. `targets` is the one column the release plan cannot
- * answer — validation has not run — so it renders as pending rather than as a
- * guess or a blank. A blank would be indistinguishable from "no targets".
+ * Phase 1's projection. The `targets` column carries the RESOLVED target shape,
+ * not a placeholder: publishability is declared in `package.json`, so what a
+ * package publishes to is knowable before anything is built. Only how many
+ * targets are READY needs the build, which is what Phase 2 replaces this cell
+ * with. Rendering both facts as `pending` hid a decided one behind an undecided
+ * one, and made a package that publishes nowhere indistinguishable from one
+ * nobody had looked at yet.
  *
- * The word alone, with no icon: the status column already carries the hourglass
+ * No icon on a count: the status column already carries the hourglass
  * for the row, and repeating it here both duplicated the signal and widened the
  * column enough to unsettle the table's layout.
  *
@@ -91,6 +97,7 @@ export const toPendingReleaseRows = (
 		readonly changesetCount: number;
 		readonly oldVersion: string;
 		readonly newVersion: string;
+		readonly targetCount: number;
 	}>,
 ): ReadonlyArray<ReleaseRow> =>
 	packages.map((pkg) => ({
@@ -99,7 +106,13 @@ export const toPendingReleaseRows = (
 		versions: `${pkg.oldVersion} → ${pkg.newVersion}`,
 		bump: pkg.bumpType,
 		changesetCount: pkg.changesetCount,
-		targets: "pending",
+		// Phase 1 knows WHAT will be published without building anything —
+		// publishability is declared in `package.json`, not discovered by
+		// compiling. Only READINESS needs the build, so this column carries the
+		// resolved shape now and Phase 2 replaces it with `n/m ready`. It read
+		// `pending` for both facts before, which hid a decided one behind an
+		// undecided one.
+		targets: pkg.targetCount === 0 ? releaseKindCell("github-only") : `${pkg.targetCount} target(s)`,
 	}));
 
 /**
@@ -125,10 +138,11 @@ export interface ValidatedPackage {
  * Fill in the column Phase 1 had to leave pending.
  *
  * @remarks
- * A package with **no builds** is version-only — it is versioned and
- * changelogged but publishes nothing — which is `⏭️ no targets`, not a failure
- * and not a zero-of-zero ready. Reporting `0/0 ready` would read as a problem
- * where there is none.
+ * A package with **no builds** is `github-release` kind — it is versioned,
+ * changelogged, tagged and given a GitHub release, and publishes to no
+ * registry — which is `🏷️ GitHub release only`, not a failure and not a
+ * zero-of-zero ready. Reporting `0/0 ready` would read as a problem where
+ * there is none, and the previous `⏭️ no targets` read as a skip.
  *
  * A **skipped** target counts as neither ready nor failed. It is most often
  * "already published, identical", which is a success for the release even
@@ -148,15 +162,20 @@ export const toValidatedReleaseRows = (packages: ReadonlyArray<ValidatedPackage>
 		const ready = targets.filter((t) => t.status === "ready").length;
 		const failed = targets.filter((t) => t.status === "failed").length;
 
+		// `🏷️ GitHub release only`, not `⏭️ no targets`. The old cell described
+		// the mechanism ("no targets") in the vocabulary of a skip, and `⏭️` in
+		// the status column reinforced it — so a private tracking package, whose
+		// entire release is a tag and a GitHub release BY DESIGN, read as a
+		// package that had been passed over. Nothing is skipped here.
 		const targetsCell =
 			targets.length === 0
-				? "⏭️ no targets"
+				? releaseKindCell("github-only")
 				: failed > 0
 					? `❌ ${failed}/${targets.length} failed`
 					: `✅ ${ready}/${targets.length} ready`;
 
 		return {
-			status: failed > 0 ? "❌" : targets.length === 0 ? "⏭️" : "✅",
+			status: failed > 0 ? "❌" : targets.length === 0 ? releaseKindIcon("github-only") : "✅",
 			name: pkg.name,
 			versions: `${pkg.baseVersion ?? "new"} → ${pkg.version}`,
 			// The bump is derived from the versions rather than carried: by Phase 2

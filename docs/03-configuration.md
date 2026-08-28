@@ -25,16 +25,18 @@
 | `installation-id` | GitHub App installation ID |
 | `app-slug` | GitHub App slug (URL-friendly name) |
 | `result` | Structured JSON describing the run — see below |
-| `phase` | Phase that ran: `branch-management`, `validation`, `publishing`, `close-issues`, `none` |
-| `status` | Run status: `no-op`, `success`, `partial`, `failed` |
-| `succeeded` | Whether all intended work completed |
+| `phase` | Phase that ran: `branch-management`, `validation`, `publish`, `close-issues`, `none` |
+| `status` | The phase's own outcome label. Branch management: `nothing-to-release`, `branch-created`, `branch-updated`, `branch-unchanged`, `conflicted`. Validation: `validated`, `nothing-to-release`, `build-failed`, `checks-failed`. Publish: `released`, `nothing-to-release`, `partial`, `failed`, `blocked` |
+| `succeeded` | Whether all intended work completed (or correctly did nothing) |
 | `package-count` | Number of packages the phase touched |
 | `release-pr-number` | Release PR number, when one is involved (empty otherwise) |
 | `closed-issues-count` | Number of linked issues closed by the close-issues phase (`"0"` in every other phase) |
 | `failed-issues-count` | Number of linked issues the close-issues phase failed to close (`"0"` in every other phase) |
 | `closed-issues` | JSON array describing each linked issue the close-issues phase handled — number, title, whether it closed, and the error when it did not (`"[]"` in every other phase) |
 
-The `result` output is a phase-discriminated JSON object validated by `https://raw.githubusercontent.com/savvy-web/silk-release-action/main/silk-release-action.output.schema.json`. It carries the machine-readable contract: the three orthogonal flags (`noop`, `succeeded`, `hasFailures`), a `dryRun` marker and exactly one phase payload block. Read fields with the `fromJSON()` expression function — `${{ fromJSON(steps.release.outputs.result).status }}` — and branch on `schemaVersion` for forward compatibility.
+The `result` output is a phase-discriminated JSON object validated by `https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.0.0/silk-release-action-5.0.0.json`. It carries the machine-readable contract: a `success` boolean gate, a per-phase `outcome` enum (the same labels as the `status` scalar output above), a human-readable `summary`, a `failure` block (`null` on success), per-phase `totals`, a `dryRun` marker and exactly one phase payload block. Read fields with the `fromJSON()` expression function — `${{ fromJSON(steps.release.outputs.result).outcome }}` — and branch on `schemaVersion` for forward compatibility.
+
+Publish and validation payloads key their `workspaces` by workspace name (with an `order` array giving publish order) rather than an array. Each workspace carries a `kind` of `github-only` or `github-with-packages` and a `packages` array of per-registry publications — a workspace with only private packages reports `github-only` and an honest `npm: — none` rather than a misleading green tick for a registry with no targets.
 
 The serialized payload does not include per-package release notes. The validation phase still computes the next CHANGELOG entries, but it surfaces them in the dedicated Release Notes Preview check rather than in `result`. To read release notes from a workflow, fetch the GitHub release body after Phase 3, or read the Release Notes Preview check on the release PR.
 

@@ -149,8 +149,8 @@ describe("createValidationCheck", () => {
 		const f = makeFixtures();
 		const validationOutput = {
 			$schema:
-				"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/silk-release-action.output.schema.json",
-			schemaVersion: "1",
+				"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.0.0/silk-release-action-5.0.0.json",
+			schemaVersion: "2",
 			phase: "validation",
 		};
 		const jsonBlock = [

@@ -53,6 +53,7 @@ import {
 	NOTHING_TO_RELEASE_TITLE,
 	formatReleasePackageList,
 	getReleasingPackages,
+	listAllPackages,
 	listPublishablePackages,
 	resolveReleasePrTitle,
 } from "./release-summary-helpers.js";
@@ -336,9 +337,32 @@ export const updateReleaseBranch = (
 			// <version>`; an independent multi-package release lists name@version
 			// (collapsing to a count when long); a single-package repo with nothing
 			// publishable falls back to the root version. Otherwise the prefix.
-			const publishablePackages = yield* listPublishablePackages(process.cwd());
-			const detectedReleasing = getReleasingPackages(publishablePackages, changedFiles, process.cwd());
-			const releasingPackages = detectedReleasing.length > 0 ? detectedReleasing : publishablePackages;
+			// Detect over EVERY workspace package, not just the publishable subset.
+			// A private tracking package is not publishable, so titling from that
+			// subset could not name the packages a `github-only` release consists
+			// of — detection found nothing and the old fallback then claimed the
+			// ENTIRE publishable set was releasing, which is how a two-package
+			// wave was titled `release: 31 packages`.
+			const allPackages = yield* listAllPackages(process.cwd());
+			const releasingPackages = getReleasingPackages(allPackages, changedFiles, process.cwd());
+			// The scope basis is the RELEASE-ELIGIBLE set, not every workspace package.
+			// `commonScope` omits a shared npm scope from the title for brevity, and
+			// widening the basis to every package pulled in the changeset-ignored ones
+			// (`docs`, `scratchpad`), whose differing scope made the set mixed and
+			// silently stopped the stripping — so a title that used to read
+			// `release: runtimes@0.4.4` came back fully qualified. Publishable packages
+			// already honour the changeset ignore list; the releasing ones are unioned
+			// in so a private tracking package still counts toward the shared scope.
+			const publishable = yield* listPublishablePackages(process.cwd());
+			const scopeBasis = [
+				...publishable,
+				...releasingPackages.filter((r) => !publishable.some((p) => p.name === r.name)),
+			];
+			if (releasingPackages.length === 0) {
+				// No fallback. An empty detection means no package.json moved, which
+				// is honestly "nothing to release" — never "everything".
+				yield* Effect.logWarning("No package.json changed in the version bump; PR title falls back to pending");
+			}
 			let singlePackageRepoVersion: string | undefined;
 			if (releasingPackages.length === 0 && isSinglePackage()) {
 				const readResult = yield* Effect.result(fs.readFileString("package.json"));
@@ -357,7 +381,7 @@ export const updateReleaseBranch = (
 			prTitle = resolveReleasePrTitle({
 				releasingPackages,
 				perPackageVersioning: yield* isMonorepoForTagging(process.cwd()),
-				releasablePackages: publishablePackages,
+				releasablePackages: scopeBasis,
 				singlePackageRepoVersion,
 			});
 			if (prTitle !== NOTHING_TO_RELEASE_TITLE) {

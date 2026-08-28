@@ -62,18 +62,24 @@ import { ActionLogger, ActionOutputs, DryRun } from "@effected/github-actions";
 import { Effect } from "effect";
 import { PublishError, ReleasesError } from "../release/errors.js";
 import type { DetectedRelease } from "../release/publish.js";
-import { detectReleases, runBuildAndSbom, runPublishTargets } from "../release/publish.js";
+import { detectReleases, planWorkspaces, runBuildAndSbom, runPublishTargets } from "../release/publish.js";
 import { runReleases } from "../release/releases.js";
-import type { PublishPackagesResult, ReleaseInfo } from "../release/types.js";
+import type {
+	PublishFailureInput,
+	PublishPackagesResult,
+	PublishWorkspacePlan,
+	ReleaseInfo,
+} from "../release/types.js";
 import type { Inputs } from "../schema/inputs.js";
 import { emitReleaseOutput } from "../schema/outputs.js";
-import { toPublishingOutput } from "../schema/projections.js";
+import { toPublishOutput } from "../schema/projections.js";
 import { closeLinkedIssues } from "../utils/close-linked-issues.js";
 import { detectPackageManager } from "../utils/detect-package-manager.js";
 import type { TagInfo } from "../utils/determine-tag-strategy.js";
 import { determineTagStrategy, isMonorepoForTagging } from "../utils/determine-tag-strategy.js";
 import { ensureFullHistory } from "../utils/ensure-full-history.js";
 import { grouped } from "../utils/grouped.js";
+import { releaseKindLabel, summarizeReleaseWave, tallyReleaseKinds } from "../utils/release-kind.js";
 import { sortReleasesTopologically } from "../utils/sort-releases-topologically.js";
 
 /**
@@ -113,14 +119,19 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 			const dryRun = yield* (yield* DryRun).isDryRun;
 			const packageManager = yield* detectPackageManager;
 
+			// `plan` is threaded into every emission, including the aborted ones —
+			// it is what keeps the wave's membership and each workspace's `kind`
+			// on the wire when the phase stops early.
 			const emitPublishing = (
+				plan: ReadonlyArray<PublishWorkspacePlan>,
 				publishResult: PublishPackagesResult,
 				tags: ReadonlyArray<TagInfo>,
 				releases: ReadonlyArray<ReleaseInfo>,
 				tagShas: Record<string, string>,
+				failure: PublishFailureInput | null,
 			) =>
-				emitReleaseOutput(outputs, toPublishingOutput({ publishResult, tags, releases, tagShas, dryRun }), {
-					packageCount: publishResult.totalPackages,
+				emitReleaseOutput(outputs, toPublishOutput({ plan, publishResult, tags, releases, tagShas, dryRun, failure }), {
+					packageCount: plan.length,
 					releasePrNumber: mergedReleasePRNumber !== undefined ? mergedReleasePRNumber : null,
 				});
 
@@ -148,6 +159,13 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 				.map((name) => detectedByName.get(name))
 				.filter((d): d is DetectedRelease => d !== undefined);
 
+			// ── Step 1b: Resolve the publish plan (BEFORE the build gate) ─────────
+			// Cheap, manifest-only, and cannot fail — so it runs ahead of the first
+			// step that can. Every later emission, including the aborted ones, is
+			// driven off this plan, which is how a run that dies at `ci:build` can
+			// still report which workspaces were in flight and what kind each is.
+			const plan = yield* planWorkspaces(detected);
+
 			if (detected.length === 0) {
 				const empty: PublishPackagesResult = {
 					success: true,
@@ -157,8 +175,8 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 					totalTargets: 0,
 					successfulTargets: 0,
 				};
-				yield* emitPublishing(empty, [], [], {});
-				yield* Effect.logInfo("Release publishing: ✅ nothing to publish");
+				yield* emitPublishing([], empty, [], [], {}, null);
+				yield* Effect.logInfo("Release publishing: ✅ no packages were versioned — nothing to tag, release or publish");
 				return;
 			}
 
@@ -207,7 +225,17 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 					successfulTargets: 0,
 					...(buildSbom.buildError !== undefined ? { buildError: buildSbom.buildError } : {}),
 				};
-				yield* emitPublishing(failed, [], [], {});
+				yield* emitPublishing(
+					plan,
+					failed,
+					[],
+					[],
+					{},
+					{
+						stage: "build",
+						reason: buildSbom.buildError ?? detail,
+					},
+				);
 				yield* Effect.logInfo("Release publishing: ❌ aborted at Build & SBOM — nothing published");
 				yield* outputs.setFailed("Phase 3 aborted at Build & SBOM");
 				// FAIL, do not return. `setFailed` only annotates; the exit code comes
@@ -224,7 +252,17 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 				yield* Effect.logError(
 					`❌ Published ${publishResult.successfulTargets}/${publishResult.totalTargets} target(s) — aborting before releases`,
 				);
-				yield* emitPublishing(publishResult, [], [], {});
+				yield* emitPublishing(
+					plan,
+					publishResult,
+					[],
+					[],
+					{},
+					{
+						stage: "publish",
+						reason: `Published ${publishResult.successfulTargets}/${publishResult.totalTargets} target(s)`,
+					},
+				);
 				yield* Effect.logInfo("Release publishing: ❌ failed at Publish");
 				yield* outputs.setFailed("Publishing failed");
 				// FAIL, do not return — see the note on `PublishError`. Returning here
@@ -236,7 +274,21 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 					}),
 				);
 			}
-			yield* Effect.logInfo(`✅ Published ${publishResult.successfulTargets}/${publishResult.totalTargets} target(s)`);
+			// Name the wave's shape, not just the ratio. `✅ Published 0/0 target(s)`
+			// is true of a release made entirely of private tracking packages and
+			// tells a reader nothing about whether that was the design or a
+			// resolution failure.
+			const publishKinds = tallyReleaseKinds(publishResult.packages.map((pkg) => pkg.targets.length));
+			yield* Effect.logInfo(
+				publishKinds.registry === 0
+					? `✅ No registry publishing — all ${publishKinds.githubRelease} package(s) are ` +
+							`${releaseKindLabel("github-only")}`
+					: `✅ Published ${publishResult.successfulTargets}/${publishResult.totalTargets} target(s) ` +
+							`across ${publishKinds.registry} package(s)` +
+							(publishKinds.githubRelease > 0
+								? `; ${publishKinds.githubRelease} ${releaseKindLabel("github-only")}`
+								: ""),
+			);
 
 			// ── Step 5: Create releases ────────────────────────────────────────────
 			// `runReleases` wraps itself in Step.withStep.
@@ -292,7 +344,18 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 				const rev = yield* Effect.result(git.revParse(process.cwd(), tag.name));
 				tagShas[tag.name] = rev._tag === "Success" ? rev.success : "";
 			}
-			yield* emitPublishing(publishResult, tagStrategy.tags, releasesResult.releases, tagShas);
+			yield* emitPublishing(
+				plan,
+				publishResult,
+				tagStrategy.tags,
+				releasesResult.releases,
+				tagShas,
+				releasesResult.success
+					? closeResult !== null && closeResult.failedCount > 0
+						? { stage: "linked-issues", reason: `${closeResult.failedCount} issue(s) failed to close` }
+						: null
+					: { stage: "releases", reason: releasesResult.errors.join("; ") },
+			);
 
 			// ── Deferred failure ───────────────────────────────────────────────────
 			// Everything above has run: the follow-on close-linked-issues work, the
@@ -330,8 +393,15 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 				return yield* Effect.fail(new ReleasesError({ reason, message }));
 			}
 
+			// The closing line reports the three facts separately — versioned,
+			// published, released — so a zero in the middle is legible as the shape
+			// of the wave rather than as an absence of work.
 			yield* Effect.logInfo(
-				`Release publishing: ✅ ${publishResult.successfulPackages} package(s), ${releasesResult.releases.length} release(s)`,
+				`Release publishing: ✅ ${summarizeReleaseWave({
+					workspaces: plan.length,
+					packagesPublished: publishResult.successfulTargets,
+					releases: releasesResult.releases.length,
+				})}`,
 			);
 		}),
 	);

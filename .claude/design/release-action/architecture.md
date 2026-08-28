@@ -4,8 +4,8 @@ category: architecture
 status: current
 completeness: 95
 created: 2026-02-07
-updated: 2026-08-23
-last-synced: 2026-08-23
+updated: 2026-08-27
+last-synced: 2026-08-27
 module: release-action
 related:
   - integration.md
@@ -31,6 +31,7 @@ dependencies: []
     - [Check derivation](#check-derivation)
     - [Degradation semantics (issue #216)](#degradation-semantics-issue-216)
   - [Phase 3: Release Publishing](#phase-3-release-publishing)
+    - [Release kind — `github-with-packages` vs `github-only`](#release-kind--github-with-packages-vs-github-only-srcutilsrelease-kindts)
     - [Per-byte-group prod layout](#per-byte-group-prod-layout)
     - [Group-keyed release assets](#group-keyed-release-assets)
   - [Phase 3a: Issue Closing](#phase-3a-issue-closing)
@@ -45,7 +46,7 @@ dependencies: []
   - [Why API Commits?](#why-api-commits)
   - [Why Recreate vs Rebase?](#why-recreate-vs-rebase)
   - [Why version natively?](#why-version-natively)
-  - [Why a Five-Step Phase-3 Flow?](#why-a-five-step-phase-3-flow)
+  - [Why a Six-Step Phase-3 Flow?](#why-a-six-step-phase-3-flow)
   - [Why Pack Once per Directory?](#why-pack-once-per-directory)
   - [Why a Silk-Specific Publishability Helper?](#why-a-silk-specific-publishability-helper)
 - [Key Design Patterns](#key-design-patterns)
@@ -215,7 +216,9 @@ Key mechanics:
 
 #### Release PR and commit titles
 
-Both branch-management modules resolve the PR title and the commit subject from the packages that will release, using helpers in `release-summary-helpers.ts`. The flow is: `listPublishablePackages` (an Effect over `WorkspaceDiscovery` + `PublishabilityDetector`, so it already honors the changeset `ignore` list and the silk rules) → `getReleasingPackages` (the subset whose `package.json` changed in this version bump) → `resolveReleasePrTitle`. `formatReleasePackageList` renders the commit body. The per-package-versioning signal comes from `isMonorepoForTagging(process.cwd())` (Effect-based, resolved through the same detector plus `ChangesetConfig.fixed`).
+Both branch-management modules resolve the PR title and the commit subject from the packages that will release, using helpers in `release-summary-helpers.ts`. The flow is: `listAllPackages` (every workspace package, publishable or not — see below) → `getReleasingPackages` (the subset whose `package.json` changed in this version bump) → `resolveReleasePrTitle`. `formatReleasePackageList` renders the commit body. The per-package-versioning signal comes from `isMonorepoForTagging(process.cwd())` (Effect-based, resolved through the same detector plus `ChangesetConfig.fixed`).
+
+**Detection runs over every workspace package, not the publishable subset, and has no fallback.** A private tracking package is not publishable, so titling from `listPublishablePackages` alone could never name the packages a `github-only` release consists of — detection over that narrower set found nothing, and the old fallback then claimed the *entire* publishable set was releasing, which is how a two-package private wave was titled `release: 31 packages`. `listAllPackages` (`utils/release-summary-helpers.ts`) is every workspace package from `WorkspaceDiscovery`, each carrying its resolved `targetCount` from the publishable set (`0` when absent — i.e. `github-only`). Detection over that full set has no "claim everything" fallback: an empty match honestly falls through to `NOTHING_TO_RELEASE_TITLE` or the single-package-repo branch, and a warning is logged rather than silently naming packages nothing actually released.
 
 The title format keys off versioning topology rather than how many packages release this run, so the PR title and the git tag strategy stay aligned:
 
@@ -256,7 +259,7 @@ Four properties of the body are load-bearing:
 
 Every write goes through `Effect.result` and a failed one becomes a logged warning — `withSection` types `publish` as infallible for exactly that reason, because a finalizer that could fail on the way out would replace the caller's real error with a reporting one.
 
-The release table itself is `utils/release-table.ts`, shared between the phase that *plans* a release and the phase that *validates* it. Phase 1 knows every column except `targets`; the table is rendered once with that column pending and re-rendered when Phase 2 fills it in, rather than withheld until everything is known. `utils/release-plan.ts` is the pure projection of `ReleasePlanner`'s plan into what Phase 1 reports (which packages a release covers, and how many changesets asked for it — both halves have been wrong in production).
+The release table itself is `utils/release-table.ts`, shared between the phase that *plans* a release and the phase that *validates* it. Phase 1 knows the **shape** of every column, `targets` included — publishability is declared in `package.json`, so what a package will publish to needs no build to know. The `targets` cell therefore renders the resolved shape from the first render (`releaseKindCell("github-only")` or `N target(s)`), not a `pending` placeholder; only *readiness* needs the build, which is what Phase 2's `toValidatedReleaseRows` replaces the cell with (`n/m ready`). Rendering both facts as `pending` used to hide a decided one behind an undecided one. `utils/release-plan.ts` is the pure projection of `ReleasePlanner`'s plan into what Phase 1 reports (which packages a release covers, how many changesets asked for it, and each one's pre-build target count via `PlannedPackage.targetCount` — all three have been wrong in production).
 
 ### Phase 2: Release Validation
 
@@ -331,19 +334,26 @@ Two rules the publish-validation fix established, both load-bearing for the path
 
 Triggers on merge of the release PR to main. `steps/publishing.ts` is the phase body; the orchestration lives in `src/release/`. Failure posture is fail-the-job: a failed build/SBOM gate or a partial publish raises `PublishError` rather than returning — `setFailed` only annotates, and returning is what once let a 4-of-8-target publish report a green run.
 
-The five Phase-3 steps in sequence:
+The Phase-3 steps in sequence:
 
 1. **`detectReleases`** (`src/release/publish.ts`) — Detects released packages from the merged PR's file diff (PR-first) or commit diff (fallback), then drops changeset-ignored names entirely via `ChangesetConfig.isIgnored`.
-2. **`runBuildAndSbom`** (`src/release/publish.ts`) — Runs `ci:build` once, then generates one CycloneDX SBOM per package. Aborts the phase if the build fails. Returns `BuildSbomResult` including per-package SBOM paths.
-3. **`runPublishTargets`** (`src/release/publish.ts`) — Publishes packages. Discovers workspace packages, resolves publish targets via `PublishabilityDetector`, sorts topologically via `sortReleasesTopologically` (idempotent — the step has already ordered the set), and calls `publishDirectoryGroup` for each unique build directory. Aborts before any releases if fewer than half the targets published.
-4. **`runReleases`** (`src/release/releases.ts`) — Creates Git tags (sha-aware idempotency) and GitHub releases, uploads group-keyed tarball, SBOM, API-doc and `meta.tgz` assets, creates SLSA provenance and SBOM attestations (idempotent: checks for an existing attestation before writing). One attestation per build directory, not per target. Asset names are keyed by byte-group via `src/utils/group-id.ts`.
-5. **`buildPublishSummary`** (`src/release/report.ts`) — Generates the sticky-comment publish summary and Check Run output.
+2. **`planWorkspaces`** (`src/release/publish.ts`) — **Deliberately ahead of the Build & SBOM gate.** Resolves every detected workspace's publish targets via `resolvePublishTargetSpecs` (shared with the Build & SBOM gate below) before anything is built, and classifies each as `github-with-packages` or `github-only` via `utils/release-kind.ts`. Target resolution reads manifests only, so it is cheap and cannot fail — which is what lets an aborted run still report every workspace's `kind` and intended publication count, rather than losing the wave's membership entirely (the old output derived membership from `publishResult.packages`, which is empty on an abort).
+3. **`runBuildAndSbom`** (`src/release/publish.ts`) — Runs `ci:build` once, then generates one CycloneDX SBOM per package **that resolved a publish target**. A `github-only` workspace has no tarball to describe and no release asset to attach an SBOM to, so it is skipped and named in `BuildSbomResult.sbomSkipped` rather than getting a stray, unattached SBOM document. Aborts the phase if the build fails. Returns `BuildSbomResult` including per-package SBOM paths and the skip list.
+4. **`runPublishTargets`** (`src/release/publish.ts`) — Publishes packages. Discovers workspace packages, resolves publish targets via the same `resolvePublishTargetSpecs`, sorts topologically via `sortReleasesTopologically` (idempotent — the step has already ordered the set), and calls `publishDirectoryGroup` for each unique build directory. Aborts before any releases if fewer than half the targets published.
+5. **`runReleases`** (`src/release/releases.ts`) — Creates Git tags (sha-aware idempotency) and GitHub releases, uploads group-keyed tarball, SBOM, API-doc and `meta.tgz` assets, creates SLSA provenance and SBOM attestations (idempotent: checks for an existing attestation before writing). One attestation per build directory, not per target. Asset names are keyed by byte-group via `src/utils/group-id.ts`.
+6. **`buildPublishSummary`** (`src/release/report.ts`) — Generates the sticky-comment publish summary and Check Run output.
 
 Ordering is established **once, at the source**: immediately after `detectReleases`, `steps/publishing.ts` orders the detected set dependency-first via `sortReleasesTopologically`, so every downstream step — tag strategy, build & SBOM, publish and GitHub releases — runs in the same order. Previously only `runPublishTargets` sorted topologically while tag strategy and `runReleases` consumed the detection-order (alphabetical) set. The helper builds a `DependencyGraph.make({ packages })` from `WorkspaceDiscovery.listPackages()` (there is no standalone `TopologicalSorter` service in `@effected/workspaces`), filters `DependencyGraph.sortSubset`'s dependency closure back to the released subset, and falls back to detection order on a cyclic graph.
 
-`determine-tag-strategy.ts` decides between single-tag and per-package tag strategies and runs between steps 3 and 4. The step resolves the per-package-tags boolean via `isMonorepoForTagging(process.cwd())` and passes it to the pure `determineTagStrategy(publishResults, needsPerPackageTags)`.
+`determine-tag-strategy.ts` decides between single-tag and per-package tag strategies and runs between steps 4 and 5. The step resolves the per-package-tags boolean via `isMonorepoForTagging(process.cwd())` and passes it to the pure `determineTagStrategy(publishResults, needsPerPackageTags)`.
 
 The close-linked-issues follow-on inside this step degrades to a warning: it is housekeeping after a successful release.
+
+#### Release kind — `github-with-packages` vs `github-only` (`src/utils/release-kind.ts`)
+
+A release wave is not assumed homogeneous. `utils/release-kind.ts` names the split every surface now shares: a workspace that resolved at least one publish target is `github-with-packages` (merging the release PR uploads a tarball somewhere); one that resolved none is `github-only` — versioned, changelogged, tagged and given a GitHub release, publishing to no registry. **This is the intended steady state for a private tracking package — one that exists only to give changesets something to version — not a degraded `github-with-packages`.** Before this module the two were told apart ad hoc by asking whether some array happened to be empty, rendered as `⏭️ no targets`, which reads as "something was skipped" when nothing was ever meant to happen; the render is now `🏷️ GitHub release only` (`releaseKindCell`).
+
+The vocabulary is shared, not per-phase: `releaseKindOf(targetCount)` classifies, `releaseKindLabel`/`releaseKindIcon`/`releaseKindCell` render, `tallyReleaseKinds` counts a wave, and `summarizeWorkspace` / `summarizeValidationWorkspace` / `summarizeReleaseWave` / `summarizeBranchManagement` / `summarizeValidation` derive every phase's one-line `summary` field from the same structured facts — never authored independently, so the wire prose cannot drift from the data beside it. It is used by the Phase-1 table (`utils/release-table.ts`'s `targets` column), the Phase-2 comment and check-run summaries (`release/report.ts`), and the Phase-3 log and output (`release/publish.ts`, `schema/release-output.ts`).
 
 #### `publishDirectoryGroup` three-way probe-then-decide
 
@@ -464,7 +474,7 @@ main.ts  (guard + Action.run only)
                           ReleaseLive = the four above + ChangesetConfigLive
                                         + SilkPublishability.layerAdaptive
     schema/outputs.ts     emitReleaseOutput (all phases)
-    schema/projections.ts toBranchManagementOutput / toValidationOutput / toPublishingOutput
+    schema/projections.ts toBranchManagementOutput / toValidationOutput / toPublishOutput
     utils/grouped.ts      collapsible Actions log groups (all phases)
     utils/github-urls.ts  instance-aware web URLs (GHES-correct)
     utils/summary-writer.ts  job-summary markdown
@@ -516,13 +526,19 @@ The `src/schema/` directory contains the input decode point, the output declarat
 
 - **`src/schema/inputs.ts`** — `INPUT_NAMES`, `Inputs`, `BranchRefs`, `readInputs`. See [Inputs and Outputs](#inputs-and-outputs-single-decode-point).
 - **`src/schema/outputs.ts`** — `PRE_OUTPUT_NAMES`, `OUTPUT_NAMES`, `emitReleaseOutput`.
-- **`src/schema/release-output.ts`** — `ReleaseOutput` as a `Schema.Union` of three phase structs discriminated by the `phase` literal: `BranchManagementOutput`, `ValidationOutput`, `PublishingOutput`. Each carries orthogonal machine flags (`noop`, `succeeded`, `hasFailures`) plus a derived human-readable `status`. The action emits a Schema-encoded instance as the single `result` output plus five scalar mirrors (`phase`, `status`, `succeeded`, `package-count`, `release-pr-number`), and three close-issues scalars. `ValidationPublishPackage.releaseNotes` is `Schema.optional` — populated in-memory for the Release Notes Preview check but stripped before serialization, so it is absent from the emitted `result` and from `silk-release-action.output.schema.json`'s `required` list.
+- **`src/schema/release-output.ts`** — `ReleaseOutput` as a `Schema.Union` of three phase structs discriminated by the `phase` literal: `BranchManagementOutput`, `ValidationOutput`, `PublishOutput`. **Schema v2** (`SCHEMA_VERSION = "2"`, in-band as every payload's `schemaVersion` field): every phase now carries an orthogonal `success` (boolean gate) + `outcome` (per-phase taxonomy) pair, plus a derived `summary` (one sentence, computed from the structured fields beside it — never authored independently, so the prose cannot drift from the data), a `failure` record (`stage` + `reason`, null on success), and `totals`. The old four-flag set (`status`/`noop`/`succeeded`/`hasFailures`) and `deriveStatus` are gone; so are `ReleaseFlags` and `StatusLiteral`.
 
-  Every numeric field in this module is `Schema.Finite`, not `Schema.Number`. Under the installed Effect version, `Schema.Number` lowers to `anyOf: [number, "NaN"|"Infinity"|"-Infinity"]` (v4 encodes non-finite values as strings) and that lowering silently drops any `title`/`description` annotation when it hoists the union into `$defs`; `Schema.Finite` lowers to a plain `{ type: "number" }` and keeps the annotation. All twelve fields this affects are counts, byte sizes, a PR number and a release ID — genuinely finite — so the fix is also a correctness tightening: those fields now reject `NaN`/`Infinity` at encode time instead of silently serializing them as strings. A future numeric field on this schema should default to `Schema.Finite` for the same reason.
-- **`src/schema/projections.ts`** — three pure projection functions, each taking an explicit input interface as the deliberate seam between internal pipeline types and the published contract.
+  The publish phase (Phase 3) is reshaped around the **workspace**, not the package: `PublishOutput.publish.workspaces` is a `Record<name, PublishWorkspace>` (plus an `order` array preserving the topological sequence a JSON object cannot), and each workspace publishes an array of `packages` — one entry per (package, registry) publication, carrying its own `success`/`outcome` (`published` | `recovered` | `failed` | `blocked`). A workspace's own `kind` (`github-only` | `github-with-packages`, from `utils/release-kind.ts`) is resolved before publishing begins, so it stays correct on an aborted run. `ValidationOutput.validation.workspaces` mirrors the same shape: `ValidationWorkspace.packages` is one entry per (package, registry) *dry-run* — the previous `builds[].targets[]` nesting is gone, flattened into the same `ValidationPackage` shape `PublishedPackage` carries, since validation dry-runs exactly what publish uploads and every consumer had to flatten the old nesting before it could be compared. Both phases share one `PublishRegistry` `$def` for exactly that reason.
+
+  `ValidationPackage.releaseNotes` is `Schema.optional` on the workspace, not the package — populated in-memory for the Release Notes Preview check but stripped before serialization, so it is absent from the emitted `result` and from the committed schema's `required` list.
+
+  Every numeric field in this module is `Schema.Finite`, not `Schema.Number`. Under the installed Effect version, `Schema.Number` lowers to `anyOf: [number, "NaN"|"Infinity"|"-Infinity"]` (v4 encodes non-finite values as strings) and that lowering silently drops any `title`/`description` annotation when it hoists the union into `$defs`; `Schema.Finite` lowers to a plain `{ type: "number" }` and keeps the annotation. All numeric fields this affects are counts, byte sizes, a PR number and a release ID — genuinely finite — so the fix is also a correctness tightening: those fields now reject `NaN`/`Infinity` at encode time instead of silently serializing them as strings. A future numeric field on this schema should default to `Schema.Finite` for the same reason.
+- **`src/schema/projections.ts`** — three pure projection functions (`toBranchManagementOutput`, `toValidationOutput`, `toPublishOutput`), each taking an explicit input interface as the deliberate seam between internal pipeline types and the published contract.
 - **`src/schema/silk-release-config.ts`** — `SilkReleaseConfig` Effect schema for the `sbom-config` action input (and `.github/silk-release.json`), plus `INPUT_SCHEMA_URL`.
 
-Two JSON Schema artifacts at repo root are generated from these schemas: `silk-release-action.input.schema.json` and `silk-release-action.output.schema.json`, both carrying `$id` URLs on `raw.githubusercontent.com/savvy-web/silk-release-action/main/`. **Generation now runs through `@effected/schemastore`'s `SchemaPipeline`**, which replaced the hand-rolled Draft-07 lowering plus the `biome` shell-out and the `ajv` dependency (`ajv` is gone from `package.json`). The pipeline handles the Draft 2020-12 → Draft-07 lowering, strict validation and drift-stable formatting; `__test__/generate-schema.test.ts` is the drift guard over both committed documents.
+Two JSON Schema artifacts are generated from these schemas. The input document stays at the repo root, `silk-release-action.input.schema.json`. **The output document is versioned and lives under `schemas/<version>/`** — `schemas/5.0.0/silk-release-action-5.0.0.json` today — because it is referenced by `$schema`/`$id` in every `result` payload the action emits (`SCHEMA_URL` in `src/schema/release-output.ts`), so the URL has to keep resolving to the shape a given payload was written against long after the schema has moved on; an unversioned URL would silently re-point old payloads at a newer contract. The unversioned `silk-release-action.output.schema.json` at the repo root is gone.
+
+**Generation runs through `@effected/schemastore`'s `SchemaPipeline`**, which replaced the hand-rolled Draft-07 lowering plus the `biome` shell-out and the `ajv` dependency (`ajv` is gone from `package.json`). The pipeline handles the Draft 2020-12 → Draft-07 lowering, strict validation and drift-stable formatting; `__test__/generate-schema.test.ts` is the drift guard over both committed documents. `lib/scripts/generate-schema.ts` also runs a **contract gate before writing anything**: `SchemaPipeline.check` classifies what changed (`created` | `annotations` | `contract`) against the already-published version, and a `contract` change — a removed/renamed field, a changed type — fails the run, names every affected document, and writes nothing, rather than silently rewriting a version's file out from under consumers pinned to its URL. The response to a genuine contract break is bumping `SCHEMA_SEMVER` (and `SCHEMA_URL`) to a new label, which writes a new file and leaves the published one alone.
 
 ### Type System
 
@@ -575,10 +591,11 @@ The corollary: if recreation followed by versioning yields no changes, the branc
 
 Shelling out to the consumer's `ci:version` script forced Phase 1 to run a full dependency install just to bump versions and write changelogs — the slowest part of an otherwise API-only phase. Versioning in-process through the bundled silk-effects engine makes Phase 1 genuinely zero-install. The changelog id map removes the last `node_modules` dependency: the generator named in the consumer's changeset config resolves to an action-shipped bundle instead of a package the consumer would have to install. It also decouples the action from consumer script drift — the version step behaves identically in every repo.
 
-### Why a Five-Step Phase-3 Flow?
+### Why a Six-Step Phase-3 Flow?
 
-Phase 3 is split into `detectReleases` → `runBuildAndSbom` → `runPublishTargets` → `runReleases` → summary to enforce fail-fast gating at each boundary:
+Phase 3 is split into `detectReleases` → `planWorkspaces` → `runBuildAndSbom` → `runPublishTargets` → `runReleases` → summary to enforce fail-fast gating at each boundary:
 
+- Target resolution (`planWorkspaces`) happens before the build gate precisely because it cannot fail — it only reads manifests — so a run that aborts at the build still reports every workspace's kind and intended publication count instead of losing the wave's membership.
 - Build failure aborts before any tarball is created.
 - Publish failure of more than half the targets aborts before GitHub releases are created, preventing a release that references versions which are not fully on registries.
 - Attestation failures are non-fatal so a single OIDC hiccup does not roll back the entire release.
@@ -682,8 +699,8 @@ Registry reads go through `NpmRegistry` over `FetchHttpClient` (HTTP, not `npm v
 | :--- | :---------- |
 | `src/schema/inputs.ts` | `INPUT_NAMES`, `readInputs` — the single input decode point |
 | `src/schema/outputs.ts` | `PRE_OUTPUT_NAMES`, `OUTPUT_NAMES`, `emitReleaseOutput` |
-| `src/schema/release-output.ts` | `ReleaseOutput` union, phase structs, `deriveStatus` |
-| `src/schema/projections.ts` | `toBranchManagementOutput`, `toValidationOutput`, `toPublishingOutput` |
+| `src/schema/release-output.ts` | `ReleaseOutput` union (schema v2), phase structs, `SCHEMA_URL`/`SCHEMA_VERSION` |
+| `src/schema/projections.ts` | `toBranchManagementOutput`, `toValidationOutput`, `toPublishOutput` |
 | `src/schema/silk-release-config.ts` | `SilkReleaseConfig` schema; `INPUT_SCHEMA_URL` |
 
 ### Release domain
@@ -691,14 +708,14 @@ Registry reads go through `NpmRegistry` over `FetchHttpClient` (HTTP, not `npm v
 | File | Description |
 | :--- | :---------- |
 | `src/release/layers.ts` | `WorkspacesLive`, `LocalExecLive`, `NativeVersioningLive`, `ReleaseLive` |
-| `src/release/publish.ts` | `detectReleases`, `runBuildAndSbom`, `runPublishTargets`, `publishDirectoryGroup` |
+| `src/release/publish.ts` | `detectReleases`, `planWorkspaces`, `runBuildAndSbom`, `runPublishTargets`, `publishDirectoryGroup` |
 | `src/release/releases.ts` | `runReleases`: tags, releases, group-keyed assets, attestations |
 | `src/release/attest-helpers.ts` | Assembles sign (`@effected/sbom`) + store (`@effected/github`) into one pipeline |
 | `src/release/meta-archive.ts` | `tarMetaFolder`: packs a bundler `meta/` folder into `…<group>.meta.tgz` |
 | `src/release/validation.ts` | `runValidation`: Phase-2 dry-run + SBOM + `ValidationReport` |
 | `src/release/validation-checks.ts` | `CHECK_NAMES`, `deriveValidationChecks`, `applyCheckUrls` — pure |
 | `src/release/report.ts` | `buildValidationComment`, `buildPublishSummary`, `buildChecksTable`, `buildFindingsTable`, `buildPublishValidationSummary`, `buildReleaseNotesPreviewSummary`, `buildSbomPreviewSummary` |
-| `src/release/resolve-targets.ts` | `resolvePublishableTargets`, `isTargetPrivate`, `pickToken` |
+| `src/release/resolve-targets.ts` | `resolvePublishableTargets`, `resolvePublishTargetSpecs` (the shared detect + JSR-filter + private-build-filter used by both the Build & SBOM gate and the publish step), `isTargetPrivate`, `pickToken` |
 | `src/release/changeset-config.ts` | `ChangesetConfig` service: mode, versionPrivate, ignorePatterns, isIgnored, fixed |
 | `src/release/types.ts` | `TargetPublishResult`, `ValidationFinding`, `ValidationPackageResult`, … |
 | `src/release/errors.ts` | `ValidationError`, `ReleasesError`, `PublishError` tagged errors |
@@ -737,8 +754,9 @@ Registry reads go through `NpmRegistry` over `FetchHttpClient` (HTTP, not `npm v
 | `src/utils/native-version.ts` | `runNativeVersion`, `CHANGELOG_MODULES`, token scoping, reset-then-retry |
 | `src/utils/npm-cache.ts` | `ensureNpmCacheEnv` — runner-writable npm cache |
 | `src/utils/porcelain-changes.ts` | `git status --porcelain -z` → Git Data API `FileChange` set |
-| `src/utils/release-plan.ts` | Pure projection of the release plan into Phase-1 reporting |
-| `src/utils/release-summary-helpers.ts` | `listPublishablePackages`, `getReleasingPackages`, `resolveReleasePrTitle`, `formatReleasePackageList` |
+| `src/utils/release-kind.ts` | `ReleaseKind` (`github-only` \| `github-with-packages`), `releaseKindOf`/`Label`/`Icon`/`Cell`, `tallyReleaseKinds`, the `summarize*` one-line derivations shared by every phase |
+| `src/utils/release-plan.ts` | Pure projection of the release plan into Phase-1 reporting, incl. pre-build `targetCount` |
+| `src/utils/release-summary-helpers.ts` | `listPublishablePackages`, `listAllPackages`, `getReleasingPackages`, `resolveReleasePrTitle`, `formatReleasePackageList` |
 | `src/utils/release-table.ts` | The shared "what will be released" table (Phase 1 + Phase 2) |
 | `src/utils/sort-releases-topologically.ts` | Dependency-first ordering via `DependencyGraph.sortSubset` |
 | `src/utils/summary-writer.ts` | Job-summary markdown builders |

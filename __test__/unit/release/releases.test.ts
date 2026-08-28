@@ -65,6 +65,7 @@ const makePublishResult = (
 	targets: [
 		{
 			target: {
+				name: "@test/pkg",
 				protocol: "npm" as const,
 				registry: "https://registry.npmjs.org/",
 				directory: `/tmp/dist/${name}`,
@@ -989,6 +990,7 @@ describe("runReleases", () => {
 						targets: [
 							{
 								target: {
+									name: "@test/pkg",
 									protocol: "npm" as const,
 									registry: "https://npm.pkg.github.com/",
 									directory: tmpDir,

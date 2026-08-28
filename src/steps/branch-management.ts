@@ -60,6 +60,7 @@ import { grouped } from "../utils/grouped.js";
 import type { FileReadError } from "../utils/porcelain-changes.js";
 import type { PlannedPackage } from "../utils/release-plan.js";
 import { toReleasePlanReport } from "../utils/release-plan.js";
+import { listPublishablePackages } from "../utils/release-summary-helpers.js";
 import { updateReleaseBranch } from "../utils/update-release-branch.js";
 import { readStickyComment, updateStickyComment } from "../utils/update-sticky-comment.js";
 import type { BranchFlowOutcome } from "./publish-release-plan.js";
@@ -205,7 +206,15 @@ export const branchManagement = (
 				// Projected in `release-plan`, where it is tested. A package's `changesets`
 				// list is empty when it releases only because a dependency moved — the
 				// `—` in the release table — and the file count is not the package count.
-				const { packages, changesetFileCount } = toReleasePlanReport(plan);
+				// Resolve each planned package's publish-target count BEFORE the build.
+				// Publishability is declared in `package.json`, so what a package will
+				// publish to is knowable now; only how many targets are READY needs the
+				// build, which is Phase 2's job. A package absent from the publishable
+				// set has no targets — which is the correct reading for a private
+				// tracking package, not a gap in the data.
+				const publishable = yield* listPublishablePackages(process.cwd());
+				const targetCounts = new Map(publishable.map((p) => [p.name, p.targetCount] as const));
+				const { packages, changesetFileCount } = toReleasePlanReport(plan, targetCounts);
 
 				const { sha: headSha, runId: planRunId } = yield* (yield* ActionEnvironment).github;
 				// Links the stamped sha in every banner.

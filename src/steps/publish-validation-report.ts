@@ -123,7 +123,7 @@ export const buildValidationSections = (report: ValidationReport, stamp: Section
 		body: [
 			releaseTable.render(toValidatedReleaseRows(report.validationPackages)),
 			RELEASE_TABLE_LEGEND,
-			buildReleaseTotals(report.validation.publish),
+			buildReleaseTotals(report.validation),
 		].join("\n\n"),
 	},
 	...(report.validation.buildValidation.passed

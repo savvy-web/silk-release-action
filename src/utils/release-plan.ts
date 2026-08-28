@@ -58,6 +58,22 @@ export interface PlannedPackage {
 	readonly changesetCount: number;
 	readonly oldVersion: string;
 	readonly newVersion: string;
+	/**
+	 * Publish targets this package will publish to, resolved WITHOUT a build.
+	 *
+	 * @remarks
+	 * Zero means the package is `github-only` — versioned, tagged and released
+	 * on GitHub, publishing to no registry. Resolvable in Phase 1 because
+	 * publishability is declared in `package.json` (`publishConfig`), not
+	 * discovered by building: only *readiness* needs the build, which is why
+	 * Phase 2 replaces this count with an `n/m ready` figure.
+	 *
+	 * The one thing a pre-build count cannot apply is the built-`package.json`
+	 * private filter, which drops a target whose build output is marked
+	 * private. Such a target is counted here and dropped in Phases 2 and 3, so
+	 * this is the DECLARED target count, and it is an upper bound.
+	 */
+	readonly targetCount: number;
 }
 
 /** What Phase 1 reports about the release it is about to cut. */
@@ -85,11 +101,18 @@ export interface ReleasePlanReport {
  * absent. A report built from the files alone could not see B at all.
  *
  * @param plan - The result of `ReleasePlanner.plan`.
+ * @param targetCounts - Publish-target count per package name, resolved
+ *   without a build (see {@link PlannedPackage.targetCount}). A package absent
+ *   from the map is `github-only` — it publishes nowhere — which is the
+ *   correct reading for a private tracking package.
  * @returns The packages this release covers, and the changeset file count.
  *
  * @public
  */
-export const toReleasePlanReport = (plan: PlanLike): ReleasePlanReport => ({
+export const toReleasePlanReport = (
+	plan: PlanLike,
+	targetCounts: ReadonlyMap<string, number> = new Map(),
+): ReleasePlanReport => ({
 	// A `"none"` release is dropped, not reported as a bump.
 	//
 	// The plan can carry a package it considered and decided not to version —
@@ -104,6 +127,7 @@ export const toReleasePlanReport = (plan: PlanLike): ReleasePlanReport => ({
 			changesetCount: release.changesets.length,
 			oldVersion: release.oldVersion,
 			newVersion: release.newVersion,
+			targetCount: targetCounts.get(release.name) ?? 0,
 		})),
 	changesetFileCount: plan.changesets.length,
 });

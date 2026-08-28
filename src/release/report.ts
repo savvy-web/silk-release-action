@@ -1,9 +1,10 @@
 import { GitHubMarkdown } from "@effected/github-actions";
-import { classifyRegistry, registryDisplayName } from "@effected/npm";
+import { classifyRegistry } from "@effected/npm";
 import type { SbomMetadata } from "@effected/sbom";
 import type { ValidationOutput } from "../schema/release-output.js";
 import { DEFAULT_SERVER_URL, orgPackagePageUrl } from "../utils/github-urls.js";
 import type { ConfigSource } from "../utils/load-release-config.js";
+import { releaseKindCell, releaseKindIcon, releaseKindOf, tallyReleaseKinds } from "../utils/release-kind.js";
 
 /**
  * The `validation` payload of a {@link ValidationOutput} — the single
@@ -14,22 +15,84 @@ import type { ConfigSource } from "../utils/load-release-config.js";
 export type ValidationPayload = ValidationOutput["validation"];
 
 /** The publish sub-struct: ready flags, target counts, and build-centric packages. */
-type ValidationPublish = ValidationPayload["publish"];
+/**
+ * The workspace map flattened back to an ordered, named list, for rendering.
+ *
+ * @remarks
+ * The payload keys workspaces by name so a consumer can look one up directly,
+ * and carries `order` because a JSON object has no guaranteed key order. The
+ * renderers want a list in that order with the name on each entry, which is
+ * what this restores — the map is the wire shape, this is the view.
+ */
+export interface ValidationWorkspaceView {
+	readonly order: ReadonlyArray<string>;
+	readonly workspaces: ValidationPayload["workspaces"];
+}
 
-/** A released package with its builds, as carried by {@link ValidationOutput}. */
-type ValidationPublishPackage = ValidationPublish["packages"][number];
+/** One workspace, with its name grafted back on from the map key. */
+type NamedWorkspace = ValidationPayload["workspaces"][string] & { readonly name: string };
 
-/** A single build directory of a released package. */
-type ValidationBuild = ValidationPublishPackage["builds"][number];
+/** The workspaces in `order`, each carrying its name. */
+const orderedWorkspaces = (v: ValidationWorkspaceView): ReadonlyArray<NamedWorkspace> =>
+	v.order.flatMap((name) => {
+		const ws = v.workspaces[name];
+		return ws === undefined ? [] : [{ name, ...ws }];
+	});
 
-/** A single registry target under a build. */
-type ValidationBuildTarget = ValidationBuild["targets"][number];
+type ValidationPublish = ValidationWorkspaceView;
+
+/** A released workspace with its packages, as carried by {@link ValidationOutput}. */
+type ValidationPublishPackage = NamedWorkspace;
+
+/** One (package, registry) publication. */
+type ValidationBuildTarget = ValidationPublishPackage["packages"][number];
+
+/**
+ * The publications of one build directory, regrouped for display.
+ *
+ * @remarks
+ * The wire data is flat — one entry per publication, carrying its own build
+ * metadata — because that is the unit the publish phase reports and the two
+ * phases must line up. The COMMENT still reads best grouped by directory (one
+ * headline with sizes, then that directory's registry table), so the grouping
+ * is restored here, at the point of rendering, rather than baked into the
+ * payload.
+ */
+interface BuildGroup {
+	readonly directory: string;
+	readonly packedBytes: number | null;
+	readonly unpackedBytes: number | null;
+	readonly fileCount: number | null;
+	readonly sbom: ValidationBuildTarget["sbom"];
+	readonly targets: ReadonlyArray<ValidationBuildTarget>;
+}
+
+/** Regroup a workspace's publications by the directory they pack from. */
+const groupByBuild = (pkg: ValidationPublishPackage): ReadonlyArray<BuildGroup> => {
+	const groups = new Map<string, BuildGroup & { targets: ValidationBuildTarget[] }>();
+	for (const p of pkg.packages) {
+		const existing = groups.get(p.directory);
+		if (existing === undefined) {
+			groups.set(p.directory, {
+				directory: p.directory,
+				packedBytes: p.packedBytes,
+				unpackedBytes: p.unpackedBytes,
+				fileCount: p.fileCount,
+				sbom: p.sbom,
+				targets: [p],
+			});
+		} else {
+			existing.targets.push(p);
+		}
+	}
+	return [...groups.values()];
+};
 
 /** One row of the validation checks table. */
 type ValidationCheck = ValidationPayload["checks"][number];
 
 /** One non-pass validation outcome. */
-type ValidationFinding = ValidationPayload["findings"][number];
+type ValidationFinding = ValidationPayload["errors"][number];
 
 /**
  * Options for the publish summary report.
@@ -155,21 +218,70 @@ function renderBumpCell(pkg: ValidationPublishPackage): string {
 }
 
 /**
+ * Render one registry's readiness cell, distinguishing "none" from "all ready".
+ *
+ * @remarks
+ * `—` rather than `✅` or `❌` when the count is zero. A tick claims a
+ * successful check that never ran; a cross claims a failure that never
+ * happened. Neither is true of a wave that simply has no targets for that
+ * registry, which is the steady state for a release made only of private
+ * tracking packages.
+ *
+ * @internal
+ */
+/**
+ * Roll the workspaces' publications up per registry, for display.
+ *
+ * @remarks
+ * A rendering concern, not a payload one. The registry is a property of the
+ * package that publishes to it — hoisting a registry map onto the payload made
+ * the same fact live in two places and gave a consumer a second, less usable
+ * shape to reconcile. A registry with no publication is simply absent here,
+ * which is what lets the readiness cell say `— none` instead of asserting a
+ * verdict on a check that never ran.
+ *
+ * @internal
+ */
+function tallyRegistries(
+	workspaces: ReadonlyArray<ValidationPublishPackage>,
+): Record<string, { resolved: number; ready: number }> {
+	const out: Record<string, { resolved: number; ready: number }> = {};
+	for (const ws of workspaces) {
+		for (const p of ws.packages) {
+			out[p.registry.type] ??= { resolved: 0, ready: 0 };
+			const entry = out[p.registry.type];
+			if (entry === undefined) continue;
+			entry.resolved++;
+			if (p.outcome === "ready") entry.ready++;
+		}
+	}
+	return out;
+}
+
+function renderRegistryReadiness(entry: { readonly resolved: number; readonly ready: number } | undefined): string {
+	// Absent, or present with nothing resolved, both mean the wave has no target
+	// for this registry. `—` rather than a tick or a cross: a tick claims a check
+	// that never ran, a cross claims a failure that never happened.
+	if (entry === undefined || entry.resolved === 0) return "— none";
+	return entry.ready === entry.resolved ? "✅" : "❌";
+}
+
+/**
  * Classify the overall publish status for a package.
  */
 type PackageStatus = "success" | "skipped" | "partial" | "failed";
 
 function getPackageStatus(pkg: ValidationPublishPackage): PackageStatus {
-	const targets = pkg.builds.flatMap((b) => b.targets);
+	const targets = pkg.packages;
 	if (targets.length === 0) return "success";
 
-	const allSkipped = targets.every((t) => t.status === "skipped");
+	const allSkipped = targets.every((t) => t.outcome === "skipped");
 	if (allSkipped) return "skipped";
 
-	const hasFailures = targets.some((t) => t.status === "failed");
+	const hasFailures = targets.some((t) => t.outcome === "failed");
 	if (hasFailures) return "failed";
 
-	const anySkipped = targets.some((t) => t.status === "skipped");
+	const anySkipped = targets.some((t) => t.outcome === "skipped");
 	if (anySkipped) return "partial";
 
 	return "success";
@@ -195,7 +307,7 @@ function getPackageStatusIcon(status: PackageStatus): string {
  * Get the per-target status cell for a build's registry table.
  */
 function getTargetDetailStatus(target: ValidationBuildTarget): string {
-	switch (target.status) {
+	switch (target.outcome) {
 		case "skipped":
 			return "⏭️ Skipped";
 		case "failed":
@@ -212,7 +324,7 @@ function getTargetDetailStatus(target: ValidationBuildTarget): string {
  * The directory is rendered verbatim — it is the build-relative output
  * directory (e.g. `dist/npm`) the build-centric `ValidationOutput` carries.
  */
-function renderBuildHeadline(build: ValidationBuild): string {
+function renderBuildHeadline(build: BuildGroup): string {
 	const directory = GitHubMarkdown.code(build.directory);
 	const packed = build.packedBytes === null ? "—" : humanizeSize(build.packedBytes);
 	const unpacked = build.unpackedBytes === null ? "—" : humanizeSize(build.unpackedBytes);
@@ -236,10 +348,10 @@ function renderBuildHeadline(build: ValidationBuild): string {
 /**
  * Render one build's registry table.
  */
-function renderBuildTargetsTable(build: ValidationBuild): string {
+function renderBuildTargetsTable(build: BuildGroup): string {
 	const rows: ReadonlyArray<ReadonlyArray<string>> = build.targets.map((t) => {
-		const registry = registryDisplayName(t.registry);
-		const icon = getRegistryIcon(t.registry);
+		const registry = t.registry.name;
+		const icon = getRegistryIcon(t.registry.url);
 		const provenance = t.provenance ? "✅" : "\u{1F6AB}"; // 🚫
 		return [getTargetDetailStatus(t), `${icon} ${registry}`, t.access, provenance];
 	});
@@ -286,8 +398,8 @@ export function buildReleaseTotals(publish: ValidationPublish): string {
 	let files = 0;
 	let targets = 0;
 	let ready = 0;
-	for (const pkg of publish.packages) {
-		for (const build of pkg.builds) {
+	for (const pkg of orderedWorkspaces(publish)) {
+		for (const build of groupByBuild(pkg)) {
 			if (build.packedBytes !== null) packed += build.packedBytes;
 			if (build.unpackedBytes !== null) unpacked += build.unpackedBytes;
 			if (build.fileCount !== null) files += build.fileCount;
@@ -298,10 +410,22 @@ export function buildReleaseTotals(publish: ValidationPublish): string {
 				// here made `skipped` targets count as ready, so the same release
 				// reported two different `n/m ready` figures in two adjacent sections
 				// of the same comment.
-				if (t.status === "ready") ready++;
+				if (t.outcome === "ready") ready++;
 			}
 		}
 	}
+	// A wave with no targets at all has nothing to total. Rendering
+	// `0 B packed · 0 B unpacked · 0 files · 0/0 targets ready` for a release
+	// made entirely of private tracking packages reads like a build that
+	// produced nothing, when in fact no build was ever meant to run.
+	if (targets === 0) {
+		const kinds = tallyReleaseKinds(orderedWorkspaces(publish).map((pkg) => pkg.packages.length));
+		return (
+			`**Totals:** ${releaseKindCell("github-only")} — ` +
+			`${kinds.githubRelease} package(s) tagged and released on GitHub, nothing published to a registry`
+		);
+	}
+
 	return (
 		`**Totals:** \u{1F4E6} ${humanizeSize(packed)} packed · ` +
 		`\u{1F4C2} ${humanizeSize(unpacked)} unpacked · ` +
@@ -315,8 +439,8 @@ export function buildPublishSummary(publish: ValidationPublish): string {
 	// excluded — a `<details>` block around a header-only, zero-row table is
 	// malformed output. They still appear in the summary table above with the
 	// `🏷️ Version only` cell.
-	const detailSections = publish.packages
-		.filter((pkg) => pkg.builds.length > 0)
+	const detailSections = orderedWorkspaces(publish)
+		.filter((pkg) => pkg.packages.length > 0)
 		.map((pkg) => {
 			const pkgStatus = getPackageStatus(pkg);
 			const statusIcon = getPackageStatusIcon(pkgStatus);
@@ -325,7 +449,7 @@ export function buildPublishSummary(publish: ValidationPublish): string {
 
 			// One section per build directory: directory + sizes + SBOM line, then
 			// that build's registry table.
-			const buildSections = pkg.builds
+			const buildSections = groupByBuild(pkg)
 				.map((build) => `${renderBuildHeadline(build)}\n\n${renderBuildTargetsTable(build)}`)
 				.join("\n\n");
 
@@ -491,8 +615,8 @@ export interface ValidationCommentOptions {
 export function validationStatusTitle(validation: ValidationPayload | null): string {
 	// `null` is "validation has not run", which Phase 1 reports.
 	if (validation === null) return "⏳ Release Validation";
-	const hasError = validation.findings.some((f) => f.severity === "error");
-	const hasWarning = validation.findings.some((f) => f.severity === "warning");
+	const hasError = validation.errors.length > 0;
+	const hasWarning = validation.warnings.length > 0;
 	return `${hasError ? "❌" : hasWarning ? "⚠️" : "✅"} Release Validation`;
 }
 
@@ -541,7 +665,9 @@ export function buildValidationDetails(validation: ValidationPayload, options?: 
 
 	// No checks table here: the verdict section above carries it, so a reader
 	// meets the state of every check before any of the detail behind them.
-	const findingsTable = buildFindingsTable(validation.findings);
+	// Errors first, then warnings — the split arrays make the display order the
+	// concatenation order rather than a sort the renderer has to remember.
+	const findingsTable = buildFindingsTable([...validation.errors, ...validation.warnings]);
 	if (findingsTable !== "") {
 		parts.push(findingsTable);
 	}
@@ -559,13 +685,13 @@ export function buildValidationDetails(validation: ValidationPayload, options?: 
 				"⚠️ **Build validation failed** — no release preview is available. " +
 				"Fix the build errors flagged above; the preview regenerates once the build passes.",
 		);
-	} else if (validation.publish.packages.length === 0) {
+	} else if (validation.order.length === 0) {
 		parts.push(
 			`${publishTitle}\n\n` +
 				"_No packages have version differences against the target branch — nothing will be published or released on merge._",
 		);
 	} else {
-		parts.push(buildPublishSummary(validation.publish));
+		parts.push(buildPublishSummary(validation));
 	}
 
 	// One footer, carrying the link and the timestamp.
@@ -640,32 +766,61 @@ export { getBumpTypeIcon };
  * @public
  */
 export function buildPublishValidationSummary(validation: ValidationPayload): string {
-	const publish = validation.publish;
+	const publish = validation;
 
 	// The check-run page already renders the title; the body must not repeat
 	// a `## Publish Validation` heading underneath it.
-	const totals =
-		`**Targets ready:** ${publish.readyTargets}/${publish.totalTargets} · ` +
-		`**npm:** ${publish.npmReady ? "✅" : "❌"} · ` +
-		`**GitHub Packages:** ${publish.githubPackagesReady ? "✅" : "❌"}`;
+	const kinds = tallyReleaseKinds(orderedWorkspaces(publish).map((pkg) => pkg.packages.length));
 
-	if (publish.packages.length === 0) {
-		return `${totals}\n\n_No packages with publish targets._`;
+	// The wave's SHAPE leads, because it is what makes the rest of the line
+	// readable. `Targets ready: 0/0 · npm: ✅` told a reader nothing about
+	// whether that was a wave with nothing to publish or a wave that failed to
+	// resolve anything.
+	const shape =
+		orderedWorkspaces(publish).length === 0
+			? "**Nothing to release** — no package has a version difference against the target branch."
+			: kinds.registry === 0
+				? `**${kinds.githubRelease} package(s)** — every one is ${releaseKindCell("github-only")}. ` +
+					"Nothing publishes to a registry."
+				: kinds.githubRelease === 0
+					? `**${kinds.registry} package(s)** publishing to a registry.`
+					: `**${kinds.registry} package(s)** publishing to a registry · ` +
+						`**${kinds.githubRelease}** ${releaseKindCell("github-only")}.`;
+
+	// Derived from the publications themselves, which each carry their registry.
+	// Neither a pair of booleans (which both started `true`, so an all-private
+	// wave read as npm-ready) nor a hoisted registry map: the registry belongs
+	// to the package that publishes to it, and a rollup for display is cheap.
+	const registries = tallyRegistries(orderedWorkspaces(publish));
+	const resolved = Object.values(registries).reduce((n, r) => n + r.resolved, 0);
+	const ready = Object.values(registries).reduce((n, r) => n + r.ready, 0);
+	const totals =
+		`${shape}\n\n` +
+		`**Targets ready:** ${ready}/${resolved} · ` +
+		`**npm:** ${renderRegistryReadiness(registries.npm)} · ` +
+		`**GitHub Packages:** ${renderRegistryReadiness(registries["github-packages"])}`;
+
+	if (orderedWorkspaces(publish).length === 0) {
+		return `${totals}\n\n_No packages have version differences against the target branch._`;
 	}
 
 	const sections: string[] = [totals];
 
-	for (const pkg of publish.packages) {
+	for (const pkg of orderedWorkspaces(publish)) {
 		const pkgStatus = getPackageStatus(pkg);
 		const statusIcon = getPackageStatusIcon(pkgStatus);
-		sections.push(`### ${statusIcon} ${pkg.name}@${pkg.version}`);
+		const kindIcon = releaseKindIcon(releaseKindOf(pkg.packages.length));
+		sections.push(`### ${statusIcon} ${kindIcon} ${pkg.name}@${pkg.version}`);
 
-		if (pkg.builds.length === 0) {
-			sections.push("_Version-only package — no publish targets._");
+		if (pkg.packages.length === 0) {
+			// The workspace's own derived `summary`, not a sentence composed here:
+			// two renderings of the same fact are two places for it to drift, and
+			// the payload's summary is the one a JSON consumer already reads.
+			sections.push(`${releaseKindCell("github-only")} — ${pkg.summary}`);
 			continue;
 		}
 
-		for (const buildEntry of pkg.builds) {
+		for (const buildEntry of groupByBuild(pkg)) {
 			sections.push(renderBuildHeadline(buildEntry));
 			if (buildEntry.targets.length > 0) {
 				sections.push(renderBuildTargetsTable(buildEntry));
@@ -682,7 +837,7 @@ export function buildPublishValidationSummary(validation: ValidationPayload): st
  * produced: a `### <package>` heading, a `**oldVersion → newVersion** (type)`
  * line, and the extracted CHANGELOG section (or an explanatory status).
  */
-function renderReleaseNotesSection(pkg: ValidationPayload["publish"]["packages"][number]): string {
+function renderReleaseNotesSection(pkg: NamedWorkspace): string {
 	const heading = `### ${pkg.name}`;
 	const transition = `**${renderVersionTransition(pkg)}** · ${renderBumpCell(pkg)}`;
 
@@ -737,14 +892,13 @@ function renderReleaseNotesSection(pkg: ValidationPayload["publish"]["packages"]
 export function buildReleaseNotesPreviewSummary(validation: ValidationPayload): string {
 	// The check-run page already renders the title; the body must not repeat
 	// a `## Release Notes Preview` heading underneath it.
-	const packages = validation.publish.packages;
+	const packages = orderedWorkspaces(validation);
 
 	if (packages.length === 0) {
 		return "_No packages are being released._";
 	}
 
-	const notesIcon = (notes: ValidationPayload["publish"]["packages"][number]["releaseNotes"]): string =>
-		notes?.status === "found" ? "✅" : "⚠️";
+	const notesIcon = (notes: NamedWorkspace["releaseNotes"]): string => (notes?.status === "found" ? "✅" : "⚠️");
 
 	const tableRows: ReadonlyArray<ReadonlyArray<string>> = packages.map((pkg) => {
 		const changesets = pkg.changesetCount === null ? "—" : String(pkg.changesetCount);
@@ -817,7 +971,7 @@ export function buildSbomPreviewSummary(
 ): string {
 	// The check-run page already renders the title; the body must not repeat
 	// a `## SBOM Preview` heading underneath it.
-	const packages = validation.publish.packages;
+	const packages = orderedWorkspaces(validation);
 
 	const sourceLine =
 		sbomConfigSource !== null ? `**Config source:** ${formatSbomConfigSource(sbomConfigSource)}` : null;
@@ -860,12 +1014,12 @@ export function buildSbomPreviewSummary(
 	for (const pkg of packages) {
 		sections.push(`### ${pkg.name}@${pkg.version}`);
 
-		if (pkg.builds.length === 0) {
+		if (pkg.packages.length === 0) {
 			sections.push("_Version-only package — no SBOM generated._");
 			continue;
 		}
 
-		for (const buildEntry of pkg.builds) {
+		for (const buildEntry of groupByBuild(pkg)) {
 			const buildHeader = `**${GitHubMarkdown.code(buildEntry.directory)}**`;
 			sections.push(buildHeader);
 

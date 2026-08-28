@@ -1,3 +1,4 @@
+import { classifyRegistry, registryDisplayName } from "@effected/npm";
 import { Contact, SbomMetadata, Supplier } from "@effected/sbom";
 import { describe, expect, it } from "vitest";
 import {
@@ -12,16 +13,81 @@ import {
 	getPackagePageUrl,
 } from "../../../src/release/report.js";
 import type { ValidationOutput } from "../../../src/schema/release-output.js";
+import { summarizeValidationWorkspace } from "../../../src/utils/release-kind.js";
 
 // ─── Type aliases for the build-centric ValidationOutput sub-structs ──────────
 
 type ValidationPayload = ValidationOutput["validation"];
-type ValidationPublish = ValidationPayload["publish"];
-type ValidationPublishPackage = ValidationPublish["packages"][number];
-type ValidationBuild = ValidationPublishPackage["builds"][number];
-type ValidationBuildTarget = ValidationBuild["targets"][number];
+/** The three fields the renderers read as a unit; the payload keys by name. */
+type ValidationPublish = Pick<ValidationPayload, "order" | "workspaces">;
+/** A workspace with its name grafted on, which is how fixtures are easiest to write. */
+type ValidationPublishPackage = ValidationPayload["workspaces"][string] & { readonly name: string };
+type ValidationPackage = ValidationPublishPackage["packages"][number];
+
+/**
+ * A build directory plus the targets under it — the shape the fixtures are
+ * easiest to write in.
+ *
+ * @remarks
+ * The payload is FLAT (one entry per publication, each carrying its own build
+ * metadata) so it lines up with what the publish phase reports. Fixtures still
+ * describe a build once and list its targets, and `buildsToPackages` flattens
+ * them the way the projection does — so a fixture cannot accidentally describe
+ * two publications of one tarball with disagreeing sizes.
+ */
+interface FixtureBuild {
+	readonly directory: string;
+	readonly packedBytes: number | null;
+	readonly unpackedBytes: number | null;
+	readonly fileCount: number | null;
+	readonly sbom: ValidationPackage["sbom"];
+	readonly targets: ReadonlyArray<FixtureTarget>;
+}
+
+/** A registry target, before the build metadata is merged onto it. */
+interface FixtureTarget {
+	readonly name?: string;
+	readonly registry: string;
+	readonly status: "ready" | "skipped" | "failed";
+	readonly access: "public" | "restricted";
+	readonly provenance: boolean;
+}
+
+type ValidationBuildTarget = FixtureTarget;
+
+/** Flatten fixture builds into the flat publication list the payload carries. */
+function buildsToPackages(builds: ReadonlyArray<FixtureBuild>, version: string): ReadonlyArray<ValidationPackage> {
+	return builds.flatMap((b) =>
+		b.targets.map((t) => ({
+			name: t.name ?? "@savvy-web/linked-1",
+			version,
+			// Classified through the SAME functions the projection uses, not by
+			// substring-matching a hard-coded host. Two reasons: a fixture that
+			// classified registries differently from production could mask a
+			// mis-classification rather than catch it, and `.includes(host)` on a
+			// URL is a genuine anti-pattern — the host can appear anywhere in the
+			// string, so an arbitrary host may precede or follow it (CodeQL flags
+			// exactly this).
+			registry: {
+				name: registryDisplayName(t.registry),
+				type: classifyRegistry(t.registry),
+				url: t.registry,
+			},
+			outcome: t.status,
+			success: t.status === "ready",
+			error: null,
+			access: t.access,
+			provenance: t.provenance,
+			directory: b.directory,
+			packedBytes: b.packedBytes,
+			unpackedBytes: b.unpackedBytes,
+			fileCount: b.fileCount,
+			sbom: b.sbom,
+		})),
+	);
+}
 type ValidationCheck = ValidationPayload["checks"][number];
-type ValidationFinding = ValidationPayload["findings"][number];
+type ValidationFinding = ValidationPayload["errors"][number];
 
 // ─── Factories ────────────────────────────────────────────────────────────────
 
@@ -48,7 +114,7 @@ function ghTarget(overrides?: Partial<ValidationBuildTarget>): ValidationBuildTa
 }
 
 /** A build directory with sizes, SBOM, and registry targets. */
-function build(overrides?: Partial<ValidationBuild>): ValidationBuild {
+function build(overrides?: Partial<FixtureBuild>): FixtureBuild {
 	return {
 		directory: "dist/npm",
 		packedBytes: 716,
@@ -61,51 +127,78 @@ function build(overrides?: Partial<ValidationBuild>): ValidationBuild {
 }
 
 /** A released package with one build. */
-function pkg(overrides?: Partial<ValidationPublishPackage>): ValidationPublishPackage {
+function pkg(
+	overrides?: Partial<ValidationPublishPackage> & { readonly builds?: ReadonlyArray<FixtureBuild> },
+): ValidationPublishPackage {
+	const { builds, ...rest } = overrides ?? {};
+	const version = rest.version ?? "5.0.13";
+	const packages = builds === undefined ? buildsToPackages([build()], version) : buildsToPackages(builds, version);
+	// Derive `outcome` and `summary` from the packages, exactly as the
+	// projection does. A fixture that let them be set independently could
+	// describe a `github-only` workspace as "1 package(s) ready to publish" —
+	// which is how the rendering bug this guards against would slip through.
+	const ready = packages.filter((p) => p.outcome === "ready").length;
+	const failed = packages.filter((p) => p.outcome === "failed").length;
+	const outcome =
+		packages.length === 0
+			? ("nothing-to-validate" as const)
+			: failed > 0 && ready > 0
+				? ("partial" as const)
+				: failed > 0
+					? ("failed" as const)
+					: ready === 0
+						? ("skipped" as const)
+						: ("validated" as const);
 	return {
 		name: "@savvy-web/linked-1",
 		version: "5.0.13",
 		baseVersion: "5.0.12",
 		bumpType: "patch",
 		changesetCount: 1,
-		ready: true,
-		versionOnly: false,
-		builds: [build()],
+		success: failed === 0,
+		outcome,
+		summary: summarizeValidationWorkspace({ outcome, packages: packages.length, ready }),
+		kind: packages.length === 0 ? "github-only" : "github-with-packages",
+		packages,
 		releaseNotes: { status: "found", content: "### Patch Changes\n\n- Sample release note." },
-		...overrides,
+		...rest,
 	};
 }
 
 /** A publish payload around a list of packages. */
 function publishOf(packages: ReadonlyArray<ValidationPublishPackage>): ValidationPublish {
-	let totalTargets = 0;
-	let readyTargets = 0;
-	for (const p of packages) {
-		for (const b of p.builds) {
-			for (const t of b.targets) {
-				totalTargets++;
-				if (t.status !== "failed") readyTargets++;
-			}
-		}
-	}
 	return {
-		npmReady: true,
-		githubPackagesReady: true,
-		totalTargets,
-		readyTargets,
-		packages,
+		order: packages.map((p) => p.name),
+		workspaces: Object.fromEntries(packages.map(({ name, ...ws }) => [name, ws] as const)),
 	};
 }
 
 /** A validation payload around a publish payload + checks/findings. */
-function validationOf(overrides?: Partial<ValidationPayload>): ValidationPayload {
+function validationOf(
+	overrides?: Partial<ValidationPayload> & {
+		readonly publish?: ValidationPublish;
+		/** Convenience: a flat finding list, split by severity the way the projection does. */
+		readonly findings?: ReadonlyArray<ValidationFinding>;
+	},
+): ValidationPayload {
+	const { publish, findings, ...rest } = overrides ?? {};
+	const split =
+		findings === undefined
+			? {}
+			: {
+					errors: findings.filter((f) => f.severity === "error"),
+					warnings: findings.filter((f) => f.severity === "warning"),
+				};
 	return {
 		buildValidation: { passed: true, packageCount: 0 },
 		checks: [],
-		findings: [],
-		publish: publishOf([]),
+		errors: [],
+		warnings: [],
+		...publishOf([]),
+		...publish,
+		...split,
 		checkRun: null,
-		...overrides,
+		...rest,
 	};
 }
 
@@ -274,7 +367,7 @@ describe("buildPublishSummary", () => {
 
 	it("renders a failed target with a ❌ status and a degraded package summary", () => {
 		const failedBuild = build({ targets: [npmTarget({ status: "failed" })] });
-		const markdown = buildPublishSummary(publishOf([pkg({ ready: false, builds: [failedBuild] })]));
+		const markdown = buildPublishSummary(publishOf([pkg({ success: false, builds: [failedBuild] })]));
 		expect(markdown).toContain("❌ Failed");
 	});
 
@@ -590,12 +683,15 @@ describe("buildPublishValidationSummary", () => {
 		expect(md).not.toContain("## 📦 Publish Validation");
 		expect(md).toContain("**Targets ready:** 1/1");
 		expect(md).toContain("**npm:** ✅");
-		expect(md).toContain("**GitHub Packages:** ✅");
+		// The default fixture has one npm target and no GitHub Packages target.
+		expect(md).toContain("**GitHub Packages:** — none");
+		// The wave's shape leads the section.
+		expect(md).toContain("**1 package(s)** publishing to a registry.");
 	});
 
 	it("renders one section per package with a header and a registry table per build", () => {
 		const md = buildPublishValidationSummary(validationOf({ publish: publishOf([pkg()]) }));
-		expect(md).toContain("### ✅ @savvy-web/linked-1@5.0.13");
+		expect(md).toContain("### ✅ 📦 @savvy-web/linked-1@5.0.13");
 		// The build headline + registry table both appear, without a <details>
 		// wrapper (flattened so the check-run page renders them expanded).
 		expect(md).toContain("`dist/npm`");
@@ -605,25 +701,64 @@ describe("buildPublishValidationSummary", () => {
 
 	it("renders a no-packages placeholder when nothing is being released", () => {
 		const md = buildPublishValidationSummary(validationOf({ publish: publishOf([]) }));
-		expect(md).toContain("_No packages with publish targets._");
+		expect(md).toContain("**Nothing to release**");
+		expect(md).toContain("_No packages have version differences against the target branch._");
+		// An empty wave must NOT be described as a wave of release-only packages.
+		expect(md).not.toContain("0 package(s)");
 	});
 
-	it("renders a version-only sub-section for a package with no builds", () => {
-		const versionOnly = pkg({ name: "@org/version-only", versionOnly: true, builds: [] });
+	// A package with no builds is `github-release` kind. The copy must say that
+	// it IS released — tagged, and given a GitHub release — rather than describe
+	// it by what it lacks, which is how `no publish targets` read.
+	it("describes a package with no builds as GitHub-release-only, not as lacking targets", () => {
+		const versionOnly = pkg({ name: "@org/version-only", kind: "github-only", builds: [] });
 		const md = buildPublishValidationSummary(validationOf({ publish: publishOf([versionOnly]) }));
 		expect(md).toContain("@org/version-only");
-		expect(md).toContain("_Version-only package — no publish targets._");
+		expect(md).toContain("GitHub release only");
+		// The workspace's own derived summary, not a sentence the renderer
+		// composes — so the comment and the JSON cannot disagree.
+		expect(md).toContain("No registry target — nothing to validate");
+		// And it must NOT claim publications a workspace with none would make.
+		expect(md).not.toContain("ready to publish");
+		// `⏭️` claims something was skipped. Nothing was.
+		expect(md).not.toContain("⏭️");
+	});
+
+	// Readiness is now DERIVED from the registry map rather than carried as a
+	// pair of booleans, so a fixture cannot assert a readiness its targets
+	// contradict. The booleans this replaced were "nothing of this kind FAILED"
+	// flags that both started `true`, so a wave with no target at all reported
+	// `npmReady: true` — a green verdict on a check that never ran.
+	it("renders '— none' rather than ✅ for a registry the wave has no targets for", () => {
+		const versionOnly = pkg({ name: "@org/tracking", kind: "github-only", builds: [] });
+		const publish = publishOf([versionOnly]);
+		// The proof is on the workspace itself: no publications at all, so there
+		// is no registry for a readiness verdict to be about.
+		expect(publish.workspaces["@org/tracking"]?.packages).toEqual([]);
+		const md = buildPublishValidationSummary(validationOf({ publish }));
+		expect(md).toContain("**npm:** — none");
+		expect(md).toContain("**GitHub Packages:** — none");
+		expect(md).not.toContain("**npm:** ✅");
+		expect(md).not.toContain("**GitHub Packages:** ✅");
+		// ...and the wave's shape is stated up front.
+		expect(md).toContain("every one is");
+		expect(md).toContain("Nothing publishes to a registry.");
 	});
 
 	it("renders ❌ npm / ❌ GitHub Packages flags when readiness is false", () => {
 		const failedBuild = build({ targets: [npmTarget({ status: "failed" })] });
-		const publish: ValidationPublish = {
-			...publishOf([pkg({ builds: [failedBuild] })]),
-			npmReady: false,
-			githubPackagesReady: false,
-		};
+		const publish = publishOf([pkg({ builds: [failedBuild] })]);
 		const md = buildPublishValidationSummary(validationOf({ publish }));
+		// npm HAS a target and it failed, so ❌ is a real verdict.
 		expect(md).toContain("**npm:** ❌");
+		// GitHub Packages has no target in this wave, so it gets neither verdict.
+		expect(md).toContain("**GitHub Packages:** — none");
+	});
+
+	it("renders ❌ for GitHub Packages when the wave has a GitHub Packages target that failed", () => {
+		const failedBuild = build({ targets: [ghTarget({ status: "failed" })] });
+		const publish = publishOf([pkg({ builds: [failedBuild] })]);
+		const md = buildPublishValidationSummary(validationOf({ publish }));
 		expect(md).toContain("**GitHub Packages:** ❌");
 	});
 
@@ -661,8 +796,8 @@ describe("buildPublishValidationSummary", () => {
 		const md = buildPublishValidationSummary(validationOf({ publish: publishOf([pkgA, pkgB]) }));
 
 		// Both per-package headers appear, in input order.
-		expect(md).toContain("### ✅ @org/pkg-a@1.2.3");
-		expect(md).toContain("### ✅ @org/pkg-b@2.0.0");
+		expect(md).toContain("### ✅ 📦 @org/pkg-a@1.2.3");
+		expect(md).toContain("### ✅ 📦 @org/pkg-b@2.0.0");
 		expect(md.indexOf("@org/pkg-a@1.2.3")).toBeLessThan(md.indexOf("@org/pkg-b@2.0.0"));
 
 		// Each package's build headline + registry sit under its own header.
@@ -897,7 +1032,7 @@ describe("buildSbomPreviewSummary", () => {
 	});
 
 	it("renders the version-only sub-section for a package with no builds", () => {
-		const versionOnly = pkg({ name: "@org/version-only", versionOnly: true, builds: [] });
+		const versionOnly = pkg({ name: "@org/version-only", kind: "github-only", builds: [] });
 		const md = buildSbomPreviewSummary(
 			validationOf({ publish: publishOf([versionOnly]) }),
 			new Map([["@org/version-only:dist/npm", sampleResolved]]),

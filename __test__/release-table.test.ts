@@ -21,6 +21,7 @@ const PLAN = [
 		changesetCount: 2,
 		oldVersion: "1.4.0",
 		newVersion: "1.5.0",
+		targetCount: 1,
 	},
 	{
 		name: "@scope/dependent",
@@ -28,6 +29,7 @@ const PLAN = [
 		changesetCount: 0,
 		oldVersion: "2.0.3",
 		newVersion: "2.0.4",
+		targetCount: 1,
 	},
 	{
 		name: "@scope/breaking",
@@ -35,6 +37,7 @@ const PLAN = [
 		changesetCount: 1,
 		oldVersion: "0.9.9",
 		newVersion: "1.0.0",
+		targetCount: 1,
 	},
 ];
 
@@ -84,20 +87,43 @@ describe("releaseTable", () => {
 		expect(header).toContain("Targets");
 	});
 
-	it("leaves publish readiness pending rather than blank or assumed", () => {
+	// Phase 1 knows WHAT each package publishes to without building anything:
+	// publishability is declared in `package.json`. Only READINESS needs the
+	// build. Reporting both as `pending` hid a decided fact behind an undecided
+	// one — a private tracking package's "publishes nowhere" was indistinguish-
+	// able from "we have not looked yet".
+	it("reports the resolved target shape, and never claims a readiness it has not got", () => {
 		const rendered = releaseTable.render(toPendingReleaseRows(PLAN));
 		const rows = rendered.split("\n").filter((line) => line.includes("@scope/"));
 
-		// A blank cell would be indistinguishable from "no targets"; a ✅ would
-		// claim a validation result Phase 1 has not got.
 		expect(rows).toHaveLength(3);
 		for (const row of rows) {
-			expect(row).toContain("| pending |");
+			expect(row).toContain("| 1 target(s) |");
+			// A ✅ would claim a validation result Phase 1 has not got.
+			expect(row).not.toContain("✅");
+			expect(row).not.toContain("ready");
 			// The hourglass belongs to the status column; repeating it here
 			// duplicated the signal and widened the row.
 			expect(row).not.toContain("⏳ pending");
-			expect(row).not.toContain("✅");
 		}
+	});
+
+	it("names a package with no targets as GitHub-release-only before any build runs", () => {
+		const rows = toPendingReleaseRows([
+			{
+				name: "@scope/tracking",
+				bumpType: "minor",
+				changesetCount: 1,
+				oldVersion: "0.13.1",
+				newVersion: "0.14.0",
+				targetCount: 0,
+			},
+		]);
+		const rendered = releaseTable.render(rows);
+
+		expect(rendered).toContain("🏷️ GitHub release only");
+		// Not `pending`: this is a decided fact, resolvable from package.json.
+		expect(rendered).not.toContain("pending");
 	});
 
 	it("renders an empty plan as headers with no rows", () => {
@@ -111,7 +137,7 @@ describe("releaseTable", () => {
 		// `⏭️` (no targets) and `❌` (failed) are emitted by `toValidatedReleaseRows`
 		// alongside the plan icons. Omitting them here let a legend that dropped
 		// either one still pass.
-		for (const icon of ["✅", "⏳", "⏭️", "❌", "🔴", "🟡", "🟢"]) {
+		for (const icon of ["✅", "⏳", "🏷️", "⏭️", "❌", "🔴", "🟡", "🟢"]) {
 			expect(RELEASE_TABLE_LEGEND).toContain(icon);
 		}
 	});
@@ -120,7 +146,7 @@ describe("releaseTable", () => {
 const target = (status: "ready" | "skipped" | "failed") => ({ status });
 
 describe("toValidatedReleaseRows", () => {
-	it("reports a version-only package as having no targets, not zero ready", () => {
+	it("reports a package with no builds as GitHub-release-only, not as skipped", () => {
 		const [row] = toValidatedReleaseRows([
 			{ name: "@scope/version-only", version: "1.1.0", baseVersion: "1.0.0", changesetCount: 1, builds: [] },
 		]);
@@ -128,8 +154,14 @@ describe("toValidatedReleaseRows", () => {
 
 		// `0/0 ready` would read as a problem for a package that is simply not
 		// published — versioned and changelogged, but with nothing to upload.
-		expect(rendered).toContain("⏭️ no targets");
 		expect(rendered).not.toContain("0/0");
+		// The cell must name what the package DOES get (a tag and a GitHub
+		// release), not what it lacks. `⏭️ no targets` said the opposite: the
+		// skip glyph reads as "this was passed over", and a private tracking
+		// package is not passed over — this is its whole release.
+		expect(rendered).toContain("🏷️ GitHub release only");
+		expect(rendered).not.toContain("⏭️");
+		expect(rendered).not.toContain("no targets");
 	});
 
 	it("counts ready targets across every build of a package", () => {

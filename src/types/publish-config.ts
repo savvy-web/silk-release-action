@@ -104,6 +104,16 @@ export interface PublishConfig {
  * Fully resolved target with all values filled in
  */
 export interface ResolvedTarget {
+	/**
+	 * The package name as published to this target.
+	 *
+	 * @remarks
+	 * Not necessarily the workspace's own name — `PublishTarget.name` is the
+	 * name on the tarball, and a workspace may publish under a different name
+	 * per target. Carried so the release output can report what actually
+	 * landed on each registry.
+	 */
+	name: string;
 	protocol: PublishProtocol;
 	registry: string | null; // null for JSR
 	directory: string; // Absolute path to publish from
