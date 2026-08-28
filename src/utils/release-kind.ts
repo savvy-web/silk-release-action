@@ -240,3 +240,35 @@ export const summarizeValidation = (args: {
 			);
 	}
 };
+
+/**
+ * The one-line account of a single workspace's validation.
+ *
+ * @remarks
+ * The counterpart to {@link summarizeWorkspace}, which does the same job for
+ * the publish phase. Derived, never authored: a reader can trust it precisely
+ * because nothing can set it to something the structured fields do not say.
+ *
+ * @param args - The workspace's outcome and publication counts.
+ * @returns One sentence.
+ *
+ * @public
+ */
+export const summarizeValidationWorkspace = (args: {
+	readonly outcome: "validated" | "nothing-to-validate" | "skipped" | "partial" | "failed";
+	readonly packages: number;
+	readonly ready: number;
+}): string => {
+	switch (args.outcome) {
+		case "nothing-to-validate":
+			return "No registry target — nothing to validate; releases on GitHub only.";
+		case "validated":
+			return `${args.packages} package(s) ready to publish.`;
+		case "skipped":
+			return `${args.packages} package(s) were not probed.`;
+		case "partial":
+			return `${args.ready} of ${args.packages} package(s) ready; the rest failed their dry-run.`;
+		case "failed":
+			return `${args.packages} package(s) failed their dry-run.`;
+	}
+};

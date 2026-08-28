@@ -194,6 +194,8 @@ describe("toValidationOutput", () => {
 			bumpType: "minor",
 			changesetCount: 1,
 			success: true,
+			outcome: "validated",
+			summary: "1 package(s) ready to publish.",
 			kind: "github-with-packages",
 			packages: [
 				{
@@ -316,6 +318,12 @@ describe("toValidationOutput", () => {
 			bumpType: "minor",
 			changesetCount: 1,
 			success: true,
+			// `nothing-to-validate` is the COMPLETE outcome for a workspace that
+			// publishes nowhere, not an absence of one — the same distinction the
+			// phase-level `nothing-to-release` draws, and the workspace-level
+			// counterpart to the publish phase's `released`.
+			outcome: "nothing-to-validate",
+			summary: "No registry target — nothing to validate; releases on GitHub only.",
 			kind: "github-only",
 			packages: [],
 			releaseNotes: { status: "no-changelog" },

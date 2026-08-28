@@ -646,6 +646,18 @@ const ValidationWorkspace = Schema.Struct({
 		description:
 			"True when every publication this workspace would make passed its dry-run probe. True by construction for a `github-only` workspace, which makes none. Named to match the publish phase's workspace entry.",
 	}),
+	outcome: Schema.Literals(["validated", "nothing-to-validate", "skipped", "partial", "failed"]).annotate({
+		identifier: "ValidationWorkspaceOutcome",
+		title: "Workspace outcome",
+		description:
+			"`validated` — every publication passed its dry-run probe. `nothing-to-validate` — a `github-only` workspace: it publishes to no registry, so there is nothing to probe, and this is the complete, correct outcome rather than an absence of one. `skipped` — every publication was intentionally not probed. `partial` — some passed and at least one failed. `failed` — probes ran and none passed. Mirrors the publish phase's workspace `outcome` field; the VALUES differ because a dry-run probe and an upload have different results.",
+	}),
+	summary: Schema.String.annotate({
+		title: "Summary",
+		description:
+			"One human-readable sentence describing this workspace's validation. Derived from the fields beside it and never authored independently, so it cannot drift from them — the same contract the publish phase's workspace `summary` carries.",
+		examples: ["No registry target — nothing to validate; releases on GitHub only."],
+	}),
 	kind: Schema.Literals(["github-only", "github-with-packages"]).annotate({
 		identifier: "ValidationWorkspaceKind",
 		title: "Workspace kind",
@@ -890,6 +902,8 @@ export const ValidationOutput = Schema.Struct({
 						bumpType: "minor",
 						changesetCount: 1,
 						success: true,
+						outcome: "validated",
+						summary: "2 package(s) ready to publish.",
 						kind: "github-with-packages",
 						packages: [
 							{

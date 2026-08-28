@@ -12,6 +12,7 @@ import {
 	getPackagePageUrl,
 } from "../../../src/release/report.js";
 import type { ValidationOutput } from "../../../src/schema/release-output.js";
+import { summarizeValidationWorkspace } from "../../../src/utils/release-kind.js";
 
 // ─── Type aliases for the build-centric ValidationOutput sub-structs ──────────
 
@@ -123,18 +124,36 @@ function pkg(
 ): ValidationPublishPackage {
 	const { builds, ...rest } = overrides ?? {};
 	const version = rest.version ?? "5.0.13";
+	const packages = builds === undefined ? buildsToPackages([build()], version) : buildsToPackages(builds, version);
+	// Derive `outcome` and `summary` from the packages, exactly as the
+	// projection does. A fixture that let them be set independently could
+	// describe a `github-only` workspace as "1 package(s) ready to publish" —
+	// which is how the rendering bug this guards against would slip through.
+	const ready = packages.filter((p) => p.outcome === "ready").length;
+	const failed = packages.filter((p) => p.outcome === "failed").length;
+	const outcome =
+		packages.length === 0
+			? ("nothing-to-validate" as const)
+			: failed > 0 && ready > 0
+				? ("partial" as const)
+				: failed > 0
+					? ("failed" as const)
+					: ready === 0
+						? ("skipped" as const)
+						: ("validated" as const);
 	return {
 		name: "@savvy-web/linked-1",
 		version: "5.0.13",
 		baseVersion: "5.0.12",
 		bumpType: "patch",
 		changesetCount: 1,
-		success: true,
-		kind: "github-with-packages",
-		packages: buildsToPackages([build()], version),
+		success: failed === 0,
+		outcome,
+		summary: summarizeValidationWorkspace({ outcome, packages: packages.length, ready }),
+		kind: packages.length === 0 ? "github-only" : "github-with-packages",
+		packages,
 		releaseNotes: { status: "found", content: "### Patch Changes\n\n- Sample release note." },
 		...rest,
-		...(builds === undefined ? {} : { packages: buildsToPackages(builds, version) }),
 	};
 }
 
@@ -688,7 +707,11 @@ describe("buildPublishValidationSummary", () => {
 		const md = buildPublishValidationSummary(validationOf({ publish: publishOf([versionOnly]) }));
 		expect(md).toContain("@org/version-only");
 		expect(md).toContain("GitHub release only");
-		expect(md).toContain("tagged and released on GitHub");
+		// The workspace's own derived summary, not a sentence the renderer
+		// composes — so the comment and the JSON cannot disagree.
+		expect(md).toContain("No registry target — nothing to validate");
+		// And it must NOT claim publications a workspace with none would make.
+		expect(md).not.toContain("ready to publish");
 		// `⏭️` claims something was skipped. Nothing was.
 		expect(md).not.toContain("⏭️");
 	});

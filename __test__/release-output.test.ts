@@ -134,6 +134,8 @@ describe("ReleaseOutput schema", () => {
 					bumpType: "minor",
 					changesetCount: 1,
 					success: true,
+					outcome: "validated",
+					summary: "1 package(s) ready to publish.",
 					kind: "github-with-packages",
 					packages: [
 						{

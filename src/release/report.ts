@@ -813,10 +813,10 @@ export function buildPublishValidationSummary(validation: ValidationPayload): st
 		sections.push(`### ${statusIcon} ${kindIcon} ${pkg.name}@${pkg.version}`);
 
 		if (pkg.packages.length === 0) {
-			sections.push(
-				`${releaseKindCell("github-only")} — versioned, tagged and released on GitHub. ` +
-					"No registry target, so nothing is packed or uploaded.",
-			);
+			// The workspace's own derived `summary`, not a sentence composed here:
+			// two renderings of the same fact are two places for it to drift, and
+			// the payload's summary is the one a JSON consumer already reads.
+			sections.push(`${releaseKindCell("github-only")} — ${pkg.summary}`);
 			continue;
 		}
 

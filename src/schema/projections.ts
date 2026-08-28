@@ -25,6 +25,7 @@ import {
 	summarizeBranchManagement,
 	summarizeReleaseWave,
 	summarizeValidation,
+	summarizeValidationWorkspace,
 	summarizeWorkspace,
 	tallyReleaseKinds,
 } from "../utils/release-kind.js";
@@ -191,6 +192,21 @@ const toValidationWorkspace = (pkg: ValidationPackageResult): ValidationOutput["
 	// No `name` field: the workspace map is keyed by name, so carrying it as a
 	// field too would be a second spelling of the key that can disagree with it.
 	const githubOnly = pkg.builds.length === 0;
+	const allTargets = pkg.builds.flatMap((b) => b.targets);
+	const ready = allTargets.filter((t) => t.status === "ready").length;
+	const failed = allTargets.filter((t) => t.status === "failed").length;
+	// `nothing-to-validate` is the COMPLETE outcome for a workspace that
+	// publishes nowhere, not an absence of one — the same distinction the
+	// phase-level `nothing-to-release` draws.
+	const workspaceOutcome: ValidationOutput["validation"]["workspaces"][string]["outcome"] = githubOnly
+		? "nothing-to-validate"
+		: failed > 0 && ready > 0
+			? "partial"
+			: failed > 0
+				? "failed"
+				: ready === 0
+					? "skipped"
+					: "validated";
 	return {
 		version: pkg.version,
 		baseVersion: pkg.baseVersion,
@@ -200,6 +216,12 @@ const toValidationWorkspace = (pkg: ValidationPackageResult): ValidationOutput["
 		// nowhere, so there is no dry-run that could fail. One with packages is
 		// ready when every publication passed its probe.
 		success: githubOnly || pkg.builds.every((b) => b.targets.every((t) => t.status !== "failed")),
+		outcome: workspaceOutcome,
+		summary: summarizeValidationWorkspace({
+			outcome: workspaceOutcome,
+			packages: allTargets.length,
+			ready: allTargets.filter((t) => t.status === "ready").length,
+		}),
 		kind: githubOnly ? "github-only" : "github-with-packages",
 		// Flattened builds × targets into one entry per (package, registry)
 		// publication — the same unit the publish phase reports. The build
