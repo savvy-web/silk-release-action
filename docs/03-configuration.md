@@ -112,7 +112,7 @@ permissions:
 
 # ...
 
-- uses: savvy-web/silk-release-action@v4
+- uses: savvy-web/silk-release-action@v5
   with:
     app-client-id: ${{ vars.APP_CLIENT_ID }}
     app-private-key: ${{ secrets.APP_PRIVATE_KEY }}
