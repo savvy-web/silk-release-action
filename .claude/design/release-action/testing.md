@@ -4,8 +4,8 @@ category: testing
 status: current
 completeness: 90
 created: 2026-02-07
-updated: 2026-08-23
-last-synced: 2026-08-23
+updated: 2026-08-27
+last-synced: 2026-08-27
 module: release-action
 related:
   - architecture.md
@@ -269,9 +269,10 @@ Inject inputs via the `ActionInput` layer, not by mutating `process.env` between
 | `__test__/schema-inputs.test.ts` | `src/schema/inputs.ts` + `action.yml` | Manifest guard |
 | `__test__/schema-outputs.test.ts` | `src/schema/outputs.ts` + `action.yml` | Manifest guard |
 | `__test__/test-placement.test.ts` | the repo tree | Placement guard |
-| `__test__/generate-schema.test.ts` | `lib/scripts/generate-schema.ts` (drift guard over both committed JSON Schemas) | Schema |
-| `__test__/projections.test.ts` | `src/schema/projections.ts` | Schema |
+| `__test__/generate-schema.test.ts` | `lib/scripts/generate-schema.ts` (drift guard over both committed JSON Schemas — the input document at the repo root, the versioned output document under `schemas/<version>/`) | Schema |
+| `__test__/projections.test.ts` | `src/schema/projections.ts` (schema v2 — workspace-keyed `success`/`outcome`/`summary`) | Schema |
 | `__test__/release-output.test.ts` | `src/schema/release-output.ts` | Schema |
+| `__test__/unit/utilities/release-kind.test.ts` | `src/utils/release-kind.ts` | Schema |
 | `__test__/detect-workflow-phase.test.ts` | `detect-workflow-phase.ts` | Routing |
 | `__test__/event-payload.test.ts` | `utils/event-payload.ts` | Routing |
 | `__test__/check-release-branch.test.ts` | `check-release-branch.ts` | Phase 1 |
