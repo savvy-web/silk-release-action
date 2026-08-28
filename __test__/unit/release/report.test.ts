@@ -1,3 +1,4 @@
+import { classifyRegistry, registryDisplayName } from "@effected/npm";
 import { Contact, SbomMetadata, Supplier } from "@effected/sbom";
 import { describe, expect, it } from "vitest";
 import {
@@ -60,11 +61,18 @@ function buildsToPackages(builds: ReadonlyArray<FixtureBuild>, version: string):
 		b.targets.map((t) => ({
 			name: t.name ?? "@savvy-web/linked-1",
 			version,
-			registry: t.registry.includes("npm.pkg.github.com")
-				? { name: "GitHub Packages", type: "github-packages" as const, url: t.registry }
-				: t.registry.includes("registry.npmjs.org")
-					? { name: "npm", type: "npm" as const, url: t.registry }
-					: { name: t.registry, type: "custom" as const, url: t.registry },
+			// Classified through the SAME functions the projection uses, not by
+			// substring-matching a hard-coded host. Two reasons: a fixture that
+			// classified registries differently from production could mask a
+			// mis-classification rather than catch it, and `.includes(host)` on a
+			// URL is a genuine anti-pattern — the host can appear anywhere in the
+			// string, so an arbitrary host may precede or follow it (CodeQL flags
+			// exactly this).
+			registry: {
+				name: registryDisplayName(t.registry),
+				type: classifyRegistry(t.registry),
+				url: t.registry,
+			},
 			outcome: t.status,
 			success: t.status === "ready",
 			error: null,

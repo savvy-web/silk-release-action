@@ -191,7 +191,7 @@ const BranchManagementPayload = Schema.Struct({
 		).annotate({
 			title: "Changeset packages",
 			description:
-				"Every package this release will version, from the release plan — including packages bumped only because a dependency moved, which `changesetCount: 0` identifies. Empty array when there is nothing to release; the action emits a no-op in that case.",
+				'Every package this release will version, from the release plan — including packages bumped only because a dependency moved, which `changesetCount: 0` identifies. Empty array when there is nothing to release; the phase reports `outcome: "nothing-to-release"` in that case, which is a success — nothing failed.',
 		}),
 	}).annotate({
 		identifier: "BranchManagementChangesets",
@@ -496,7 +496,7 @@ const ValidationPackage = Schema.Struct({
 	error: Schema.NullOr(
 		Schema.String.annotate({
 			title: "Error message",
-			description: "Why the dry-run failed. Non-null only when `status` is `failed`.",
+			description: "Why the dry-run failed. Non-null only when `outcome` is `failed`.",
 		}),
 	),
 	access: Schema.Literals(["public", "restricted"]).annotate({
@@ -1308,6 +1308,6 @@ export const ReleaseOutput = Schema.Union([BranchManagementOutput, ValidationOut
 	identifier: "ReleaseOutput",
 	title: "Silk Release Action output",
 	description:
-		'The phase-discriminated release output contract. Use `phase` to discriminate to the right variant. Four orthogonal state signals (`status`, `noop`, `succeeded`, `hasFailures`) are derived from the same underlying outcome and obey a fixed relationship: `noop` is true when the phase had nothing to do (no changesets, no release-branch updates pending, or no publish targets resolved) — in this case `succeeded` is true and `hasFailures` is false; `status` is `"no-op"`. When the phase produced its intended work without errors, `noop` is false, `succeeded` is true, `hasFailures` is false, and `status` is `"success"`. When the phase produced any failure, `noop` is false, `succeeded` is false, `hasFailures` is true, and `status` is `"partial"`. The `status` value `"failed"` is reserved for an impossible flag combination and is never emitted by the current projections; treat `"partial"` as the canonical failure label. `status` is a coarse label for logs and summaries; the three booleans are the machine contract. Every variant carries the same shared top-level fields (`$schema`, `schemaVersion`, `phase`, `status`, `noop`, `succeeded`, `hasFailures`, `dryRun`) plus a phase-specific payload.',
+		"The phase-discriminated release output contract. Use `phase` to discriminate to the right variant: `branch-management`, `validation` or `publish`. Every variant carries the same shared top-level fields — `$schema`, `schemaVersion`, `phase`, `success`, `outcome`, `summary`, `dryRun`, `failure`, `totals` — plus a phase-specific payload. **`success` and `outcome` are orthogonal, and that is the point.** `success` is the boolean gate a consumer should filter on; `outcome` is the taxonomy saying what specifically happened, drawn from a per-phase enum. Keeping them separate means a filter written against `success` keeps working when a new `outcome` member is added. A run that had nothing to do is a SUCCESS — nothing failed — and says so through its outcome (`nothing-to-release`) rather than through a separate flag. `summary` is one human-readable sentence derived from the structured fields beside it, never authored independently, so it cannot drift from them. `failure` is null unless the phase failed, and names both the stage it stopped at and why. This replaced the v1 contract's four overlapping signals (`status`, `noop`, `succeeded`, `hasFailures`), whose definitions had already drifted from their own documentation.",
 });
 export type ReleaseOutput = Schema.Schema.Type<typeof ReleaseOutput>;
