@@ -873,6 +873,56 @@ describe("runReleases", () => {
 				expect(assetNames).toContain(expectedApiDoc);
 			}),
 		);
+
+		it.effect("degrades to a warning when the pre-existing meta/tsdoctor.json is malformed", () =>
+			Effect.gen(function* () {
+				// Arrange: the sbom-pointer upsert runs after publish succeeded, so a
+				// malformed manifest must not abort the release — the meta bundle is a
+				// best-effort doc-builder asset, mirroring the tarMetaFolder posture.
+				const pkgDir = join(tmpDir, "pkg");
+				const metaDir = join(tmpDir, "meta");
+				mkdirSync(pkgDir, { recursive: true });
+				mkdirSync(metaDir, { recursive: true });
+
+				const tarballPath = join(pkgDir, "pkg.tgz");
+				const sbomPath = join(pkgDir, "pkg.sbom.json");
+				writeFileSync(tarballPath, Buffer.from("fake tarball"));
+				writeFileSync(sbomPath, JSON.stringify({ bomFormat: "CycloneDX" }));
+				writeFileSync(join(metaDir, "tsdoctor.json"), "{ not json", "utf-8");
+
+				const tag = makeGitTagLayer();
+				const release = makeGitHubReleaseLayer();
+				const publishResult = makePublishPackagesResult([
+					makePublishResult("@test/pkg-d", "4.0.0", tarballPath, sbomPath),
+				]);
+				const firstTarget = publishResult.packages[0]?.targets[0];
+				if (firstTarget) {
+					firstTarget.target.directory = pkgDir;
+				}
+
+				const args: ReleasesInputArgs = {
+					tags: [makeTag("v4.0.0", "@test/pkg-d", "4.0.0")],
+					publishResult,
+					packageManager: "pnpm",
+					dryRun: false,
+				};
+				const layers = Layer.mergeAll(
+					baseLayers(),
+					tag.layer,
+					release.layer,
+					makeAttestationLayer().layer,
+					makeArtifactMetadataLayer().layer,
+				);
+
+				const result: ReleasesReport = yield* runReleases(args).pipe(Effect.provide(layers));
+
+				expect(result.success).toBe(true);
+				expect(result.releases).toHaveLength(1);
+				expect(release.createCalls).toHaveLength(1);
+				// The malformed manifest is left untouched rather than clobbered.
+				expect(readFileSync(join(metaDir, "tsdoctor.json"), "utf-8")).toBe("{ not json");
+			}),
+		);
 	});
 
 	describe("group-keyed meta.tgz doc bundle", () => {
@@ -1204,5 +1254,61 @@ describe("copySbomIntoMeta", () => {
 		writeFileSync(sbomPath, "{}", "utf-8");
 		expect(() => copySbomIntoMeta(sbomPath, pkgDir)).not.toThrow();
 		expect(existsSync(join(root, "dist", "dev", "meta", "x.sbom.json"))).toBe(false);
+		expect(existsSync(join(root, "dist", "dev", "meta", "tsdoctor.json"))).toBe(false);
+	});
+
+	describe("tsdoctor.json sbom pointer", () => {
+		function makeLayout(): { pkgDir: string; metaDir: string; sbomPath: string } {
+			const root = mkdtempSync(join(tmpdir(), "rel-meta-"));
+			createdDirs.push(root);
+			const pkgDir = join(root, "dist", "prod", "npm", "pkg");
+			const metaDir = join(root, "dist", "prod", "npm", "meta");
+			mkdirSync(pkgDir, { recursive: true });
+			mkdirSync(metaDir, { recursive: true });
+			const sbomPath = join(root, "pkg.sbom.json");
+			writeFileSync(sbomPath, '{"bomFormat":"CycloneDX"}', "utf-8");
+			return { pkgDir, metaDir, sbomPath };
+		}
+
+		function readManifest(metaDir: string): Record<string, unknown> {
+			return JSON.parse(readFileSync(join(metaDir, "tsdoctor.json"), "utf-8")) as Record<string, unknown>;
+		}
+
+		it("creates a spec-1 manifest carrying the sbom pointer when none exists", () => {
+			const { pkgDir, metaDir, sbomPath } = makeLayout();
+
+			copySbomIntoMeta(sbomPath, pkgDir);
+
+			expect(readManifest(metaDir)).toEqual({
+				spec: 1,
+				sbom: { path: "pkg.sbom.json", format: "cyclonedx-json" },
+			});
+		});
+
+		it("preserves existing manifest fields while adding the sbom pointer", () => {
+			const { pkgDir, metaDir, sbomPath } = makeLayout();
+			writeFileSync(join(metaDir, "tsdoctor.json"), JSON.stringify({ spec: 1, name: "X" }), "utf-8");
+
+			copySbomIntoMeta(sbomPath, pkgDir);
+
+			expect(readManifest(metaDir)).toEqual({
+				spec: 1,
+				name: "X",
+				sbom: { path: "pkg.sbom.json", format: "cyclonedx-json" },
+			});
+		});
+
+		it("overwrites a stale sbom pointer", () => {
+			const { pkgDir, metaDir, sbomPath } = makeLayout();
+			writeFileSync(
+				join(metaDir, "tsdoctor.json"),
+				JSON.stringify({ spec: 1, sbom: { path: "old.sbom.json", format: "spdx-json" } }),
+				"utf-8",
+			);
+
+			copySbomIntoMeta(sbomPath, pkgDir);
+
+			expect(readManifest(metaDir).sbom).toEqual({ path: "pkg.sbom.json", format: "cyclonedx-json" });
+		});
 	});
 });

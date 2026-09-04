@@ -11,7 +11,7 @@
 // rest of the batch. The overall `success` flag is `true` only when `errors`
 // is empty.
 
-import { copyFileSync, existsSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { Attestation, GitHubError, ReleaseInfo as GitHubReleaseInfo } from "@effected/github";
 import { ArtifactMetadata, GitHubRelease, GitTag, Repo, StorageRecordInput } from "@effected/github";
@@ -115,15 +115,37 @@ export function metaDirFor(buildDirectory: string): string {
 }
 
 /**
+ * The `format` label recorded in the meta bundle's `tsdoctor.json` sbom
+ * pointer. The action generates CycloneDX JSON via `@effected/sbom`
+ * (`Sbom.generate` → `bomFormat: "CycloneDX"`), so this is the matching
+ * tsdoctor label, not `spdx-json`.
+ */
+const SBOM_POINTER_FORMAT = "cyclonedx-json";
+
+/**
  * Copy a generated SBOM file into the group's `meta/` folder (beside its `pkg/`
- * build dir) so the `…{group}.meta.tgz` doc bundle includes it. No-op when the
- * meta folder is absent (a non-bundler package) or the source is missing. The
- * copy keeps the SBOM's basename (`<unscoped>.sbom.json`).
+ * build dir) so the `…{group}.meta.tgz` doc bundle includes it, then upsert an
+ * `sbom` pointer into `meta/tsdoctor.json`. No-op when the meta folder is
+ * absent (a non-bundler package) or the source is missing. The copy keeps the
+ * SBOM's basename (`<unscoped>.sbom.json`).
+ *
+ * The pointer is layer 3 of the tsdoctor bundle spec: only this action knows
+ * the SBOM's final name, so it is recorded here rather than pre-declared by the
+ * bundler. An existing manifest keeps its other fields; a missing one is
+ * created as `{ spec: 1, sbom }`; a stale `sbom` entry is overwritten.
  */
 export function copySbomIntoMeta(sbomPath: string, buildDirectory: string): void {
 	const metaDir = metaDirFor(buildDirectory);
 	if (!existsSync(sbomPath) || !existsSync(metaDir)) return;
-	copyFileSync(sbomPath, join(metaDir, basename(sbomPath)));
+	const sbomName = basename(sbomPath);
+	copyFileSync(sbomPath, join(metaDir, sbomName));
+
+	const manifestPath = join(metaDir, "tsdoctor.json");
+	const existing: Record<string, unknown> = existsSync(manifestPath)
+		? (JSON.parse(readFileSync(manifestPath, "utf-8")) as Record<string, unknown>)
+		: { spec: 1 };
+	const next = { ...existing, sbom: { path: sbomName, format: SBOM_POINTER_FORMAT } };
+	writeFileSync(manifestPath, `${JSON.stringify(next, null, 2)}\n`, "utf-8");
 }
 
 /**
@@ -578,8 +600,19 @@ const processOneTag = (
 				}
 
 				// ── SBOM meta copy ──────────────────────────────────────────────────
+				// Runs after publish succeeded, so it degrades to a warning like the
+				// meta tar below: the meta bundle is a best-effort doc-builder asset,
+				// and a malformed pre-existing tsdoctor.json must not abort the release.
 				if (targetResult.sbomPath) {
-					copySbomIntoMeta(targetResult.sbomPath, targetResult.target.directory);
+					const sbomPath = targetResult.sbomPath;
+					yield* Effect.try({
+						try: () => copySbomIntoMeta(sbomPath, targetResult.target.directory),
+						catch: (cause) => (cause instanceof Error ? cause.message : String(cause)),
+					}).pipe(
+						Effect.catch((message) =>
+							Effect.logWarning(`runReleases: sbom meta copy failed for ${basename(sbomPath)}: ${message}`),
+						),
+					);
 				}
 
 				// ── Meta bundle (api + tsconfig + sbom) — unattested doc-builder asset ──
