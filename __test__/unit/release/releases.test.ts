@@ -873,6 +873,56 @@ describe("runReleases", () => {
 				expect(assetNames).toContain(expectedApiDoc);
 			}),
 		);
+
+		it.effect("degrades to a warning when the pre-existing meta/tsdoctor.json is malformed", () =>
+			Effect.gen(function* () {
+				// Arrange: the sbom-pointer upsert runs after publish succeeded, so a
+				// malformed manifest must not abort the release — the meta bundle is a
+				// best-effort doc-builder asset, mirroring the tarMetaFolder posture.
+				const pkgDir = join(tmpDir, "pkg");
+				const metaDir = join(tmpDir, "meta");
+				mkdirSync(pkgDir, { recursive: true });
+				mkdirSync(metaDir, { recursive: true });
+
+				const tarballPath = join(pkgDir, "pkg.tgz");
+				const sbomPath = join(pkgDir, "pkg.sbom.json");
+				writeFileSync(tarballPath, Buffer.from("fake tarball"));
+				writeFileSync(sbomPath, JSON.stringify({ bomFormat: "CycloneDX" }));
+				writeFileSync(join(metaDir, "tsdoctor.json"), "{ not json", "utf-8");
+
+				const tag = makeGitTagLayer();
+				const release = makeGitHubReleaseLayer();
+				const publishResult = makePublishPackagesResult([
+					makePublishResult("@test/pkg-d", "4.0.0", tarballPath, sbomPath),
+				]);
+				const firstTarget = publishResult.packages[0]?.targets[0];
+				if (firstTarget) {
+					firstTarget.target.directory = pkgDir;
+				}
+
+				const args: ReleasesInputArgs = {
+					tags: [makeTag("v4.0.0", "@test/pkg-d", "4.0.0")],
+					publishResult,
+					packageManager: "pnpm",
+					dryRun: false,
+				};
+				const layers = Layer.mergeAll(
+					baseLayers(),
+					tag.layer,
+					release.layer,
+					makeAttestationLayer().layer,
+					makeArtifactMetadataLayer().layer,
+				);
+
+				const result: ReleasesReport = yield* runReleases(args).pipe(Effect.provide(layers));
+
+				expect(result.success).toBe(true);
+				expect(result.releases).toHaveLength(1);
+				expect(release.createCalls).toHaveLength(1);
+				// The malformed manifest is left untouched rather than clobbered.
+				expect(readFileSync(join(metaDir, "tsdoctor.json"), "utf-8")).toBe("{ not json");
+			}),
+		);
 	});
 
 	describe("group-keyed meta.tgz doc bundle", () => {

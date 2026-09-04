@@ -600,8 +600,19 @@ const processOneTag = (
 				}
 
 				// ── SBOM meta copy ──────────────────────────────────────────────────
+				// Runs after publish succeeded, so it degrades to a warning like the
+				// meta tar below: the meta bundle is a best-effort doc-builder asset,
+				// and a malformed pre-existing tsdoctor.json must not abort the release.
 				if (targetResult.sbomPath) {
-					copySbomIntoMeta(targetResult.sbomPath, targetResult.target.directory);
+					const sbomPath = targetResult.sbomPath;
+					yield* Effect.try({
+						try: () => copySbomIntoMeta(sbomPath, targetResult.target.directory),
+						catch: (cause) => (cause instanceof Error ? cause.message : String(cause)),
+					}).pipe(
+						Effect.catch((message) =>
+							Effect.logWarning(`runReleases: sbom meta copy failed for ${basename(sbomPath)}: ${message}`),
+						),
+					);
 				}
 
 				// ── Meta bundle (api + tsconfig + sbom) — unattested doc-builder asset ──
