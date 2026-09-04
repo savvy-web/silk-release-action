@@ -1,5 +1,25 @@
 # @savvy-web/silk-release-action
 
+## 5.1.0
+
+### Features
+
+- The `…<group>.meta.tgz` doc bundle now records an `sbom` pointer in `meta/tsdoctor.json` (`{ "path": "<unscoped>.sbom.json", "format": "cyclonedx-json" }`) beside the copied SBOM, so tsdoctor's fetcher can locate it without guessing the file name. An existing manifest keeps its other fields; a missing one is created as `{ "spec": 1, "sbom": … }`. [#357][#357]
+
+### Dependencies
+
+| Dependency | Type | Action | From | To |
+| --- | --- | --- | --- | --- |
+| @savvy-web/silk-effects | dependency | updated | ^7.3.1 | ^7.3.2 |
+
+[#357][#357]
+
+### Thanks
+
+Thanks to [@spencerbeggs](https://github.com/spencerbeggs) for their contributions!
+
+[#357]: https://github.com/savvy-web/silk-release-action/pull/357
+
 ## 5.0.6
 
 ### Dependencies
@@ -142,7 +162,7 @@ Thanks to [@savvy-web-bot](https://github.com/apps/savvy-web-bot) for their cont
 ### Bug Fixes
 
 - A wave of private tracking packages reported `npm: ✅` and `GitHub Packages: ✅` in the Publish Validation check, because both readiness flags were "nothing failed" booleans that started `true`. Each registry now renders `— none` when the wave has no target for it.
-- The Build \& SBOM gate generated an SBOM for every detected package, including packages with no publish target — writing a document into the package directory and attaching it to nothing, since release-asset upload is per-target. Such packages are now skipped and named in `sbomSkipped`, distinct from `sbomFailures`.
+- The Build & SBOM gate generated an SBOM for every detected package, including packages with no publish target — writing a document into the package directory and attaching it to nothing, since release-asset upload is per-target. Such packages are now skipped and named in `sbomSkipped`, distinct from `sbomFailures`.
 - The release PR title read `release: 31 packages` for a wave of two private tracking packages, because detection's publishable-package fallback claimed the entire publishable set was releasing when narrowing found nothing. Detection now runs over every workspace package with no fallback. A later widening of that basis then re-broke shared-scope stripping by pulling in changeset-ignored workspaces; the scope basis is now the release-eligible set specifically.
 - Phase 2 reported `0 check(s) passed` for five passing checks, because the totals counted the human-readable `outcome` sentence instead of `status`. `checksPassed`, `checksFailed` and a new `checksWarning` now read `status` and sum to the number of checks.
 - A validation run with nothing to validate reported `succeeded: false`. It is now `success: true` with `outcome: "nothing-to-release"` — nothing failed, so nothing is reported as failing. [#333][#333]
@@ -392,7 +412,7 @@ Thanks to [@spencerbeggs](https://github.com/spencerbeggs) for their contributio
 ### Bug Fixes
 
 - ### A failed publish build now shows you why it failed
-  When the publishing phase's Build \& SBOM step failed, the job log carried only the exit summary — the group opened and went straight to the error annotation, and the compiler diagnostics appeared in no log at all. Root-causing a failed release meant reproducing the build out of band.
+  When the publishing phase's Build & SBOM step failed, the job log carried only the exit summary — the group opened and went straight to the error annotation, and the compiler diagnostics appeared in no log at all. Root-causing a failed release meant reproducing the build out of band.
 
   The captured output is now re-emitted on failure. Both streams go out, because the producing tool decides which one it uses: turbo puts task output on stdout under `--output-logs=full`, while a bare compiler writes diagnostics to stderr. The failure annotation also falls back to the stdout tail when stderr is empty, replacing the bare `ci:build failed —` that a stdout-only tool used to produce.
   ### Comma-separated closing references link every issue, not just the first
@@ -1484,7 +1504,7 @@ Thanks to [@spencerbeggs](https://github.com/spencerbeggs) for their contributio
 
 ### Features
 
-- [`22e682d`](https://github.com/savvy-web/silk-release-action/commit/22e682d2d9178b16bc3accf4b0d7dea703765f29) Add a Turbo Cache diagnostics section to build validation. Detection now also recognizes the TURBO\_RUN\_SUMMARY environment variable in addition to the --summarize flag, all .turbo/runs summaries in a job are aggregated, and a collapsed Turbo Cache section (totals, REMOTE/LOCAL/MISS breakdown, per-task detail) is added to the build-validation summary. The concise console marker is unchanged. The feature is non-fatal.
+- [`22e682d`](https://github.com/savvy-web/silk-release-action/commit/22e682d2d9178b16bc3accf4b0d7dea703765f29) Add a Turbo Cache diagnostics section to build validation. Detection now also recognizes the TURBO_RUN_SUMMARY environment variable in addition to the --summarize flag, all .turbo/runs summaries in a job are aggregated, and a collapsed Turbo Cache section (totals, REMOTE/LOCAL/MISS breakdown, per-task detail) is added to the build-validation summary. The concise console marker is unchanged. The feature is non-fatal.
 
 ## 2.1.1
 
@@ -2030,7 +2050,7 @@ When a package publishes to multiple registries with different names (e.g., `my-
 
 - 556da74: # Adds workflow to sync standard labels to repositories with workflow:standard property
 
-  Adds a new workflow\_dispatch workflow that syncs standard workflow labels to repositories with the custom property `workflow:standard`.
+  Adds a new workflow_dispatch workflow that syncs standard workflow labels to repositories with the custom property `workflow:standard`.
   ## Key features
   - Loads standard labels from `.github/labels.json` configuration file
   - Queries organization for repositories with `workflow:standard` custom property
