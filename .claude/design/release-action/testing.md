@@ -155,7 +155,9 @@ This replaced seven `FileSystem.layerNoop({ … })` stubs, and the swap is load-
 
 Two `as never` casts in `porcelain-changes.test.ts` went with them: an absent file now fails with the typed `NotFound` rather than a hand-forged error shape.
 
-**One host-filesystem double remains, deliberately.** `detect-workflow-phase.test.ts`'s event-payload cases build a real temp directory (`mkdtempSync` / `writeFileSync` / `rmSync` against `NodeFileSystem.layer`) because `ActionEnvironment.makeTest` reads the payload through the real filesystem. Restructuring it onto a seed is tracked as a follow-up, not an oversight.
+**No host-filesystem double remains.** `detect-workflow-phase.test.ts`'s event-payload cases used to build a real temp directory, because `ActionEnvironment.makeTest` reads `GITHUB_EVENT_PATH` through a genuine `FileSystem` — `layerTest` stubs it out, so the payload would never be read and seeding the path would return empty. The constraint is that the implementation must be *real*, not that it must be the *host's*: `MemoryFileSystem` satisfies it. The volume is provided as one layer value in both places it is needed — under `ActionEnvironment` via `Layer.provide`, and merged for the program — so the two provisions memoize onto the same volume instead of building two that could drift.
+
+Each case seeds exactly one of three shapes, which the old harness conflated behind a single `eventPathOverride`: a JSON payload, raw bytes that are deliberately not JSON, or a path deliberately left unseeded. Seeding the payload at a path `GITHUB_EVENT_PATH` does not name kills 3 tests — the check that the payload is genuinely read rather than the harness quietly returning empty.
 
 ### `@effect/vitest` — `it.effect` vs plain `it()`
 

@@ -146,9 +146,10 @@ Load before migrating any suite to `it.effect`.
   exec bit, `MemoryFileSystem.directory()` for a directory). Relative reads resolve from the volume
   root, so seed `"package.json"` as `/package.json`. A `layerNoop` stub that answers plausibly for
   any path lets a mutant reading the WRONG path survive — see *Effect Service Doubles* in
-  `@../.claude/design/release-action/testing.md` for the three mutants this swap started killing.
-  The one deliberate exception is `detect-workflow-phase.test.ts`'s event-payload temp directory,
-  which needs the real filesystem for `ActionEnvironment.makeTest`
+  `@../.claude/design/release-action/testing.md` for the mutants this swap started killing.
+  `ActionEnvironment.makeTest` needs a *real* `FileSystem` to read `GITHUB_EVENT_PATH` (`layerTest`
+  stubs it out), but memfs is real enough — provide the same layer value under `Layer.provide` and
+  in the merge so both provisions memoize onto one volume
 - `vi.mock` must be imported from `"vitest"`, never through `@effect/vitest` — Vitest hoists it
   above all imports, so a re-exported binding is not yet initialized and the file dies at load with
   `Cannot access '__vi_import_1__' before initialization`, naming neither `vi` nor the package

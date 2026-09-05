@@ -9,10 +9,6 @@
  * through to Strategy 2 on every run.
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { NodeFileSystem } from "@effect/platform-node";
 import { GitHubError, PullRequest, PullRequestInfo, Repo, RepoRef } from "@effected/github";
 import { ActionEnvironment } from "@effected/github-actions";
 import { MemoryFileSystem } from "@effected/memfs";
@@ -20,6 +16,9 @@ import { DateTime, Effect, Layer, Logger, Option } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PhaseDetectionOptions, PhaseDetectionResult } from "../src/utils/detect-workflow-phase.js";
 import { detectWorkflowPhase } from "../src/utils/detect-workflow-phase.js";
+
+/** Where every seeded event payload lives in the in-memory volume. */
+const EVENT_PATH = "/event.json";
 
 const RELEASE_BRANCH = "changeset-release/main";
 const TARGET_BRANCH = "main";
@@ -221,10 +220,12 @@ interface FullParams {
 	ref?: string;
 	eventName?: string;
 	sha?: string;
-	/** Event payload written to a real temp file and read via NodeFileSystem. */
+	/** Event payload seeded into the volume as JSON at `EVENT_PATH`. */
 	eventPayload?: unknown;
-	/** When set, GITHUB_EVENT_PATH points here verbatim (e.g. a missing path). */
-	eventPathOverride?: string;
+	/** Raw bytes seeded at `EVENT_PATH` verbatim — for a payload that is not valid JSON. */
+	rawEvent?: string;
+	/** Points GITHUB_EVENT_PATH at this path and seeds NOTHING there (the missing-file case). */
+	unseededEventPath?: string;
 	/** PRs returned by Strategy 1 (`listAssociatedWithCommit`) for `sha`. */
 	associated?: PullRequestInfo[];
 	options?: Partial<PhaseDetectionOptions>;
@@ -232,24 +233,35 @@ interface FullParams {
 
 const runDetectFull = (params: FullParams): Promise<PhaseDetectionResult> => {
 	const sha = params.sha ?? MERGE_COMMIT_SHA;
-	const tmp = mkdtempSync(join(tmpdir(), "detect-phase-"));
+
+	// The event file lives in the in-memory volume, not on the host disk. Only
+	// ONE of these three shapes applies per case: a JSON payload, raw bytes that
+	// are deliberately not JSON, or a path that is deliberately absent.
 	let eventPath = "";
-	if (params.eventPathOverride !== undefined) {
-		eventPath = params.eventPathOverride;
+	const seed: Record<string, string> = {};
+	if (params.unseededEventPath !== undefined) {
+		eventPath = params.unseededEventPath;
+	} else if (params.rawEvent !== undefined) {
+		eventPath = EVENT_PATH;
+		seed[EVENT_PATH] = params.rawEvent;
 	} else if (params.eventPayload !== undefined) {
-		eventPath = join(tmp, "event.json");
-		writeFileSync(eventPath, JSON.stringify(params.eventPayload));
+		eventPath = EVENT_PATH;
+		seed[EVENT_PATH] = JSON.stringify(params.eventPayload);
 	}
 
+	// One layer VALUE, provided in two places, so both provisions memoize onto
+	// the same volume rather than building two that could drift apart.
+	const fileSystem = MemoryFileSystem.layerWith(seed);
 	const associated = params.associated;
 
 	const layer = Layer.mergeAll(
-		// `makeTest` provided with a REAL FileSystem, not `layerTest`.
+		// `makeTest` provided with a WORKING FileSystem, not `layerTest`.
 		// `layerTest` is documented as "makeTest behind a layer, with FileSystem
-		// STUBBED OUT" — so its `payload` never reads the temp event file these
-		// cases write, and the `NodeFileSystem.layer` merged below would not reach
-		// it. Seeding `GITHUB_EVENT_PATH` and getting an empty payload back is the
-		// false green this harness exists to avoid.
+		// STUBBED OUT" — so its `payload` never reads the seeded event file these
+		// cases rely on, and the FileSystem merged below would not reach it.
+		// Seeding `GITHUB_EVENT_PATH` and getting an empty payload back is the
+		// false green this harness exists to avoid. The implementation only has to
+		// be a real one; it does not have to be the host's.
 		Layer.effect(ActionEnvironment)(
 			ActionEnvironment.makeTest({
 				GITHUB_SHA: sha,
@@ -265,7 +277,7 @@ const runDetectFull = (params: FullParams): Promise<PhaseDetectionResult> => {
 				GITHUB_SERVER_URL: "https://github.com",
 				GITHUB_API_URL: "https://api.github.com",
 			}),
-		).pipe(Layer.provide(NodeFileSystem.layer)),
+		).pipe(Layer.provide(fileSystem)),
 		PullRequest.layerTest({
 			listAssociatedWithCommit: () =>
 				associated === undefined
@@ -274,7 +286,7 @@ const runDetectFull = (params: FullParams): Promise<PhaseDetectionResult> => {
 			list: () => Effect.succeed([]),
 		}),
 		Layer.succeed(Repo, RepoRef.make({ owner: "owner", repo: "repo" })),
-		NodeFileSystem.layer,
+		fileSystem,
 	);
 
 	return Effect.runPromise(
@@ -283,7 +295,7 @@ const runDetectFull = (params: FullParams): Promise<PhaseDetectionResult> => {
 			targetBranch: TARGET_BRANCH,
 			...params.options,
 		}).pipe(Effect.provide(layer), Effect.provide(Logger.layer([]))),
-	).finally(() => rmSync(tmp, { recursive: true, force: true }));
+	);
 };
 
 const makeAssociatedPR = (over: Partial<PullRequestInfo> = {}): PullRequestInfo =>
@@ -386,7 +398,7 @@ describe("detectWorkflowPhase — event-driven phases", () => {
 	it("falls back to an empty payload when GITHUB_EVENT_PATH points at a missing file", async () => {
 		const result = await runDetectFull({
 			ref: "refs/heads/some-feature",
-			eventPathOverride: join(tmpdir(), "does-not-exist-detect-phase.json"),
+			unseededEventPath: "/does-not-exist-detect-phase.json",
 		});
 
 		expect(result.phase).toBe("none");
@@ -394,16 +406,10 @@ describe("detectWorkflowPhase — event-driven phases", () => {
 	});
 
 	it("falls back to an empty payload when the event file holds malformed JSON", async () => {
-		const tmp = mkdtempSync(join(tmpdir(), "detect-bad-"));
-		const bad = join(tmp, "event.json");
-		writeFileSync(bad, "{ not valid json");
-		try {
-			const result = await runDetectFull({ ref: "refs/heads/some-feature", eventPathOverride: bad });
-			expect(result.phase).toBe("none");
-			expect(result.commitMessage).toBe("");
-		} finally {
-			rmSync(tmp, { recursive: true, force: true });
-		}
+		const result = await runDetectFull({ ref: "refs/heads/some-feature", rawEvent: "{ not valid json" });
+
+		expect(result.phase).toBe("none");
+		expect(result.commitMessage).toBe("");
 	});
 });
 
