@@ -1,8 +1,9 @@
 import { ScriptedSpawner } from "@effected/commands";
 import { Git } from "@effected/git";
 import { ActionOutputs, ActionState, ActionStateError } from "@effected/github-actions";
+import { MemoryFileSystem } from "@effected/memfs";
 import { Changesets } from "@savvy-web/silk-effects";
-import { Effect, Exit, FileSystem, Layer, Logger } from "effect";
+import { Effect, Exit, Layer, Logger } from "effect";
 import type { ChildProcessSpawner } from "effect/unstable/process";
 import { describe, expect, it } from "vitest";
 import { CHANGELOG_MODULES, runNativeVersion } from "../src/utils/native-version.js";
@@ -26,9 +27,17 @@ const inspectorValid = Changesets.makeConfigInspectorTest({
 	legacyVersionFilesUsed: false,
 });
 
-const fsWithConfig = FileSystem.layerNoop({
-	exists: (path) => Effect.succeed(path.endsWith(".changeset/config.json")),
-});
+/**
+ * A volume carrying the changeset config the gate probes for, at the exact
+ * path `runNativeVersion("/repo")` derives.
+ *
+ * @remarks
+ * Its predecessor answered `exists` by suffix (`path.endsWith(...)`), so the
+ * gate's path derivation was never actually pinned — any project directory
+ * would have satisfied it. Seeded absolutely, `/repo` is the only directory
+ * the gate can find a config in.
+ */
+const fsWithConfig = MemoryFileSystem.layerWith({ "/repo/.changeset/config.json": "{}" });
 
 /**
  * A spawner that FAILS any spawn. The predecessor's `CommandRunnerTest`
@@ -294,7 +303,8 @@ describe("runNativeVersion", () => {
 	});
 
 	it("skips the config gate when no .changeset/config.json exists", async () => {
-		const fsNoConfig = FileSystem.layerNoop({ exists: () => Effect.succeed(false) });
+		// An empty volume: nothing is seeded, so the config genuinely is not there.
+		const fsNoConfig = MemoryFileSystem.layer;
 		// Inspector that would fail if consulted — proves the gate short-circuits.
 		const inspectorUnused = Layer.succeed(Changesets.ConfigInspector, {
 			inspect: () => Effect.die("inspect must not be called when config is absent"),

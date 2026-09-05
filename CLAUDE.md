@@ -18,7 +18,7 @@ Load design docs when working on the relevant subsystem:
 
 The **publish-validation crash path is fixed** ([issue #216](https://github.com/savvy-web/silk-release-action/issues/216)): a crash now returns `crashedPublishValidation`, carrying an `error` finding per affected check, so it reports red instead of ✅ 5/5. Its characterization tests were converted to assert the fixed behaviour.
 
-The **other Phase-2 degradation paths are still live** — a crashed issue-linking step, a check run that could not be created, a failed comment write, and a failed pull-request lookup all still degrade silently. They remain pinned by 10 `CHARACTERIZATION` tests written to fail when *their* fix lands. Load *Degradation semantics (issue #216)* in `architecture.md` and its companion in `testing.md` before changing a `steps/*` failure posture, or you will "fix" a test that is deliberately pinning a bug.
+The **other Phase-2 degradation paths are still live** — a crashed issue-linking step, a check run that could not be created, a failed comment write, and a failed pull-request lookup all still degrade silently. They remain pinned by **10 `CHARACTERIZATION` test cases across four files**, each written to fail when *their* fix lands — 7 pinning the degradation paths themselves (`link-issues-and-build-steps.test.ts`, `per-step-checks.test.ts`, `publish-validation-report.test.ts`) and 3 pinning adjacent reporting oddities in `validation-checks.test.ts`. Count test **cases**: grepping `CHARACTERIZATION` returns 18 lines across the test tree, because block comments and two historical `Was \`CHARACTERIZATION — …\`` notes in `publish-validation.test.ts` (whose own pins were fixed and converted) match too. Load *Degradation semantics (issue #216)* in `architecture.md` and its companion in `testing.md` before changing a `steps/*` failure posture, or you will "fix" a test that is deliberately pinning a bug.
 
 Two rules the fix established, both load-bearing: a degraded step contributes a **finding** rather than flipping a boolean (flipping `publishOk` would double-count the build-failed path), and `Effect.catch` must never be widened to `catchCause` — a defect killing the phase is the last honest failure signal.
 
@@ -62,6 +62,7 @@ For full architecture, module dependency graph, and per-module documentation: `@
 | `strict-warnings` | No | `false` | Escalate warnings to failures (blocks auto-merge) |
 | `sbom-config` | No | `""` | SBOM metadata JSON (schema-validated) |
 | `custom-registries` | No | `""` | Custom registry auth (one per line) |
+| `on-build` | No | `""` | Command run after the validation build; a non-zero exit fails Phase 2. Gate only — exit code is read, stderr is not; must not mutate the repo. Skipped in dry-run along with the build it gates; unset is a total no-op |
 
 ### Authentication Model
 
@@ -103,7 +104,7 @@ Load before linking a local library build, when a duplicate copy shows up in the
 
 All in-progress feature work lands on a long-lived **`dev`** branch, never directly on `main`. `main` always reflects the last released state.
 
-The shared release workflow at `savvy-web/.github/.github/workflows/release.yml` has a matching **`dev` branch**. Consumer repos pin their calling workflow to it (`uses: savvy-web/.github/.github/workflows/release.yml@dev`) so they exercise in-progress workflow changes before they reach `main`. This repo's own `release.yml` and the end-to-end test repo `savvy-web/silk-integration` both pin `@dev` (see [Integration Testing](#integration-testing) and the dogfooding procedure above — Spencer initiates the integration runs).
+The shared release workflow at `savvy-web/.github/.github/workflows/release.yml` has a matching **`dev` branch**. Consumer repos pin their calling workflow to it (`uses: savvy-web/.github/.github/workflows/release.yml@dev`) so they exercise in-progress workflow changes before they reach `main`. The end-to-end test repo `savvy-web/silk-integration` pins `@dev`; **this repo's own `release.yml` pins `@main`** — the action under development is already the thing being tested here, and pinning the caller to `@dev` too would make a failed run ambiguous between the two. (See [Integration Testing](#integration-testing) and the dogfooding procedure above — Spencer initiates the integration runs.)
 
 ### Flow: `dev` → `main` → release
 
@@ -111,11 +112,17 @@ The shared release workflow at `savvy-web/.github/.github/workflows/release.yml`
 2. The push to `main` triggers **Phase 1** — changeset detection creates/updates `changeset-release/main` and the release PR.
 3. Pushes to the release branch trigger **Phase 2** validation (build, publish dry-runs, release-notes preview, sticky comment).
 4. Merging the release PR triggers **Phase 3** — publishing, Git tags, and a published GitHub release.
-5. The published release fires `release-sync.yml` (below), which closes the loop by resetting `dev` back to `main`.
+5. The push to `main` that merged the release PR fires `branch-sync.yml` (below), which closes the loop by evening `dev` out with `main`.
 
-### `release-sync.yml` — post-release housekeeping
+### `branch-sync.yml` — branch-pair housekeeping
 
-Triggered by `release: [published]` (plus `workflow_dispatch` with `tag` + `dry-run`). Runs as the App bot so pushes bypass protection and don't recurse. On a **stable SemVer release `>= 1.0.0`** (bare `MAJOR.MINOR.PATCH`) it moves the **`v<major>`** alias tag to the released commit and **hard-resets `dev` to `main` HEAD** — a genuine clobber, safe only because `dev` work always lands in `main` first. Each push is skipped when the ref already points at its target. Prerelease, build-metadata, sub-`1.0.0` and non-SemVer tags are no-ops.
+Replaces the former `release-sync.yml`. Three concerns, three jobs, all running as the App bot so pushes bypass protection without recursing:
+
+- **`promote`** — a `pnpm/config-deps` merge into `dev` opens or refreshes the `dev` → `main` PR with auto-merge.
+- **`sync-dev`** — **any push to `main`** evens `dev` out with it. It keys off *`main` moving*, not off a release being published: a push to `main` that produces no release (a dependency promotion with no changeset) still has to even the branches out, and the old release-triggered form missed exactly that case. Merging `changeset-release/main` is itself a push to `main`, so the release path stays covered.
+- **`major-tag`** — a published release moves the **`v<major>`** alias tag to the released commit.
+
+`dev` is **force-reset only when git proves by patch-id that it holds nothing `main` lacks** — the unconditional hard reset the predecessor performed is gone. A `dev` that is genuinely ahead is preparing a release: it gets rebased, and if the rebase conflicts nothing is touched at all.
 
 ## Common Commands
 
@@ -132,19 +139,23 @@ pnpm lint:md:fix       # Markdown auto-fix
 ### Type Checking
 
 ```bash
-pnpm typecheck         # Run tsgo --noEmit via Turbo
+pnpm typecheck         # turbo run types:check (cached)
+pnpm types:check       # tsc --noEmit directly, no cache
 ```
 
-`tsgo` is the TypeScript native preview build, invoked via Turbo for caching.
+`tsc --noEmit` is the checker; Turbo wraps it as the `types:check` task for caching. (`tsgo`, the native preview build, is no longer used here.)
 
 ### Testing
 
 ```bash
 pnpm test                              # Run all tests
-pnpm test --watch                      # Watch mode
-pnpm test --coverage                   # With coverage report
-pnpm ci:test                           # CI mode with coverage
+pnpm test:watch                        # Watch mode
+pnpm test:coverage                     # With coverage report
+pnpm check:collection                  # Collection gate only
+pnpm ci:test                           # The gate, then the suite with coverage
 ```
+
+`ci:test` runs `scripts/check-test-collection.mjs` **before** vitest. A `*.test.ts` the runner's project discovery skips does not run, does not fail and does not appear in any report — the suite stays green over tests that never ran, and `--pass-with-no-tests` means collecting *nothing* also exits 0. The script asks vitest what it actually collected (`vitest list --json`) and diffs that against what is on disk, so it catches an exclusion rule nobody has learned about yet. `__test__/test-placement.test.ts` covers the same ground from the other side, against a known list of sanctioned directories.
 
 A CLI file argument does **not** filter to a single file here (vitest projects are discovered via the vitest-agent plugin) — to run specific files, use the vitest-agent MCP `run_tests` tool with a `files` array.
 
@@ -163,7 +174,7 @@ Husky with lint-staged processes staged files on commit:
 - Markdown linted with `markdownlint-cli2`
 - Shell scripts have executable bits removed
 - YAML formatted with Prettier, validated with `yaml-lint`
-- TypeScript changes trigger `tsgo --noEmit`
+- TypeScript changes trigger `tsc --noEmit`
 
 Hooks skip in CI (`GITHUB_ACTIONS=1`) and during rebase/squash (except final commit).
 
@@ -171,7 +182,7 @@ Hooks skip in CI (`GITHUB_ACTIONS=1`) and during rebase/squash (except final com
 
 ### Biome Configuration
 
-Strict rules enforced (see `biome.jsonc`):
+Strict rules enforced (see `biome.json`):
 
 - Tabs, width 2 | Line width 120
 - Lexicographic import ordering
@@ -204,19 +215,30 @@ Conventional Commits format enforced via commitlint (`@commitlint/config-convent
 
 ## Shared Actions and Workflows
 
-Composite actions in `.github/actions/`: **release** (release environment setup/orchestration) and **local** (local variant for this repo).
+**There is no `.github/actions/` directory.** The canon's `persistLocal` slot — which would emit a `.github/actions/local` composite for an `act` smoke loop — is **deliberately disabled** in `action.config.ts`: we do not run `act` locally, and committing a second copy of the bundle only adds weight to every checkout of the action. `act-test.yml` was removed with it rather than left pointing at a build that is never produced. Re-enabling `persistLocal` is a decision to start using `act`, not a default to restore.
 
-Workflows in `.github/workflows/`: `claude.yml` (@claude mentions), `project-listener.yml` (reusable, adds items to GitHub Projects), `release.yml` (this repo's release), `release-sync.yml` (post-release housekeeping, above). This repository uses the **simple release workflow** (private repo, no NPM packages).
+Workflows in `.github/workflows/`:
+
+| Workflow | Purpose |
+| -------- | ------- |
+| `release.yml` | This repo's own release; calls the shared workflow at `savvy-web/.github` pinned `@main` |
+| `branch-sync.yml` | `dev`/`main` branch-pair housekeeping (above) |
+| `silk-update.yml` | Config-dependency updates onto `pnpm/config-deps` (scheduled trigger currently commented out; `workflow_dispatch` only) |
+| `claude.yml` | @claude mentions |
+| `project-listener.yml` | Reusable; adds items to GitHub Projects |
+| `dco.yml` | Developer Certificate of Origin sign-off check |
+
+This repository uses the **simple release workflow** (private repo, no NPM packages).
 
 ## Project Structure
 
-`src/` (see [Source layout](#silk-release-action) above and `src/CLAUDE.md`), `__test__/` (all tests — singular, see `__test__/CLAUDE.md`), `.claude/{commands,design}/`, `.github/{actions,workflows,ISSUE_TEMPLATE}/`, `.changeset/`, `.husky/`, and root configs (`biome.jsonc`, `tsconfig.json`, `turbo.json`, `action.yml`, `action.config.ts`).
+`src/` (see [Source layout](#silk-release-action) above and `src/CLAUDE.md`), `__test__/` (all tests — singular, see `__test__/CLAUDE.md`), `.claude/{design,plans,skills}/`, `.github/{workflows,instructions,scripts,ISSUE_TEMPLATE}/`, `lib/{configs,scripts,turbo}/`, `scripts/`, `types/`, `docs/`, `schemas/`, `.changeset/`, `.husky/`, and root configs (`biome.json`, `tsconfig.json`, `turbo.json`, `vitest.config.ts`, `action.yml`, `action.config.ts`).
 
 ## Adding New Workflows/Actions
 
 ### TypeScript Actions (Preferred)
 
-Write action logic in TypeScript for type safety and testability. Create in `.github/actions/action-name/` with `action.yml`.
+Write action logic in TypeScript for type safety and testability. A new composite or TypeScript action gets its own `.github/actions/<action-name>/` directory with an `action.yml`; no such directory exists today (see [Shared Actions and Workflows](#shared-actions-and-workflows)).
 
 ### Reusable Workflows
 
@@ -229,17 +251,19 @@ Create in `.github/workflows/` with `workflow_call` trigger. Document required s
 
 ## Turborepo Configuration
 
-- Daemon enabled | Strict environment mode
-- Global passthrough: `GITHUB_ACTIONS`, `GITHUB_OUTPUT`
-- `//#typecheck:all` (root, cached) | `typecheck` (package-level, depends on root)
+- Strict environment mode | Global passthrough: `GITHUB_ACTIONS`, `CI`
+- Two tasks, both cached: **`types:check`** (`tsc --noEmit`, no dependencies) and **`build:prod`** (`github-action-builder build` → `dist/**`, `dependsOn: ["types:check"]`)
+- `types:check`'s `inputs` must mirror the `include` of the tsconfig `tsc` actually resolves (`@savvy-web/github-action-builder/tsconfig/action.json`), which covers `__test__/**` as well as `src/**`. When they drifted apart, a test-only change hit a cached FULL TURBO and reported a green typecheck without running one. The comment in `turbo.json` records this; keep the two lists in step.
 
 ## Environment Variables
 
 Strict environment mode in Turbo. Declare new env vars in `turbo.json` under `globalPassThroughEnv` or task-specific `env`.
 
-## Custom Claude Commands
+## Claude Code tooling
 
-In `.claude/commands/`: `/lint`, `/typecheck`, `/tsdoc`, `/fix-issue`, `/pr-review`, `/build-fix`, `/test-fix`, `/turbo-check`, `/package-setup`.
+**There is no `.claude/commands/` directory.** Repo-specific commands were replaced by plugin skills and agents: the **silk** plugin (`/silk:*` skills, the `savvy-mcp` tools, `changeset-manager`/`turborepo`/`tsdoctor` agents), the **effected** plugin (the Effect v4 and GitHub-Actions skill suites plus the `action-engineer`, `effect-developer`, `effect-reviewer` and `effect-migrator` agents), **design-docs**, and **vitest-agent**. `pnpm claude` launches Claude Code with the local effected plugin directory linked (`--plugin-dir=../../spencerbeggs/effected/plugins/claude-code`), so plugin changes are dogfooded before release.
+
+`.claude/` holds `design/` (the design docs above), `plans/`, `skills/effected-construct-index`, `cache/` and `dogfood/`.
 
 ## GitHub App Configuration
 

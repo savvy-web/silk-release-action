@@ -3,9 +3,13 @@
  *
  * @remarks
  * `ReleaseOutput` is a `Schema.Union` of three phase structs, discriminated by
- * the `phase` literal. It is the single source of truth: the committed
- * `silk-release-action.output.schema.json` is generated from it, and
- * `main.ts` emits a Schema-encoded instance as the `result` action output.
+ * the `phase` literal. It is the single source of truth: the committed,
+ * **version-labelled** document at `schemas/<version>/silk-release-action-<version>.json`
+ * (`schemas/5.0.0/silk-release-action-5.0.0.json` today) is generated from it,
+ * and `main.ts` emits a Schema-encoded instance as the `result` action output.
+ * There is no unversioned `silk-release-action.output.schema.json`; the label
+ * is what keeps an emitted payload's `$schema` resolving to the shape it was
+ * written against.
  *
  * Field order matters — `setJson` serialises in declaration order, so `$schema`
  * is declared first in every phase struct.

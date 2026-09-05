@@ -43,9 +43,10 @@ import {
 	RepoRef,
 } from "@effected/github";
 import { ActionEnvironment, ActionOutputs, DryRun } from "@effected/github-actions";
+import { MemoryFileSystem } from "@effected/memfs";
 import { PublishabilityDetector, WorkspaceDiscovery } from "@effected/workspaces";
 import { Changesets, PrBody } from "@savvy-web/silk-effects";
-import { DateTime, Effect, FileSystem, Layer, Logger, Option } from "effect";
+import { DateTime, Effect, Layer, Logger, Option } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ChangesetConfig } from "../src/release/changeset-config.js";
 import type { LinkedIssue, UpdateReleaseBranchResult } from "../src/utils/update-release-branch.js";
@@ -286,7 +287,6 @@ const gitScript = (options: GitOptions) => {
 const runStage = async (
 	f: Fixtures,
 	git: GitOptions = { porcelain: PORCELAIN_CHANGED },
-	changesetFiles: ReadonlyArray<string> = [],
 	plannerLayer: Layer.Layer<Changesets.ReleasePlanner> = releasePlannerStub,
 	/** Overrides on top of the seeded `GITHUB_*` block — e.g. a GHES host. */
 	envOverrides: Readonly<Record<string, string>> = {},
@@ -452,11 +452,17 @@ const runStage = async (
 				}),
 		}),
 		Layer.succeed(Repo, RepoRef.make({ owner: "owner", repo: "repo" })),
-		FileSystem.layerNoop({
-			exists: () => Effect.succeed(false),
-			readDirectory: () => Effect.succeed([...changesetFiles]),
-			readFileString: () => Effect.succeed("file contents"),
-		}),
+		// A volume seeded with the ONE path this stage actually reads:
+		// `package.json`, arriving both as the `-z` status entry and as the
+		// single-package version probe. Its predecessor answered EVERY read with
+		// "file contents" and EVERY directory listing with a changeset name
+		// whatever directory was asked for, so the committed path was not pinned.
+		//
+		// The stage no longer lists `.changeset/` — the changeset-file scan was
+		// replaced by the commit walk — so nothing is seeded there. Reseeding
+		// `/package.json` as `/nope.json` fails this file; that is the check that
+		// the path is pinned rather than merely plausible.
+		MemoryFileSystem.layerWith({ "/package.json": "file contents" }),
 		workspaceDiscoveryStub,
 		publishabilityDetectorStub,
 		changesetConfigStub,
@@ -530,7 +536,7 @@ describe("updateReleaseBranch", () => {
 			prs: [{ number: 42, head: RELEASE_BRANCH, base: TARGET_BRANCH, state: "open" }],
 		});
 
-		await runStage(f, withCommit, [], releasePlannerStub, {
+		await runStage(f, withCommit, releasePlannerStub, {
 			GITHUB_SERVER_URL: "https://ghes.acme.internal",
 		});
 
@@ -767,7 +773,7 @@ describe("updateReleaseBranch", () => {
 			issueDetails: [{ number: 55, title: "Linked bug", state: "open", url: "https://x/55", nodeId: "I_55" }],
 		});
 
-		const { result } = await runStage(f, { porcelain: PORCELAIN_CHANGED }, ["feat.md"]);
+		const { result } = await runStage(f, { porcelain: PORCELAIN_CHANGED });
 
 		expect(result.linkedIssues.map((i: LinkedIssue) => i.number)).toContain(55);
 	});
@@ -786,7 +792,7 @@ describe("updateReleaseBranch", () => {
 			],
 		});
 
-		const { result } = await runStage(f, { porcelain: PORCELAIN_CHANGED }, ["feat.md"]);
+		const { result } = await runStage(f, { porcelain: PORCELAIN_CHANGED });
 
 		expect(result.linkedIssues.map((i: LinkedIssue) => i.number)).toEqual([55]);
 	});
@@ -851,6 +857,6 @@ describe("updateReleaseBranch", () => {
 		const f = makeFixtures();
 		const failingPlanner = Changesets.makeReleasePlannerTest({});
 
-		await expect(runStage(f, withCommit, [], failingPlanner)).rejects.toThrow(/ReleasePlanError|not provided/);
+		await expect(runStage(f, withCommit, failingPlanner)).rejects.toThrow(/ReleasePlanError|not provided/);
 	});
 });

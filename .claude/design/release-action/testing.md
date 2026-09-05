@@ -4,8 +4,8 @@ category: testing
 status: current
 completeness: 90
 created: 2026-02-07
-updated: 2026-08-27
-last-synced: 2026-08-27
+updated: 2026-09-04
+last-synced: 2026-09-04
 module: release-action
 related:
   - architecture.md
@@ -145,6 +145,20 @@ Unexercised members are stubbed with `Effect.die(...)` so an accidental call fai
 
 **The subprocess seam is a `ChildProcessSpawner`, not a command map.** The predecessor's `CommandRunnerTest` returned a default success (exit 0) for any unregistered command, which meant a code path that shelled out to something the test never anticipated silently passed. Suites that care now provide a spawner that **fails any spawn** (`native-version.test.ts`) or one that asserts on the exact argv (`validate-builds.test.ts`), so "this path must not run a command" and "this path runs *this* command" are both assertable.
 
+**The filesystem seam is `@effected/memfs`, not a stubbed `FileSystem.layerNoop`.** Every volume-modelling double provides `MemoryFileSystem.layer` (an empty volume) or `MemoryFileSystem.layerWith({ … })` seeded with the files the flow genuinely reads; `MemoryFileSystem.file(content, { mode })` carries an exec bit and `MemoryFileSystem.directory()` seeds a directory. Relative reads (`"package.json"`, `"biome.jsonc"`) resolve from the volume root, so a seed is that same name rooted at `/`.
+
+This replaced seven `FileSystem.layerNoop({ … })` stubs, and the swap is load-bearing rather than cosmetic — each old stub answered *plausibly* for paths the code should never have asked for, so a whole class of mutant survived:
+
+- `format-workspace`'s `exists: (path) => files.some((f) => path.endsWith(f))` could not tell a root config from a nested one. Reseeding the volume at `/nested/<file>` now kills 4 tests; under the suffix match that mutant survived.
+- `create-release-branch` / `update-release-branch`'s blanket `readFileString: () => "file contents"` answered *any* path. Reseeding `/package.json` as `/nope.json` now kills 12 tests with the real `NotFound` production sees; before, a stage reading the wrong path was invisible.
+- `detect-workflow-phase`'s `readFileString: () => "{}"` could not distinguish "never called" from "called and answered". An empty volume passing is now positive evidence that nothing in that flow reads a file.
+
+Two `as never` casts in `porcelain-changes.test.ts` went with them: an absent file now fails with the typed `NotFound` rather than a hand-forged error shape.
+
+**No host-filesystem double remains.** `detect-workflow-phase.test.ts`'s event-payload cases used to build a real temp directory, because `ActionEnvironment.makeTest` reads `GITHUB_EVENT_PATH` through a genuine `FileSystem` — `layerTest` stubs it out, so the payload would never be read and seeding the path would return empty. The constraint is that the implementation must be *real*, not that it must be the *host's*: `MemoryFileSystem` satisfies it. The volume is provided as one layer value in both places it is needed — under `ActionEnvironment` via `Layer.provide`, and merged for the program — so the two provisions memoize onto the same volume instead of building two that could drift.
+
+Each case seeds exactly one of three shapes, which the old harness conflated behind a single `eventPathOverride`: a JSON payload, raw bytes that are deliberately not JSON, or a path deliberately left unseeded. Seeding the payload at a path `GITHUB_EVENT_PATH` does not name kills 3 tests — the check that the payload is genuinely read rather than the harness quietly returning empty.
+
 ### `@effect/vitest` — `it.effect` vs plain `it()`
 
 Part of the suite runs Effects through `it.effect` from `@effect/vitest` (which re-exports all of Vitest, so `describe` / `expect` / `vi` come from the same import). The rest is deliberately still on plain `vitest`. **The split is a rule, not an accident of how far a migration got**; the full rules live in `__test__/CLAUDE.md`. In summary:
@@ -174,7 +188,7 @@ The input guard additionally enforces that each input is read in exactly one pla
 
 ### Characterization Tests
 
-10 tests across four files are marked `CHARACTERIZATION`. They pin **what the code does today, not what it should do**; where the two differ the test still pins today's behaviour, says so in a comment, and is written to fail when the fix lands.
+10 test **cases** across four files are marked `CHARACTERIZATION` (a raw grep for the word returns 18 lines — block comments and the two converted-pin notes in `publish-validation.test.ts` match as well; count `it("CHARACTERIZATION` titles, not lines). They pin **what the code does today, not what it should do**; where the two differ the test still pins today's behaviour, says so in a comment, and is written to fail when the fix lands.
 
 They exist because these paths received their **first-ever coverage** in the `main.ts` split. The logic lived inline in a 624-line orchestrator that no test executed — replacing that whole body with `Effect.die` left the suite green. Writing characterization tests first, before changing behaviour, is what makes the eventual fix a reviewable diff rather than an unverifiable rewrite.
 

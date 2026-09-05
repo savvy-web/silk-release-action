@@ -66,6 +66,9 @@ catalogs:
     '@effected/markdown':
       specifier: ^0.8.0
       version: 0.8.0
+    '@effected/memfs':
+      specifier: ^0.5.0
+      version: 0.5.0
     '@effected/npm':
       specifier: ^0.12.1
       version: 0.12.1
@@ -153,6 +156,9 @@ importers:
       '@effect/vitest':
         specifier: catalog:effect
         version: 4.0.0-rc.109(effect@4.0.0-rc.109)(vitest@4.1.11)
+      '@effected/memfs':
+        specifier: catalog:effected
+        version: 0.5.0(effect@4.0.0-rc.109)
       '@effected/schemastore':
         specifier: catalog:effected
         version: 0.4.0(effect@4.0.0-rc.109)
@@ -565,6 +571,12 @@ packages:
         optional: true
       '@effected/yaml':
         optional: true
+
+  '@effected/memfs@0.5.0':
+    resolution: {integrity: sha512-QGtsYDss8i53GptLQFi99HRKNoWJdLHRhKpFVCL+e8JITnYU4KcmpTcHSBD6CNu6c6YBD4+N/mFZx4gy6p5Nvg==}
+    engines: {node: '>=24.11.0'}
+    peerDependencies:
+      effect: 4.0.0-rc.109
 
   '@effected/npm@0.12.1':
     resolution: {integrity: sha512-bHV0iTYQv/9MZ3wxdZnzii43pxhpoKgQva2A5Ahg0aJvHa3EEHaOaGXnxre8HUSgzSbK2RzKLkrynVnkH5VNRA==}
@@ -3891,6 +3903,10 @@ snapshots:
       '@effected/jsonc': 0.8.1(effect@4.0.0-rc.109)
       '@effected/toml': 0.5.0(effect@4.0.0-rc.109)
       '@effected/yaml': 0.12.0(effect@4.0.0-rc.109)
+
+  '@effected/memfs@0.5.0(effect@4.0.0-rc.109)':
+    dependencies:
+      effect: 4.0.0-rc.109
 
   '@effected/npm@0.12.1(@effected/semver@0.5.0(effect@4.0.0-rc.109))(effect@4.0.0-rc.109)':
     dependencies:

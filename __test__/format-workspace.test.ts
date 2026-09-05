@@ -15,7 +15,9 @@
 
 import type { ScriptResult } from "@effected/commands";
 import { ScriptedSpawner, ToolDiscovery } from "@effected/commands";
-import { Effect, Exit, FileSystem, Layer, Logger } from "effect";
+import { MemoryFileSystem } from "@effected/memfs";
+import type { FileSystem } from "effect";
+import { Effect, Exit, Layer, Logger } from "effect";
 import { describe, expect, it } from "vitest";
 import { formatWorkspaceWithBiome } from "../src/utils/format-workspace.js";
 
@@ -26,8 +28,19 @@ interface Options {
 	readonly format?: ScriptResult;
 }
 
+/**
+ * A volume holding exactly the named config files at the repo root.
+ *
+ * @remarks
+ * The predecessor answered `exists` with `path.endsWith(f)`, which is a
+ * *suffix* match: it would have answered `true` for `nested/dir/biome.json`
+ * just as readily as for the root config the module actually probes. A volume
+ * seeded at the paths `formatWorkspaceWithBiome` reads (`biome.jsonc` /
+ * `biome.json`, relative, so resolved from the volume's root) makes the probe
+ * exact — nothing else on the volume can satisfy it.
+ */
 const fsWith = (files: string[]): Layer.Layer<FileSystem.FileSystem> =>
-	FileSystem.layerNoop({ exists: (path: string) => Effect.succeed(files.some((f) => path.endsWith(f))) });
+	MemoryFileSystem.layerWith(Object.fromEntries(files.map((file) => [`/${file}`, ""])));
 
 const run = async (
 	files: string[],
