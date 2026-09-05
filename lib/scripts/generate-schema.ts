@@ -6,11 +6,14 @@
  * (`ReleaseOutput` — the action's structured output) and
  * `src/schema/silk-release-config.ts` (`SilkReleaseConfig` — the
  * `sbom-config`/`.github/silk-release.json`/`SILK_RELEASE_SBOM_TEMPLATE`
- * input) are the single sources of truth. This script serialises them to
- * two SchemaStore-compatible JSON Schema documents at the repository root:
+ * input) are the single sources of truth. This script serialises them to two
+ * SchemaStore-compatible JSON Schema documents:
  *
- * - `silk-release-action.output.schema.json` — from `ReleaseOutput`
- * - `silk-release-action.input.schema.json`  — from `SilkReleaseConfig`
+ * - `schemas/<version>/silk-release-action-<version>.json` — from
+ *   `ReleaseOutput`, **version-labelled** because every emitted payload's
+ *   `$schema` points at it (see {@link SCHEMA_SEMVER})
+ * - `silk-release-action.input.schema.json` — from `SilkReleaseConfig`, at the
+ *   repository root, unversioned because nothing pins it per payload
  *
  * Everything below {@link targets} belongs to `@effected/schemastore`:
  * `SchemaPipeline.run` builds each document (core's `Schema.toJsonSchemaDocument`

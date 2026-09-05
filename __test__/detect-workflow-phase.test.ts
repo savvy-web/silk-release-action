@@ -15,7 +15,8 @@ import { join } from "node:path";
 import { NodeFileSystem } from "@effect/platform-node";
 import { GitHubError, PullRequest, PullRequestInfo, Repo, RepoRef } from "@effected/github";
 import { ActionEnvironment } from "@effected/github-actions";
-import { DateTime, Effect, FileSystem, Layer, Logger, Option } from "effect";
+import { MemoryFileSystem } from "@effected/memfs";
+import { DateTime, Effect, Layer, Logger, Option } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PhaseDetectionOptions, PhaseDetectionResult } from "../src/utils/detect-workflow-phase.js";
 import { detectWorkflowPhase } from "../src/utils/detect-workflow-phase.js";
@@ -97,7 +98,11 @@ const runDetect = (f: Fixtures): Promise<PhaseDetectionResult> => {
 			list: () => Effect.succeed(f.prs),
 		}),
 		Layer.succeed(Repo, RepoRef.make({ owner: "owner", repo: "repo" })),
-		FileSystem.layerNoop({ readFileString: () => Effect.succeed("{}") }),
+		// An empty volume. `detectWorkflowPhase` itself reads no files — this only
+		// satisfies the `FileSystem` requirement its dependencies carry — so nothing
+		// is seeded, and a read that DID happen would fail typed rather than being
+		// answered `"{}"` by a stub that could not tell one path from another.
+		MemoryFileSystem.layer,
 	);
 
 	return Effect.runPromise(

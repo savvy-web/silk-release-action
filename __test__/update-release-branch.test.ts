@@ -43,9 +43,10 @@ import {
 	RepoRef,
 } from "@effected/github";
 import { ActionEnvironment, ActionOutputs, DryRun } from "@effected/github-actions";
+import { MemoryFileSystem } from "@effected/memfs";
 import { PublishabilityDetector, WorkspaceDiscovery } from "@effected/workspaces";
 import { Changesets, PrBody } from "@savvy-web/silk-effects";
-import { DateTime, Effect, FileSystem, Layer, Logger, Option } from "effect";
+import { DateTime, Effect, Layer, Logger, Option } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ChangesetConfig } from "../src/release/changeset-config.js";
 import type { LinkedIssue, UpdateReleaseBranchResult } from "../src/utils/update-release-branch.js";
@@ -452,10 +453,16 @@ const runStage = async (
 				}),
 		}),
 		Layer.succeed(Repo, RepoRef.make({ owner: "owner", repo: "repo" })),
-		FileSystem.layerNoop({
-			exists: () => Effect.succeed(false),
-			readDirectory: () => Effect.succeed([...changesetFiles]),
-			readFileString: () => Effect.succeed("file contents"),
+		// A volume seeded with the pending changeset files the case names, plus
+		// the one path the stage actually reads (`package.json`, arriving both as
+		// the `-z` status entry and as the single-package version probe). Its
+		// predecessor answered EVERY read with "file contents" and EVERY directory
+		// listing with the changeset names whatever directory was asked for, so
+		// neither the changeset directory nor the committed path was pinned.
+		MemoryFileSystem.layerWith({
+			"/package.json": "file contents",
+			"/.changeset": MemoryFileSystem.directory(),
+			...Object.fromEntries(changesetFiles.map((name) => [`/.changeset/${name}`, "file contents"])),
 		}),
 		workspaceDiscoveryStub,
 		publishabilityDetectorStub,

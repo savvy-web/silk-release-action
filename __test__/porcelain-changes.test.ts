@@ -20,21 +20,38 @@
  */
 
 import { StatusEntry } from "@effected/git";
-import type { Layer } from "effect";
-import { Effect, FileSystem } from "effect";
+import { MemoryFileSystem } from "@effected/memfs";
+import type { FileSystem, Layer } from "effect";
+import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 import { collectPorcelainChanges } from "../src/utils/porcelain-changes.js";
 
-/** A `FileSystem` whose reads answer from a map, and fail for anything absent. */
+/**
+ * A volume seeded with exactly the files the case names.
+ *
+ * @remarks
+ * The predecessor hand-rolled this over `FileSystem.layerNoop`, and both of its
+ * stubs had to lie to typecheck: the absent-file failure was
+ * `new Error(...) as never`, and `stat` answered `{ mode } as never` for every
+ * path — including ones nothing seeded. A real volume needs neither cast.
+ * Absence now fails with the same typed `NotFound` production sees, and a
+ * `stat` of an unseeded path fails rather than fabricating a mode.
+ *
+ * Paths arrive relative (`"package.json"`), which the volume resolves from its
+ * virtual root, so the seed keys are the same names rooted at `/`.
+ */
 const fsLayer = (
 	files: Record<string, string>,
 	executable: ReadonlyArray<string> = [],
 ): Layer.Layer<FileSystem.FileSystem> =>
-	FileSystem.layerNoop({
-		readFileString: (path: string) =>
-			path in files ? Effect.succeed(files[path]) : Effect.fail(new Error(`ENOENT: ${path}`) as never),
-		stat: (path: string) => Effect.succeed({ mode: BigInt(executable.includes(path) ? 0o100755 : 0o100644) } as never),
-	});
+	MemoryFileSystem.layerWith(
+		Object.fromEntries(
+			Object.entries(files).map(([path, content]) => [
+				`/${path}`,
+				MemoryFileSystem.file(content, { mode: executable.includes(path) ? 0o755 : 0o644 }),
+			]),
+		),
+	);
 
 /** One entry as `Git.status` reports it. */
 const entry = (xy: string, path: string, origPath?: string): StatusEntry =>

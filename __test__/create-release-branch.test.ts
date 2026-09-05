@@ -46,9 +46,10 @@ import {
 	RepoRef,
 } from "@effected/github";
 import { ActionEnvironment, ActionOutputs, DryRun } from "@effected/github-actions";
+import { MemoryFileSystem } from "@effected/memfs";
 import { PublishabilityDetector, WorkspaceDiscovery } from "@effected/workspaces";
 import { Changesets } from "@savvy-web/silk-effects";
-import { Effect, FileSystem, Layer, Logger, Option } from "effect";
+import { Effect, Layer, Logger, Option } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ChangesetConfig } from "../src/release/changeset-config.js";
 import type { CreateReleaseBranchResult } from "../src/utils/create-release-branch.js";
@@ -337,10 +338,12 @@ const runStage = async (
 				}),
 		}),
 		Layer.succeed(Repo, RepoRef.make({ owner: "owner", repo: "repo" })),
-		FileSystem.layerNoop({
-			exists: () => Effect.succeed(false),
-			readFileString: () => Effect.succeed("file contents"),
-		}),
+		// A volume holding exactly the one path the stage reads: `package.json`,
+		// which arrives both as the `-z` status entry committed to the branch and
+		// as the single-package version probe. Its predecessor answered EVERY read
+		// with "file contents" and every `exists` with false, so a stage that read
+		// a path nothing put there still got a plausible answer; here it fails.
+		MemoryFileSystem.layerWith({ "/package.json": "file contents" }),
 		workspaceDiscoveryStub,
 		publishabilityDetectorStub,
 		changesetConfigStub,

@@ -4,7 +4,7 @@ Unit testing patterns and infrastructure for silk-release-action.
 
 __See also:__ [Root CLAUDE.md](../CLAUDE.md) | [src/CLAUDE.md](../src/CLAUDE.md)
 
-__For comprehensive testing documentation:__ `@../.claude/design/release-action/testing.md` -- test-layer patterns, silk-effects test factories, all specialized patterns (fake timers, filesystem, workspaces sync APIs, GitHub context, summaries), the `__test__/unit/` mirrored layout, the integration fixture harness, the 10 remaining `CHARACTERIZATION` tests (issue #216 — its own pins are fixed and converted), and the coverage map.
+__For comprehensive testing documentation:__ `@../.claude/design/release-action/testing.md` -- test-layer patterns, silk-effects test factories, all specialized patterns (fake timers, filesystem, workspaces sync APIs, GitHub context, summaries), the `__test__/unit/` mirrored layout, the integration fixture harness, the 10 remaining `CHARACTERIZATION` test cases across four files (issue #216 — its own pins are fixed and converted; a raw grep returns 18 lines, so count `it("CHARACTERIZATION` titles), and the coverage map.
 
 ## Running Tests
 
@@ -132,10 +132,23 @@ Load before migrating any suite to `it.effect`.
   clarity, and churns diffs for no reader's benefit
 - Cover all code paths (branches, switch cases, error handling)
 - A test pinning known-wrong behaviour says `CHARACTERIZATION`, names the issue, and is written to
-  fail when the fix lands — 18 exist for issue #216. Do not "fix" one to make it pass
+  fail when the fix lands. __10 test cases__ across four files carry the marker: 7 pin the live
+  issue #216 degradation paths, 3 pin adjacent reporting oddities in `validation-checks.test.ts`.
+  Count `it("CHARACTERIZATION` titles, not grep lines — a raw grep returns 18, because block
+  comments and the two converted-pin notes in `publish-validation.test.ts` match too. Do not "fix"
+  one to make it pass
 - For retry logic in a __plain `it()`__ test, use `vi.useFakeTimers()` per-test (not globally) with
   `vi.advanceTimersByTimeAsync(60000)`, and always `vi.useRealTimers()` in `afterEach`. Do __not__
   combine fake timers with `it.effect`
+- __The filesystem double is `@effected/memfs`, never `FileSystem.layerNoop`.__ Provide
+  `MemoryFileSystem.layer` for an empty volume or `MemoryFileSystem.layerWith({ "/path": … })`
+  seeded with the files the flow actually reads (`MemoryFileSystem.file(content, { mode })` for an
+  exec bit, `MemoryFileSystem.directory()` for a directory). Relative reads resolve from the volume
+  root, so seed `"package.json"` as `/package.json`. A `layerNoop` stub that answers plausibly for
+  any path lets a mutant reading the WRONG path survive — see *Effect Service Doubles* in
+  `@../.claude/design/release-action/testing.md` for the three mutants this swap started killing.
+  The one deliberate exception is `detect-workflow-phase.test.ts`'s event-payload temp directory,
+  which needs the real filesystem for `ActionEnvironment.makeTest`
 - `vi.mock` must be imported from `"vitest"`, never through `@effect/vitest` — Vitest hoists it
   above all imports, so a re-exported binding is not yet initialized and the file dies at load with
   `Cannot access '__vi_import_1__' before initialization`, naming neither `vi` nor the package

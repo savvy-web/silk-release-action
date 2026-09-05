@@ -4,8 +4,8 @@ category: architecture
 status: current
 completeness: 95
 created: 2026-02-07
-updated: 2026-08-27
-last-synced: 2026-08-27
+updated: 2026-09-04
+last-synced: 2026-09-04
 module: release-action
 related:
   - integration.md
@@ -392,7 +392,7 @@ This phase exists separately from the close-linked-issues follow-on inside `step
 
 ### Post-Release Housekeeping (out of action)
 
-The published GitHub release this phase creates is consumed by a **repo-local workflow**, not by the action itself: `.github/workflows/release-sync.yml` listens on `release: [published]` and, for stable SemVer `>= 1.0.0` tags, moves the `v<major>` alias tag to the released commit and hard-resets `dev` to `main`. See **CLAUDE.md → Development & Release Cycle** for the full `dev → main → release` loop.
+The published GitHub release this phase creates is consumed by a **repo-local workflow**, not by the action itself: `.github/workflows/branch-sync.yml` (which replaced `release-sync.yml`) listens on `release: [published]` for its `major-tag` job, moving the `v<major>` alias tag to the released commit for stable SemVer `>= 1.0.0` tags. Its `sync-dev` job keys off any push to `main` rather than off the release, and force-resets `dev` only when git proves by patch-id that `dev` holds nothing `main` lacks. See **CLAUDE.md → Development & Release Cycle** for the full `dev → main → release` loop.
 
 ### Module Dependency Graph
 
@@ -546,7 +546,7 @@ Two JSON Schema artifacts are generated from these schemas. The input document s
 - **`src/types/publish-config.ts`** — multi-registry publishing types: `PublishTarget`, `ResolvedTarget`, `PublishResult`, `AuthSetupResult`, `PrePackedTarball`.
 - **`src/types/shared-types.ts`** — `ValidationResult` and `PackageValidationResult`.
 - **`src/types/sbom-config.ts`** — `SBOMConfig`, `EnhancedCycloneDXDocument`, NTIA compliance types, supplier/copyright metadata types.
-- **`src/types/global.d.ts`** — global type augmentations for Vitest.
+- **`types/global.d.ts`** (repo root, not under `src/`) — ambient `NodeJS.ProcessEnv` augmentations. The builder's tsconfig includes `types/**/*.d.ts`; a second, near-empty `src/types/global.d.ts` used to coexist with it and was removed as duplicate scaffolding.
 
 ## Rationale
 
@@ -773,4 +773,4 @@ Registry reads go through `NpmRegistry` over `FetchHttpClient` (HTTP, not `npm v
 | `src/types/publish-config.ts` | Multi-registry publishing type definitions |
 | `src/types/sbom-config.ts` | SBOM configuration and CycloneDX types |
 | `src/types/shared-types.ts` | `ValidationResult`, `PackageValidationResult` |
-| `src/types/global.d.ts` | Global type augmentations for Vitest |
+| `types/global.d.ts` | Ambient `NodeJS.ProcessEnv` augmentations (repo root) |
