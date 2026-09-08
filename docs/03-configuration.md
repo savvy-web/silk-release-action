@@ -16,6 +16,7 @@
 | `strict-warnings` | No | `"false"` | When `"true"`, warning-severity validation findings escalate the per-step and unified check-run conclusions from `neutral` to `failure`, blocking anything that gates on check status — a branch-protection required check, and the auto-merge the `auto-merge` input enables. Errors always fail regardless of this setting |
 | `sbom-config` | No | `""` | SBOM metadata configuration (JSON string) for NTIA-compliant SBOM generation. Must conform to the `SilkReleaseConfig` schema |
 | `custom-registries` | No | `""` | Custom registries with authentication (one per line). Format: `https://registry.example.com/_authToken=<token>` — see [Custom registry format](#custom-registry-format) |
+| `on-build` | No | `""` | Command run after the validation build. A non-zero exit fails Phase 2. Gating is strictly on the exit code — the command's stderr is not inspected — and the command must not mutate the repository. Skipped in dry-run along with the build it gates; unset is a total no-op |
 
 ## Outputs
 
@@ -34,7 +35,7 @@
 | `failed-issues-count` | Number of linked issues the close-issues phase failed to close (`"0"` in every other phase) |
 | `closed-issues` | JSON array describing each linked issue the close-issues phase handled — number, title, whether it closed, and the error when it did not (`"[]"` in every other phase) |
 
-The `result` output is a phase-discriminated JSON object validated by `https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.0.0/silk-release-action-5.0.0.json`. It carries the machine-readable contract: a `success` boolean gate, a per-phase `outcome` enum (the same labels as the `status` scalar output above), a human-readable `summary`, a `failure` block (`null` on success), per-phase `totals`, a `dryRun` marker and exactly one phase payload block. Read fields with the `fromJSON()` expression function — `${{ fromJSON(steps.release.outputs.result).outcome }}` — and branch on `schemaVersion` for forward compatibility.
+The `result` output is a phase-discriminated JSON object validated by `https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.0.0/silk-release-action-5.0.0.json`. It carries the machine-readable contract: a `success` boolean gate, a per-phase `outcome` enum (the same labels as the `status` scalar output above), a human-readable `summary`, a `failure` block (`null` on success), per-phase `totals`, a `dryRun` marker and exactly one phase payload block. Read fields with the `fromJSON()` expression function — `${{ fromJSON(steps.release.outputs.result).outcome }}` — and branch on `schemaVersion` for forward compatibility. Every numeric field in the document — counts, byte sizes, the release PR number, the GitHub release id — is a JSON integer, so a consumer can decode it as one without allowing for a floating-point or string form.
 
 Publish and validation payloads key their `workspaces` by workspace name (with an `order` array giving publish order) rather than an array. Each workspace carries a `kind` of `github-only` or `github-with-packages` and a `packages` array of per-registry publications — a workspace with only private packages reports `github-only` and an honest `npm: — none` rather than a misleading green tick for a registry with no targets.
 

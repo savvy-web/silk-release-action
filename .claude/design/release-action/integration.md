@@ -4,8 +4,8 @@ category: integration
 status: current
 completeness: 92
 created: 2026-02-07
-updated: 2026-08-27
-last-synced: 2026-08-27
+updated: 2026-09-08
+last-synced: 2026-09-08
 module: release-action
 related:
   - architecture.md
@@ -59,7 +59,7 @@ This precedence fixed a regression where a public source package (`private: fals
 
 Ignored packages are excluded from detection entirely, not just from publishing: Phase-2 `detectReleasedPackages` and Phase-3 `detectReleases` both drop changeset-ignored names via `ChangesetConfig.isIgnored`, so they never appear in validation or publish output — not even as version-only rows.
 
-The implementation reads raw `package.json` from disk (not the typed `WorkspacePackage`) so it can see `publishConfig.targets`, which is not surfaced by the typed `PublishConfig` schema in `@effected/workspaces`. The same rules are encoded identically in `silk-update-action` and the silk `changesets` package.
+The implementation reads raw `package.json` from disk (not the typed `WorkspacePackage`) so it can see `publishConfig.targets`, which is not surfaced by the typed `PublishConfig` schema in `@effected/workspaces`. A publishable package need not declare a `version`: `@effected/workspaces` types `WorkspacePackage.version` as an `optionalKey` and `PublishablePackage.version` as `string | undefined`, precisely because publishability is decided by `publishConfig` and a version-less private package or monorepo root is an ordinary pnpm shape. Consumers answer that absence rather than substituting a `"0.0.0"` placeholder — see the release-title helpers and `detectReleasedPackages` in [architecture.md](architecture.md#shared-infrastructure). The same rules are encoded identically in `silk-update-action` and the silk `changesets` package.
 
 ### Registry Infrastructure
 

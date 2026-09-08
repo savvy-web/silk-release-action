@@ -87,6 +87,26 @@ export function getReleasingPackages(
 }
 
 /**
+ * Render one package as `name@version`, or as the bare name when it declares no
+ * version.
+ *
+ * @remarks
+ * `PublishablePackage.version` is optional upstream: publishability is decided
+ * by `publishConfig`, not by `version`, so a version-less workspace legitimately
+ * reaches the title and the commit body. Interpolating it directly would render
+ * the literal `name@undefined` into a PR title and a commit message — visible,
+ * permanent, and wrong. Naming the package alone is the honest rendering: it
+ * says what is releasing without inventing a version it does not have.
+ *
+ * @param name - The package name, already scope-stripped where the caller wants that.
+ * @param version - The declared version, or `undefined` when the manifest carries none.
+ * @returns `name@version`, or `name` when `version` is absent or empty.
+ */
+function labelPackage(name: string, version: string | undefined): string {
+	return version !== undefined && version !== "" ? `${name}@${version}` : name;
+}
+
+/**
  * Default character cap for a listed `release: name@version, …` PR title before
  * it collapses to `release: <count> packages`. Sized to stay within the
  * conventional-commit header length while still showing a couple of packages.
@@ -167,7 +187,7 @@ export const NOTHING_TO_RELEASE_TITLE: string = "release: pending";
  * @returns The resolved PR title.
  */
 export function resolveReleasePrTitle(input: {
-	readonly releasingPackages: ReadonlyArray<{ readonly name: string; readonly version: string }>;
+	readonly releasingPackages: ReadonlyArray<{ readonly name: string; readonly version: string | undefined }>;
 	readonly perPackageVersioning: boolean;
 	readonly releasablePackages?: ReadonlyArray<{ readonly name: string }>;
 	readonly singlePackageRepoVersion?: string | undefined;
@@ -190,7 +210,7 @@ export function resolveReleasePrTitle(input: {
 		return NOTHING_TO_RELEASE_TITLE;
 	}
 	const scope = commonScope((input.releasablePackages ?? releasingPackages).map((pkg) => pkg.name));
-	const listed = `release: ${releasingPackages.map((pkg) => `${stripScope(pkg.name, scope)}@${pkg.version}`).join(", ")}`;
+	const listed = `release: ${releasingPackages.map((pkg) => labelPackage(stripScope(pkg.name, scope), pkg.version)).join(", ")}`;
 	return releasingPackages.length > 1 && listed.length > maxLength
 		? `release: ${releasingPackages.length} packages`
 		: listed;
@@ -209,7 +229,7 @@ export function resolveReleasePrTitle(input: {
  * @returns A `- name@version` list joined by newlines, or an empty string when none.
  */
 export function formatReleasePackageList(
-	releasingPackages: ReadonlyArray<{ readonly name: string; readonly version: string }>,
+	releasingPackages: ReadonlyArray<{ readonly name: string; readonly version: string | undefined }>,
 ): string {
-	return releasingPackages.map((pkg) => `- ${pkg.name}@${pkg.version}`).join("\n");
+	return releasingPackages.map((pkg) => `- ${labelPackage(pkg.name, pkg.version)}`).join("\n");
 }

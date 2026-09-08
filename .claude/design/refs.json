@@ -4,38 +4,38 @@
 		{
 			"source": "CLAUDE.md",
 			"target": ".claude/design/release-action/architecture.md",
-			"hash": "a1fa37a7799b06781710f5940c6cb6d8fec9a8c5b869f48ea759516198acef3b",
-			"recordedAt": "2026-08-27"
+			"hash": "fa6e37643113ebce1b18d5d4d08e3a5eb60f9e5f56377462a7fc0762b3cb073c",
+			"recordedAt": "2026-09-08"
 		},
 		{
 			"source": "CLAUDE.md",
 			"target": ".claude/design/release-action/integration.md",
-			"hash": "9bb6f1e4c0113a731641b57730dc3868258ecd6268befe6e4780a4de08662aca",
-			"recordedAt": "2026-08-27"
+			"hash": "a4aea99a6744a51bce30b0507b3b7b6eb222de1dab8d3c3fca5b98a3a719837a",
+			"recordedAt": "2026-09-08"
 		},
 		{
 			"source": "CLAUDE.md",
 			"target": ".claude/design/release-action/testing.md",
-			"hash": "471fea545b2e2039c904f8382162f065ecc46ef31dd801243c485cf1da478a18",
-			"recordedAt": "2026-08-27"
+			"hash": "54fc371eabfe16942680e8e71d6bd92236515523078254efac5e3618ca0ceb1f",
+			"recordedAt": "2026-09-08"
 		},
 		{
 			"source": "__test__/CLAUDE.md",
 			"target": ".claude/design/release-action/testing.md",
-			"hash": "471fea545b2e2039c904f8382162f065ecc46ef31dd801243c485cf1da478a18",
-			"recordedAt": "2026-08-27"
+			"hash": "54fc371eabfe16942680e8e71d6bd92236515523078254efac5e3618ca0ceb1f",
+			"recordedAt": "2026-09-08"
 		},
 		{
 			"source": "src/CLAUDE.md",
 			"target": ".claude/design/release-action/architecture.md",
-			"hash": "a1fa37a7799b06781710f5940c6cb6d8fec9a8c5b869f48ea759516198acef3b",
-			"recordedAt": "2026-08-27"
+			"hash": "fa6e37643113ebce1b18d5d4d08e3a5eb60f9e5f56377462a7fc0762b3cb073c",
+			"recordedAt": "2026-09-08"
 		},
 		{
 			"source": "src/CLAUDE.md",
 			"target": ".claude/design/release-action/integration.md",
-			"hash": "9bb6f1e4c0113a731641b57730dc3868258ecd6268befe6e4780a4de08662aca",
-			"recordedAt": "2026-08-27"
+			"hash": "a4aea99a6744a51bce30b0507b3b7b6eb222de1dab8d3c3fca5b98a3a719837a",
+			"recordedAt": "2026-09-08"
 		}
 	]
 }

@@ -3,14 +3,6 @@
 	"$id": "https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.0.0/silk-release-action-5.0.0.json",
 	"$ref": "#/$defs/ReleaseOutput",
 	"$defs": {
-		"Literal_": {
-			"type": "string",
-			"enum": [
-				"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.0.0/silk-release-action-5.0.0.json"
-			],
-			"title": "JSON Schema URL",
-			"description": "URL of the hosted JSON Schema this output conforms to. Editors and json-schema-aware consumers use this for hover docs and validation."
-		},
 		"BranchManagementOutcome": {
 			"type": "string",
 			"enum": ["nothing-to-release", "branch-created", "branch-updated", "branch-unchanged", "conflicted"],
@@ -39,32 +31,18 @@
 			"additionalProperties": false,
 			"title": "Failure"
 		},
-		"Union_": {
-			"type": "string",
-			"enum": ["Infinity", "-Infinity", "NaN"]
-		},
 		"BranchManagementTotals": {
 			"type": "object",
 			"properties": {
 				"changesetFiles": {
-					"anyOf": [
-						{
-							"type": "number"
-						},
-						{
-							"$ref": "#/$defs/Union_"
-						}
-					]
+					"type": "integer",
+					"title": "Changeset files",
+					"description": "Changeset files observed in `.changeset/`. NOT the workspace count — one file may name several workspaces, and two files may name the same one, so the two diverge in both directions."
 				},
 				"workspaces": {
-					"anyOf": [
-						{
-							"type": "number"
-						},
-						{
-							"$ref": "#/$defs/Union_"
-						}
-					]
+					"type": "integer",
+					"title": "Workspaces",
+					"description": "Workspaces the release plan versions. Includes those pulled in only because a dependency moved, which name no changeset of their own."
 				}
 			},
 			"required": ["changesetFiles", "workspaces"],
@@ -111,13 +89,9 @@
 			"type": "object",
 			"properties": {
 				"number": {
-					"type": "number",
-					"allOf": [
-						{
-							"title": "Release PR number",
-							"description": "The GitHub PR number for the release PR."
-						}
-					]
+					"type": "integer",
+					"title": "Release PR number",
+					"description": "The GitHub PR number for the release PR."
 				},
 				"url": {
 					"type": "string",
@@ -155,13 +129,9 @@
 					"$ref": "#/$defs/ChangesetsBumpType"
 				},
 				"changesetCount": {
-					"type": "number",
-					"allOf": [
-						{
-							"title": "Changesets naming this package",
-							"description": "How many changeset files name this package. **Zero means the package releases only because a dependency did** — it still gets a version bump and a CHANGELOG entry, but no changeset asked for it, so it is invisible to a count of changeset files. Renders as the `—` in a release table's changeset column."
-						}
-					]
+					"type": "integer",
+					"title": "Changesets naming this package",
+					"description": "How many changeset files name this package. **Zero means the package releases only because a dependency did** — it still gets a version bump and a CHANGELOG entry, but no changeset asked for it, so it is invisible to a count of changeset files. Renders as the `—` in a release table's changeset column."
 				},
 				"oldVersion": {
 					"type": "string",
@@ -183,13 +153,9 @@
 			"type": "object",
 			"properties": {
 				"count": {
-					"type": "number",
-					"allOf": [
-						{
-							"title": "Changeset count",
-							"description": "The number of changeset **files** observed in the `.changeset/` directory. Not the length of `packages`: one file may name several packages, and two files may name the same one, so the two numbers diverge in both directions."
-						}
-					]
+					"type": "integer",
+					"title": "Changeset count",
+					"description": "The number of changeset **files** observed in the `.changeset/` directory. Not the length of `packages`: one file may name several packages, and two files may name the same one, so the two numbers diverge in both directions."
 				},
 				"packages": {
 					"type": "array",
@@ -234,7 +200,12 @@
 			"type": "object",
 			"properties": {
 				"$schema": {
-					"$ref": "#/$defs/Literal_"
+					"type": "string",
+					"enum": [
+						"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.0.0/silk-release-action-5.0.0.json"
+					],
+					"title": "JSON Schema URL",
+					"description": "URL of the hosted JSON Schema this output conforms to. Editors and json-schema-aware consumers use this for hover docs and validation."
 				},
 				"schemaVersion": {
 					"type": "string",
@@ -382,84 +353,44 @@
 			"type": "object",
 			"properties": {
 				"workspaces": {
-					"anyOf": [
-						{
-							"type": "number"
-						},
-						{
-							"$ref": "#/$defs/Union_"
-						}
-					]
+					"type": "integer",
+					"title": "Workspaces",
+					"description": "Workspaces with a version difference against the target branch."
 				},
 				"githubOnly": {
-					"anyOf": [
-						{
-							"type": "number"
-						},
-						{
-							"$ref": "#/$defs/Union_"
-						}
-					]
+					"type": "integer",
+					"title": "GitHub-only workspaces",
+					"description": "Workspaces that resolved no publish target — versioned, tagged and released, publishing to no registry. Zero builds is their steady state, not a failure."
 				},
 				"githubWithPackages": {
-					"anyOf": [
-						{
-							"type": "number"
-						},
-						{
-							"$ref": "#/$defs/Union_"
-						}
-					]
+					"type": "integer",
+					"title": "Registry-publishing workspaces",
+					"description": "Workspaces that resolved at least one publish target."
 				},
 				"checksPassed": {
-					"anyOf": [
-						{
-							"type": "number"
-						},
-						{
-							"$ref": "#/$defs/Union_"
-						}
-					]
+					"type": "integer",
+					"title": "Checks passed",
+					"description": "Validation checks whose status is `pass`."
 				},
 				"checksWarning": {
-					"anyOf": [
-						{
-							"type": "number"
-						},
-						{
-							"$ref": "#/$defs/Union_"
-						}
-					]
+					"type": "integer",
+					"title": "Checks with warnings",
+					"description": "Validation checks whose status is `warning` — neither passed nor failed. Carried so the three counts sum to the number of checks; folding warnings into either bucket loses them."
 				},
 				"checksFailed": {
-					"anyOf": [
-						{
-							"type": "number"
-						},
-						{
-							"$ref": "#/$defs/Union_"
-						}
-					]
+					"type": "integer",
+					"title": "Checks failed",
+					"description": "Validation checks whose status is `error`."
 				},
 				"errorFindings": {
-					"anyOf": [
-						{
-							"type": "number"
-						},
-						{
-							"$ref": "#/$defs/Union_"
-						}
-					]
+					"type": "integer",
+					"title": "Error findings",
+					"description": "Findings of `error` severity. Any of these makes `success` false."
 				},
 				"warningFindings": {
-					"anyOf": [
-						{
-							"type": "number"
-						},
-						{
-							"$ref": "#/$defs/Union_"
-						}
-					]
+					"type": "integer",
+					"title": "Warning findings",
+					"description": "Findings of `warning` severity. These do NOT make `success` false unless the run set `strict-warnings`."
 				}
 			},
 			"required": [
@@ -485,13 +416,9 @@
 					"description": "True when every released package built successfully."
 				},
 				"packageCount": {
-					"type": "number",
-					"allOf": [
-						{
-							"title": "Package count",
-							"description": "Number of packages built and validated."
-						}
-					]
+					"type": "integer",
+					"title": "Package count",
+					"description": "Number of packages built and validated."
 				}
 			},
 			"required": ["passed", "packageCount"],
@@ -661,13 +588,9 @@
 			"type": "object",
 			"properties": {
 				"componentCount": {
-					"type": "number",
-					"allOf": [
-						{
-							"title": "Component count",
-							"description": "Number of components (direct + transitive dependencies) in the BOM. 0 is legitimate for a dependency-free package."
-						}
-					]
+					"type": "integer",
+					"title": "Component count",
+					"description": "Number of components (direct + transitive dependencies) in the BOM. 0 is legitimate for a dependency-free package."
 				},
 				"ntiaCompliant": {
 					"type": "boolean",
@@ -745,13 +668,9 @@
 				"packedBytes": {
 					"anyOf": [
 						{
-							"type": "number",
-							"allOf": [
-								{
-									"title": "Packed size (bytes)",
-									"description": "Size of the packed tarball. Null when the dry-run did not report it."
-								}
-							]
+							"type": "integer",
+							"title": "Packed size (bytes)",
+							"description": "Size of the packed tarball. Null when the dry-run did not report it."
 						},
 						{
 							"type": "null"
@@ -761,13 +680,9 @@
 				"unpackedBytes": {
 					"anyOf": [
 						{
-							"type": "number",
-							"allOf": [
-								{
-									"title": "Unpacked size (bytes)",
-									"description": "Size of the unpacked contents. Null when the dry-run did not report it."
-								}
-							]
+							"type": "integer",
+							"title": "Unpacked size (bytes)",
+							"description": "Size of the unpacked contents. Null when the dry-run did not report it."
 						},
 						{
 							"type": "null"
@@ -777,13 +692,9 @@
 				"fileCount": {
 					"anyOf": [
 						{
-							"type": "number",
-							"allOf": [
-								{
-									"title": "File count",
-									"description": "Files in the packed tarball. Null when the dry-run did not report it."
-								}
-							]
+							"type": "integer",
+							"title": "File count",
+							"description": "Files in the packed tarball. Null when the dry-run did not report it."
 						},
 						{
 							"type": "null"
@@ -942,13 +853,9 @@
 				"changesetCount": {
 					"anyOf": [
 						{
-							"type": "number",
-							"allOf": [
-								{
-									"title": "Changeset count",
-									"description": "Number of changesets contributing to this package's bump. Null when unknown."
-								}
-							]
+							"type": "integer",
+							"title": "Changeset count",
+							"description": "Number of changesets contributing to this package's bump. Null when unknown."
 						},
 						{
 							"type": "null"
@@ -1093,7 +1000,12 @@
 			"type": "object",
 			"properties": {
 				"$schema": {
-					"$ref": "#/$defs/Literal_"
+					"type": "string",
+					"enum": [
+						"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.0.0/silk-release-action-5.0.0.json"
+					],
+					"title": "JSON Schema URL",
+					"description": "URL of the hosted JSON Schema this output conforms to. Editors and json-schema-aware consumers use this for hover docs and validation."
 				},
 				"schemaVersion": {
 					"type": "string",
@@ -1332,104 +1244,54 @@
 			"type": "object",
 			"properties": {
 				"workspaces": {
-					"anyOf": [
-						{
-							"type": "number"
-						},
-						{
-							"$ref": "#/$defs/Union_"
-						}
-					]
+					"type": "integer",
+					"title": "Workspaces",
+					"description": "Total workspaces released this run. Zero only when the run had nothing to release."
 				},
 				"githubOnly": {
-					"anyOf": [
-						{
-							"type": "number"
-						},
-						{
-							"$ref": "#/$defs/Union_"
-						}
-					]
+					"type": "integer",
+					"title": "GitHub-only workspaces",
+					"description": "Workspaces of kind `github-only` — tagged and released, publishing to no registry."
 				},
 				"githubWithPackages": {
-					"anyOf": [
-						{
-							"type": "number"
-						},
-						{
-							"$ref": "#/$defs/Union_"
-						}
-					]
+					"type": "integer",
+					"title": "Registry-publishing workspaces",
+					"description": "Workspaces of kind `github-with-packages` — those that resolved at least one publish target."
 				},
 				"blocked": {
-					"anyOf": [
-						{
-							"type": "number"
-						},
-						{
-							"$ref": "#/$defs/Union_"
-						}
-					]
+					"type": "integer",
+					"title": "Blocked workspaces",
+					"description": "Workspaces never attempted because the phase aborted. Zero on a clean run."
 				},
 				"packagesResolved": {
-					"anyOf": [
-						{
-							"type": "number"
-						},
-						{
-							"$ref": "#/$defs/Union_"
-						}
-					]
+					"type": "integer",
+					"title": "Packages resolved",
+					"description": "Package publications that were *intended* — one per (package, registry) pair resolved before publishing began. Compare with `packagesPublished` to see how much of the intent was realised."
 				},
 				"packagesPublished": {
-					"anyOf": [
-						{
-							"type": "number"
-						},
-						{
-							"$ref": "#/$defs/Union_"
-						}
-					]
+					"type": "integer",
+					"title": "Packages published",
+					"description": "Publications whose bytes were newly uploaded this run."
 				},
 				"packagesRecovered": {
-					"anyOf": [
-						{
-							"type": "number"
-						},
-						{
-							"$ref": "#/$defs/Union_"
-						}
-					]
+					"type": "integer",
+					"title": "Packages recovered",
+					"description": "Publications already present at an identical digest, so nothing was re-uploaded."
 				},
 				"packagesFailed": {
-					"anyOf": [
-						{
-							"type": "number"
-						},
-						{
-							"$ref": "#/$defs/Union_"
-						}
-					]
+					"type": "integer",
+					"title": "Packages failed",
+					"description": "Publications that were attempted and did not land."
 				},
 				"tagsCreated": {
-					"anyOf": [
-						{
-							"type": "number"
-						},
-						{
-							"$ref": "#/$defs/Union_"
-						}
-					]
+					"type": "integer",
+					"title": "Tags created",
+					"description": "Git tags cut this run."
 				},
 				"releasesCreated": {
-					"anyOf": [
-						{
-							"type": "number"
-						},
-						{
-							"$ref": "#/$defs/Union_"
-						}
-					]
+					"type": "integer",
+					"title": "Releases created",
+					"description": "GitHub releases created this run."
 				}
 			},
 			"required": [
@@ -1681,14 +1543,9 @@
 					"description": "Browser download URL for the asset."
 				},
 				"size": {
-					"anyOf": [
-						{
-							"type": "number"
-						},
-						{
-							"$ref": "#/$defs/Union_"
-						}
-					]
+					"type": "integer",
+					"title": "Size",
+					"description": "Asset size in bytes."
 				}
 			},
 			"required": ["name", "url", "size"],
@@ -1700,14 +1557,9 @@
 			"type": "object",
 			"properties": {
 				"id": {
-					"anyOf": [
-						{
-							"type": "number"
-						},
-						{
-							"$ref": "#/$defs/Union_"
-						}
-					]
+					"type": "integer",
+					"title": "Release ID",
+					"description": "GitHub's numeric release id."
 				},
 				"url": {
 					"type": "string",
@@ -1820,7 +1672,12 @@
 			"type": "object",
 			"properties": {
 				"$schema": {
-					"$ref": "#/$defs/Literal_"
+					"type": "string",
+					"enum": [
+						"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.0.0/silk-release-action-5.0.0.json"
+					],
+					"title": "JSON Schema URL",
+					"description": "URL of the hosted JSON Schema this output conforms to. Editors and json-schema-aware consumers use this for hover docs and validation."
 				},
 				"schemaVersion": {
 					"type": "string",
