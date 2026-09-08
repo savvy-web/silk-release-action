@@ -376,6 +376,17 @@ export const detectReleasedPackages = (
 		const kept: ReleasedPackage[] = [];
 		for (const pkg of workspacePackages) {
 			const baseVersion = baseVersions.get(pkg.name) ?? null;
+			// A version-less manifest has nothing to release UNDER. Discovery
+			// carries `version` exactly as the manifest has it and tolerates only
+			// absence, so this is a real workspace shape (a private tracking
+			// package, a monorepo root), not a decode failure — and the upstream
+			// contract is that whoever needs a concrete version answers the
+			// absence rather than inventing one. Inventing `"0.0.0"` here would
+			// tag and publish under a version nobody declared.
+			if (pkg.version === undefined) {
+				yield* Effect.logDebug(`${pkg.name}: no declared version, nothing to release`);
+				continue;
+			}
 			// Brand-new package (absent from the target branch) → released.
 			// Changed version → released. Same version → not released.
 			if (baseVersion !== null && pkg.version === baseVersion) continue;
@@ -573,7 +584,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 		let sbomCount = 0;
 		let sbomSuccess = 0;
 
-		for (const { pkg, baseVersion } of orderedReleasedPackages) {
+		for (const { pkg, baseVersion, currentVersion } of orderedReleasedPackages) {
 			// Resolve publish targets, then drop any whose built `package.json` is
 			// `private` — validation only exercises what will actually be published.
 			//
@@ -594,7 +605,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 				});
 				validationPackages.push({
 					name: pkg.name,
-					version: pkg.version,
+					version: currentVersion,
 					baseVersion,
 					changesetCount: changesetCounts.get(pkg.name) ?? null,
 					builds: [],
@@ -614,7 +625,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 				yield* Effect.logDebug(`${pkg.name}: no publish targets (version-only)`);
 				validationPackages.push({
 					name: pkg.name,
-					version: pkg.version,
+					version: currentVersion,
 					baseVersion,
 					changesetCount: changesetCounts.get(pkg.name) ?? null,
 					builds: [],
@@ -769,7 +780,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 						const root =
 							manifest._tag === "present"
 								? SbomMetadataSource.rootComponent(manifest.pkg, sbomOptions)
-								: SbomMetadataSource.componentFor({ name: pkg.name, version: pkg.version });
+								: SbomMetadataSource.componentFor({ name: pkg.name, version: currentVersion });
 						const metadata =
 							manifest._tag === "present"
 								? SbomMetadataSource.fromPackage(manifest.pkg, sbomOptions)
@@ -861,7 +872,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 
 			validationPackages.push({
 				name: pkg.name,
-				version: pkg.version,
+				version: currentVersion,
 				baseVersion,
 				changesetCount: changesetCounts.get(pkg.name) ?? null,
 				builds: buildResults,

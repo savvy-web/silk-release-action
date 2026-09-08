@@ -4,8 +4,8 @@ Thank you for considering contributing to `silk-release-action`. This document e
 
 ## Prerequisites
 
-- **Node.js** 26.5.1 (see `devEngines` in `package.json`)
-- **pnpm** 11.20.0 (enforced via `packageManager` field)
+- **Node.js** matching `engines.node` in `package.json`; `devEngines.runtime` pins the version CI uses
+- **pnpm** at the version pinned in the `packageManager` field — run through Corepack so the pin applies
 - **Git** with commit signing configured (recommended)
 
 ## Setup
@@ -29,13 +29,29 @@ pnpm install
 | `pnpm typecheck` | Run TypeScript type checking via Turbo |
 | `pnpm lint:md` | Lint markdown files |
 | `pnpm validate` | Validate GitHub Action metadata |
+| `pnpm generate-schema` | Regenerate the JSON Schema artifacts (`silk-release-action.input.schema.json` and the versioned output schema under `schemas/`) |
+
+### Schema generation
+
+`pnpm generate-schema` writes both JSON Schema artifacts. It gates on a contract check first: if a document's contract changed while its version label is already published, the run fails, names the offending documents and writes nothing. Two flags adjust that: `--check` (alias `--dry-run`) reports and writes nothing, `--allow-contract-change` (alias `--force`) writes through the gate.
+
+```bash
+pnpm generate-schema --check
+# INFO: Unchanged (none): .../schemas/5.0.0/silk-release-action-5.0.0.json
+# INFO: Unchanged (none): .../silk-release-action.input.schema.json
+
+pnpm generate-schema --allow-contract-change
+# writes through the gate after a warning that a published document may be rewritten in place
+```
+
+Reach for `--allow-contract-change` only when the version label is also moving. The intended response to a gate failure is to bump `SCHEMA_SEMVER` in `lib/scripts/generate-schema.ts` and `SCHEMA_URL` in `src/schema/release-output.ts` together, then regenerate.
 
 ## Code Quality Standards
 
 - **Formatter:** Biome -- tabs, 120-character line width
 - **Linting:** Biome with strict rules including `noImportCycles`, `useExplicitType` for exports, and `useNodejsImportProtocol`
 - **TypeScript:** Strict mode, ES2022 target, bundler module resolution
-- **Testing:** Vitest with 85% coverage thresholds (per-file)
+- **Testing:** Vitest, with coverage thresholds supplied by the `@vitest-agent/plugin` standard level
 - **Imports:** Use `.js` extensions in all imports; use `node:` protocol for Node.js built-ins; separate type imports
 
 ## Pre-commit Hooks

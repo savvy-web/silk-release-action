@@ -134,7 +134,7 @@ const BranchManagementPayload = Schema.Struct({
 	}),
 	releasePr: Schema.NullOr(
 		Schema.Struct({
-			number: Schema.Finite.annotate({
+			number: Schema.Int.annotate({
 				title: "Release PR number",
 				description: "The GitHub PR number for the release PR.",
 			}),
@@ -155,7 +155,7 @@ const BranchManagementPayload = Schema.Struct({
 		}),
 	),
 	changesets: Schema.Struct({
-		count: Schema.Finite.annotate({
+		count: Schema.Int.annotate({
 			title: "Changeset count",
 			description:
 				"The number of changeset **files** observed in the `.changeset/` directory. Not the length of `packages`: one file may name several packages, and two files may name the same one, so the two numbers diverge in both directions.",
@@ -172,7 +172,7 @@ const BranchManagementPayload = Schema.Struct({
 					description:
 						"The bump the release plan applies to this package: `major`, `minor`, or `patch`. The validation phase emits an extended set under `ValidationBumpType` that adds `new` and `unknown`.",
 				}),
-				changesetCount: Schema.Finite.annotate({
+				changesetCount: Schema.Int.annotate({
 					title: "Changesets naming this package",
 					description:
 						"How many changeset files name this package. **Zero means the package releases only because a dependency did** — it still gets a version bump and a CHANGELOG entry, but no changeset asked for it, so it is invisible to a count of changeset files. Renders as the `—` in a release table's changeset column.",
@@ -250,12 +250,12 @@ export const BranchManagementOutput = Schema.Struct({
 		description: "Why and where the phase failed. Null when `success` is true.",
 	}),
 	totals: Schema.Struct({
-		changesetFiles: Schema.Number.annotate({
+		changesetFiles: Schema.Int.annotate({
 			title: "Changeset files",
 			description:
 				"Changeset files observed in `.changeset/`. NOT the workspace count — one file may name several workspaces, and two files may name the same one, so the two diverge in both directions.",
 		}),
-		workspaces: Schema.Number.annotate({
+		workspaces: Schema.Int.annotate({
 			title: "Workspaces",
 			description:
 				"Workspaces the release plan versions. Includes those pulled in only because a dependency moved, which name no changeset of their own.",
@@ -434,7 +434,7 @@ const PublishRegistry = Schema.Struct({
 });
 
 const ValidationBuildSbom = Schema.Struct({
-	componentCount: Schema.Finite.annotate({
+	componentCount: Schema.Int.annotate({
 		title: "Component count",
 		description:
 			"Number of components (direct + transitive dependencies) in the BOM. 0 is legitimate for a dependency-free package.",
@@ -519,19 +519,19 @@ const ValidationPackage = Schema.Struct({
 		examples: ["dist/npm", "dist/jsr"],
 	}),
 	packedBytes: Schema.NullOr(
-		Schema.Finite.annotate({
+		Schema.Int.annotate({
 			title: "Packed size (bytes)",
 			description: "Size of the packed tarball. Null when the dry-run did not report it.",
 		}),
 	),
 	unpackedBytes: Schema.NullOr(
-		Schema.Finite.annotate({
+		Schema.Int.annotate({
 			title: "Unpacked size (bytes)",
 			description: "Size of the unpacked contents. Null when the dry-run did not report it.",
 		}),
 	),
 	fileCount: Schema.NullOr(
-		Schema.Finite.annotate({
+		Schema.Int.annotate({
 			title: "File count",
 			description: "Files in the packed tarball. Null when the dry-run did not report it.",
 		}),
@@ -640,7 +640,7 @@ const ValidationWorkspace = Schema.Struct({
 			"The validation phase's package bump type, derived by diffing the release-branch version against the target-branch version. A superset of `ChangesetsBumpType` (Phase 1 declared bumps): `major`/`minor`/`patch` are the standard semver bumps, and this enum adds `new` (no prior published version exists on the target branch) and `unknown` (could not be determined, typically when the prior version was a pre-release tag).",
 	}),
 	changesetCount: Schema.NullOr(
-		Schema.Finite.annotate({
+		Schema.Int.annotate({
 			title: "Changeset count",
 			description: "Number of changesets contributing to this package's bump. Null when unknown.",
 		}),
@@ -694,7 +694,7 @@ const ValidationPayload = Schema.Struct({
 			title: "Build validation passed",
 			description: "True when every released package built successfully.",
 		}),
-		packageCount: Schema.Finite.annotate({
+		packageCount: Schema.Int.annotate({
 			title: "Package count",
 			description: "Number of packages built and validated.",
 		}),
@@ -801,37 +801,37 @@ export const ValidationOutput = Schema.Struct({
 		description: "Why and where validation failed. Null when `success` is true.",
 	}),
 	totals: Schema.Struct({
-		workspaces: Schema.Number.annotate({
+		workspaces: Schema.Int.annotate({
 			title: "Workspaces",
 			description: "Workspaces with a version difference against the target branch.",
 		}),
-		githubOnly: Schema.Number.annotate({
+		githubOnly: Schema.Int.annotate({
 			title: "GitHub-only workspaces",
 			description:
 				"Workspaces that resolved no publish target — versioned, tagged and released, publishing to no registry. Zero builds is their steady state, not a failure.",
 		}),
-		githubWithPackages: Schema.Number.annotate({
+		githubWithPackages: Schema.Int.annotate({
 			title: "Registry-publishing workspaces",
 			description: "Workspaces that resolved at least one publish target.",
 		}),
-		checksPassed: Schema.Number.annotate({
+		checksPassed: Schema.Int.annotate({
 			title: "Checks passed",
 			description: "Validation checks whose status is `pass`.",
 		}),
-		checksWarning: Schema.Number.annotate({
+		checksWarning: Schema.Int.annotate({
 			title: "Checks with warnings",
 			description:
 				"Validation checks whose status is `warning` — neither passed nor failed. Carried so the three counts sum to the number of checks; folding warnings into either bucket loses them.",
 		}),
-		checksFailed: Schema.Number.annotate({
+		checksFailed: Schema.Int.annotate({
 			title: "Checks failed",
 			description: "Validation checks whose status is `error`.",
 		}),
-		errorFindings: Schema.Number.annotate({
+		errorFindings: Schema.Int.annotate({
 			title: "Error findings",
 			description: "Findings of `error` severity. Any of these makes `success` false.",
 		}),
-		warningFindings: Schema.Number.annotate({
+		warningFindings: Schema.Int.annotate({
 			title: "Warning findings",
 			description:
 				"Findings of `warning` severity. These do NOT make `success` false unless the run set `strict-warnings`.",
@@ -1087,7 +1087,7 @@ const PublishedPackage = Schema.Struct({
 const PublishReleaseAsset = Schema.Struct({
 	name: Schema.String.annotate({ title: "Asset name", description: "File name of the release asset." }),
 	url: Schema.String.annotate({ title: "Download URL", description: "Browser download URL for the asset." }),
-	size: Schema.Number.annotate({ title: "Size", description: "Asset size in bytes." }),
+	size: Schema.Int.annotate({ title: "Size", description: "Asset size in bytes." }),
 }).annotate({
 	identifier: "PublishReleaseAsset",
 	title: "Release asset",
@@ -1112,7 +1112,7 @@ const PublishTag = Schema.Struct({
 });
 
 const PublishRelease = Schema.Struct({
-	id: Schema.Number.annotate({ title: "Release ID", description: "GitHub's numeric release id." }),
+	id: Schema.Int.annotate({ title: "Release ID", description: "GitHub's numeric release id." }),
 	url: Schema.String.annotate({ title: "Release URL", description: "Web URL of the GitHub release." }),
 	assets: Schema.Array(PublishReleaseAsset).annotate({
 		title: "Release assets",
@@ -1201,41 +1201,41 @@ const PublishFailure = Schema.Struct({
 });
 
 const PublishTotals = Schema.Struct({
-	workspaces: Schema.Number.annotate({
+	workspaces: Schema.Int.annotate({
 		title: "Workspaces",
 		description: "Total workspaces released this run. Zero only when the run had nothing to release.",
 	}),
-	githubOnly: Schema.Number.annotate({
+	githubOnly: Schema.Int.annotate({
 		title: "GitHub-only workspaces",
 		description: "Workspaces of kind `github-only` — tagged and released, publishing to no registry.",
 	}),
-	githubWithPackages: Schema.Number.annotate({
+	githubWithPackages: Schema.Int.annotate({
 		title: "Registry-publishing workspaces",
 		description: "Workspaces of kind `github-with-packages` — those that resolved at least one publish target.",
 	}),
-	blocked: Schema.Number.annotate({
+	blocked: Schema.Int.annotate({
 		title: "Blocked workspaces",
 		description: "Workspaces never attempted because the phase aborted. Zero on a clean run.",
 	}),
-	packagesResolved: Schema.Number.annotate({
+	packagesResolved: Schema.Int.annotate({
 		title: "Packages resolved",
 		description:
 			"Package publications that were *intended* — one per (package, registry) pair resolved before publishing began. Compare with `packagesPublished` to see how much of the intent was realised.",
 	}),
-	packagesPublished: Schema.Number.annotate({
+	packagesPublished: Schema.Int.annotate({
 		title: "Packages published",
 		description: "Publications whose bytes were newly uploaded this run.",
 	}),
-	packagesRecovered: Schema.Number.annotate({
+	packagesRecovered: Schema.Int.annotate({
 		title: "Packages recovered",
 		description: "Publications already present at an identical digest, so nothing was re-uploaded.",
 	}),
-	packagesFailed: Schema.Number.annotate({
+	packagesFailed: Schema.Int.annotate({
 		title: "Packages failed",
 		description: "Publications that were attempted and did not land.",
 	}),
-	tagsCreated: Schema.Number.annotate({ title: "Tags created", description: "Git tags cut this run." }),
-	releasesCreated: Schema.Number.annotate({
+	tagsCreated: Schema.Int.annotate({ title: "Tags created", description: "Git tags cut this run." }),
+	releasesCreated: Schema.Int.annotate({
 		title: "Releases created",
 		description: "GitHub releases created this run.",
 	}),

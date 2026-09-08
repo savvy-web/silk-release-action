@@ -35,9 +35,18 @@
  * the editors it exists to serve. `advisory` findings survive the gate and are
  * logged here.
  *
- * Run via `pnpm generate-schema`. The committed outputs are guarded against
- * drift by `__test__/generate-schema.test.ts`, which imports {@link targets}
- * and uses `SchemaPipeline.check` — the identical walk, without writing.
+ * Run via `pnpm generate-schema`. Two flags override the default walk:
+ *
+ * - `--check` (alias `--dry-run`) — report what a run would do and write
+ *   nothing, including the contract change the gate would refuse
+ * - `--allow-contract-change` (alias `--force`) — write through the contract
+ *   gate at the SAME version label. Correct only while that label is
+ *   unpublished, or when repairing an unparseable file; see
+ *   {@link allowContractChange}
+ *
+ * The committed outputs are guarded against drift by
+ * `__test__/generate-schema.test.ts`, which imports {@link targets} and uses
+ * `SchemaPipeline.check` — the identical walk, without writing.
  */
 
 import { realpathSync } from "node:fs";
@@ -108,48 +117,95 @@ export const targets: ReadonlyArray<SchemaTarget> = [
 	}),
 ];
 
+/**
+ * Whether this invocation was asked to write through the contract gate.
+ *
+ * @remarks
+ * `--allow-contract-change` (alias `--force`) swaps the pipeline's
+ * `"block-versioned"` policy for `"allow"`: the run classifies and reports a
+ * contract change instead of refusing it, and writes the new document over the
+ * published one at the SAME version label.
+ *
+ * That is a lie to every consumer pinned to {@link SCHEMA_URL} — unless the
+ * label was never published, which is exactly the case this flag exists for:
+ * iterating on a version that has not shipped, or seeing what a dependency bump
+ * did to the document before deciding whether it warrants a bump. It is also
+ * the sanctioned repair path for a published file whose text no longer parses
+ * (`SchemaFile` classifies unparseable text as a contract change).
+ *
+ * The gate is the default; this is the deliberate override, and the run says so
+ * loudly on the way past.
+ */
+const allowContractChange = process.argv.slice(2).some((a) => a === "--allow-contract-change" || a === "--force");
+
+/**
+ * Whether this invocation should report only.
+ *
+ * @remarks
+ * `--check` runs the identical walk with no writes — the same call the drift
+ * test makes — and reports what a run WOULD do, including a contract change the
+ * gate would refuse.
+ */
+const checkOnly = process.argv.slice(2).some((a) => a === "--check" || a === "--dry-run");
+
+const contractChanges = allowContractChange ? "allow" : "block-versioned";
+
+/** Log one target's findings and what the walk did (or would do) with it. */
+const report = Effect.fn("report")(function* (r: {
+	readonly $id: string;
+	readonly path: string;
+	readonly change: string;
+	readonly findings: ReadonlyArray<{ readonly label: string; readonly path: string; readonly message: string }>;
+}) {
+	// Anything surviving the gate is advisory by definition.
+	for (const finding of r.findings) {
+		yield* Effect.logInfo(`${r.$id}: ${finding.label} at "${finding.path}" — ${finding.message}`);
+	}
+});
+
 const generate = Effect.gen(function* () {
-	// ── Contract gate, BEFORE anything is written ─────────────────────────────
-	// `check` is the same walk as `run` with no writes, and it does NOT stop at
-	// the first blocked target — so a repo with two broken documents learns
-	// about both in one run. Gating here rather than after `run` is the whole
-	// point: a `contract` change means an assertion moved, and rewriting an
-	// already-published version's file in place would silently break every
-	// consumer pinned to its URL. Failing after the write would report the
-	// problem accurately and still have caused it.
+	// The contract gate now lives in the package: under the default
+	// `"block-versioned"` policy, `run` refuses a PINNED target whose validation
+	// contract moved — before anything is written, and total over the targets, so
+	// two broken documents surface in one run. Rewriting an already-published
+	// version's file in place would silently break every consumer pinned to its
+	// URL, and failing after the write would report the problem accurately and
+	// still have caused it.
 	//
 	// `DocumentDiff` classifies `default`, `examples`, `readOnly` and
 	// `writeOnly` as contract changes even though the spec calls them
 	// annotations — consumers act on them, and under-reporting ships a silent
 	// break while over-reporting only costs a bump. `"created"` is not a
 	// contract change: a version's first write has no predecessor to break.
-	const preflight = yield* SchemaPipeline.check(targets);
-	const broken = preflight.filter((r) => r.change === "contract");
-	if (broken.length > 0) {
-		for (const r of broken) {
-			yield* Effect.logError(`Contract change in an already-published schema: ${r.path}`);
+	if (checkOnly) {
+		const results = yield* SchemaPipeline.check(targets, { contractChanges });
+		for (const result of results) {
+			yield* report(result);
+			yield* Effect.log(
+				`${result.wouldWrite ? "Would write" : "Unchanged"} (${result.change}): ${result.path}` +
+					(result.contractBlocked ? " — REFUSED: contract change at a published version" : "") +
+					(result.blocked ? " — REFUSED: blocking findings" : ""),
+			);
 		}
-		return yield* Effect.fail(
-			new Error(
-				`${broken.length} document(s) changed their contract at version ${SCHEMA_SEMVER}. ` +
-					"Nothing was written. Bump SCHEMA_SEMVER in lib/scripts/generate-schema.ts and SCHEMA_URL in " +
-					"src/schema/release-output.ts to the new label, then re-run: the new version writes a new " +
-					"file and leaves the published one intact.",
-			),
+		return;
+	}
+
+	if (allowContractChange) {
+		yield* Effect.logWarning(
+			"--allow-contract-change: the contract gate is OFF. A published document may be rewritten in place " +
+				`at version ${SCHEMA_SEMVER}, which breaks every consumer pinned to its URL. Only correct while ` +
+				"that label is unpublished, or when repairing an unparseable file.",
 		);
 	}
 
 	// The whole gate-and-write walk is the package's: it lints, runs the ajv
-	// gate, fails with `SchemaGateError` carrying every blocking finding, and
-	// writes only what passes. The default blocking predicate is
-	// `severity === "warning"`, which is the policy we want.
-	const results = yield* SchemaPipeline.run(targets);
+	// gate, fails with `SchemaGateError` carrying every blocking finding, applies
+	// the contract policy, and writes only what passes. The default blocking
+	// predicate is `severity === "warning"`, which is the policy we want.
+	const results = yield* SchemaPipeline.run(targets, { contractChanges });
 
 	for (const result of results) {
-		// Anything surviving the gate is advisory by definition.
-		for (const finding of result.findings) {
-			yield* Effect.logInfo(`${result.$id}: ${finding.label} at "${finding.path}" — ${finding.message}`);
-		}
+		yield* report(result);
 		// `change` classifies what actually differed: `"contract"` is a
 		// consumer-visible break, `"annotations"` is documentation only — the
 		// versioning signal for a published schema, reported for free.
@@ -157,7 +213,26 @@ const generate = Effect.gen(function* () {
 			result.outcome === "written" ? `Written (${result.change}): ${result.path}` : `Unchanged: ${result.path}`,
 		);
 	}
-});
+}).pipe(
+	Effect.catchTag("SchemaContractChangeError", (error) =>
+		Effect.gen(function* () {
+			for (const t of error.targets) {
+				yield* Effect.logError(`Contract change in an already-published schema: ${t.path}`);
+			}
+			return yield* Effect.fail(
+				new Error(
+					`${error.targets.length} document(s) changed their contract at version ${SCHEMA_SEMVER}. ` +
+						"Nothing was written. Bump SCHEMA_SEMVER in lib/scripts/generate-schema.ts and SCHEMA_URL in " +
+						"src/schema/release-output.ts to the new label" +
+						(error.targets[0] ? ` (suggested: ${error.targets[0].nextVersion})` : "") +
+						", then re-run: the new version writes a new file and leaves the published one intact. " +
+						"To write anyway — only correct while the label is unpublished — re-run with " +
+						"`pnpm generate-schema -- --allow-contract-change`, or `--check` to see what would change.",
+				),
+			);
+		}),
+	),
+);
 
 const AppLayer = Layer.mergeAll(SchemaFile.layer, SchemaValidator.layer).pipe(Layer.provide(NodeServices.layer));
 

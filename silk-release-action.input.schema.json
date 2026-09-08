@@ -130,13 +130,9 @@
 					"anyOf": [
 						{
 							"type": "integer",
-							"allOf": [
-								{
-									"title": "Copyright start year",
-									"description": "Year the copyright begins, used to format a year range against the current year. Most users should NOT set this — it is auto-detected from the npm registry's first-publication date. Override only when registry lookup is unreliable or the copyright predates first npm publication.",
-									"examples": [2024, 2021]
-								}
-							]
+							"title": "Copyright start year",
+							"description": "Year the copyright begins, used to format a year range against the current year. Most users should NOT set this — it is auto-detected from the npm registry's first-publication date. Override only when registry lookup is unreliable or the copyright predates first npm publication.",
+							"examples": [2024, 2021]
 						},
 						{
 							"type": "null"
