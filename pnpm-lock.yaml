@@ -9,22 +9,22 @@ importers:
         specifier: 0.7.1
         version: 0.7.1
       '@savvy-web/pnpm-plugin-silk':
-        specifier: 0.34.1
-        version: 0.34.1
+        specifier: 0.34.2
+        version: 0.34.2
 
 packages:
 
   '@effected/pnpm-plugin-effect@0.7.1':
     resolution: {integrity: sha512-Y6FL3tc/wRtQb1cBsNIUiPVwmfzH+spnl7gNTWyhPeiMdsScPl3McYEiUBoUYPD+eIvdh1QPA1SDDF1YFvrjCg==}
 
-  '@savvy-web/pnpm-plugin-silk@0.34.1':
-    resolution: {integrity: sha512-c4v4LPIvj8WERmS1UVUafk4THBgVhG/ULH1OggU94wiPFazQWcJQ0XtEocBLlXXZAL9R7W5PN0L7W22+CBj67g==}
+  '@savvy-web/pnpm-plugin-silk@0.34.2':
+    resolution: {integrity: sha512-0fxSk7ix0HXkrGP6igaw2Cpm6rggP2dAUzZuDBqrnVfHGZhO5ymf0lghN8BEyREX5KU17MMgDVncAvueSFBK0g==}
 
 snapshots:
 
   '@effected/pnpm-plugin-effect@0.7.1': {}
 
-  '@savvy-web/pnpm-plugin-silk@0.34.1': {}
+  '@savvy-web/pnpm-plugin-silk@0.34.2': {}
 
 ---
 lockfileVersion: '9.0'
@@ -99,7 +99,7 @@ overrides:
   '@effect/vitest>vitest': ^5.0.0
   '@microsoft/api-extractor>typescript': ^6.0.3
 
-pnpmfileChecksum: sha256-ZpplR0DSrkPalbn4uQwexbAv2rrxooVCgI9/5+6oW/o=
+pnpmfileChecksum: sha256-m0Xl3Xu+rfxKLFb6UeFJQ9SAEJlKHylTwKG5YjuOA9o=
 
 importers:
 
@@ -148,7 +148,7 @@ importers:
         specifier: catalog:effected
         version: 0.14.0(effect@4.0.0-rc.112)
       '@savvy-web/silk-effects':
-        specifier: ^7.3.2
+        specifier: ^7.5.1
         version: 7.5.1(@effected/commands@0.6.1(effect@4.0.0-rc.112))(@effected/git@0.12.0(effect@4.0.0-rc.112))(@effected/toml@0.6.0(effect@4.0.0-rc.112))(@effected/workspaces@0.20.1(@effected/jsonc@0.9.0(effect@4.0.0-rc.112))(effect@4.0.0-rc.112))(effect@4.0.0-rc.112)
       effect:
         specifier: catalog:effect
@@ -164,10 +164,10 @@ importers:
         specifier: catalog:effected
         version: 0.6.0(effect@4.0.0-rc.112)
       '@savvy-web/github-action-builder':
-        specifier: ^2.2.11
+        specifier: ^2.3.3
         version: 2.3.3(@types/node@26.5.0)(redis@6.2.1)(typescript@7.0.2)
       '@savvy-web/silk':
-        specifier: ^3.11.6
+        specifier: ^3.14.0
         version: 3.14.0(@changesets/cli@3.0.2)(@commitlint/cli@21.2.2(@types/node@26.5.0)(conventional-commits-parser@7.1.2)(typescript@7.0.2))(@commitlint/config-conventional@21.2.2)(@effected/jsonc@0.9.0(effect@4.0.0-rc.112))(@effected/toml@0.6.0(effect@4.0.0-rc.112))(@types/bun@1.4.1)(@types/node@26.5.0)(@vitest/coverage-istanbul@5.0.0)(@vitest/coverage-v8@5.0.0)(@vitest/expect@5.0.0)(husky@9.1.7)(lint-staged@17.5.0)(markdownlint-cli2-formatter-codequality@0.0.7(markdownlint-cli2@0.23.2))(markdownlint-cli2@0.23.2)(redis@6.2.1)(tsx@4.23.13)(turbo@2.10.12)(typescript@7.0.2)(vite@8.2.2(@types/node@26.5.0)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13)(yaml@2.9.0))(vitest@5.0.0)
       '@vitest-agent/plugin':
         specifier: ^3.0.1
