@@ -58,8 +58,8 @@
 		"@effect/vitest": "catalog:effect",
 		"@effected/memfs": "catalog:effected",
 		"@effected/schemastore": "catalog:effected",
-		"@savvy-web/github-action-builder": "^2.3.3",
-		"@savvy-web/silk": "^3.14.0",
+		"@savvy-web/github-action-builder": "^2.3.4",
+		"@savvy-web/silk": "^3.15.0",
 		"@vitest-agent/plugin": "^3.0.1",
 		"tsx": "catalog:silk"
 	},
