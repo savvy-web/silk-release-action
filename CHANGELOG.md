@@ -1,5 +1,21 @@
 # @savvy-web/silk-release-action
 
+## 5.2.1
+
+### Dependencies
+
+| Dependency | Type | Action | From | To |
+| --- | --- | --- | --- | --- |
+| @savvy-web/silk-effects | dependency | updated | ^7.3.2 | ^7.5.1 |
+
+[#366][#366]
+
+### Thanks
+
+Thanks to [@savvy-web-bot](https://github.com/apps/savvy-web-bot) for their contributions!
+
+[#366]: https://github.com/savvy-web/silk-release-action/pull/366
+
 ## 5.2.0
 
 ### Features
@@ -337,12 +353,16 @@ Thanks to [@spencerbeggs](https://github.com/spencerbeggs) for their contributio
 
 ### Refactoring
 
-- Source the bundled vanilla changesets changelog generator from silk-effects'&#10;`Changesets.vanillaChangelogFunctions` re-export instead of depending on&#10;`@changesets/changelog-git` directly. The action now carries a single
-  changesets vendor surface — the same one backing the silk generator — and&#10;`@changesets/changelog-git` is no longer a direct dependency.
+- Source the bundled vanilla changesets changelog generator from silk-effects'
+  `Changesets.vanillaChangelogFunctions` re-export instead of depending on
+  `@changesets/changelog-git` directly. The action now carries a single
+  changesets vendor surface — the same one backing the silk generator — and
+  `@changesets/changelog-git` is no longer a direct dependency.
 
 ### Dependencies
 
-- Adopts the Silk changesets wave. `@savvy-web/silk-effects` moves to a `^7.1.0`&#10;floor because `Changesets.vanillaChangelogFunctions` does not exist in `7.0.1`;
+- Adopts the Silk changesets wave. `@savvy-web/silk-effects` moves to a `^7.1.0`
+  floor because `Changesets.vanillaChangelogFunctions` does not exist in `7.0.1`;
   the `@effected/*` bumps ride the `@effected/pnpm-plugin-effect` config-dependency
   pin, which is the kit's single version surface.
 
@@ -979,7 +999,8 @@ Thanks to [@spencerbeggs](https://github.com/spencerbeggs) for their contributio
   403 on the registry integrity probe, which reads as a package-permissions problem rather than a
   missing input.
   ### Validation fails on an unreadable target ref
-  Phase 2 previously read each package's version with one `git show <target>:<pkg>/package.json`&#10;per package. A bad or unreadable ref made every package look brand-new, so the entire
+  Phase 2 previously read each package's version with one `git show <target>:<pkg>/package.json`
+  per package. A bad or unreadable ref made every package look brand-new, so the entire
   workspace reported as releasing. Version comparison now reads a single workspace snapshot at
   the target ref, and a failure to read it **fails validation** instead of silently reporting a
   full-workspace release.
@@ -990,9 +1011,11 @@ Thanks to [@spencerbeggs](https://github.com/spencerbeggs) for their contributio
   verbose.** Nothing is lost — this is additional output, not different output.
   ### A concurrent branch write is now a visible conflict
   The release-branch ref move was a single forced update. It is now a forced reset followed by
-  an unforced commit, so another writer landing between the two produces a **visible conflict**&#10;rather than being silently overwritten.
+  an unforced commit, so another writer landing between the two produces a **visible conflict**
+  rather than being silently overwritten.
   ### Build validation always invokes the build script through `run`
-  Phase 2 previously invoked the build script as `pnpm ci:build` for pnpm and yarn but&#10;`npm run ci:build` for npm and bun — an inconsistency inherited from the shell pipeline this
+  Phase 2 previously invoked the build script as `pnpm ci:build` for pnpm and yarn but
+  `npm run ci:build` for npm and bun — an inconsistency inherited from the shell pipeline this
   replaced. All four package managers now go through `run`. The two forms are equivalent for
   pnpm and yarn, so no workflow changes, but a build script named the same as a package-manager
   subcommand no longer resolves differently between managers.
@@ -1002,7 +1025,8 @@ Thanks to [@spencerbeggs](https://github.com/spencerbeggs) for their contributio
   is now determined by whether the process spawns at all, so a `biome` that exists and exits
   non-zero surfaces a genuine format failure instead of silently skipping formatting.
   ### Transient-failure retry is broader
-  Retry classification during versioning widens from 5 error codes to 11 — adding&#10;`ECONNABORTED`, `ECONNREFUSED`, `EHOSTUNREACH`, `ENETUNREACH`, `EPIPE` and `socket hang up` —
+  Retry classification during versioning widens from 5 error codes to 11 — adding
+  `ECONNABORTED`, `ECONNREFUSED`, `EHOSTUNREACH`, `ENETUNREACH`, `EPIPE` and `socket hang up` —
   and comparison becomes case-insensitive. Both widen the set of failures that are retried.
 
 ### Features
@@ -1015,7 +1039,8 @@ Thanks to [@spencerbeggs](https://github.com/spencerbeggs) for their contributio
 
   **A package released only because a dependency moved now appears**, with `changesetCount: 0`.
   Such a package is versioned and gets a CHANGELOG entry but has no changeset of its own, so it
-  was previously invisible in this output. `count` continues to report the number of changeset&#10;**files**, which is not the length of `packages` — one file may name several packages, and two
+  was previously invisible in this output. `count` continues to report the number of changeset
+  **files**, which is not the length of `packages` — one file may name several packages, and two
   files may name the same one.
   ### Opt-in auto-merge for the release pull request
   A new `auto-merge` input takes `merge`, `squash` or `rebase`, or empty to disable. It is **off
@@ -1023,7 +1048,8 @@ Thanks to [@spencerbeggs](https://github.com/spencerbeggs) for their contributio
   packages, which is a decision about a repository's release posture rather than one this action
   should make on a consumer's behalf. Requires branch protection with required status checks.
 
-  An unrecognised value **fails** rather than quietly disabling — a workflow that writes&#10;`auto-merge: sqush` wants auto-merge, and treating the typo as "off" leaves the release pull
+  An unrecognised value **fails** rather than quietly disabling — a workflow that writes
+  `auto-merge: sqush` wants auto-merge, and treating the typo as "off" leaves the release pull
   request open indefinitely looking like a defect in the action. A repository that rejects
   auto-merge only warns, because the release itself has already succeeded and the pull request
   remains there to be merged by hand.
@@ -1057,7 +1083,8 @@ Thanks to [@spencerbeggs](https://github.com/spencerbeggs) for their contributio
   automation — saw a clean release. Both paths now fail with a typed error after annotating.
   ### The release window was bounded by the highest version tag, not the last release
   The commit walk that collects linked issues asked for the newest version-shaped tag. Across a
-  monorepo those version lines are not comparable: `@scope/a@5.0.25` outranks `@scope/b@2.3.7`&#10;numerically while being several releases older. The boundary therefore landed on whichever
+  monorepo those version lines are not comparable: `@scope/a@5.0.25` outranks `@scope/b@2.3.7`
+  numerically while being several releases older. The boundary therefore landed on whichever
   package happened to hold the highest version anywhere in the repository.
 
   Worse, it was **stuck**. Nothing advanced it until some package out-bumped that version, so each
@@ -1076,7 +1103,8 @@ Thanks to [@spencerbeggs](https://github.com/spencerbeggs) for their contributio
   paths also disagreed in the open: one release pull request reported four linked issues in its
   check and two in its description.
 
-  Both paths now share one walk — close keywords from commit bodies, plus `closingIssuesReferences`&#10;from each merge commit's pull request — and issues attached to the release pull request itself
+  Both paths now share one walk — close keywords from commit bodies, plus `closingIssuesReferences`
+  from each merge commit's pull request — and issues attached to the release pull request itself
   are included, since they are closed on merge regardless and were otherwise absent from both the
   description and the check.
   ### Already-closed issues were re-announced by later releases
@@ -1127,7 +1155,8 @@ Thanks to [@spencerbeggs](https://github.com/spencerbeggs) for their contributio
   (timestamp) regardless of configuration. It is now set at generation time.
   ### Findings tables were corrupted by unescaped pipes
   Markdown tables were assembled by joining cells with `|` and escaping nothing. Any cell
-  containing a pipe — the findings table renders **raw npm stderr**, and version ranges such as&#10;`>=1 || <2` are routine — shifted every column after it and added phantom columns. Cell content
+  containing a pipe — the findings table renders **raw npm stderr**, and version ranges such as
+  `>=1 || <2` are routine — shifted every column after it and added phantom columns. Cell content
   is now escaped.
   ### Linked issues carried an empty URL and node id
   Issues discovered by message reference only were recorded with `""` for both `url` and node id.
@@ -1161,7 +1190,9 @@ Thanks to [@spencerbeggs](https://github.com/spencerbeggs) for their contributio
   defaulting to `https://github.com` where it is unset — which is the github.com case, since only
   Enterprise sets the variable.
   ### The versioning retry reset the wrong working tree
-  Phase 1's native versioning takes a directory, and both its config gate and `planner.apply`&#10;operate on it. The reset-then-retry path that runs after a transient failure did not: its&#10;`git checkout -- .` and `git clean -fd` ran in the **ambient process working directory**. Where
+  Phase 1's native versioning takes a directory, and both its config gate and `planner.apply`
+  operate on it. The reset-then-retry path that runs after a transient failure did not: its
+  `git checkout -- .` and `git clean -fd` ran in the **ambient process working directory**. Where
   those differed, the retry deleted untracked files somewhere unrelated — `git clean -fd` is
   destructive — and then re-applied onto a release tree that was still half-applied, which is the
   corruption the reset exists to prevent. Both commands now run in the directory they were given.
@@ -1186,8 +1217,10 @@ Thanks to [@spencerbeggs](https://github.com/spencerbeggs) for their contributio
   staleness the queue exists to prevent. Writes are now serialised, and the finalizer interrupts
   the batching fiber before its final drain so the last write is the complete one.
   ### Prerelease versions were reported as patch bumps
-  Phase 2 recovers each package's bump from its version transition, parsing `major.minor.patch`&#10;by splitting on `.`. A prerelease or build suffix breaks that: `2.0.0-rc.1` splits to a third
-  element of `0-rc`, which is not a number, so the unparseable-version guard fired and a **major**&#10;transition rendered as `patch`. Every prerelease understated its severity. The numeric core is
+  Phase 2 recovers each package's bump from its version transition, parsing `major.minor.patch`
+  by splitting on `.`. A prerelease or build suffix breaks that: `2.0.0-rc.1` splits to a third
+  element of `0-rc`, which is not a number, so the unparseable-version guard fired and a **major**
+  transition rendered as `patch`. Every prerelease understated its severity. The numeric core is
   now parsed before the suffix.
   ### The same release reported two different ready counts
   The publish totals line counted every target that had not failed as ready, while the release
@@ -1196,7 +1229,8 @@ Thanks to [@spencerbeggs](https://github.com/spencerbeggs) for their contributio
   comment. Both now count the same thing.
   ### Scoped release tags produced broken links
   Per-package tags are scoped — `@scope/pkg@1.0.0` — and were embedded in release URLs
-  unencoded. GitHub's own canonical URL for such a release encodes the `@` while keeping the `/`&#10;a real path separator (`/releases/tag/%40scope/pkg%401.0.0`). Tags are now encoded per path
+  unencoded. GitHub's own canonical URL for such a release encodes the `@` while keeping the `/`
+  a real path separator (`/releases/tag/%40scope/pkg%401.0.0`). Tags are now encoded per path
   segment, matching what GitHub itself publishes; unscoped tags are unaffected.
 
 ### Performance
@@ -1608,9 +1642,12 @@ npm's own trusted-publishing provenance URL — the Sigstore transparency-log en
 
 - [`c153bda`](https://github.com/savvy-web/silk-release-action/commit/c153bdad48f0fb9d71c385a4cafd71a86b066e7c) ### Adopts the `@savvy-web/bundler` per-byte-group prod layout
 
-Publish and release now resolve targets from each package's `dist/prod/targets.json`&#10;binding and operate on `dist/prod/<group>/pkg` — the byte-variant group layout the
-new bundler emits — instead of a single publish directory. This requires&#10;`@savvy-web/silk-effects` `^1.0.0` (Record-map `publishConfig.targets`,
-binding-driven target resolution; the legacy array form is gone) and&#10;`@savvy-web/github-action-effects` `^2.1.3`. `npm: true` + `github: true` collapse
+Publish and release now resolve targets from each package's `dist/prod/targets.json`
+binding and operate on `dist/prod/<group>/pkg` — the byte-variant group layout the
+new bundler emits — instead of a single publish directory. This requires
+`@savvy-web/silk-effects` `^1.0.0` (Record-map `publishConfig.targets`,
+binding-driven target resolution; the legacy array form is gone) and
+`@savvy-web/github-action-effects` `^2.1.3`. `npm: true` + `github: true` collapse
 into one tarball deployed to both registries.
 
 ### Features
@@ -1618,7 +1655,8 @@ into one tarball deployed to both registries.
 - [`c153bda`](https://github.com/savvy-web/silk-release-action/commit/c153bdad48f0fb9d71c385a4cafd71a86b066e7c) ### Group `meta.tgz` doc bundle
 
 Each byte-group now ships an unattested `…<group>.meta.tgz` release asset bundling
-the bundler's `meta/` folder (`<unscoped>.api.json` + `tsconfig.json` +&#10;`package.json`) plus the generated SBOM, for documentation builders. API-reference
+the bundler's `meta/` folder (`<unscoped>.api.json` + `tsconfig.json` +
+`package.json`) plus the generated SBOM, for documentation builders. API-reference
 docs are now read from the bundler's `meta/` folder rather than the publish dir.
 
 ### Bug Fixes
@@ -1628,9 +1666,11 @@ docs are now read from the bundler's `meta/` folder rather than the publish dir.
   fail with a 422 on large monorepos.
 - Restore per-build packed/unpacked/file-count sizes in the validation output
   (sized via `npm pack --dry-run --json`).
-- Label Phase-2 dry-run and SBOM steps by byte-group id rather than the now-uniform&#10;`pkg` directory basename.
+- Label Phase-2 dry-run and SBOM steps by byte-group id rather than the now-uniform
+  `pkg` directory basename.
 - Surface npm's actual publish error (e.g. `ENEEDAUTH`, `E404`) in failures instead
-  of an opaque exit code, and log the resolved auth-token key and target `.npmrc`&#10;(never the token) for auth debugging.
+  of an opaque exit code, and log the resolved auth-token key and target `.npmrc`
+  (never the token) for auth debugging.
 
 ### Group-keyed release-asset names
 
@@ -2009,7 +2049,8 @@ When a package publishes to multiple registries with different names (e.g., `my-
 
 - a9e963e: Fix release workflow to properly create GitHub releases and tags
 
-  **Root Cause:**&#10;The `check-changesets` job was preventing the publish step from running when release PRs were merged, because changesets are consumed (deleted) during versioning. The changesets action internally handles detecting release PR merges by checking for version changes.
+  **Root Cause:**
+  The `check-changesets` job was preventing the publish step from running when release PRs were merged, because changesets are consumed (deleted) during versioning. The changesets action internally handles detecting release PR merges by checking for version changes.
 
   **Changes:**
   - Removed `check-changesets` job and its condition from both reusable workflows
@@ -2023,7 +2064,8 @@ When a package publishes to multiple registries with different names (e.g., `my-
   1. **When changesets exist:** Creates release PR with version bumps
   2. **When release PR merges:** Detects version changes, runs publish command, creates tags and GitHub releases
 
-  **Technical Details:**&#10;For private packages, `changeset publish` creates the git tag and triggers GitHub release creation without attempting NPM publication.
+  **Technical Details:**
+  For private packages, `changeset publish` creates the git tag and triggers GitHub release creation without attempting NPM publication.
 
 ## 1.3.1
 
@@ -2040,7 +2082,8 @@ When a package publishes to multiple registries with different names (e.g., `my-
   - Added initial checkout steps to both reusable workflows before using local composite actions
   - Added `contents: write` and `pull-requests: write` permissions to main release workflow
 
-  **Technical Details:**&#10;The `createGithubReleases` feature in the changesets action only works when `changeset publish` actually executes. For private packages, `changeset publish` creates the git tag and triggers GitHub release creation without attempting NPM publication.
+  **Technical Details:**
+  The `createGithubReleases` feature in the changesets action only works when `changeset publish` actually executes. For private packages, `changeset publish` creates the git tag and triggers GitHub release creation without attempting NPM publication.
 
 ## 1.3.0
 
