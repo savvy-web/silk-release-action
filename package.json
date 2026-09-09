@@ -51,15 +51,15 @@
 		"@effected/semver": "catalog:effected",
 		"@effected/workspaces": "catalog:effected",
 		"@effected/yaml": "catalog:effected",
-		"@savvy-web/silk-effects": "^7.3.2",
+		"@savvy-web/silk-effects": "^7.5.1",
 		"effect": "catalog:effect"
 	},
 	"devDependencies": {
 		"@effect/vitest": "catalog:effect",
 		"@effected/memfs": "catalog:effected",
 		"@effected/schemastore": "catalog:effected",
-		"@savvy-web/github-action-builder": "^2.2.11",
-		"@savvy-web/silk": "^3.11.6",
+		"@savvy-web/github-action-builder": "^2.3.3",
+		"@savvy-web/silk": "^3.14.0",
 		"@vitest-agent/plugin": "^3.0.1",
 		"tsx": "catalog:silk"
 	},
