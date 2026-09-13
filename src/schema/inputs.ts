@@ -188,7 +188,7 @@ const loadInputs: Config.Config<Inputs> = Config.all({
 	dryRun: ActionInput.boolean("dry-run").pipe(Config.withDefault(false)),
 	phase: ActionInput.string("phase").pipe(
 		Config.withDefault(""),
-		Config.mapOrFail((raw) => {
+		Config.mapEffect((raw) => {
 			const value = raw.trim();
 			if (value === "") return Effect.succeedNone;
 			return Schema.decodeUnknownEffect(WorkflowPhaseSchema)(value).pipe(
@@ -209,7 +209,7 @@ const loadInputs: Config.Config<Inputs> = Config.all({
 	),
 	customRegistries: ActionInput.lines("custom-registries").pipe(
 		Config.withDefault([]),
-		Config.mapOrFail(parseCustomRegistries),
+		Config.mapEffect(parseCustomRegistries),
 	),
 });
 

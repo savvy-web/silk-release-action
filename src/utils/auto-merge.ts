@@ -49,7 +49,7 @@ export const autoMergeMethodConfig: Config.Config<Option.Option<AutoMergeMethod>
 	"auto-merge",
 ).pipe(
 	Config.withDefault(""),
-	Config.mapOrFail((raw) => {
+	Config.mapEffect((raw) => {
 		const value = raw.trim();
 		if (value === "") return Effect.succeedNone;
 		return Schema.decodeUnknownEffect(AutoMergeMethodSchema)(value).pipe(
