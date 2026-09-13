@@ -4,7 +4,7 @@
 // #215): each line binds a custom registry URL to the npmrc auth token the
 // Phase-3 publish flow sends it. The parse lives here as a PURE function —
 // the input itself is still read exactly once, in `schema/inputs.ts`, which
-// composes this via `Config.mapOrFail`.
+// composes this via `Config.mapEffect`.
 
 import { Config, Effect, Redacted, Schema, SchemaIssue } from "effect";
 

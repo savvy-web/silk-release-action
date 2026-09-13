@@ -54,6 +54,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodeServices } from "@effect/platform-node";
 import { SchemaFile, SchemaPipeline, SchemaTarget, SchemaValidator, SchemaVersioning } from "@effected/schemastore";
+import type { Schema } from "effect";
 import { Effect, Layer, Result } from "effect";
 import { ReleaseOutput, SCHEMA_URL } from "../../src/schema/release-output.js";
 import { INPUT_SCHEMA_URL, SilkReleaseConfig } from "../../src/schema/silk-release-config.js";
@@ -69,6 +70,23 @@ const REPO_ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
  * is spelled.
  */
 const CATALOG_NAME = "silk-release-action";
+
+/**
+ * The `Schema.toJsonSchemaDocument` options every target is generated with.
+ *
+ * @remarks
+ * `effect@4.0.0-rc.113` flipped `toJsonSchemaDocument`'s `onExcessProperty`
+ * default from `"error"` to `"ignore"`, which emits `additionalProperties:
+ * true` on every object. Both published documents were generated closed
+ * (`additionalProperties: false`), and reopening them is a `contract` change
+ * at an already-published version. Pinning the option on the target keeps the
+ * documents' generation contract self-describing, so a core default moving
+ * again cannot silently rewrite what consumers validate against. (The
+ * decoders in `src/schema/` keep core's `"ignore"` default and tolerate
+ * excess keys; the published documents have always been the stricter of the
+ * two, and that is the contract consumers hold.)
+ */
+const JSON_SCHEMA_OPTIONS: Schema.ToJsonSchemaOptions = { onExcessProperty: "error" };
 
 /**
  * The published version of the output document.
@@ -101,6 +119,10 @@ const SCHEMA_SEMVER = SchemaVersioning.parseResult("5.0.0").pipe(
  * payload the action emits, so its URL has to keep resolving after the shape
  * moves on. `name` is required once `version` is present, enforced by an
  * overload pair rather than a runtime check.
+ *
+ * Both targets pin {@link JSON_SCHEMA_OPTIONS}: the documents are closed
+ * (`additionalProperties: false` on every object) and must stay that way
+ * regardless of core's default.
  */
 export const targets: ReadonlyArray<SchemaTarget> = [
 	SchemaTarget.make({
@@ -109,11 +131,13 @@ export const targets: ReadonlyArray<SchemaTarget> = [
 		name: CATALOG_NAME,
 		version: SCHEMA_SEMVER,
 		path: resolve(REPO_ROOT, "schemas", SCHEMA_SEMVER, SchemaVersioning.fileName(CATALOG_NAME, SCHEMA_SEMVER)),
+		jsonSchema: JSON_SCHEMA_OPTIONS,
 	}),
 	SchemaTarget.make({
 		schema: SilkReleaseConfig,
 		$id: INPUT_SCHEMA_URL,
 		path: resolve(REPO_ROOT, "silk-release-action.input.schema.json"),
+		jsonSchema: JSON_SCHEMA_OPTIONS,
 	}),
 ];
 
