@@ -57,7 +57,7 @@
 		"@effect/vitest": "catalog:effect",
 		"@effected/memfs": "catalog:effected",
 		"@effected/schemastore": "catalog:effected",
-		"@okfit/plugin": "^0.3.3",
+		"@okfit/plugin": "^0.3.4",
 		"@savvy-web/github-action-builder": "^2.3.6",
 		"@savvy-web/silk": "^4.0.2",
 		"@vitest-agent/plugin": "^4.0.0",

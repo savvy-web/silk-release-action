@@ -6,21 +6,18 @@ Guidance for Claude Code when working in this repository.
 
 Private repository (`@savvy-web/silk-release-action`) holding the release action itself plus shared composite actions, reusable workflows, GitHub Projects automation, and internal GitHub tooling.
 
-## Design Documentation
+## Knowledge bundle (okf)
 
-Load design docs when working on the relevant subsystem:
+`okf/` is this repository's OKF knowledge bundle — decisions, conventions, gotchas, interfaces, limitations, modules, and runbooks, each one concept per file. `okf/index.md` is the entry point; start there. Load the concept that covers the subsystem you're touching rather than searching the tree cold:
 
-- `@./.claude/design/release-action/architecture.md` - Three-phase workflow, native versioning (zero-install Phase 1), the managed release-PR body region, module dependency graph, entry points, shared infrastructure
-- `@./.claude/design/release-action/integration.md` - Multi-registry publishing, OIDC auth, native versioning/changelog module map, token plumbing, SBOM/NTIA compliance, publish summaries
-- `@./.claude/design/release-action/testing.md` - Test strategy, test-layer patterns, silk-effects test factories, coverage map, specialized testing patterns, the remaining `CHARACTERIZATION` tests
+- Architecture, entry points, the layer graph, phase steps: `okf/modules/release-action.md`
+- OIDC/token auth, publishability rules, GitHub Packages: `okf/decisions/oidc-first-authentication.md`, `okf/decisions/never-set-github-token.md`, `okf/decisions/silk-publishability-rules.md`, `okf/limitations/github-packages-needs-workflow-token.md`
+- SBOM/NTIA metadata: `okf/interfaces/sbom-config.md`
+- Test strategy, layers-not-mocks, placement, characterization tests: `okf/modules/test-harness.md`, `okf/conventions/effect-service-doubles.md`, `okf/conventions/test-placement.md`, `okf/conventions/it-effect-vs-plain-it.md`, `okf/glossary/characterization-test.md`
+- Output schema v2 shape and versioning: `okf/interfaces/release-output.md`, `okf/decisions/versioned-output-schema.md`
+- Action inputs/outputs contract: `okf/interfaces/action-inputs.md`
 
-**Phase-2 degradation — partly fixed, still partly live. Read before touching it.** A degraded step reports a green release verdict for work that never ran unless it **contributes a finding**, because findings are the only thing the verdict reads.
-
-The **publish-validation crash path is fixed** ([issue #216](https://github.com/savvy-web/silk-release-action/issues/216)): a crash now returns `crashedPublishValidation`, carrying an `error` finding per affected check, so it reports red instead of ✅ 5/5. Its characterization tests were converted to assert the fixed behaviour.
-
-The **other Phase-2 degradation paths are still live** — a crashed issue-linking step, a check run that could not be created, a failed comment write, and a failed pull-request lookup all still degrade silently. They remain pinned by **10 `CHARACTERIZATION` test cases across four files**, each written to fail when *their* fix lands — 7 pinning the degradation paths themselves (`link-issues-and-build-steps.test.ts`, `per-step-checks.test.ts`, `publish-validation-report.test.ts`) and 3 pinning adjacent reporting oddities in `validation-checks.test.ts`. Count test **cases** — `it("CHARACTERIZATION` titles — not grep lines: a raw grep returns roughly twice as many hits, because each file's block comment, the two historical `Was \`CHARACTERIZATION — …\`` notes in `publish-validation.test.ts` (whose own pins were fixed and converted), and this guidance in the context files all match too. Load *Degradation semantics (issue #216)* in `architecture.md` and its companion in `testing.md` before changing a `steps/*` failure posture, or you will "fix" a test that is deliberately pinning a bug.
-
-Two rules the fix established, both load-bearing: a degraded step contributes a **finding** rather than flipping a boolean (flipping `publishOk` would double-count the build-failed path), and `Effect.catch` must never be widened to `catchCause` — a defect killing the phase is the last honest failure signal.
+**Phase-2 degradation — partly fixed, still partly live. Read before touching it.** The fixed publish-validation crash path and the load-bearing rule (a degraded step contributes a **finding**, never flips a boolean) are `okf/decisions/degraded-steps-contribute-findings.md`. What still degrades silently — and what a green run does not actually prove — is `okf/gotchas/phase-2-silent-degradation.md`. The `CHARACTERIZATION` test convention and how to count the cases correctly is `okf/glossary/characterization-test.md`. Load all three before changing a `steps/*` failure posture, or you will "fix" a test that is deliberately pinning a bug ([issue #216](https://github.com/savvy-web/silk-release-action/issues/216)).
 
 ### Vendored reference repos (`.repos/`)
 
@@ -34,9 +31,9 @@ One read-only submodule, managed via `savvy repos` (config in `.repos/config.jso
 
 TypeScript-based GitHub Action for automated release management with changesets. Entry points: `pre.ts`, `main.ts`, `post.ts`.
 
-**Source layout.** `main.ts` is a 19-line entry guard only; composition lives in `src/program.ts` (read inputs → detect phase → five-arm switch) and the layer graph in `src/layers/`. Phase bodies are one module each under `src/steps/`. Also: `src/release/` (publish, releases, validation, reporting, publishability, `resolve-targets.ts`), `src/schema/` (`inputs.ts` and `outputs.ts` are the single decode/declare points, plus the output schema and projections), `src/utils/` (including `release-kind.ts`), `src/types/`, `src/changelog/` (bundled changelog workers). JSON Schema artifacts: `silk-release-action.input.schema.json` at the repo root (unchanged), and the **versioned** `schemas/5.0.0/silk-release-action-5.0.0.json` (the output document — kept under its own version label so a newer schema can't silently move underneath a root path). `pnpm generate-schema` delegates its contract gate to `@effected/schemastore`: `SchemaPipeline.run` is called with `contractChanges: "block-versioned"`, so a contract change against an already-published version fails with `SchemaContractChangeError`, names the documents and the suggested `nextVersion`, and writes nothing — bump `SCHEMA_SEMVER` (`lib/scripts/generate-schema.ts`) and `SCHEMA_URL` (`src/schema/release-output.ts`) together in response. The script's own hand-rolled preflight is gone. Two flags: `--check` (alias `--dry-run`) runs the same walk and writes nothing, and `--allow-contract-change` (alias `--force`) sets `contractChanges: "allow"` to rewrite a published document in place after a loud warning — only correct while a version is genuinely unpublished.
+**Source layout.** `main.ts` is a 19-line entry guard only; composition lives in `src/program.ts` (read inputs → detect phase → five-arm switch) and the layer graph in `src/layers/`. Phase bodies are one module each under `src/steps/`. Also: `src/release/` (publish, releases, validation, reporting, publishability, `resolve-targets.ts`), `src/schema/` (`inputs.ts` and `outputs.ts` are the single decode/declare points, plus the output schema and projections), `src/utils/` (including `release-kind.ts`), `src/types/`, `src/changelog/` (bundled changelog workers). JSON Schema artifacts: `silk-release-action.input.schema.json` at the repo root (unchanged), and the **versioned** `schemas/5.0.0/silk-release-action-5.0.0.json` (the output document — kept under its own version label so a newer schema can't silently move underneath a root path). `pnpm generate-schema` delegates its contract gate to `@effected/schemastore`: `SchemaPipeline.run` is called with `contractChanges: "block-versioned"`, so a contract change against an already-published version fails with `SchemaContractChangeError`, names the documents and the suggested `nextVersion`, and writes nothing — bump `SCHEMA_SEMVER` (`lib/scripts/generate-schema.ts`) and `SCHEMA_URL` (`src/schema/release-output.ts`) together in response. The script's own hand-rolled preflight is gone. Two flags: `--check` (alias `--dry-run`) runs the same walk and writes nothing, and `--allow-contract-change` (alias `--force`) sets `contractChanges: "allow"` to rewrite a published document in place after a loud warning — only correct while a version is genuinely unpublished. Runbook for responding to a blocked contract change: `okf/runbooks/bump-output-schema-version.md`.
 
-**Output schema v2 (`schemaVersion: "2"`).** The unit is the **workspace**, not the package: `publish.workspaces`/`validation.workspaces` are maps keyed by workspace name (plus an `order` array), each carrying `kind` (`github-only` | `github-with-packages`, from `utils/release-kind.ts`), `success`, `outcome`, `summary`, and a `packages` array. `status`/`noop`/`succeeded`/`hasFailures` are gone from every phase, replaced by `success` + `outcome` + `summary` + `failure` + `totals`. The publish phase's output discriminator is `phase: "publish"` — the `phase` *input* still accepts `publishing`; don't conflate the two. Details: `@./.claude/design/release-action/architecture.md`.
+**Output schema v2 (`schemaVersion: "2"`).** The unit is the **workspace**, not the package: `publish.workspaces`/`validation.workspaces` are maps keyed by workspace name (plus an `order` array), each carrying `kind` (`github-only` | `github-with-packages`, from `utils/release-kind.ts`), `success`, `outcome`, `summary`, and a `packages` array. `status`/`noop`/`succeeded`/`hasFailures` are gone from every phase, replaced by `success` + `outcome` + `summary` + `failure` + `totals`. The publish phase's output discriminator is `phase: "publish"` — the `phase` *input* still accepts `publishing`; don't conflate the two. Details: `okf/interfaces/release-output.md`.
 
 **Three-phase workflow:**
 
@@ -44,7 +41,7 @@ TypeScript-based GitHub Action for automated release management with changesets.
 2. **Phase 2 (Validation)** - Push to release branch triggers build validation, publish dry-runs, release notes preview, and sticky comment updates
 3. **Phase 3 (Publishing)** - Merge of release PR triggers multi-registry publishing, GitHub releases, and SBOM/attestation generation
 
-For full architecture, module dependency graph, and per-module documentation: `@./.claude/design/release-action/architecture.md`
+For full architecture, module dependency graph, and per-module documentation: `okf/modules/release-action.md`
 
 ### Action Inputs
 
@@ -75,9 +72,9 @@ For full architecture, module dependency graph, and per-module documentation: `@
 
 **Never drop `github-token`.** A GitHub App installation token — including the one this action provisions — cannot access GitHub Packages at all; the sole exception is the default Actions token, which is what `github-token` carries. Omit the input and every Packages publish fails. `custom-registries` is not a substitute. `pre.ts` persists it to `GithubPackagesTokenState` and masks it.
 
-**Removed inputs.** `skip-token-revoke` (an opt-out of cleaning up a live secret, buying nothing the one-hour expiry did not) and `pr-title-prefix` (never reached a real title — every branch that names packages or a version builds its own `release: …` string).
+**Removed inputs.** `skip-token-revoke` (an opt-out of cleaning up a live secret, buying nothing the one-hour expiry did not) and `pr-title-prefix` (never reached a real title — every branch that names packages or a version builds its own `release: …` string). Full list and rationale: `okf/decisions/removed-inputs.md`.
 
-For full integration details and token plumbing: `@./.claude/design/release-action/integration.md`
+For full integration details and token plumbing: `okf/decisions/oidc-first-authentication.md`, `okf/decisions/never-set-github-token.md`.
 
 ### Integration Testing
 
@@ -88,6 +85,8 @@ Use `savvy-web/silk-integration` to test from feature branches:
 3. Push to feature branch
 4. Trigger: `gh workflow run release.yml --repo savvy-web/silk-integration --ref main`
 5. Watch: `gh run list --repo savvy-web/silk-integration --limit 1`
+
+Full procedure: `okf/runbooks/integration-testing.md`.
 
 ### Dogfooding First-Party Dependencies
 
@@ -102,7 +101,7 @@ Load before linking a local library build, when a duplicate copy shows up in the
 
 ### The `dev` branch convention
 
-All in-progress feature work lands on a long-lived **`dev`** branch, never directly on `main`. `main` always reflects the last released state.
+All in-progress feature work lands on a long-lived **`dev`** branch, never directly on `main`. `main` always reflects the last released state. Convention: `okf/conventions/dev-branch-flow.md`.
 
 The shared release workflow at `savvy-web/.github/.github/workflows/release.yml` has a matching **`dev` branch**. Consumer repos pin their calling workflow to it (`uses: savvy-web/.github/.github/workflows/release.yml@dev`) so they exercise in-progress workflow changes before they reach `main`. The end-to-end test repo `savvy-web/silk-integration` pins `@dev`; **this repo's own `release.yml` pins `@main`** — the action under development is already the thing being tested here, and pinning the caller to `@dev` too would make a failed run ambiguous between the two. (See [Integration Testing](#integration-testing) and the dogfooding procedure above — Spencer initiates the integration runs.)
 
@@ -215,7 +214,7 @@ Conventional Commits format enforced via commitlint (`@commitlint/config-convent
 
 ## Shared Actions and Workflows
 
-**There is no `.github/actions/` directory.** The canon's `persistLocal` slot — which would emit a `.github/actions/local` composite for an `act` smoke loop — is **deliberately disabled** in `action.config.ts`: we do not run `act` locally, and committing a second copy of the bundle only adds weight to every checkout of the action. `act-test.yml` was removed with it rather than left pointing at a build that is never produced. Re-enabling `persistLocal` is a decision to start using `act`, not a default to restore.
+**There is no `.github/actions/` directory.** The canon's `persistLocal` slot — which would emit a `.github/actions/local` composite for an `act` smoke loop — is **deliberately disabled** in `action.config.ts`: we do not run `act` locally, and committing a second copy of the bundle only adds weight to every checkout of the action. `act-test.yml` was removed with it rather than left pointing at a build that is never produced. Re-enabling `persistLocal` is a decision to start using `act`, not a default to restore. Decision: `okf/decisions/no-local-composite-action.md`.
 
 Workflows in `.github/workflows/`:
 
@@ -232,7 +231,7 @@ This repository uses the **simple release workflow** (private repo, no NPM packa
 
 ## Project Structure
 
-`src/` (see [Source layout](#silk-release-action) above and `src/CLAUDE.md`), `__test__/` (all tests — singular, see `__test__/CLAUDE.md`), `.claude/{design,plans,skills}/`, `.github/{workflows,instructions,scripts,ISSUE_TEMPLATE}/`, `lib/{configs,scripts,turbo}/`, `scripts/`, `types/`, `docs/`, `schemas/`, `.changeset/`, `.husky/`, and root configs (`biome.json`, `tsconfig.json`, `turbo.json`, `vitest.config.ts`, `action.yml`, `action.config.ts`).
+`src/` (see [Source layout](#silk-release-action) above and `src/CLAUDE.md`), `__test__/` (all tests — singular, see `__test__/CLAUDE.md`), `okf/` (the knowledge bundle — see [Knowledge bundle (okf)](#knowledge-bundle-okf) above), `.claude/{plans,skills}/`, `.github/{workflows,instructions,scripts,ISSUE_TEMPLATE}/`, `lib/{configs,scripts,turbo}/`, `scripts/`, `types/`, `docs/`, `schemas/`, `.changeset/`, `.husky/`, and root configs (`biome.json`, `tsconfig.json`, `turbo.json`, `vitest.config.ts`, `action.yml`, `action.config.ts`).
 
 ## Adding New Workflows/Actions
 
@@ -253,7 +252,7 @@ Create in `.github/workflows/` with `workflow_call` trigger. Document required s
 
 - Strict environment mode | Global passthrough: `GITHUB_ACTIONS`, `CI`
 - Two tasks, both cached: **`types:check`** (`tsc --noEmit`, no dependencies) and **`build:prod`** (`github-action-builder build` → `dist/**`, `dependsOn: ["types:check"]`)
-- `types:check`'s `inputs` must mirror the `include` of the tsconfig `tsc` actually resolves (`@savvy-web/github-action-builder/tsconfig/action.json`), which covers `__test__/**` as well as `src/**`. When they drifted apart, a test-only change hit a cached FULL TURBO and reported a green typecheck without running one. The comment in `turbo.json` records this; keep the two lists in step.
+- `types:check`'s `inputs` must mirror the `include` of the tsconfig `tsc` actually resolves (`@savvy-web/github-action-builder/tsconfig/action.json`), which covers `__test__/**` as well as `src/**`. When they drifted apart, a test-only change hit a cached FULL TURBO and reported a green typecheck without running one. The comment in `turbo.json` records this; keep the two lists in step. Gotcha: `okf/gotchas/turbo-typecheck-cache-inputs.md`.
 
 ## Environment Variables
 
@@ -261,9 +260,9 @@ Strict environment mode in Turbo. Declare new env vars in `turbo.json` under `gl
 
 ## Claude Code tooling
 
-**There is no `.claude/commands/` directory.** Repo-specific commands were replaced by plugin skills and agents: the **silk** plugin (`/silk:*` skills, the `savvy-mcp` tools, `changeset-manager`/`turborepo`/`tsdoctor` agents), the **effected** plugin (the Effect v4 and GitHub-Actions skill suites plus the `action-engineer`, `effect-developer`, `effect-reviewer` and `effect-migrator` agents), **design-docs**, and **vitest-agent**. `pnpm claude` launches Claude Code with the local effected plugin directory linked (`--plugin-dir=../../spencerbeggs/effected/plugins/claude-code`), so plugin changes are dogfooded before release.
+**There is no `.claude/commands/` directory.** Repo-specific commands were replaced by plugin skills and agents: the **silk** plugin (`/silk:*` skills, the `savvy-mcp` tools, `changeset-manager`/`turborepo`/`tsdoctor` agents), the **effected** plugin (the Effect v4 and GitHub-Actions skill suites plus the `action-engineer`, `effect-developer`, `effect-reviewer` and `effect-migrator` agents), **okfit** (the `okf/` knowledge bundle above), and **vitest-agent**. `pnpm claude` launches Claude Code with the local effected plugin directory linked (`--plugin-dir=../../spencerbeggs/effected/plugins/claude-code`), so plugin changes are dogfooded before release.
 
-`.claude/` holds `design/` (the design docs above), `plans/`, `skills/effected-construct-index`, `cache/` and `dogfood/`.
+`.claude/` holds `plans/`, `skills/effected-construct-index`, `cache/` and `dogfood/`.
 
 ## GitHub App Configuration
 

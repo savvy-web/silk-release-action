@@ -4,9 +4,9 @@ Source code architecture and coding patterns for silk-release-action.
 
 **See also:** [Root CLAUDE.md](../CLAUDE.md) | [**test**/CLAUDE.md](../__test__/CLAUDE.md)
 
-**For full architecture documentation:** `@../.claude/design/release-action/architecture.md` -- entry points, program/steps split, phase detection, Phase-1 native versioning (zero-install), the `@effected/*` kit map, module dependency graph, the per-byte-group prod layout (`dist/prod/<group>/pkg`), group-keyed release assets, the release-PR body region, and **Degradation semantics (issue #216)**.
+**For full architecture documentation:** `okf/modules/release-action.md` -- entry points, program/steps split, phase detection, Phase-1 native versioning, the `@effected/*` kit map, module dependency graph, the release-PR body region. Degradation semantics (issue #216): `okf/decisions/degraded-steps-contribute-findings.md` and `okf/gotchas/phase-2-silent-degradation.md`.
 
-**For integration/publishing details:** `@../.claude/design/release-action/integration.md` -- registry infrastructure, native versioning and the changelog module map, token-auth publishing fallback, SBOM generation, and publish summaries.
+**For integration/publishing details:** `okf/decisions/oidc-first-authentication.md`, `okf/decisions/never-set-github-token.md`, `okf/decisions/silk-publishability-rules.md`, `okf/interfaces/sbom-config.md` -- registry infrastructure, native versioning, token-auth publishing fallback, SBOM generation.
 
 ## Architecture Overview
 
@@ -72,7 +72,7 @@ Every `action.yml` input is decoded **once**, in `schema/inputs.ts`; `main` hand
 - The reference region is emitted unconditionally, empty or not, so it stays an addressable target
 - Closing references have two non-interchangeable spellings: comma-joined inside the squash fence (commitlint), bare one-per-line outside it (GitHub's linker)
 
-Load the architecture doc ("Release PR body") before changing marker syntax or the merge rule.
+Load `okf/interfaces/release-pr-surfaces.md` before changing marker syntax or the merge rule.
 
 ## TSDoc
 

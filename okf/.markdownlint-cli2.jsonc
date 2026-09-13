@@ -1,0 +1,16 @@
+{
+	// OKF bundle: a concept's frontmatter `title:` plus its body H1 trips MD025,
+	// and every index.md is spec-shaped as one H1 per concept type.
+	"overrides": [
+		{
+			"combine": "merge",
+			"config": { "MD025": { "front_matter_title": "" } },
+			"filter": ["**/*.md", "!**/index.md"]
+		},
+		{
+			"combine": "merge",
+			"config": { "MD025": false },
+			"filter": ["**/index.md"]
+		}
+	]
+}

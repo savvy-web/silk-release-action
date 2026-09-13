@@ -54,6 +54,7 @@ jobs:
             @effected/pnpm-plugin-effect
           dependencies: |
             @effected/*
+            @okfit/*
             @savvy-web/*
             @vitest-agent/*
             ajv

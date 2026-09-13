@@ -4,7 +4,7 @@ Unit testing patterns and infrastructure for silk-release-action.
 
 __See also:__ [Root CLAUDE.md](../CLAUDE.md) | [src/CLAUDE.md](../src/CLAUDE.md)
 
-__For comprehensive testing documentation:__ `@../.claude/design/release-action/testing.md` -- test-layer patterns, silk-effects test factories, all specialized patterns (fake timers, filesystem, workspaces sync APIs, GitHub context, summaries), the `__test__/unit/` mirrored layout, the integration fixture harness, the 10 remaining `CHARACTERIZATION` test cases across four files (issue #216 — its own pins are fixed and converted; a raw grep returns far more lines than that, so count `it("CHARACTERIZATION` titles), and the coverage map.
+__For comprehensive testing documentation:__ `okf/modules/test-harness.md` -- test-layer patterns, the `__test__/unit/` mirrored layout, the integration fixture harness, and the coverage map. `okf/conventions/effect-service-doubles.md` -- layers-not-mocks, the fault-injection and filesystem-double patterns. `okf/conventions/it-effect-vs-plain-it.md` -- the `it.effect` vs plain `it()` split. `okf/glossary/characterization-test.md` -- what `CHARACTERIZATION` means and how to count the cases (issue #216 — its own pins are fixed and converted; a raw grep returns far more lines than the case count).
 
 ## Running Tests
 
@@ -145,8 +145,8 @@ Load before migrating any suite to `it.effect`.
   seeded with the files the flow actually reads (`MemoryFileSystem.file(content, { mode })` for an
   exec bit, `MemoryFileSystem.directory()` for a directory). Relative reads resolve from the volume
   root, so seed `"package.json"` as `/package.json`. A `layerNoop` stub that answers plausibly for
-  any path lets a mutant reading the WRONG path survive — see *Effect Service Doubles* in
-  `@../.claude/design/release-action/testing.md` for the mutants this swap started killing.
+  any path lets a mutant reading the WRONG path survive — see `okf/conventions/effect-service-doubles.md`
+  for the mutants this swap started killing.
   `ActionEnvironment.makeTest` needs a *real* `FileSystem` to read `GITHUB_EVENT_PATH` (`layerTest`
   stubs it out), but memfs is real enough — provide the same layer value under `Layer.provide` and
   in the merge so both provisions memoize onto one volume
