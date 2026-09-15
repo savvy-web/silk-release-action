@@ -14,8 +14,8 @@ sources:
     resource: ../../node_modules/@savvy-web/github-action-builder/tsconfig/action.json
 generated:
   by: okfit/claude-code
-  at: 2026-09-13T19:54:03Z
-  body_sha256: 4c012d52a00be9389d3273fbfa25ef14ada7be6738bdd9a54534486d8c907bb9
+  at: 2026-09-15T03:42:33Z
+  body_sha256: cb34bbca7be7473a46e84a094221cf85170013785bdfd45f18c4057f3c28677d
 status: draft
 ---
 
@@ -51,8 +51,9 @@ ran against the new tree.
 `turbo.json`'s `types:check.inputs` currently lists
 `__test__/**/*.ts`, `__test__/**/*.mts`, and `__test__/**/*.cts` alongside
 `src/**/*.ts`, `lib/**/*.ts`, and `lib/**/*.mts` specifically so the two
-lists stay in step; the comment inline in `turbo.json` records the drift
-history and the rule.[^turbo-json] Keeping the two lists synchronized is
+lists stay in step. `turbo.json` carries no inline comment recording this
+any more — this concept is the record of the drift history and the
+rule.[^turbo-json] Keeping the two lists synchronized is
 the load-bearing fact, not the specific paths listed today: the tsconfig's
 `include` is the authority, and Turbo's `inputs` must mirror it, or a
 future drift silently repeats the same gap.

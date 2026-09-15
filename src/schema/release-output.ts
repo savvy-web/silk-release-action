@@ -4,8 +4,8 @@
  * @remarks
  * `ReleaseOutput` is a `Schema.Union` of three phase structs, discriminated by
  * the `phase` literal. It is the single source of truth: the committed,
- * **version-labelled** document at `schemas/<version>/silk-release-action-<version>.json`
- * (`schemas/5.0.0/silk-release-action-5.0.0.json` today) is generated from it,
+ * **version-labelled** document at `schemas/<version>/silk-release-action.output-<version>.json`
+ * (`schemas/5.2/silk-release-action.output-5.2.json` today) is generated from it,
  * and `main.ts` emits a Schema-encoded instance as the `result` action output.
  * There is no unversioned `silk-release-action.output.schema.json`; the label
  * is what keeps an emitted payload's `$schema` resolving to the shape it was
@@ -16,6 +16,7 @@
  */
 
 import { Schema } from "effect";
+import { OUTPUT_SCHEMA_URL, OUTPUT_SCHEMA_VERSION } from "./silk-release-config.js";
 
 /**
  * Hosted JSON Schema URL; the emitted `result` carries this as `$schema`.
@@ -26,13 +27,15 @@ import { Schema } from "effect";
  * written against long after the schema has moved on. An unversioned URL would
  * silently re-point old payloads at a newer contract.
  *
- * Kept in step with `SCHEMA_SEMVER` in `lib/scripts/generate-schema.ts`, which
- * derives the file name from the same label. When SchemaStore hosts the
- * document, this becomes its `schemastore.org` URL and the raw GitHub path
- * stays as the fallback origin.
+ * Derived from `OUTPUT_SCHEMA_URL` and `OUTPUT_SCHEMA_VERSION` — the same
+ * constants `lib/scripts/schemastore.config.ts` derives the document's `$id`
+ * and file name from — so the two cannot disagree;
+ * `__test__/schemastore-config.test.ts` pins the derivation. When SchemaStore
+ * hosts the document, this becomes its `schemastore.org` URL and the raw
+ * GitHub path stays as the fallback origin.
  */
 export const SCHEMA_URL =
-	"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.0.0/silk-release-action-5.0.0.json";
+	`${OUTPUT_SCHEMA_URL}/${OUTPUT_SCHEMA_VERSION}/silk-release-action.output-${OUTPUT_SCHEMA_VERSION}.json` as const;
 
 /**
  * In-band schema version. Bumped only on a breaking JSON-shape change

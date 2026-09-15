@@ -14,8 +14,6 @@ sources:
     resource: ../../src/release/validation.ts
 generated:
   by: okfit/claude-code
-  at: 2026-09-13T19:54:03Z
-  body_sha256: 54fae29cd0775ce4de3e8595812323647ddfc352c3c5dba43a228283008cca0f
 ---
 
 # SBOM configuration
@@ -50,8 +48,8 @@ not apply.[^load-release-config-ts] A config with SBOM fields written at the
 JSON root instead of nested under an `sbom` key is detected and reported by
 name, rather than decoding to an empty config and silently dropping every
 field. The generated JSON Schema for this whole input shape is published at
-`INPUT_SCHEMA_URL`, mirrored on disk as
-`silk-release-action.input.schema.json` at the repository root — the `$schema`
+`INPUT_SCHEMA_URL`, mirrored on disk as the version-labelled
+`schemas/<version>/silk-release-action.input-<version>.json` — the `$schema`
 field of a config file may reference it for editor completion, though the
 action itself does not require the reference to be present.[^silk-release-config-ts]
 

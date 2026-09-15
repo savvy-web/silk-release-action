@@ -9,8 +9,8 @@ tags:
   - dx
 generated:
   by: okfit/claude-code
-  at: 2026-09-13T19:54:03Z
-  body_sha256: 9c2d43ae9009743b98d810f8c51bca6c15dd3264421e688a4612edaf51f7c44d
+  at: 2026-09-15T03:42:33Z
+  body_sha256: 357e3cb53196aee61250c7743967a8ad16a3c9794006cce37fc6c68fa3e8cce9
 sources:
   - id: vitest-config
     resource: ../../vitest.config.ts
@@ -154,7 +154,7 @@ directly — see below).
 | `__test__/schema-inputs.test.ts` | `src/schema/inputs.ts` + `action.yml` | Manifest guard |
 | `__test__/schema-outputs.test.ts` | `src/schema/outputs.ts` + `action.yml` | Manifest guard |
 | `__test__/test-placement.test.ts` | the repo tree | Placement guard |
-| `__test__/generate-schema.test.ts` | `lib/scripts/generate-schema.ts` (drift guard over the root input schema and the versioned output schema under `schemas/<version>/`) | Schema |
+| `__test__/schemastore-config.test.ts` | `lib/scripts/schemastore.config.ts` (pins the config-derived `$id`s to `SCHEMA_URL`/`INPUT_SCHEMA_URL`; content drift of the documents under `schemas/` is `pnpm schema:check`, not a test) | Schema |
 | `__test__/projections.test.ts` | `src/schema/projections.ts` | Schema |
 | `__test__/release-output.test.ts` | `src/schema/release-output.ts` | Schema |
 | `__test__/unit/utilities/release-kind.test.ts` | `src/utils/release-kind.ts` | Schema |

@@ -12,7 +12,7 @@ We author nearly every runtime dependency, so a bug or missing API can be fixed 
 
 | Scope | Repo | Local checkout |
 | ----- | ---- | -------------- |
-| `@effected/*` (`github-actions`, `github`, `git`, `npm`, `commands`, `workspaces`, `sbom`, `markdown`, `package-json`, `jsonc`, `semver`, `yaml`, `schemastore`) | `spencerbeggs/effected` (monorepo) | `../../spencerbeggs/effected/packages/<name>` |
+| `@effected/*` (`github-actions`, `github`, `git`, `npm`, `commands`, `workspaces`, `sbom`, `markdown`, `package-json`, `jsonc`, `semver`, `yaml`, `schemastore`, `schemastore-cli`) | `spencerbeggs/effected` (monorepo) | `../../spencerbeggs/effected/packages/<name>` |
 | `@savvy-web/silk-effects`, `@savvy-web/github-action-builder` (dev), `@savvy-web/silk` (dev) | `savvy-web/systems` (monorepo) | `../systems/packages/<name>` |
 
 `@savvy-web/github-action-effects` is **dead** — its surface was replaced wholesale by the `@effected/*` kit in [#191](https://github.com/savvy-web/silk-release-action/pull/191). Do not reach for it.
