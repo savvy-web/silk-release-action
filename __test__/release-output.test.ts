@@ -6,12 +6,11 @@
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import type { ValidationOutput } from "../src/schema/release-output.js";
-import { ReleaseOutput, SCHEMA_URL, SCHEMA_VERSION } from "../src/schema/release-output.js";
+import { ReleaseOutput, SCHEMA_URL } from "../src/schema/release-output.js";
 
 describe("ReleaseOutput schema", () => {
 	const branchSample: ReleaseOutput = {
 		$schema: SCHEMA_URL,
-		schemaVersion: SCHEMA_VERSION,
 		phase: "branch-management",
 		success: true,
 		outcome: "branch-created",
@@ -39,7 +38,6 @@ describe("ReleaseOutput schema", () => {
 
 	const publishSample: ReleaseOutput = {
 		$schema: SCHEMA_URL,
-		schemaVersion: SCHEMA_VERSION,
 		phase: "publish",
 		success: true,
 		outcome: "released",
@@ -104,7 +102,6 @@ describe("ReleaseOutput schema", () => {
 
 	const validationSample: ValidationOutput = {
 		$schema: SCHEMA_URL,
-		schemaVersion: SCHEMA_VERSION,
 		phase: "validation",
 		success: true,
 		outcome: "validated",

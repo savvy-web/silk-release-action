@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from "@effect/vitest";
 import type { ActionOutputsShape } from "@effected/github-actions";
-import { ActionLogger, ActionOutputs } from "@effected/github-actions";
+import { ActionOutputs, ActionState, ActionStateError } from "@effected/github-actions";
 import { Effect, Logger } from "effect";
 import {
 	MAIN_SCALAR_OUTPUT_NAMES,
@@ -22,7 +22,8 @@ import {
 	initialMainScalarOutputs,
 } from "../src/schema/outputs.js";
 import type { ReleaseOutput } from "../src/schema/release-output.js";
-import { SCHEMA_URL, SCHEMA_VERSION } from "../src/schema/release-output.js";
+import { SCHEMA_URL } from "../src/schema/release-output.js";
+import { ReleaseResultState, STATE_KEYS } from "../src/state.js";
 import { declaredOutputNames, scanOutputWriteReceivers, scanOutputWrites } from "./utils/manifest.js";
 
 /**
@@ -131,7 +132,6 @@ describe("emitMainScalarOutputs", () => {
 describe("emitReleaseOutput", () => {
 	const sample: ReleaseOutput = {
 		$schema: SCHEMA_URL,
-		schemaVersion: SCHEMA_VERSION,
 		phase: "branch-management",
 		success: true,
 		outcome: "branch-created",
@@ -157,11 +157,10 @@ describe("emitReleaseOutput", () => {
 		},
 	};
 
-	/** Records `set` and `setJson` (as the encoded text the runner would see) plus every log line and group name. */
+	/** Records `set` and `setJson` (as the encoded text the runner would see) plus every state save. */
 	const harness = () => {
 		const sets: Array<{ name: string; value: string }> = [];
-		const groups: Array<string> = [];
-		const logs: Array<string> = [];
+		const saved: Array<{ key: string; value: unknown }> = [];
 		const outputs = ActionOutputs.makeTest({
 			set: (name: string, value: string) =>
 				Effect.sync(() => {
@@ -172,35 +171,48 @@ describe("emitReleaseOutput", () => {
 					sets.push({ name, value: JSON.stringify(value) });
 				}),
 		});
-		const layer = ActionLogger.layerTest({
-			group: <A, E, R>(name: string, effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+		const layer = ActionState.layerTest({
+			save: ((key: string, value: unknown) =>
 				Effect.sync(() => {
-					groups.push(name);
-				}).pipe(Effect.andThen(effect)),
+					saved.push({ key, value });
+				})) as ActionState["Service"]["save"],
 		});
-		const recorder = Logger.make(({ message }) => {
-			logs.push(Array.isArray(message) ? message.map(String).join(" ") : String(message));
-		});
-		return { sets, groups, logs, layer, loggerLayer: Logger.layer([recorder]), outputs };
+		return { sets, saved, layer, outputs };
 	};
 
-	it.effect("should log the encoded result inside a collapsed group before setting it", () =>
+	it.effect("should save the encoded result to state for the post phase, then set it", () =>
 		Effect.gen(function* () {
 			const h = harness();
 			yield* emitReleaseOutput(h.outputs, sample, { packageCount: 1, releasePrNumber: 42 }).pipe(
 				Effect.provide(h.layer),
-				Effect.provide(h.loggerLayer),
+				Effect.provide(Logger.layer([])),
 			);
-			expect(h.groups).toEqual(["Structured result output"]);
-			const logged = h.logs.find((line) => line.includes('"schemaVersion"'));
-			expect(logged).toBeDefined();
-			// Pretty-printed — the runner collapses the group, so readability wins over one-line copy-paste.
-			expect(logged).toContain("\n  ");
+			expect(h.saved.map((entry) => entry.key)).toEqual([STATE_KEYS.releaseResult]);
+			const state = h.saved[0]?.value;
+			expect(state).toBeInstanceOf(ReleaseResultState);
+			const json = (state as ReleaseResultState).json;
+			// Pretty-printed — `post` prints it verbatim, so readability wins over one-line copy-paste.
+			expect(json).toContain("\n  ");
 			// The same document `setJson` published, byte-for-byte modulo whitespace.
 			const result = h.sets.find((entry) => entry.name === "result");
 			expect(result).toBeDefined();
-			expect(JSON.parse(logged ?? "")).toEqual(JSON.parse(result?.value ?? ""));
+			expect(JSON.parse(json)).toEqual(JSON.parse(result?.value ?? ""));
 			expect(JSON.parse(result?.value ?? "")).toEqual(sample);
+		}),
+	);
+
+	it.effect("should still set the result when the state save fails", () =>
+		Effect.gen(function* () {
+			const h = harness();
+			const failing = ActionState.layerTest({
+				save: ((key: string) =>
+					Effect.fail(new ActionStateError({ reason: "writeFailed", key }))) as ActionState["Service"]["save"],
+			});
+			yield* emitReleaseOutput(h.outputs, sample, { packageCount: 1, releasePrNumber: 42 }).pipe(
+				Effect.provide(failing),
+				Effect.provide(Logger.layer([])),
+			);
+			expect(h.sets.find((entry) => entry.name === "result")).toBeDefined();
 		}),
 	);
 });

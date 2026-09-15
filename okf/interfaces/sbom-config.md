@@ -49,7 +49,7 @@ JSON root instead of nested under an `sbom` key is detected and reported by
 name, rather than decoding to an empty config and silently dropping every
 field. The generated JSON Schema for this whole input shape is published at
 `INPUT_SCHEMA_URL`, mirrored on disk as the version-labelled
-`schemas/<version>/silk-release-action.input-<version>.json` — the `$schema`
+`schemas/<version>/input.json` — the `$schema`
 field of a config file may reference it for editor completion, though the
 action itself does not require the reference to be present.[^silk-release-config-ts]
 

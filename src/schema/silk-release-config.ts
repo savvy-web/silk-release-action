@@ -6,7 +6,7 @@
  * `sbom-config` action input, the `.github/silk-release.json` file, and the
  * `SILK_RELEASE_SBOM_TEMPLATE` environment variable. It is the single source
  * of truth: the committed, version-labelled
- * `schemas/<version>/silk-release-action.input-<version>.json` is generated
+ * `schemas/<version>/input.json` is generated
  * from it (via `lib/scripts/schemastore.config.ts`), and `loadSBOMConfig`
  * decodes raw JSON through it before the validation phase resolves SBOM
  * metadata.
@@ -24,30 +24,74 @@
  * leaves room for future release-related sections.
  */
 
+import { HostedSchema } from "@effected/schemastore";
 import { Schema } from "effect";
 
 /**
- * The base URL every generated JSON Schema document is hosted under; the
- * `baseUrl` of `lib/scripts/schemastore.config.ts`, from which each document's
- * `$id` is derived as `<base>/<version>/<name>-<version>.json`.
+ * The version label every generated document is currently published under
+ * (`schemas/<version>/`). The one constant a contract break moves — see
+ * `okf/runbooks/bump-output-schema-version.md`.
+ *
+ * @remarks
+ * Independent of the action's own version: `6.0` is the label the schemas
+ * iterate on freely ahead of the action's 6.0.0 release. The `5.x` labels
+ * were published under the older `silk-release-action.<name>` file names and
+ * are not carried forward as frozen files.
  */
-export const OUTPUT_SCHEMA_URL = "https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas";
+export const OUTPUT_SCHEMA_VERSION = "6.0";
 
 /**
- * The version label both generated documents are published under
- * (`schemas/<version>/`). Moved together with the entries' `versions` in
- * `lib/scripts/schemastore.config.ts` — see `okf/runbooks/bump-output-schema-version.md`.
+ * Every label the documents have been published under, oldest first; the
+ * current one is the newest. Older labels are frozen: the CLI verifies each
+ * file still exists and declares its derived `$id`, but never regenerates it.
  */
-export const OUTPUT_SCHEMA_VERSION = "5.2";
+export const OUTPUT_SCHEMA_VERSIONS: ReadonlyArray<string> = [OUTPUT_SCHEMA_VERSION];
 
 /**
- * Hosted JSON Schema URL for the input config; emitted as `$id` in the
- * generated JSON Schema. Derived from the same constants the config derives
- * it from, so the two cannot disagree; `__test__/schemastore-config.test.ts`
- * pins the derivation.
+ * Where a generated JSON Schema document is hosted: raw from this repository's
+ * `main` branch under `schemas/`, versioned as `schemas/<version>/<name>.json`
+ * — the directory carries the label, so the file name does not repeat it.
+ *
+ * @remarks
+ * Constructed once here and handed to `lib/scripts/schemastore.config.ts` as
+ * each entry's `hosted`, so the `$schema` URL the code emits and the `$id` the
+ * CLI writes are one value rather than two derivations that have to agree.
  */
-export const INPUT_SCHEMA_URL =
-	`${OUTPUT_SCHEMA_URL}/${OUTPUT_SCHEMA_VERSION}/silk-release-action.input-${OUTPUT_SCHEMA_VERSION}.json` as const;
+const hosted = (name: string): HostedSchema =>
+	HostedSchema.github({
+		repo: "savvy-web/silk-release-action",
+		path: "schemas",
+		name,
+		versions: OUTPUT_SCHEMA_VERSIONS,
+		current: OUTPUT_SCHEMA_VERSION,
+		appendVersion: false,
+	});
+
+/** Hosted identity of the `result` output document (`ReleaseOutput`). */
+export const OutputSchemaIdentity: HostedSchema = hosted("output");
+
+/** Hosted identity of the input config document (`SilkReleaseConfig`). */
+export const InputSchemaIdentity: HostedSchema = hosted("input");
+
+/**
+ * Hosted identity of the SBOM template document (`SbomTemplate`) — the shape
+ * of the `sbom-config` action input and the `SILK_RELEASE_SBOM_TEMPLATE`
+ * variable on their own, so a template stored outside any repository can
+ * name the schema it conforms to.
+ */
+export const SbomTemplateSchemaIdentity: HostedSchema = hosted("sbom-template");
+
+/**
+ * Hosted JSON Schema URL for the input config; the `$id` of the generated
+ * document and the `$schema` a `.github/silk-release.json` references.
+ */
+export const INPUT_SCHEMA_URL: string = InputSchemaIdentity.$id;
+
+/**
+ * Hosted JSON Schema URL for the SBOM template; the `$id` of the generated
+ * document and the `$schema` a stored template references.
+ */
+export const SBOM_TEMPLATE_SCHEMA_URL: string = SbomTemplateSchemaIdentity.$id;
 
 // ─── Sub-structs ──────────────────────────────────────────────────────────
 
@@ -197,6 +241,36 @@ export const SbomConfig = Schema.Struct({
 });
 export type SbomConfig = Schema.Schema.Type<typeof SbomConfig>;
 
+/**
+ * An SBOM template on its own: the document the `sbom-config` action input
+ * and the `SILK_RELEASE_SBOM_TEMPLATE` variable carry.
+ *
+ * @remarks
+ * The same `sbom` section the top-level config embeds, generated from the
+ * same {@link SbomConfig} source so the two documents cannot drift, but with
+ * `sbom` required — a template that carries no SBOM metadata is a mistake,
+ * where a repository config that omits the section is merely one that has
+ * nothing to add. Every source still decodes through {@link SilkReleaseConfig};
+ * this struct exists so the template can name its own schema.
+ */
+export const SbomTemplate = Schema.Struct({
+	$schema: Schema.optional(
+		Schema.String.annotate({
+			title: "JSON Schema reference",
+			description:
+				"Optional URL of the JSON Schema this template conforms to. Editors and json-schema-aware tools use this for completion and validation; the action itself does not require it.",
+			examples: [SBOM_TEMPLATE_SCHEMA_URL],
+		}),
+	),
+	sbom: SbomConfig,
+}).annotate({
+	identifier: "SbomTemplate",
+	title: "Silk Release Action SBOM template",
+	description:
+		"An SBOM metadata template: the document passed as the `sbom-config` action input or stored in the `SILK_RELEASE_SBOM_TEMPLATE` variable. The `sbom` section is the same one a `.github/silk-release.json` embeds.",
+});
+export type SbomTemplate = Schema.Schema.Type<typeof SbomTemplate>;
+
 // ─── Top-level config ─────────────────────────────────────────────────────
 
 /**
@@ -213,9 +287,7 @@ export const SilkReleaseConfig = Schema.Struct({
 			title: "JSON Schema reference",
 			description:
 				"Optional URL of the JSON Schema this config conforms to. Editors and json-schema-aware tools use this for completion and validation; the action itself does not require it.",
-			examples: [
-				"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.2/silk-release-action.input-5.2.json",
-			],
+			examples: [INPUT_SCHEMA_URL],
 		}),
 	),
 	sbom: Schema.optional(SbomConfig),

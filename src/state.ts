@@ -45,10 +45,25 @@ export class GithubPackagesTokenState extends Schema.Class<GithubPackagesTokenSt
 }) {}
 
 /**
+ * The structured `result` output as emitted — the encoded JSON document,
+ * pretty-printed — saved by `emitReleaseOutput` so `post.ts` can print it and
+ * append it to the job summary once every step of the run has finished.
+ *
+ * @remarks
+ * Stored as text rather than re-decoded through `ReleaseOutput`: `post` only
+ * displays it, and the document is exactly what the runner holds in
+ * `steps.<id>.outputs.result`, so a second decode could only disagree.
+ */
+export class ReleaseResultState extends Schema.Class<ReleaseResultState>("ReleaseResultState")({
+	json: Schema.String,
+}) {}
+
+/**
  * String constants for the keys used with `ActionState.save/get`. Centralised
  * here so a typo in one phase doesn't silently miss state from another.
  */
 export const STATE_KEYS = {
 	startTime: "startTime",
 	githubPackagesToken: "githubPackagesToken",
+	releaseResult: "releaseResult",
 } as const;

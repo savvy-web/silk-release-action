@@ -150,7 +150,6 @@ describe("createValidationCheck", () => {
 		const f = makeFixtures();
 		const validationOutput = {
 			$schema: SCHEMA_URL,
-			schemaVersion: "2",
 			phase: "validation",
 		};
 		const jsonBlock = [

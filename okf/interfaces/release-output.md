@@ -11,7 +11,7 @@ sources:
   - id: projections-ts
     resource: ../../src/schema/projections.ts
   - id: schema-5-2
-    resource: ../../schemas/5.2/silk-release-action.output-5.2.json
+    resource: ../../schemas/6.0/output.json
 generated:
   by: okfit/claude-code
 ---
@@ -21,24 +21,28 @@ generated:
 `ReleaseOutput` is a `Schema.Union` of three phase structs, discriminated by
 a `phase` literal, and it is the single source of truth for the wire
 contract: the committed, version-labelled JSON Schema document at
-`schemas/<version>/silk-release-action.output-<version>.json` is generated from
+`schemas/<version>/output.json` is generated from
 it.[^release-output-ts] A consumer decoding the `result` output against that
 committed document is decoding against the same shape the action itself
 encodes with — there is no second, hand-maintained copy of the contract to
 drift from the first.
 
-## Identity: `schemaVersion`, `$schema`, `$id`
+## Identity: `$schema` and `$id`
 
-Every emitted document carries `schemaVersion: "2"` and a `$schema` field
-equal to the hosted `SCHEMA_URL`, which points at the versioned document
-under `schemas/<version>/` — currently
-`https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.2/silk-release-action.output-5.2.json`.[^release-output-ts]
-That same URL is the committed document's own `$id`.[^schema-5-2] The
+Every emitted document carries a `$schema` field equal to the hosted
+`SCHEMA_URL`, which points at the versioned document under
+`schemas/<version>/` — currently
+`https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/6.0/output.json`.[^release-output-ts]
+That same URL is the committed document's own `$id`.[^schema-6-0] The
 version is **in the URL**, deliberately: an unversioned URL would silently
 re-point an old payload at whatever contract the URL happens to resolve to
-next, long after that payload was written. `schemaVersion` bumps only on a
+next, long after that payload was written. The URL is the only version
+marker: the in-band `schemaVersion: "2"` field the `5.x` labels carried was
+redundant with it and is gone as of label `6.0`. The label moves only on a
 breaking JSON-shape change — a removed or renamed field, or a changed type;
-additive fields do not bump it. The full runbook for bumping it is
+additive fields regenerate the current label in place while it is
+unpublished. The schema label is independent of the action's version (`6.0`
+iterates ahead of the action's 6.0.0). The full runbook for bumping it is
 `../runbooks/bump-output-schema-version.md`, and the decision behind keeping
 the schema versioned under its own path rather than one root file is
 `../decisions/versioned-output-schema.md`.
@@ -48,7 +52,7 @@ the schema versioned under its own path rather than one root file is
 `ReleaseOutput` discriminates on `phase` into `BranchManagementOutput`
 (`phase: "branch-management"`), `ValidationOutput` (`phase: "validation"`),
 and `PublishOutput` (`phase: "publish"`).[^release-output-ts] Every variant
-shares the same top-level fields — `$schema`, `schemaVersion`, `phase`,
+shares the same top-level fields — `$schema`, `phase`,
 `success`, `outcome`, `summary`, `dryRun`, `failure`, `totals` — plus a
 phase-specific payload (`branchManagement`, `validation`, or `publish`).
 
@@ -116,4 +120,4 @@ reject or mis-type against. The convention this generalizes to is
 `../conventions/schema-numeric-fields.md`.
 
 [^release-output-ts]: `../../src/schema/release-output.ts`
-[^schema-5-2]: `../../schemas/5.2/silk-release-action.output-5.2.json`
+[^schema-6-0]: `../../schemas/6.0/output.json`

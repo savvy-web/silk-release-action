@@ -1,7 +1,7 @@
 ---
 type: Decision
 title: Version the output JSON Schema under its own path per release
-description: Both JSON Schema documents live under a per-version path, schemas/5.2/silk-release-action.output-5.2.json and schemas/5.2/silk-release-action.input-5.2.json today, and the output one is referenced by $schema/$id in every payload, so an old payload's URL keeps resolving to the shape it was written against.
+description: Every JSON Schema document lives under a per-version path, schemas/6.0/output.json, schemas/6.0/input.json and schemas/6.0/sbom-template.json today, and the output one is referenced by $schema/$id in every payload, so an old payload's URL keeps resolving to the shape it was written against.
 status: draft
 tags:
   - compat
@@ -11,8 +11,6 @@ sources:
     resource: ../../lib/scripts/schemastore.config.ts
   - id: release-output
     resource: ../../src/schema/release-output.ts
-  - id: schemastore-config-test
-    resource: ../../__test__/schemastore-config.test.ts
 generated:
   by: okfit/claude-code
 ---
@@ -32,19 +30,22 @@ misdescribe every payload emitted before the change.
 ## Decision
 
 The output JSON Schema lives at
-`schemas/<version>/silk-release-action.output-<version>.json` — today
-`schemas/5.2/silk-release-action.output-5.2.json` — rather than at an
+`schemas/<version>/output.json` — today
+`schemas/6.0/output.json` — rather than at an
 unversioned path. The input schema sits beside it under the same label,
-`schemas/<version>/silk-release-action.input-<version>.json`: it describes
+`schemas/<version>/input.json`: it describes
 the action's own inputs, so it has no payload-replay problem of its own, but
 one layout and one label for both documents keeps the config and the
 constants that name them to a single version. Both derive from
 `@effected/schemastore`'s `defineConfig`, which builds every path and `$id`
-from one `outputDir`/`baseUrl` pair plus the label — nothing is spelled by
-hand, so a document's identity cannot disagree with where it is written. The
-base URL and label are the `OUTPUT_SCHEMA_URL`/`OUTPUT_SCHEMA_VERSION`
-constants in `src/schema/silk-release-config.ts`, and `SCHEMA_URL` and
-`INPUT_SCHEMA_URL` are template-literal derivations of the same two.
+from `outputDir` plus each entry's `HostedSchema` identity — nothing is
+spelled by hand, so a document's identity cannot disagree with where it is
+written. The identities (`OutputSchemaIdentity`/`InputSchemaIdentity`) are
+constructed once in `src/schema/silk-release-config.ts` with
+`HostedSchema.github({ repo, path: "schemas", name, versions: OUTPUT_SCHEMA_VERSIONS, current: OUTPUT_SCHEMA_VERSION })`;
+`SCHEMA_URL` and `INPUT_SCHEMA_URL` are those values' `$id` getters, and the
+config receives the same values as `hosted`, so the URL a payload carries and
+the `$id` the CLI writes are one derivation rather than two that must agree.
 
 Generation is `@effected/schemastore-cli` over
 `lib/scripts/schemastore.config.ts`[^schemastore-config]: `pnpm schema:build` writes,
@@ -78,20 +79,24 @@ alone.
 used to hand-roll a preflight, then flag parsing, the contract gate and a
 drift test around `SchemaPipeline`; every consumer of the package wrote the
 same plumbing. `@effected/schemastore-cli` ships it once, and the repository
-now owns only the target manifest (`lib/scripts/schemastore.config.ts`). The one thing
-the CLI cannot see — that the derived `$id` equals the `SCHEMA_URL` payloads
-carry — is pinned by a test instead.
+now owns only the target manifest (`lib/scripts/schemastore.config.ts`). What
+the CLI cannot see — an entry handed the wrong identity, a label that moved
+off `OUTPUT_SCHEMA_VERSION` — cannot happen: the config receives the
+identity as `hosted`, and `defineConfig` rejects an entry keyed differently
+from it.
 
 ## Consequences
 
 An old payload's `$schema`/`$id` continues to resolve to the exact shape it
 was written against indefinitely, because a contract change never
 overwrites a published version's file — it always lands at a new path.
-`pnpm schema:check` is the drift guard verifying both the input and the
-output document stay in the committed, up-to-date state the CLI would
-itself produce; `__test__/schemastore-config.test.ts`[^schemastore-config-test]
-pins the config-derived `$id`s to `SCHEMA_URL`[^release-output] and
-`INPUT_SCHEMA_URL`. Bumping the version is one constant plus keeping the old
+`pnpm schema:check`, run before vitest by `pnpm ci:test`, is the whole
+guard: every document stays in the committed, up-to-date state the CLI
+would itself produce, every frozen file exists and declares its derived
+`$id`, and every object is generated closed by the library's default. The
+former `__test__/schemastore-config.test.ts` pinned the `$id` derivation
+against `SCHEMA_URL`[^release-output]; with the URL and the `$id` one
+`HostedSchema` value, there was nothing left for it to pin. Bumping the version is one constant plus keeping the old
 label in `versions`; a URL spelled by hand instead of derived would be the
 only way the emitted payload's URL and the file the CLI actually wrote could
 disagree, and the test exists to catch exactly that.
@@ -103,4 +108,3 @@ v2 shape itself.
 
 [^schemastore-config]: `../../lib/scripts/schemastore.config.ts`
 [^release-output]: `../../src/schema/release-output.ts`
-[^schemastore-config-test]: `../../__test__/schemastore-config.test.ts`

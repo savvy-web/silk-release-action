@@ -13,8 +13,6 @@ sources:
     resource: ../../src/schema/release-output.ts
   - id: silk-release-config
     resource: ../../src/schema/silk-release-config.ts
-  - id: schemastore-config-test
-    resource: ../../__test__/schemastore-config.test.ts
   - id: schemastore-cli-readme
     resource: npm:@effected/schemastore-cli
 generated:
@@ -57,28 +55,35 @@ label. This runbook is for the moment a label has shipped.
    - `OUTPUT_SCHEMA_VERSION` in
      `../../src/schema/silk-release-config.ts`[^silk-release-config] — a
      `major.minor` label such as `5.3` (three components are also accepted).
-     `SCHEMA_URL`, `INPUT_SCHEMA_URL` and both entries' `current` label in
-     `../../lib/scripts/schemastore.config.ts` are derived from it and move
-     with it.
-   - `versions` on **both** entries in
-     `../../lib/scripts/schemastore.config.ts`: keep the old label in the
+     Both `HostedSchema` identities (`OutputSchemaIdentity`,
+     `InputSchemaIdentity`) are built from it, so `SCHEMA_URL`,
+     `INPUT_SCHEMA_URL` and both config entries' current label move with it.
+   - `versions` in the `hosted` helper in the same file (the identities own
+     the labels; the config entries spell none): keep the old label in the
      array alongside `OUTPUT_SCHEMA_VERSION`. The old label becomes a
-     **frozen** version whose file the CLI verifies still exists but never
-     regenerates; advertising a label with nothing on disk fails the build.
+     **frozen** version whose file the CLI verifies still exists — and, since
+     `@effected/schemastore-cli` 0.12, still declares exactly its derived
+     `$id` — but never regenerates; advertising a label with nothing on disk,
+     or with a file whose `$id` is absent, different or unparseable, fails
+     the pre-flight before anything is written. A change to the hosting
+     (`repo`, `branch` or `path` in `HostedSchema.github`) therefore moves
+     every frozen label's `$id` and is a re-publish event for all of them,
+     not a silent re-advertisement.
      Set `published: false` on the entries until the new label ships, or
      leave `published: true` — a new label has no predecessor on disk, so
      its first write is `created`, never drift.
 3. Run `pnpm schema:build`. The new label writes
-   `schemas/<version>/silk-release-action.output-<version>.json` and
-   `schemas/<version>/silk-release-action.input-<version>.json`; the previous
+   `schemas/<version>/output.json` and
+   `schemas/<version>/input.json`; the previous
    version's files under `schemas/<old-version>/` are untouched — the CLI
    writes only the current label and only when content changed.
-4. Run the identity guard test (`../../__test__/schemastore-config.test.ts`[^schemastore-config-test]),
-   which asserts the config-derived `$id`s equal `SCHEMA_URL` and
-   `INPUT_SCHEMA_URL`, that both entries sit at `OUTPUT_SCHEMA_VERSION`, and
-   that every derived document is committed on disk. `pnpm schema:check` is
-   the content-drift gate; the two together are the guard the old drift test
-   used to be.
+4. Run `pnpm schema:check` again: it is the whole guard now. It fails on a
+   stale or missing document, on a frozen file whose `$id` is absent or
+   differs from the derived one, and on any gate failure; the identities
+   themselves cannot disagree with the config because the config receives
+   them as `hosted` (there is no separate test for the derivation — the
+   former `__test__/schemastore-config.test.ts` pinned what the CLI now
+   checks, or what holds by construction).
 5. Add a changeset describing the schema version bump — the emitted
    `$schema` value changes, which consumers see.
 
@@ -104,5 +109,4 @@ See also: [Versioned output schema decision](../decisions/versioned-output-schem
 [^schemastore-config]: `../../lib/scripts/schemastore.config.ts`
 [^release-output]: `../../src/schema/release-output.ts`
 [^silk-release-config]: `../../src/schema/silk-release-config.ts`
-[^schemastore-config-test]: `../../__test__/schemastore-config.test.ts`
 [^schemastore-cli-readme]: `npm:@effected/schemastore-cli`
