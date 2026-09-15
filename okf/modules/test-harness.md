@@ -154,7 +154,6 @@ directly — see below).
 | `__test__/schema-inputs.test.ts` | `src/schema/inputs.ts` + `action.yml` | Manifest guard |
 | `__test__/schema-outputs.test.ts` | `src/schema/outputs.ts` + `action.yml` | Manifest guard |
 | `__test__/test-placement.test.ts` | the repo tree | Placement guard |
-| `__test__/schemastore-config.test.ts` | `lib/scripts/schemastore.config.ts` (pins the config-derived `$id`s to `SCHEMA_URL`/`INPUT_SCHEMA_URL`; content drift of the documents under `schemas/` is `pnpm schema:check`, not a test) | Schema |
 | `__test__/projections.test.ts` | `src/schema/projections.ts` | Schema |
 | `__test__/release-output.test.ts` | `src/schema/release-output.ts` | Schema |
 | `__test__/unit/utilities/release-kind.test.ts` | `src/utils/release-kind.ts` | Schema |

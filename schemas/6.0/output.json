@@ -1,6 +1,6 @@
 {
 	"$schema": "http://json-schema.org/draft-07/schema#",
-	"$id": "https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.2/silk-release-action.output-5.2.json",
+	"$id": "https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/6.0/output.json",
 	"$ref": "#/$defs/ReleaseOutput",
 	"$defs": {
 		"BranchManagementOutcome": {
@@ -201,17 +201,9 @@
 			"properties": {
 				"$schema": {
 					"type": "string",
-					"enum": [
-						"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.2/silk-release-action.output-5.2.json"
-					],
+					"enum": ["https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/6.0/output.json"],
 					"title": "JSON Schema URL",
 					"description": "URL of the hosted JSON Schema this output conforms to. Editors and json-schema-aware consumers use this for hover docs and validation."
-				},
-				"schemaVersion": {
-					"type": "string",
-					"enum": ["2"],
-					"title": "Schema version",
-					"description": "In-band schema version. Bumped only on a breaking JSON-shape change (removed/renamed field, changed type) — additive fields do not bump it."
 				},
 				"phase": {
 					"type": "string",
@@ -258,7 +250,6 @@
 			},
 			"required": [
 				"$schema",
-				"schemaVersion",
 				"phase",
 				"success",
 				"outcome",
@@ -273,8 +264,7 @@
 			"description": "The structured `result` output emitted when the action runs in the branch-management phase (Phase 1). Triggered by a push to the target branch; ensures/creates the release branch and the release PR.",
 			"examples": [
 				{
-					"$schema": "https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.2/silk-release-action.output-5.2.json",
-					"schemaVersion": "2",
+					"$schema": "https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/6.0/output.json",
 					"phase": "branch-management",
 					"success": true,
 					"outcome": "branch-created",
@@ -1001,17 +991,9 @@
 			"properties": {
 				"$schema": {
 					"type": "string",
-					"enum": [
-						"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.2/silk-release-action.output-5.2.json"
-					],
+					"enum": ["https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/6.0/output.json"],
 					"title": "JSON Schema URL",
 					"description": "URL of the hosted JSON Schema this output conforms to. Editors and json-schema-aware consumers use this for hover docs and validation."
-				},
-				"schemaVersion": {
-					"type": "string",
-					"enum": ["2"],
-					"title": "Schema version",
-					"description": "In-band schema version. Bumped only on a breaking JSON-shape change (removed/renamed field, changed type) — additive fields do not bump it."
 				},
 				"phase": {
 					"type": "string",
@@ -1056,25 +1038,13 @@
 					"$ref": "#/$defs/ValidationPayload"
 				}
 			},
-			"required": [
-				"$schema",
-				"schemaVersion",
-				"phase",
-				"success",
-				"outcome",
-				"summary",
-				"dryRun",
-				"failure",
-				"totals",
-				"validation"
-			],
+			"required": ["$schema", "phase", "success", "outcome", "summary", "dryRun", "failure", "totals", "validation"],
 			"additionalProperties": false,
 			"title": "Validation output (Phase 2)",
 			"description": "The structured `result` output emitted when the action runs in the validation phase (Phase 2). Triggered by a push to the release branch; runs build validation, publish dry-runs, release-notes extraction, and emits the unified Release Validation Summary check-run.",
 			"examples": [
 				{
-					"$schema": "https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.2/silk-release-action.output-5.2.json",
-					"schemaVersion": "2",
+					"$schema": "https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/6.0/output.json",
 					"phase": "validation",
 					"success": true,
 					"outcome": "validated",
@@ -1673,17 +1643,9 @@
 			"properties": {
 				"$schema": {
 					"type": "string",
-					"enum": [
-						"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.2/silk-release-action.output-5.2.json"
-					],
+					"enum": ["https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/6.0/output.json"],
 					"title": "JSON Schema URL",
 					"description": "URL of the hosted JSON Schema this output conforms to. Editors and json-schema-aware consumers use this for hover docs and validation."
-				},
-				"schemaVersion": {
-					"type": "string",
-					"enum": ["2"],
-					"title": "Schema version",
-					"description": "In-band schema version. Bumped only on a breaking JSON-shape change (removed/renamed field, changed type) — additive fields do not bump it."
 				},
 				"phase": {
 					"type": "string",
@@ -1729,18 +1691,7 @@
 					"$ref": "#/$defs/PublishPayload"
 				}
 			},
-			"required": [
-				"$schema",
-				"schemaVersion",
-				"phase",
-				"success",
-				"outcome",
-				"summary",
-				"dryRun",
-				"failure",
-				"totals",
-				"publish"
-			],
+			"required": ["$schema", "phase", "success", "outcome", "summary", "dryRun", "failure", "totals", "publish"],
 			"additionalProperties": false,
 			"title": "Publish output (Phase 3)",
 			"description": "The structured `result` output emitted when the action runs in the publish phase (Phase 3). Triggered by the merge of the release PR; publishes each workspace's packages to every configured registry, generates SBOM and provenance attestations, and creates git tags and GitHub releases."
@@ -1758,7 +1709,7 @@
 				}
 			],
 			"title": "Silk Release Action output",
-			"description": "The phase-discriminated release output contract. Use `phase` to discriminate to the right variant: `branch-management`, `validation` or `publish`. Every variant carries the same shared top-level fields — `$schema`, `schemaVersion`, `phase`, `success`, `outcome`, `summary`, `dryRun`, `failure`, `totals` — plus a phase-specific payload. **`success` and `outcome` are orthogonal, and that is the point.** `success` is the boolean gate a consumer should filter on; `outcome` is the taxonomy saying what specifically happened, drawn from a per-phase enum. Keeping them separate means a filter written against `success` keeps working when a new `outcome` member is added. A run that had nothing to do is a SUCCESS — nothing failed — and says so through its outcome (`nothing-to-release`) rather than through a separate flag. `summary` is one human-readable sentence derived from the structured fields beside it, never authored independently, so it cannot drift from them. `failure` is null unless the phase failed, and names both the stage it stopped at and why. This replaced the v1 contract's four overlapping signals (`status`, `noop`, `succeeded`, `hasFailures`), whose definitions had already drifted from their own documentation."
+			"description": "The phase-discriminated release output contract. Use `phase` to discriminate to the right variant: `branch-management`, `validation` or `publish`. Every variant carries the same shared top-level fields — `$schema`, `phase`, `success`, `outcome`, `summary`, `dryRun`, `failure`, `totals` — plus a phase-specific payload. **`success` and `outcome` are orthogonal, and that is the point.** `success` is the boolean gate a consumer should filter on; `outcome` is the taxonomy saying what specifically happened, drawn from a per-phase enum. Keeping them separate means a filter written against `success` keeps working when a new `outcome` member is added. A run that had nothing to do is a SUCCESS — nothing failed — and says so through its outcome (`nothing-to-release`) rather than through a separate flag. `summary` is one human-readable sentence derived from the structured fields beside it, never authored independently, so it cannot drift from them. `failure` is null unless the phase failed, and names both the stage it stopped at and why. This replaced the v1 contract's four overlapping signals (`status`, `noop`, `succeeded`, `hasFailures`), whose definitions had already drifted from their own documentation."
 		}
 	}
 }

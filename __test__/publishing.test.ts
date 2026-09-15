@@ -54,7 +54,7 @@ vi.mock("../src/utils/determine-tag-strategy.js", async (importOriginal) => ({
 	isMonorepoForTagging: () => Effect.succeed(false),
 }));
 
-const { ActionLogger, ActionOutputs, DryRun } = await import("@effected/github-actions");
+const { ActionLogger, ActionOutputs, ActionState, DryRun } = await import("@effected/github-actions");
 const { Git } = await import("@effected/git");
 const { runPublishing } = await import("../src/steps/publishing.js");
 
@@ -128,6 +128,8 @@ const run = async (): Promise<RunCapture> => {
 					failedWith.push(message);
 				}),
 		}),
+		// `emitReleaseOutput` saves the encoded result for the post phase.
+		ActionState.layerTest({ save: () => Effect.void }),
 		DryRun.layerTest({ isDryRun: Effect.succeed(false) }),
 		Git.layerTest({ revParse: revParseMock }),
 	);

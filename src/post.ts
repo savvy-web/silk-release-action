@@ -1,7 +1,9 @@
 // Post-action entry point.
 //
-// Runs after the main action, **even when it failed**. Two jobs: report total
-// duration, and revoke the GitHub App installation token `pre.ts` provisioned.
+// Runs after the main action, **even when it failed**. Three jobs: surface the
+// structured `result` the main phase emitted (in the log and in the job
+// summary), report total duration, and revoke the GitHub App installation
+// token `pre.ts` provisioned.
 //
 // A post-action failure must never fail the workflow — the run is often already
 // failing for a reason the operator needs to see, and a second failure on the
@@ -9,10 +11,20 @@
 // revocation plus `Effect.catchDefect` around the whole program.
 
 import { GitHubApp } from "@effected/github";
-import { Action, ActionState, GitHubToken } from "@effected/github-actions";
+import { Action, ActionOutputs, ActionState, GitHubToken } from "@effected/github-actions";
 import type { Layer } from "effect";
 import { Effect, Option } from "effect";
-import { STATE_KEYS, StartTimeState } from "./state.js";
+import { ReleaseResultState, STATE_KEYS, StartTimeState } from "./state.js";
+
+/**
+ * The job-summary block the structured `result` is appended as.
+ *
+ * @param json - The pretty-printed `result` document.
+ * @returns A markdown fragment: a heading and a fenced JSON block.
+ *
+ * @public
+ */
+export const renderResultSummary = (json: string): string => `### JSON output\n\n\`\`\`json\n${json}\n\`\`\`\n`;
 
 /**
  * Post-action program.
@@ -23,6 +35,26 @@ export const post = Effect.gen(function* () {
 	const state = yield* ActionState;
 
 	yield* Effect.logDebug("Running post-action script");
+
+	// The structured `result`, exactly as the main phase emitted it. Absent when
+	// main failed before emitting one (or never ran) — nothing to show then.
+	// Printed here rather than at emit time so it lands after every step's own
+	// output, and appended to the job summary so it is readable without
+	// opening the log at all. Neither may fail the run.
+	const result = yield* state.getOptional(STATE_KEYS.releaseResult, ReleaseResultState);
+	if (Option.isSome(result)) {
+		const outputs = yield* ActionOutputs;
+		yield* Effect.logInfo(`Structured result output:\n${result.value.json}`);
+		yield* outputs
+			.summary(renderResultSummary(result.value.json))
+			.pipe(
+				Effect.catch((e) =>
+					Effect.logWarning(
+						`Failed to append the result to the job summary: ${e instanceof Error ? e.message : String(e)}`,
+					),
+				),
+			);
+	}
 
 	// Total duration. Absent start time is not an error: `pre` may have failed
 	// before recording it.

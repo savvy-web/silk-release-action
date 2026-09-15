@@ -30,7 +30,7 @@ import {
 	tallyReleaseKinds,
 } from "../utils/release-kind.js";
 import type { BranchManagementOutput, PublishOutput, ValidationOutput } from "./release-output.js";
-import { SCHEMA_URL, SCHEMA_VERSION } from "./release-output.js";
+import { SCHEMA_URL } from "./release-output.js";
 
 /** Input for {@link toBranchManagementOutput}. */
 export interface BranchManagementInput {
@@ -86,7 +86,6 @@ export const toBranchManagementOutput = (input: BranchManagementInput): BranchMa
 	const success = outcome !== "conflicted";
 	return {
 		$schema: SCHEMA_URL,
-		schemaVersion: SCHEMA_VERSION,
 		phase: "branch-management",
 		success,
 		outcome,
@@ -320,7 +319,6 @@ export const toValidationOutput = (input: ValidationInput): ValidationOutput => 
 	};
 	return {
 		$schema: SCHEMA_URL,
-		schemaVersion: SCHEMA_VERSION,
 		phase: "validation",
 		success,
 		outcome,
@@ -544,7 +542,6 @@ export const toPublishOutput = (input: PublishInput): PublishOutput => {
 
 	return {
 		$schema: SCHEMA_URL,
-		schemaVersion: SCHEMA_VERSION,
 		phase: "publish",
 		success,
 		outcome,

@@ -12,8 +12,9 @@
 // to lie about which process can produce which.
 
 import type { ActionOutputError, ActionOutputsShape } from "@effected/github-actions";
-import { ActionLogger } from "@effected/github-actions";
+import { ActionState } from "@effected/github-actions";
 import { Effect, Schema } from "effect";
+import { ReleaseResultState, STATE_KEYS } from "../state.js";
 import { ReleaseOutput } from "./release-output.js";
 
 /**
@@ -153,12 +154,13 @@ export const emitMainScalarOutputs = (
  * {@link MainScalarOutputs}, the two coexist and the suite holds both against
  * the manifest.
  *
- * The encoded `result` is also logged, pretty-printed, inside a collapsed
- * `ActionLogger.group` — the one place the full payload is visible without a
- * downstream step reading `steps.<id>.outputs.result`. It is encoded through
- * the same `ReleaseOutput` codec `setJson` uses, so what the log shows is what
- * the runner stores; an encode failure skips the log and is reported by the
- * `setJson` warning below rather than twice.
+ * The encoded `result` is also saved to `ActionState` (`releaseResult`), so
+ * `post.ts` can print it and append it to the job summary after everything
+ * else in the run has happened — the one place the full payload is visible
+ * without a downstream step reading `steps.<id>.outputs.result`. It is encoded
+ * through the same `ReleaseOutput` codec `setJson` uses, so what `post` shows
+ * is what the runner stores; an encode failure skips the save and is reported
+ * by the `setJson` warning below rather than twice.
  *
  * @param outputs - The `ActionOutputs` service instance.
  * @param output - The phase-projected release output to emit.
@@ -174,14 +176,21 @@ export const emitReleaseOutput = (
 	outputs: ActionOutputsShape,
 	output: ReleaseOutput,
 	scalars: { readonly packageCount: number; readonly releasePrNumber: number | null },
-): Effect.Effect<void, ActionOutputError, ActionLogger> =>
+): Effect.Effect<void, ActionOutputError, ActionState> =>
 	Effect.gen(function* () {
-		const logger = yield* ActionLogger;
-		yield* logger.group(
-			"Structured result output",
-			Schema.encodeEffect(ReleaseOutput)(output).pipe(
-				Effect.flatMap((encoded) => Effect.logInfo(JSON.stringify(encoded, null, 2))),
-				Effect.ignore,
+		const state = yield* ActionState;
+		yield* Schema.encodeEffect(ReleaseOutput)(output).pipe(
+			Effect.flatMap((encoded) =>
+				state.save(
+					STATE_KEYS.releaseResult,
+					ReleaseResultState.make({ json: JSON.stringify(encoded, null, 2) }),
+					ReleaseResultState,
+				),
+			),
+			Effect.catch((e) =>
+				Effect.logWarning(
+					`Failed to save the structured "result" for the post phase: ${e instanceof Error ? e.message : String(e)}`,
+				),
 			),
 		);
 		yield* outputs

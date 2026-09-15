@@ -17,14 +17,16 @@
 
 import type { GitHubAppShape } from "@effected/github";
 import { GitHubApp, InstallationToken } from "@effected/github";
-import { ActionInput, ActionState } from "@effected/github-actions";
+import { ActionInput, ActionOutputs, ActionState } from "@effected/github-actions";
 import { DateTime, Effect, Layer, Logger, Option, Redacted } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { post } from "../src/post.js";
+import { post, renderResultSummary } from "../src/post.js";
+import { ReleaseResultState } from "../src/state.js";
 import { cleanupTestEnvironment, setupTestEnvironment } from "./utils/github-mocks.js";
 
 interface Recorder {
 	readonly revoked: Array<string>;
+	readonly summaries: Array<string>;
 }
 
 const TOKEN = "ghs_test_token_123";
@@ -59,6 +61,8 @@ const savedTokenEnvelope = InstallationToken.make({
 
 interface StateOptions {
 	readonly startedAt?: number | undefined;
+	/** The pretty-printed `result` JSON `emitReleaseOutput` saved, when main emitted one. */
+	readonly resultJson?: string | undefined;
 }
 
 const makeLayer = (
@@ -66,7 +70,7 @@ const makeLayer = (
 	inputs: Record<string, string>,
 	options: StateOptions,
 	appOverrides: Partial<GitHubAppShape>,
-): Layer.Layer<ActionState | GitHubApp> =>
+): Layer.Layer<ActionState | ActionOutputs | GitHubApp> =>
 	Layer.mergeAll(
 		ActionState.layerTest({
 			// Branches on the two keys `post` actually reads and answers
@@ -82,10 +86,19 @@ const makeLayer = (
 						? options.startedAt === undefined
 							? Option.none()
 							: Option.some({ startedAt: options.startedAt })
-						: key === TOKEN_STATE_KEY
-							? Option.some(savedTokenEnvelope)
-							: Option.none(),
+						: key === "releaseResult"
+							? options.resultJson === undefined
+								? Option.none()
+								: Option.some(ReleaseResultState.make({ json: options.resultJson }))
+							: key === TOKEN_STATE_KEY
+								? Option.some(savedTokenEnvelope)
+								: Option.none(),
 				)) as ActionState["Service"]["getOptional"],
+		}),
+		// Only `summary` is stubbed: `post` must never set an output, export a
+		// variable or fail the run, and an unstubbed member dies loudly.
+		ActionOutputs.layerTest({
+			summary: (content) => Effect.sync(() => void recorder.summaries.push(content)),
 		}),
 		GitHubApp.layerTest({
 			revoke: (token) => Effect.sync(() => void recorder.revoked.push(Redacted.value(token))),
@@ -113,7 +126,7 @@ describe("post", () => {
 	afterEach(() => cleanupTestEnvironment());
 
 	it("should revoke the installation token when no skip is requested", async () => {
-		const recorder: Recorder = { revoked: [] };
+		const recorder: Recorder = { revoked: [], summaries: [] };
 
 		await runPost(recorder);
 
@@ -123,7 +136,7 @@ describe("post", () => {
 	it("revokes even when a legacy skip-token-revoke input is present", async () => {
 		// The input is gone. A workflow still passing it must not silently get the
 		// old behaviour — the token is revoked regardless.
-		const recorder: Recorder = { revoked: [] };
+		const recorder: Recorder = { revoked: [], summaries: [] };
 
 		await runPost(recorder, { "INPUT_SKIP-TOKEN-REVOKE": "true" });
 
@@ -131,7 +144,7 @@ describe("post", () => {
 	});
 
 	it("should not fail the workflow when a defect escapes", async () => {
-		const recorder: Recorder = { revoked: [] };
+		const recorder: Recorder = { revoked: [], summaries: [] };
 
 		await expect(
 			runPost(
@@ -149,15 +162,36 @@ describe("post", () => {
 	});
 
 	it("should report the duration when pre recorded a start time", async () => {
-		const recorder: Recorder = { revoked: [] };
+		const recorder: Recorder = { revoked: [], summaries: [] };
 
 		await runPost(recorder, {}, { startedAt: Date.now() - 2_000 });
 
 		expect(recorder.revoked).toEqual([TOKEN]);
 	});
 
+	it("should print the structured result and append it to the job summary as a JSON block", async () => {
+		const recorder: Recorder = { revoked: [], summaries: [] };
+		const json = JSON.stringify({ $schema: "https://example.com/s.json", phase: "publish", success: true }, null, 2);
+
+		await runPost(recorder, {}, { resultJson: json });
+
+		expect(recorder.summaries).toEqual([renderResultSummary(json)]);
+		expect(recorder.summaries[0]).toBe(`### JSON output\n\n\`\`\`json\n${json}\n\`\`\`\n`);
+		// The result block never gets in the way of revocation.
+		expect(recorder.revoked).toEqual([TOKEN]);
+	});
+
+	it("should append nothing to the summary when main emitted no result", async () => {
+		const recorder: Recorder = { revoked: [], summaries: [] };
+
+		await runPost(recorder, {}, { resultJson: undefined });
+
+		expect(recorder.summaries).toEqual([]);
+		expect(recorder.revoked).toEqual([TOKEN]);
+	});
+
 	it("should tolerate a missing start time", async () => {
-		const recorder: Recorder = { revoked: [] };
+		const recorder: Recorder = { revoked: [], summaries: [] };
 
 		// `pre` may have failed before recording it; that must not stop revocation.
 		await runPost(recorder, {}, { startedAt: undefined });

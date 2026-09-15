@@ -32,15 +32,13 @@ export default defineConfig({
 		// `const hasTraversalSegment = ...` — that identifier is where the wreckage
 		// lands, not what caused it.
 		nativeDynamicImports: ["@changesets/apply-release-plan"],
-		// `@cyclonedx/cyclonedx-library` ships optional plugins (XML
-		// serializers, XML validators, draft-2019 JSON validators) we
-		// never invoke — we only use the JSON serializer. They aren't
-		// installed and would never be present in the deployed action,
-		// so `ignore` (alias to a throwing stub) is correct here, not
-		// `externals` (which means "available at runtime"). cyclonedx's
-		// `_optPlug` wrapper try/catches the stub throw and falls
-		// through gracefully.
-		ignore: ["xmlbuilder2", "libxmljs2", "ajv-formats-draft2019"],
+		// Optional requires on the Azure blob path (`@effected/github-actions` →
+		// `@azure/storage-blob` → `@typespec/ts-http-runtime` → proxy agents), both
+		// try/catch-guarded and neither reachable on a hosted runner: `debug`'s
+		// `require("supports-color")` and `proxy-agent-negotiate`'s
+		// `import("kerberos")` (Negotiate proxy auth only). Alias each to a
+		// throwing stub rather than bundling a dependency nothing uses.
+		ignore: ["supports-color", "kerberos"],
 	},
 	persistLocal: {
 		enabled: false,

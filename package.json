@@ -48,6 +48,7 @@
 		"@effected/npm": "catalog:effected",
 		"@effected/package-json": "catalog:effected",
 		"@effected/sbom": "catalog:effected",
+		"@effected/schemastore": "catalog:effected",
 		"@effected/semver": "catalog:effected",
 		"@effected/workspaces": "catalog:effected",
 		"@effected/yaml": "catalog:effected",
@@ -57,7 +58,6 @@
 	"devDependencies": {
 		"@effect/vitest": "catalog:effect",
 		"@effected/memfs": "catalog:effected",
-		"@effected/schemastore": "catalog:effected",
 		"@effected/schemastore-cli": "catalog:effected",
 		"@okfit/plugin": "^0.3.6",
 		"@savvy-web/github-action-builder": "^2.3.7",

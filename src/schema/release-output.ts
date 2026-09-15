@@ -4,10 +4,10 @@
  * @remarks
  * `ReleaseOutput` is a `Schema.Union` of three phase structs, discriminated by
  * the `phase` literal. It is the single source of truth: the committed,
- * **version-labelled** document at `schemas/<version>/silk-release-action.output-<version>.json`
- * (`schemas/5.2/silk-release-action.output-5.2.json` today) is generated from it,
+ * **version-labelled** document at `schemas/<version>/output.json`
+ * (`schemas/6.0/output.json` today) is generated from it,
  * and `main.ts` emits a Schema-encoded instance as the `result` action output.
- * There is no unversioned `silk-release-action.output.schema.json`; the label
+ * There is no unversioned `output.schema.json`; the label
  * is what keeps an emitted payload's `$schema` resolving to the shape it was
  * written against.
  *
@@ -16,7 +16,7 @@
  */
 
 import { Schema } from "effect";
-import { OUTPUT_SCHEMA_URL, OUTPUT_SCHEMA_VERSION } from "./silk-release-config.js";
+import { OutputSchemaIdentity } from "./silk-release-config.js";
 
 /**
  * Hosted JSON Schema URL; the emitted `result` carries this as `$schema`.
@@ -27,28 +27,12 @@ import { OUTPUT_SCHEMA_URL, OUTPUT_SCHEMA_VERSION } from "./silk-release-config.
  * written against long after the schema has moved on. An unversioned URL would
  * silently re-point old payloads at a newer contract.
  *
- * Derived from `OUTPUT_SCHEMA_URL` and `OUTPUT_SCHEMA_VERSION` — the same
- * constants `lib/scripts/schemastore.config.ts` derives the document's `$id`
- * and file name from — so the two cannot disagree;
- * `__test__/schemastore-config.test.ts` pins the derivation. When SchemaStore
- * hosts the document, this becomes its `schemastore.org` URL and the raw
- * GitHub path stays as the fallback origin.
+ * The `$id` of `OutputSchemaIdentity`'s current document — the same value
+ * `lib/scripts/schemastore.config.ts` writes as the document's `$id`, so the
+ * two cannot disagree. When SchemaStore hosts the document, this becomes its
+ * `schemastore.org` URL and the raw GitHub path stays as the fallback origin.
  */
-export const SCHEMA_URL =
-	`${OUTPUT_SCHEMA_URL}/${OUTPUT_SCHEMA_VERSION}/silk-release-action.output-${OUTPUT_SCHEMA_VERSION}.json` as const;
-
-/**
- * In-band schema version. Bumped only on a breaking JSON-shape change
- * (removed/renamed field, changed type) — additive fields do not bump it.
- *
- * @remarks
- * `"2"` reshaped the publish phase (Phase 3) around the WORKSPACE rather than
- * the package, and replaced the `status`/`noop`/`succeeded`/`hasFailures` flag
- * set with the `success` + `outcome` pair across ALL THREE phases, adding
- * `summary`, `failure` and `totals` to each. The version is one number for the
- * whole document, so it moves when any member of the union does.
- */
-export const SCHEMA_VERSION = "2";
+export const SCHEMA_URL: string = OutputSchemaIdentity.$id;
 
 // --- shared top-level field annotations ----------------------------------
 
@@ -56,20 +40,14 @@ export const SCHEMA_VERSION = "2";
  * Reusable annotated `$schema` field — the URL of the hosted JSON Schema
  * the `result` output conforms to.
  *
- * Inlined per-phase because `Schema.Literal(SCHEMA_URL)` must remain a literal
- * for the union discriminator to narrow correctly; only the annotations are
- * factored out via a helper.
+ * `SCHEMA_URL` is a `string` (a `HostedSchema` getter, not a literal), so the
+ * decoded `$schema` is typed `string`; the union discriminates on `phase`, and
+ * runtime decoding still rejects any other URL.
  */
 const annotatedSchemaUrlField = Schema.Literal(SCHEMA_URL).annotate({
 	title: "JSON Schema URL",
 	description:
 		"URL of the hosted JSON Schema this output conforms to. Editors and json-schema-aware consumers use this for hover docs and validation.",
-});
-
-const annotatedSchemaVersionField = Schema.Literal(SCHEMA_VERSION).annotate({
-	title: "Schema version",
-	description:
-		"In-band schema version. Bumped only on a breaking JSON-shape change (removed/renamed field, changed type) — additive fields do not bump it.",
 });
 
 /**
@@ -215,7 +193,6 @@ const BranchManagementPayload = Schema.Struct({
 
 export const BranchManagementOutput = Schema.Struct({
 	$schema: annotatedSchemaUrlField,
-	schemaVersion: annotatedSchemaVersionField,
 	phase: Schema.Literal("branch-management").annotate({
 		title: "Phase discriminator",
 		description: "`branch-management` identifies this as a Phase 1 output.",
@@ -277,7 +254,6 @@ export const BranchManagementOutput = Schema.Struct({
 	examples: [
 		{
 			$schema: SCHEMA_URL,
-			schemaVersion: SCHEMA_VERSION,
 			phase: "branch-management",
 			success: true,
 			outcome: "branch-created",
@@ -772,7 +748,6 @@ const ValidationPayload = Schema.Struct({
 
 export const ValidationOutput = Schema.Struct({
 	$schema: annotatedSchemaUrlField,
-	schemaVersion: annotatedSchemaVersionField,
 	phase: Schema.Literal("validation").annotate({
 		title: "Phase discriminator",
 		description: "`validation` identifies this as a Phase 2 output.",
@@ -853,7 +828,6 @@ export const ValidationOutput = Schema.Struct({
 	examples: [
 		{
 			$schema: SCHEMA_URL,
-			schemaVersion: SCHEMA_VERSION,
 			phase: "validation",
 			success: true,
 			outcome: "validated",
@@ -1269,7 +1243,6 @@ const PublishPayload = Schema.Struct({
 /** The Phase 3 (publish) output. */
 export const PublishOutput = Schema.Struct({
 	$schema: annotatedSchemaUrlField,
-	schemaVersion: annotatedSchemaVersionField,
 	phase: Schema.Literal("publish").annotate({
 		title: "Phase discriminator",
 		description: "`publish` identifies this as a Phase 3 output.",
@@ -1315,6 +1288,6 @@ export const ReleaseOutput = Schema.Union([BranchManagementOutput, ValidationOut
 	identifier: "ReleaseOutput",
 	title: "Silk Release Action output",
 	description:
-		"The phase-discriminated release output contract. Use `phase` to discriminate to the right variant: `branch-management`, `validation` or `publish`. Every variant carries the same shared top-level fields — `$schema`, `schemaVersion`, `phase`, `success`, `outcome`, `summary`, `dryRun`, `failure`, `totals` — plus a phase-specific payload. **`success` and `outcome` are orthogonal, and that is the point.** `success` is the boolean gate a consumer should filter on; `outcome` is the taxonomy saying what specifically happened, drawn from a per-phase enum. Keeping them separate means a filter written against `success` keeps working when a new `outcome` member is added. A run that had nothing to do is a SUCCESS — nothing failed — and says so through its outcome (`nothing-to-release`) rather than through a separate flag. `summary` is one human-readable sentence derived from the structured fields beside it, never authored independently, so it cannot drift from them. `failure` is null unless the phase failed, and names both the stage it stopped at and why. This replaced the v1 contract's four overlapping signals (`status`, `noop`, `succeeded`, `hasFailures`), whose definitions had already drifted from their own documentation.",
+		"The phase-discriminated release output contract. Use `phase` to discriminate to the right variant: `branch-management`, `validation` or `publish`. Every variant carries the same shared top-level fields — `$schema`, `phase`, `success`, `outcome`, `summary`, `dryRun`, `failure`, `totals` — plus a phase-specific payload. **`success` and `outcome` are orthogonal, and that is the point.** `success` is the boolean gate a consumer should filter on; `outcome` is the taxonomy saying what specifically happened, drawn from a per-phase enum. Keeping them separate means a filter written against `success` keeps working when a new `outcome` member is added. A run that had nothing to do is a SUCCESS — nothing failed — and says so through its outcome (`nothing-to-release`) rather than through a separate flag. `summary` is one human-readable sentence derived from the structured fields beside it, never authored independently, so it cannot drift from them. `failure` is null unless the phase failed, and names both the stage it stopped at and why. This replaced the v1 contract's four overlapping signals (`status`, `noop`, `succeeded`, `hasFailures`), whose definitions had already drifted from their own documentation.",
 });
 export type ReleaseOutput = Schema.Schema.Type<typeof ReleaseOutput>;

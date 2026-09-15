@@ -11,7 +11,7 @@ import type {
 	ValidationPackageResult,
 } from "../src/release/types.js";
 import { toBranchManagementOutput, toPublishOutput, toValidationOutput } from "../src/schema/projections.js";
-import { SCHEMA_URL, SCHEMA_VERSION } from "../src/schema/release-output.js";
+import { SCHEMA_URL } from "../src/schema/release-output.js";
 
 describe("toBranchManagementOutput", () => {
 	it("projects a clean update with a release PR", () => {
@@ -31,7 +31,6 @@ describe("toBranchManagementOutput", () => {
 
 		expect(output.phase).toBe("branch-management");
 		expect(output.$schema).toBe(SCHEMA_URL);
-		expect(output.schemaVersion).toBe(SCHEMA_VERSION);
 		expect(output.success).toBe(true);
 		expect(output.outcome).toBe("branch-updated");
 		expect(output.failure).toBeNull();
@@ -172,7 +171,6 @@ describe("toValidationOutput", () => {
 		expect(output.totals.workspaces).toBe(2);
 		expect(output.totals.errorFindings).toBe(0);
 		expect(output.$schema).toBe(SCHEMA_URL);
-		expect(output.schemaVersion).toBe(SCHEMA_VERSION);
 		expect(output.dryRun).toBe(false);
 		expect(output.validation.buildValidation).toEqual({ passed: true, packageCount: 2 });
 		expect(output.validation.checks).toEqual([

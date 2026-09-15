@@ -1,7 +1,7 @@
 {
 	"$schema": "http://json-schema.org/draft-07/schema#",
-	"$id": "https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.2/silk-release-action.input-5.2.json",
-	"$ref": "#/$defs/SilkReleaseConfig",
+	"$id": "https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/6.0/sbom-template.json",
+	"$ref": "#/$defs/SbomTemplate",
 	"$defs": {
 		"SbomContact": {
 			"type": "object",
@@ -216,7 +216,7 @@
 			"title": "SBOM Configuration",
 			"description": "SBOM metadata applied during the validation phase. Merged over auto-inferred values from each package's `package.json` by `resolveSBOMMetadata` — explicit config wins. Field names match the prior `SBOMMetadataConfig` consumers so the schema is wire-compatible with existing configs."
 		},
-		"SilkReleaseConfig": {
+		"SbomTemplate": {
 			"type": "object",
 			"properties": {
 				"$schema": {
@@ -224,9 +224,9 @@
 						{
 							"type": "string",
 							"title": "JSON Schema reference",
-							"description": "Optional URL of the JSON Schema this config conforms to. Editors and json-schema-aware tools use this for completion and validation; the action itself does not require it.",
+							"description": "Optional URL of the JSON Schema this template conforms to. Editors and json-schema-aware tools use this for completion and validation; the action itself does not require it.",
 							"examples": [
-								"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.2/silk-release-action.input-5.2.json"
+								"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/6.0/sbom-template.json"
 							]
 						},
 						{
@@ -235,19 +235,13 @@
 					]
 				},
 				"sbom": {
-					"anyOf": [
-						{
-							"$ref": "#/$defs/SbomConfig"
-						},
-						{
-							"type": "null"
-						}
-					]
+					"$ref": "#/$defs/SbomConfig"
 				}
 			},
+			"required": ["sbom"],
 			"additionalProperties": false,
-			"title": "Silk Release Action input config",
-			"description": "Input configuration for the Silk Release Action. Sourced (in precedence order) from the `sbom-config` action input, the `.github/silk-release.json` file in the repository, and the `SILK_RELEASE_SBOM_TEMPLATE` environment variable. Only the `sbom` section is consumed by Phase 2 today; the top-level shape leaves room for future release-related sections."
+			"title": "Silk Release Action SBOM template",
+			"description": "An SBOM metadata template: the document passed as the `sbom-config` action input or stored in the `SILK_RELEASE_SBOM_TEMPLATE` variable. The `sbom` section is the same one a `.github/silk-release.json` embeds."
 		}
 	}
 }
