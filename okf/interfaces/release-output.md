@@ -10,12 +10,10 @@ sources:
     resource: ../../src/schema/release-output.ts
   - id: projections-ts
     resource: ../../src/schema/projections.ts
-  - id: schema-5-0-0
-    resource: ../../schemas/5.0.0/silk-release-action-5.0.0.json
+  - id: schema-5-2
+    resource: ../../schemas/5.2/silk-release-action.output-5.2.json
 generated:
   by: okfit/claude-code
-  at: 2026-09-13T19:54:03Z
-  body_sha256: 1418fd75c63aa811150ddbdbc9c437adb64be946b7771d9303a9175dd0d3f01d
 ---
 
 # The `result` output document
@@ -23,7 +21,7 @@ generated:
 `ReleaseOutput` is a `Schema.Union` of three phase structs, discriminated by
 a `phase` literal, and it is the single source of truth for the wire
 contract: the committed, version-labelled JSON Schema document at
-`schemas/<version>/silk-release-action-<version>.json` is generated from
+`schemas/<version>/silk-release-action.output-<version>.json` is generated from
 it.[^release-output-ts] A consumer decoding the `result` output against that
 committed document is decoding against the same shape the action itself
 encodes with — there is no second, hand-maintained copy of the contract to
@@ -34,8 +32,8 @@ drift from the first.
 Every emitted document carries `schemaVersion: "2"` and a `$schema` field
 equal to the hosted `SCHEMA_URL`, which points at the versioned document
 under `schemas/<version>/` — currently
-`https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.0.0/silk-release-action-5.0.0.json`.[^release-output-ts]
-That same URL is the committed document's own `$id`.[^schema-5-0-0] The
+`https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.2/silk-release-action.output-5.2.json`.[^release-output-ts]
+That same URL is the committed document's own `$id`.[^schema-5-2] The
 version is **in the URL**, deliberately: an unversioned URL would silently
 re-point an old payload at whatever contract the URL happens to resolve to
 next, long after that payload was written. `schemaVersion` bumps only on a
@@ -118,4 +116,4 @@ reject or mis-type against. The convention this generalizes to is
 `../conventions/schema-numeric-fields.md`.
 
 [^release-output-ts]: `../../src/schema/release-output.ts`
-[^schema-5-0-0]: `../../schemas/5.0.0/silk-release-action-5.0.0.json`
+[^schema-5-2]: `../../schemas/5.2/silk-release-action.output-5.2.json`

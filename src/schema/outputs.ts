@@ -12,7 +12,8 @@
 // to lie about which process can produce which.
 
 import type { ActionOutputError, ActionOutputsShape } from "@effected/github-actions";
-import { Effect } from "effect";
+import { ActionLogger } from "@effected/github-actions";
+import { Effect, Schema } from "effect";
 import { ReleaseOutput } from "./release-output.js";
 
 /**
@@ -152,6 +153,13 @@ export const emitMainScalarOutputs = (
  * {@link MainScalarOutputs}, the two coexist and the suite holds both against
  * the manifest.
  *
+ * The encoded `result` is also logged, pretty-printed, inside a collapsed
+ * `ActionLogger.group` — the one place the full payload is visible without a
+ * downstream step reading `steps.<id>.outputs.result`. It is encoded through
+ * the same `ReleaseOutput` codec `setJson` uses, so what the log shows is what
+ * the runner stores; an encode failure skips the log and is reported by the
+ * `setJson` warning below rather than twice.
+ *
  * @param outputs - The `ActionOutputs` service instance.
  * @param output - The phase-projected release output to emit.
  * @param scalars - The convenience scalar values for this phase. `packageCount`
@@ -166,8 +174,16 @@ export const emitReleaseOutput = (
 	outputs: ActionOutputsShape,
 	output: ReleaseOutput,
 	scalars: { readonly packageCount: number; readonly releasePrNumber: number | null },
-): Effect.Effect<void, ActionOutputError> =>
+): Effect.Effect<void, ActionOutputError, ActionLogger> =>
 	Effect.gen(function* () {
+		const logger = yield* ActionLogger;
+		yield* logger.group(
+			"Structured result output",
+			Schema.encodeEffect(ReleaseOutput)(output).pipe(
+				Effect.flatMap((encoded) => Effect.logInfo(JSON.stringify(encoded, null, 2))),
+				Effect.ignore,
+			),
+		);
 		yield* outputs
 			.setJson("result", output, ReleaseOutput)
 			.pipe(

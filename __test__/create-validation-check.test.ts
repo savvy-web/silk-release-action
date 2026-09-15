@@ -22,6 +22,7 @@ import { CheckRun, CheckRunRef, Repo, RepoRef } from "@effected/github";
 import { ActionEnvironment, ActionOutputs } from "@effected/github-actions";
 import { Effect, Layer, Logger } from "effect";
 import { describe, expect, it } from "vitest";
+import { SCHEMA_URL } from "../src/schema/release-output.js";
 import type { ValidationResult } from "../src/types/shared-types.js";
 import type { UnifiedValidationResult } from "../src/utils/create-validation-check.js";
 import { createValidationCheck } from "../src/utils/create-validation-check.js";
@@ -148,8 +149,7 @@ describe("createValidationCheck", () => {
 	it("appends the supplied extraBody to the check-run summary after the checks-table content", async () => {
 		const f = makeFixtures();
 		const validationOutput = {
-			$schema:
-				"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.0.0/silk-release-action-5.0.0.json",
+			$schema: SCHEMA_URL,
 			schemaVersion: "2",
 			phase: "validation",
 		};

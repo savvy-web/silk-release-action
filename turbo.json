@@ -4,7 +4,7 @@
 	"tasks": {
 		"build:prod": {
 			"cache": true,
-			"dependsOn": ["types:check"],
+			"dependsOn": ["types:check", "schema:build"],
 			"inputs": [
 				"$TURBO_DEFAULT$",
 				"$TURBO_ROOT$/package.json",
@@ -23,15 +23,30 @@
 			"outputLogs": "full",
 			"outputs": ["dist/**"]
 		},
+		"schema:build": {
+			"cache": true,
+			"dependsOn": ["types:check"],
+			"inputs": [
+				"$TURBO_DEFAULT$",
+				"$TURBO_ROOT$/package.json",
+				"$TURBO_ROOT$/tsconfig.json",
+				"$TURBO_ROOT$/pnpm-lock.yaml",
+				"$TURBO_ROOT$/pnpm-workspace.yaml",
+				"action.yml",
+				"package.json",
+				"tsconfig.json",
+				"src/**/*.ts",
+				"lib/**/*.ts",
+				"lib/**/*.mts",
+				"README.md",
+				"LICENSE"
+			],
+			"outputLogs": "full",
+			"outputs": ["schemas/**"]
+		},
 		"types:check": {
 			"cache": true,
 			"dependsOn": [],
-			// These must mirror the `include` of the tsconfig `tsc --noEmit` actually
-			// resolves (`@savvy-web/github-action-builder/tsconfig/action.json`), which
-			// covers `__test__/**` as well as `src/**`. When they drifted apart, a
-			// test-only change hit a cached FULL TURBO and reported a green typecheck
-			// without running one — a type error reachable only from a test file could
-			// not fail this task.
 			"inputs": [
 				"$TURBO_ROOT$/package.json",
 				"$TURBO_ROOT$/tsconfig.json",

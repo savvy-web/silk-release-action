@@ -81,6 +81,9 @@ catalogs:
     '@effected/schemastore':
       specifier: ^0.11.0
       version: 0.11.0
+    '@effected/schemastore-cli':
+      specifier: ^0.11.0
+      version: 0.11.0
     '@effected/semver':
       specifier: ^0.7.0
       version: 0.7.0
@@ -163,6 +166,9 @@ importers:
       '@effected/schemastore':
         specifier: catalog:effected
         version: 0.11.0(effect@4.0.0-rc.115)
+      '@effected/schemastore-cli':
+        specifier: catalog:effected
+        version: 0.11.0(@effected/config-file@0.10.0(@effected/jsonc@0.11.0(effect@4.0.0-rc.115))(@effected/toml@0.7.0(effect@4.0.0-rc.115))(@effected/walker@0.9.0(@effected/glob@0.6.0(effect@4.0.0-rc.115))(effect@4.0.0-rc.115))(@effected/yaml@0.15.1(effect@4.0.0-rc.115))(effect@4.0.0-rc.115))(@effected/schemastore@0.11.0(effect@4.0.0-rc.115))(effect@4.0.0-rc.115)(redis@6.2.1)
       '@okfit/plugin':
         specifier: ^0.3.6
         version: 0.3.6(@effected/config-file@0.10.0(@effected/jsonc@0.11.0(effect@4.0.0-rc.115))(@effected/toml@0.7.0(effect@4.0.0-rc.115))(@effected/walker@0.9.0(@effected/glob@0.6.0(effect@4.0.0-rc.115))(effect@4.0.0-rc.115))(@effected/yaml@0.15.1(effect@4.0.0-rc.115))(effect@4.0.0-rc.115))(@effected/glob@0.6.0(effect@4.0.0-rc.115))(@effected/jsonc@0.11.0(effect@4.0.0-rc.115))(@effected/markdown@0.10.0(@effected/jsonc@0.11.0(effect@4.0.0-rc.115))(@effected/toml@0.7.0(effect@4.0.0-rc.115))(@effected/yaml@0.15.1(effect@4.0.0-rc.115))(effect@4.0.0-rc.115))(@effected/toml@0.7.0(effect@4.0.0-rc.115))(@effected/walker@0.9.0(@effected/glob@0.6.0(effect@4.0.0-rc.115))(effect@4.0.0-rc.115))(@effected/yaml@0.15.1(effect@4.0.0-rc.115))(redis@6.2.1)
@@ -629,6 +635,14 @@ packages:
     resolution: {integrity: sha512-1GTSV2/ByjMnknY363tJQVJd67/suVQBt4c0F3rNw+F5oj0cvkX7j2lNr/5Smj0Kx274h3sABgj1amPrKnaT+A==}
     engines: {node: '>=24.11.0'}
     peerDependencies:
+      effect: 4.0.0-rc.115
+
+  '@effected/schemastore-cli@0.11.0':
+    resolution: {integrity: sha512-58qioZyoMMuKEoaVbzhEY9sdIWJpru5DrDn09XBbU954B2vX3KGWwkMlX9kXV9nxhFI7dMlFHPidE6HVg9GWdA==}
+    engines: {node: '>=24.11.0'}
+    hasBin: true
+    peerDependencies:
+      '@effected/schemastore': 0.11.0
       effect: 4.0.0-rc.115
 
   '@effected/schemastore@0.11.0':
@@ -3654,6 +3668,19 @@ snapshots:
     transitivePeerDependencies:
       - kerberos
       - supports-color
+
+  '@effected/schemastore-cli@0.11.0(@effected/config-file@0.10.0(@effected/jsonc@0.11.0(effect@4.0.0-rc.115))(@effected/toml@0.7.0(effect@4.0.0-rc.115))(@effected/walker@0.9.0(@effected/glob@0.6.0(effect@4.0.0-rc.115))(effect@4.0.0-rc.115))(@effected/yaml@0.15.1(effect@4.0.0-rc.115))(effect@4.0.0-rc.115))(@effected/schemastore@0.11.0(effect@4.0.0-rc.115))(effect@4.0.0-rc.115)(redis@6.2.1)':
+    dependencies:
+      '@effect/platform-node': 4.0.0-rc.115(effect@4.0.0-rc.115)(redis@6.2.1)
+      '@effected/cli': 0.5.1(@effected/config-file@0.10.0(@effected/jsonc@0.11.0(effect@4.0.0-rc.115))(@effected/toml@0.7.0(effect@4.0.0-rc.115))(@effected/walker@0.9.0(@effected/glob@0.6.0(effect@4.0.0-rc.115))(effect@4.0.0-rc.115))(@effected/yaml@0.15.1(effect@4.0.0-rc.115))(effect@4.0.0-rc.115))(effect@4.0.0-rc.115)
+      '@effected/schemastore': 0.11.0(effect@4.0.0-rc.115)
+      effect: 4.0.0-rc.115
+      jiti: 2.7.0
+    transitivePeerDependencies:
+      - '@effected/config-file'
+      - bufferutil
+      - redis
+      - utf-8-validate
 
   '@effected/schemastore@0.11.0(effect@4.0.0-rc.115)':
     dependencies:
