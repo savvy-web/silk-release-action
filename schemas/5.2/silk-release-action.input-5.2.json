@@ -1,6 +1,6 @@
 {
 	"$schema": "http://json-schema.org/draft-07/schema#",
-	"$id": "https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/silk-release-action.input.schema.json",
+	"$id": "https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.2/silk-release-action.input-5.2.json",
 	"$ref": "#/$defs/SilkReleaseConfig",
 	"$defs": {
 		"SbomContact": {
@@ -226,7 +226,7 @@
 							"title": "JSON Schema reference",
 							"description": "Optional URL of the JSON Schema this config conforms to. Editors and json-schema-aware tools use this for completion and validation; the action itself does not require it.",
 							"examples": [
-								"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/silk-release-action.input.schema.json"
+								"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.2/silk-release-action.input-5.2.json"
 							]
 						},
 						{

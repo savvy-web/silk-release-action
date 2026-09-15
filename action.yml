@@ -181,7 +181,7 @@ outputs:
     description: |
       Structured JSON describing what the run did. A phase-discriminated object
       validated by
-      https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.2.0/silk-release-action-5.2.0.json.
+      https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.2/silk-release-action.output-5.2.json.
       Parse it for the full contract; the scalars below mirror the common facts.
   phase:
     description: "Phase that ran: branch-management, validation, or publish"

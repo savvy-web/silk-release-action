@@ -4,9 +4,9 @@
 
 ## Features
 
-### Output schema 5.2.0 and the schemastore CLI
+### Output schema 5.2 and the schemastore CLI
 
-The `result` output's `$schema` now points at `https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.2.0/silk-release-action-5.2.0.json`. The document itself is unchanged apart from its `$id`; the label moved because the schema is regenerated in place by `@effected/schemastore-cli` while it is unpublished, and `5.0.0` was never consumed anywhere. The input schema (`SilkReleaseConfig`, referenced from `.github/silk-release.json` for editor completion) moves from the repository root to `schemas/silk-release-action.input.schema.json`, and its `$id` moves with it: point `$schema` at `https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/silk-release-action.input.schema.json`.
+The `result` output's `$schema` now points at `https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.2/silk-release-action.output-5.2.json`. The document itself is unchanged apart from its `$id`; the label moved because the schema is regenerated in place by `@effected/schemastore-cli` while it is unpublished, and `5.0.0` was never consumed anywhere. The input schema (`SilkReleaseConfig`, referenced from `.github/silk-release.json` for editor completion) moves from the repository root to the same versioned layout, `schemas/5.2/silk-release-action.input-5.2.json`, and its `$id` moves with it: point `$schema` at `https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.2/silk-release-action.input-5.2.json`. Both labels come from one constant, `OUTPUT_SCHEMA_VERSION`.
 
 ### The structured result is logged
 

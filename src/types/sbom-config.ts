@@ -11,7 +11,7 @@
  * `SBOMCopyrightConfig`, `SBOMMetadataConfig`, `ReleaseConfig`) are derived
  * from the Effect Schema in `src/schema/silk-release-config.ts` — the schema
  * is the single source of truth and is also the source of the generated
- * `schemas/silk-release-action.input.schema.json`. The CycloneDX-wire and
+ * `schemas/<version>/silk-release-action.input-<version>.json`. The CycloneDX-wire and
  * NTIA-result types below stay hand-rolled because they model external
  * shapes the action only consumes, not config it parses.
  *

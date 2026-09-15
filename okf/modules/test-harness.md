@@ -9,6 +9,8 @@ tags:
   - dx
 generated:
   by: okfit/claude-code
+  at: 2026-09-15T03:42:33Z
+  body_sha256: 357e3cb53196aee61250c7743967a8ad16a3c9794006cce37fc6c68fa3e8cce9
 sources:
   - id: vitest-config
     resource: ../../vitest.config.ts

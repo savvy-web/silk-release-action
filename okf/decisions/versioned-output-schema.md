@@ -1,7 +1,7 @@
 ---
 type: Decision
 title: Version the output JSON Schema under its own path per release
-description: The output document lives under a per-version path, schemas/5.2.0/silk-release-action-5.2.0.json today, and is referenced by $schema/$id in every payload, so an old payload's URL keeps resolving to the shape it was written against; the input schema stays unversioned beside it under schemas/.
+description: Both JSON Schema documents live under a per-version path, schemas/5.2/silk-release-action.output-5.2.json and schemas/5.2/silk-release-action.input-5.2.json today, and the output one is referenced by $schema/$id in every payload, so an old payload's URL keeps resolving to the shape it was written against.
 status: draft
 tags:
   - compat
@@ -32,30 +32,33 @@ misdescribe every payload emitted before the change.
 ## Decision
 
 The output JSON Schema lives at
-`schemas/<version>/silk-release-action-<version>.json` — today
-`schemas/5.2.0/silk-release-action-5.2.0.json` — rather than at an
-unversioned path. The input schema
-(`schemas/silk-release-action.input.schema.json`) stays unversioned: it
-describes the action's own inputs, which this repository controls directly
-and versions alongside the action's own releases, not a payload a consumer
-might store independently. Both sit under `schemas/` because
-`@effected/schemastore`'s `defineConfig` derives every path and `$id` from
-one `outputDir`/`baseUrl` pair — nothing is spelled by hand, so a document's
-identity cannot disagree with where it is written.
+`schemas/<version>/silk-release-action.output-<version>.json` — today
+`schemas/5.2/silk-release-action.output-5.2.json` — rather than at an
+unversioned path. The input schema sits beside it under the same label,
+`schemas/<version>/silk-release-action.input-<version>.json`: it describes
+the action's own inputs, so it has no payload-replay problem of its own, but
+one layout and one label for both documents keeps the config and the
+constants that name them to a single version. Both derive from
+`@effected/schemastore`'s `defineConfig`, which builds every path and `$id`
+from one `outputDir`/`baseUrl` pair plus the label — nothing is spelled by
+hand, so a document's identity cannot disagree with where it is written. The
+base URL and label are the `OUTPUT_SCHEMA_URL`/`OUTPUT_SCHEMA_VERSION`
+constants in `src/schema/silk-release-config.ts`, and `SCHEMA_URL` and
+`INPUT_SCHEMA_URL` are template-literal derivations of the same two.
 
 Generation is `@effected/schemastore-cli` over
 `lib/scripts/schemastore.config.ts`[^schemastore-config]: `pnpm schema:build` writes,
 `pnpm schema:check` is the identical walk with no writes and the CI gate.
-The output entry carries `versions` (every label it advertises; all but the
+Each entry carries `versions` (every label it advertises; all but the
 `current` one are frozen files the CLI verifies exist but never regenerates)
 and `published`. A label consumers depend on is `published: true`, and the
 drift policy then refuses to rewrite its file in place when the change is a
 contract change — a removed or renamed field, a changed type — failing with
 a line that names the `$id`, the change and the suggested next label. The
-response to a genuine contract break is appending a new label to `versions`
-and moving `SCHEMA_URL` in `src/schema/release-output.ts` with it, which
-writes a new file at the new version's path and leaves the published one
-untouched. `published: false` — the state today, since the schema has never
+response to a genuine contract break is bumping `OUTPUT_SCHEMA_VERSION`
+(which moves `SCHEMA_URL`, `INPUT_SCHEMA_URL` and both entries' `current`
+label together) while keeping the old label in `versions`, which writes new
+files at the new version's path and leaves the published ones untouched. `published: false` — the state today, since the schema has never
 been published — lets the current label iterate in place.
 
 `--force` (sugar for `--drift=allow`) rewrites a published document in place
@@ -87,10 +90,11 @@ overwrites a published version's file — it always lands at a new path.
 `pnpm schema:check` is the drift guard verifying both the input and the
 output document stay in the committed, up-to-date state the CLI would
 itself produce; `__test__/schemastore-config.test.ts`[^schemastore-config-test]
-pins the config-derived `$id` to `SCHEMA_URL`[^release-output]. Bumping the
-version is a two-file, matched change (`versions` in the config and
-`SCHEMA_URL`); letting the two drift apart would mean the emitted payload's
-URL and the file the CLI actually wrote disagree.
+pins the config-derived `$id`s to `SCHEMA_URL`[^release-output] and
+`INPUT_SCHEMA_URL`. Bumping the version is one constant plus keeping the old
+label in `versions`; a URL spelled by hand instead of derived would be the
+only way the emitted payload's URL and the file the CLI actually wrote could
+disagree, and the test exists to catch exactly that.
 
 See [Bump the output schema version](../runbooks/bump-output-schema-version.md)
 for the operational procedure and
