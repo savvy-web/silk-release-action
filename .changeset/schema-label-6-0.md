@@ -1,5 +1,5 @@
 ---
-"@savvy-web/silk-release-action": major
+"@savvy-web/silk-release-action": minor
 ---
 
 ## Breaking Changes
