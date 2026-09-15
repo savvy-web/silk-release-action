@@ -10,16 +10,19 @@
 
 import { describe, expect, it } from "@effect/vitest";
 import type { ActionOutputsShape } from "@effected/github-actions";
-import { ActionOutputs } from "@effected/github-actions";
-import { Effect } from "effect";
+import { ActionLogger, ActionOutputs } from "@effected/github-actions";
+import { Effect, Logger } from "effect";
 import {
 	MAIN_SCALAR_OUTPUT_NAMES,
 	OUTPUT_NAMES,
 	PRE_OUTPUT_NAMES,
 	STRUCTURED_OUTPUT_NAME,
 	emitMainScalarOutputs,
+	emitReleaseOutput,
 	initialMainScalarOutputs,
 } from "../src/schema/outputs.js";
+import type { ReleaseOutput } from "../src/schema/release-output.js";
+import { SCHEMA_URL, SCHEMA_VERSION } from "../src/schema/release-output.js";
 import { declaredOutputNames, scanOutputWriteReceivers, scanOutputWrites } from "./utils/manifest.js";
 
 /**
@@ -121,6 +124,83 @@ describe("emitMainScalarOutputs", () => {
 			const sets: Array<{ name: string; value: string }> = [];
 			yield* emitMainScalarOutputs(recordingOutputs(sets), { ...initialMainScalarOutputs, releasePrNumber: 0 });
 			expect(new Map(sets.map((e) => [e.name, e.value])).get("release-pr-number")).toBe("0");
+		}),
+	);
+});
+
+describe("emitReleaseOutput", () => {
+	const sample: ReleaseOutput = {
+		$schema: SCHEMA_URL,
+		schemaVersion: SCHEMA_VERSION,
+		phase: "branch-management",
+		success: true,
+		outcome: "branch-created",
+		summary: "1 changeset file(s) · 1 workspace(s) to version · release PR #1 created",
+		dryRun: false,
+		failure: null,
+		totals: { changesetFiles: 1, workspaces: 1 },
+		branchManagement: {
+			releaseBranch: {
+				name: "changeset-release/main",
+				existed: true,
+				created: false,
+				updated: true,
+				hasConflicts: false,
+			},
+			releasePr: { number: 42, url: "https://example.com/pr/42", action: "updated" },
+			changesets: {
+				count: 1,
+				packages: [
+					{ name: "@savvy-web/foo", bumpType: "minor", changesetCount: 1, oldVersion: "1.0.0", newVersion: "1.1.0" },
+				],
+			},
+		},
+	};
+
+	/** Records `set` and `setJson` (as the encoded text the runner would see) plus every log line and group name. */
+	const harness = () => {
+		const sets: Array<{ name: string; value: string }> = [];
+		const groups: Array<string> = [];
+		const logs: Array<string> = [];
+		const outputs = ActionOutputs.makeTest({
+			set: (name: string, value: string) =>
+				Effect.sync(() => {
+					sets.push({ name, value });
+				}),
+			setJson: (name: string, value: unknown) =>
+				Effect.sync(() => {
+					sets.push({ name, value: JSON.stringify(value) });
+				}),
+		});
+		const layer = ActionLogger.layerTest({
+			group: <A, E, R>(name: string, effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+				Effect.sync(() => {
+					groups.push(name);
+				}).pipe(Effect.andThen(effect)),
+		});
+		const recorder = Logger.make(({ message }) => {
+			logs.push(Array.isArray(message) ? message.map(String).join(" ") : String(message));
+		});
+		return { sets, groups, logs, layer, loggerLayer: Logger.layer([recorder]), outputs };
+	};
+
+	it.effect("should log the encoded result inside a collapsed group before setting it", () =>
+		Effect.gen(function* () {
+			const h = harness();
+			yield* emitReleaseOutput(h.outputs, sample, { packageCount: 1, releasePrNumber: 42 }).pipe(
+				Effect.provide(h.layer),
+				Effect.provide(h.loggerLayer),
+			);
+			expect(h.groups).toEqual(["Structured result output"]);
+			const logged = h.logs.find((line) => line.includes('"schemaVersion"'));
+			expect(logged).toBeDefined();
+			// Pretty-printed — the runner collapses the group, so readability wins over one-line copy-paste.
+			expect(logged).toContain("\n  ");
+			// The same document `setJson` published, byte-for-byte modulo whitespace.
+			const result = h.sets.find((entry) => entry.name === "result");
+			expect(result).toBeDefined();
+			expect(JSON.parse(logged ?? "")).toEqual(JSON.parse(result?.value ?? ""));
+			expect(JSON.parse(result?.value ?? "")).toEqual(sample);
 		}),
 	);
 });

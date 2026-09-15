@@ -10,8 +10,6 @@ tags:
   - dx
 generated:
   by: okfit/claude-code
-  at: 2026-09-13T19:54:03Z
-  body_sha256: 380796b7139887e2da2d55da99aaa96bb84898f128f6edaee6cbe93fd86c2518
 sources:
   - id: branch-sync-workflow
     resource: ../../.github/workflows/branch-sync.yml
@@ -145,8 +143,8 @@ release cycle `branch-sync.yml` maintains.
 `savvy-web/silk-integration` procedure for exercising a feature branch
 end-to-end before it merges.
 [Bump output schema version](../runbooks/bump-output-schema-version.md) —
-the procedure `pnpm generate-schema` gates when the output contract
-changes.
+the procedure `pnpm schema:build` gates when the output contract
+changes at a published label.
 
 [^branch-sync-workflow]: `../../.github/workflows/branch-sync.yml`
 [^turbo-config]: `../../turbo.json`

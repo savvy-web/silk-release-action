@@ -5,7 +5,7 @@
  * `ReleaseOutput` is a `Schema.Union` of three phase structs, discriminated by
  * the `phase` literal. It is the single source of truth: the committed,
  * **version-labelled** document at `schemas/<version>/silk-release-action-<version>.json`
- * (`schemas/5.0.0/silk-release-action-5.0.0.json` today) is generated from it,
+ * (`schemas/5.2.0/silk-release-action-5.2.0.json` today) is generated from it,
  * and `main.ts` emits a Schema-encoded instance as the `result` action output.
  * There is no unversioned `silk-release-action.output.schema.json`; the label
  * is what keeps an emitted payload's `$schema` resolving to the shape it was
@@ -26,13 +26,15 @@ import { Schema } from "effect";
  * written against long after the schema has moved on. An unversioned URL would
  * silently re-point old payloads at a newer contract.
  *
- * Kept in step with `SCHEMA_SEMVER` in `lib/scripts/generate-schema.ts`, which
- * derives the file name from the same label. When SchemaStore hosts the
+ * Kept in step with the `versions` label on the `silk-release-action` entry
+ * in `lib/scripts/schemastore.config.ts`, which derives the file name and `$id` from the
+ * same label; `__test__/schemastore-config.test.ts` pins the two together.
+ * When SchemaStore hosts the
  * document, this becomes its `schemastore.org` URL and the raw GitHub path
  * stays as the fallback origin.
  */
 export const SCHEMA_URL =
-	"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.0.0/silk-release-action-5.0.0.json";
+	"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.2.0/silk-release-action-5.2.0.json";
 
 /**
  * In-band schema version. Bumped only on a breaking JSON-shape change

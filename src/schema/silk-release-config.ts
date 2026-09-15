@@ -5,8 +5,8 @@
  * `SilkReleaseConfig` is the typed shape of the JSON consumed via the
  * `sbom-config` action input, the `.github/silk-release.json` file, and the
  * `SILK_RELEASE_SBOM_TEMPLATE` environment variable. It is the single source
- * of truth: the committed `silk-release-action.input.schema.json` is
- * generated from it, and `loadSBOMConfig` decodes raw JSON through it before
+ * of truth: the committed `schemas/silk-release-action.input.schema.json` is
+ * generated from it (via `lib/scripts/schemastore.config.ts`), and `loadSBOMConfig` decodes raw JSON through it before
  * the validation phase resolves SBOM metadata.
  *
  * The schema mirrors the shape `resolveSBOMMetadata` already normalises —
@@ -26,7 +26,7 @@ import { Schema } from "effect";
 
 /** Hosted JSON Schema URL for the input config; emitted as `$id` in the generated JSON Schema. */
 export const INPUT_SCHEMA_URL =
-	"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/silk-release-action.input.schema.json";
+	"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/silk-release-action.input.schema.json";
 
 // ─── Sub-structs ──────────────────────────────────────────────────────────
 
@@ -193,7 +193,7 @@ export const SilkReleaseConfig = Schema.Struct({
 			description:
 				"Optional URL of the JSON Schema this config conforms to. Editors and json-schema-aware tools use this for completion and validation; the action itself does not require it.",
 			examples: [
-				"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/silk-release-action.input.schema.json",
+				"https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/silk-release-action.input.schema.json",
 			],
 		}),
 	),
