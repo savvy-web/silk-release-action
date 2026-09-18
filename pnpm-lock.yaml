@@ -152,8 +152,8 @@ importers:
         specifier: catalog:effected
         version: 0.15.2(effect@4.0.0-rc.115)
       '@savvy-web/silk-effects':
-        specifier: ^8.2.1
-        version: 8.2.1(@effected/commands@0.7.2(effect@4.0.0-rc.115))(@effected/git@0.15.2(effect@4.0.0-rc.115))(@effected/workspaces@0.22.1(effect@4.0.0-rc.115))(effect@4.0.0-rc.115)
+        specifier: ^9.0.1
+        version: 9.0.1(@effected/commands@0.7.2(effect@4.0.0-rc.115))(@effected/git@0.15.2(effect@4.0.0-rc.115))(@effected/templates@0.6.1(effect@4.0.0-rc.115))(@effected/workspaces@0.22.1(effect@4.0.0-rc.115))(effect@4.0.0-rc.115)
       effect:
         specifier: catalog:effect
         version: 4.0.0-rc.115
@@ -1310,24 +1310,10 @@ packages:
     resolution: {integrity: sha512-MA+32lg0ZocVSs+Xlk9tY5JzAFVF8OAlheyqaB1JZwaOszhT8SE0nRDI7C4pFVU8btpAVx+9VatSWyJE+MQltw==}
     hasBin: true
 
-  '@savvy-web/silk-core@0.3.1':
-    resolution: {integrity: sha512-7bp+VhY6jfc9jZbe0Lzt+DHo1Q6bHZfl+usihW5Lqml3farEmZpGdO9TzwOEnRwcYD3LozDVR4UZJrLKgscR1A==}
-    peerDependencies:
-      '@effected/workspaces': ^0.22.0
-      effect: 4.0.0-rc.115
-
   '@savvy-web/silk-core@0.4.1':
     resolution: {integrity: sha512-InJYebcX8R8Oyq3qjyVsV4N4UgUgnJeWNASJdP7gxyKttZ40rVDCU7ZpAMer/zC5HtW1IaK3PgVumgHBdHt+OA==}
     peerDependencies:
       '@effected/templates': ^0.6.0
-      '@effected/workspaces': ^0.22.0
-      effect: 4.0.0-rc.115
-
-  '@savvy-web/silk-effects@8.2.1':
-    resolution: {integrity: sha512-rAY9eTmD4tCHyHy3kOe9c0vUpOuQYegJsESerKZA1YumeTkAsCwSAQdt7KLtSqVB85ZZe9JnA//QfjnuHAJr+w==}
-    peerDependencies:
-      '@effected/commands': ^0.7.1
-      '@effected/git': ^0.15.1
       '@effected/workspaces': ^0.22.0
       effect: 4.0.0-rc.115
 
@@ -4311,53 +4297,12 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@savvy-web/silk-core@0.3.1(@effected/workspaces@0.22.1(effect@4.0.0-rc.115))(effect@4.0.0-rc.115)':
-    dependencies:
-      '@effected/github-references': 0.3.1(effect@4.0.0-rc.115)
-      '@effected/templates': 0.6.1(effect@4.0.0-rc.115)
-      '@effected/workspaces': 0.22.1(effect@4.0.0-rc.115)
-      effect: 4.0.0-rc.115
-
   '@savvy-web/silk-core@0.4.1(@effected/templates@0.6.1(effect@4.0.0-rc.115))(@effected/workspaces@0.22.1(effect@4.0.0-rc.115))(effect@4.0.0-rc.115)':
     dependencies:
       '@effected/github-references': 0.3.1(effect@4.0.0-rc.115)
       '@effected/templates': 0.6.1(effect@4.0.0-rc.115)
       '@effected/workspaces': 0.22.1(effect@4.0.0-rc.115)
       effect: 4.0.0-rc.115
-
-  '@savvy-web/silk-effects@8.2.1(@effected/commands@0.7.2(effect@4.0.0-rc.115))(@effected/git@0.15.2(effect@4.0.0-rc.115))(@effected/workspaces@0.22.1(effect@4.0.0-rc.115))(effect@4.0.0-rc.115)':
-    dependencies:
-      '@changesets/apply-release-plan': 8.1.1
-      '@changesets/changelog-git': 1.0.0
-      '@changesets/config': 4.0.1
-      '@changesets/get-github-info': 1.0.1
-      '@changesets/get-release-plan': 5.0.2
-      '@effected/commands': 0.7.2(effect@4.0.0-rc.115)
-      '@effected/git': 0.15.2(effect@4.0.0-rc.115)
-      '@effected/github-references': 0.3.1(effect@4.0.0-rc.115)
-      '@effected/glob': 0.6.1(effect@4.0.0-rc.115)
-      '@effected/jsonc': 0.11.1(effect@4.0.0-rc.115)
-      '@effected/markdown': 0.10.1(@effected/jsonc@0.11.1(effect@4.0.0-rc.115))(@effected/toml@0.7.1(effect@4.0.0-rc.115))(@effected/yaml@0.15.2(effect@4.0.0-rc.115))(effect@4.0.0-rc.115)
-      '@effected/package-json': 0.15.1(effect@4.0.0-rc.115)
-      '@effected/templates': 0.6.1(effect@4.0.0-rc.115)
-      '@effected/toml': 0.7.1(effect@4.0.0-rc.115)
-      '@effected/walker': 0.9.1(@effected/glob@0.6.1(effect@4.0.0-rc.115))(effect@4.0.0-rc.115)
-      '@effected/workspaces': 0.22.1(effect@4.0.0-rc.115)
-      '@effected/yaml': 0.15.2(effect@4.0.0-rc.115)
-      '@manypkg/get-packages': 3.1.0
-      '@savvy-web/silk-core': 0.3.1(@effected/workspaces@0.22.1(effect@4.0.0-rc.115))(effect@4.0.0-rc.115)
-      effect: 4.0.0-rc.115
-      mdast-util-heading-range: 4.0.0
-      mdast-util-to-string: 4.0.0
-      remark-gfm: 4.0.1
-      remark-parse: 11.0.0
-      remark-stringify: 11.0.0
-      shell-quote: 1.10.0
-      unified: 11.0.5
-      unified-lint-rule: 3.0.1
-      unist-util-visit: 5.1.0
-    transitivePeerDependencies:
-      - supports-color
 
   '@savvy-web/silk-effects@9.0.1(@effected/commands@0.7.2(effect@4.0.0-rc.115))(@effected/git@0.15.2(effect@4.0.0-rc.115))(@effected/templates@0.6.1(effect@4.0.0-rc.115))(@effected/workspaces@0.22.1(effect@4.0.0-rc.115))(effect@4.0.0-rc.115)':
     dependencies:
