@@ -59,10 +59,10 @@
 		"@effect/vitest": "catalog:effect",
 		"@effected/memfs": "catalog:effected",
 		"@effected/schemastore-cli": "catalog:effected",
-		"@okfit/plugin": "^0.4.1",
+		"@okfit/plugin": "^0.4.2",
 		"@savvy-web/github-action-builder": "^2.4.2",
 		"@savvy-web/silk": "^4.2.2",
-		"@vitest-agent/plugin": "^4.1.0",
+		"@vitest-agent/plugin": "^4.1.1",
 		"tsx": "catalog:silk"
 	},
 	"packageManager": "pnpm@12.5.0+sha512.9cdbaa34ffacae1768635ac0d23e94db6201c7d59bf3da236b23d67c8f6b794d1dab323bcd5bcc51b55c8cafbf6f19a24e4aa61d6ab7772aa3b5cc85e325dc4d",
