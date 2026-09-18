@@ -52,7 +52,7 @@
 		"@effected/semver": "catalog:effected",
 		"@effected/workspaces": "catalog:effected",
 		"@effected/yaml": "catalog:effected",
-		"@savvy-web/silk-effects": "^8.2.0",
+		"@savvy-web/silk-effects": "^8.2.1",
 		"effect": "catalog:effect"
 	},
 	"devDependencies": {
@@ -60,8 +60,8 @@
 		"@effected/memfs": "catalog:effected",
 		"@effected/schemastore-cli": "catalog:effected",
 		"@okfit/plugin": "^0.4.0",
-		"@savvy-web/github-action-builder": "^2.4.0",
-		"@savvy-web/silk": "^4.0.6",
+		"@savvy-web/github-action-builder": "^2.4.1",
+		"@savvy-web/silk": "^4.1.0",
 		"@vitest-agent/plugin": "^4.0.4",
 		"tsx": "catalog:silk"
 	},
