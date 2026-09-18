@@ -112,13 +112,14 @@ const parseAnnotations = (buildError: string): Annotation[] => {
  * to a run without the input.
  *
  * @remarks
- * The gate is **strictly exit-code-driven**, which is the one place it
- * deliberately differs from the build above it. `success` for the build is
- * `exitCode === 0` AND a substring grep over stderr, because a build tool can
- * exit zero while printing errors. That reasoning does not extend to a gate
- * whose entire advertised contract IS its exit code: a checker printing
- * `0 errors found` and exiting 0 must pass, and folding it into the grep would
- * fail every release in every repo that set it.
+ * Both the build and the gate are **exit-code-driven** — `success` is
+ * `exitCode === 0`, full stop, for either one. The build additionally parses
+ * annotations from its combined stdout+stderr output (turbo puts task
+ * diagnostics on stdout, so both streams are read); the gate has no file
+ * positions to report and reproduces its output verbatim instead. Neither
+ * greps for the word "error": a checker printing `0 errors found` and exiting
+ * 0 must pass, and a prose grep would fail every release whose log happened to
+ * mention the word.
  *
  * The gate is also **pure** — it runs a command and reads an integer. It never
  * pushes, commits, or mutates the repository, so setting it cannot require the
@@ -158,7 +159,14 @@ export const validateBuilds = (
 		const { cmd: buildCmd, args: buildArgs } = buildInvocation(packageManager);
 		yield* Effect.logInfo(`Running build command: ${buildCmd} ${buildArgs.join(" ")}`);
 
+		// Two strings, two jobs. `buildError` is the FAILURE REASON — stderr, the
+		// narrow stream — and is what reaches the validation finding.
+		// `buildOutput` is the DIAGNOSTIC TEXT — both streams — and is what the
+		// annotation parser and the error summary read. Issue #265: turbo puts
+		// task diagnostics on stdout, so reading stderr alone produced a red
+		// check with zero annotations on a run whose log had every error in it.
 		let buildError = "";
+		let buildOutput = "";
 		let buildExitCode = 0;
 
 		if (!dryRun) {
@@ -171,22 +179,26 @@ export const validateBuilds = (
 			if (result._tag === "Success") {
 				buildExitCode = result.success.exitCode;
 				buildError = result.success.stderr;
+				buildOutput = [result.success.stdout, result.success.stderr].filter((s) => s !== "").join("\n");
 				if (result.success.stdout !== "") process.stdout.write(result.success.stdout);
 				if (result.success.stderr !== "") process.stderr.write(result.success.stderr);
 			} else {
 				buildExitCode = 1;
 				buildError = result.failure.message;
+				buildOutput = result.failure.message;
 				yield* Effect.logError(`Build command failed: ${buildError}`);
 			}
 		} else {
 			yield* Effect.logInfo(`[DRY RUN] Would run: ${buildCmd} ${buildArgs.join(" ")}`);
 		}
 
-		// The BUILD's verdict: exit code AND the stderr grep. Split out from the
-		// combined `success` below so the gate can be conditioned on it — a gate
-		// that inspects build output is meaningless after a failed build, and
-		// running it anyway stacks a confusing second error on the real one.
-		const buildSucceeded = buildExitCode === 0 && !buildError.includes("error") && !buildError.includes("ERROR");
+		// The BUILD's verdict is its EXIT CODE, full stop. There used to be a
+		// second arm — `!stderr.includes("error")` — on the theory that a tool
+		// can exit 0 while printing errors. It survived only because stderr was
+		// narrow; over the combined output it would fire on a package named
+		// `*-error-*` or a `0 errors` line. A tool that prints errors and exits 0
+		// is lying, and a prose grep is not the place to catch it.
+		const buildSucceeded = buildExitCode === 0;
 
 		// The `on-build` gate. `null` means "did not fail" — which covers unset,
 		// dry-run, a skipped run after a failed build, and a clean exit 0.
@@ -260,9 +272,10 @@ export const validateBuilds = (
 
 		const success = buildSucceeded && gateFailure === null;
 
-		// Annotations come from the BUILD's stderr only; a gate failure is a single
-		// reported command, not a set of file positions.
-		const annotations = !buildSucceeded && buildError !== "" ? parseAnnotations(buildError) : [];
+		// Annotations come from the BUILD's combined output; a gate failure is a
+		// single reported command, not a set of file positions. Safe over the
+		// wide text: the parser matches `file:line:col - error TS####:` shapes.
+		const annotations = !buildSucceeded && buildOutput !== "" ? parseAnnotations(buildOutput) : [];
 		if (annotations.length > 0) yield* Effect.logInfo(`Parsed ${annotations.length} error annotations`);
 
 		const checkTitle = dryRun ? "🧪 Build Validation (Dry Run)" : "Build Validation";
@@ -277,8 +290,8 @@ export const validateBuilds = (
 		const errorSummary =
 			gateFailure !== null
 				? gateFailure
-				: !buildSucceeded && buildError !== ""
-					? buildError
+				: !buildSucceeded && buildOutput !== ""
+					? buildOutput
 							.split("\n")
 							.filter((line) => line.includes("error") || line.includes("ERROR"))
 							.slice(0, 20)
@@ -354,8 +367,17 @@ export const validateBuilds = (
 		yield* outputs.summary(summaryWriter.build(jobSections));
 
 		// `errors` is load-bearing: the check derivation renders it as the build
-		// finding's message and falls back to a generic string only when blank. A
-		// gate failure whose output was dropped would produce a red check with no
-		// explanation of what drifted.
-		return { success, errors: gateFailure ?? buildError, checkId: checkRun.id, htmlUrl: checkRun.url };
+		// finding's message and falls back to a generic string only when blank.
+		// stderr is preferred (the narrow stream is the reason); when the tool
+		// reported on stdout only, the tail of the combined output stands in so
+		// the finding never reads as the bare "Build failed".
+		const failureReason =
+			buildError !== ""
+				? buildError
+				: buildOutput
+						.split("\n")
+						.filter((l) => l !== "")
+						.slice(-40)
+						.join("\n");
+		return { success, errors: gateFailure ?? failureReason, checkId: checkRun.id, htmlUrl: checkRun.url };
 	});

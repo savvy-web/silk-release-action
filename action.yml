@@ -161,9 +161,8 @@ inputs:
       commit, or otherwise mutate the repository, and the calling job's
       permissions are unchanged whether it is set or not.
 
-      Gating is strictly on the exit code -- unlike the build itself, the
-      command's stderr is not inspected, so a gate may print the word "error"
-      and still pass by exiting 0.
+      Gating is strictly on the exit code, the same as the build itself: a
+      gate may print the word "error" and still pass by exiting 0.
 
       Skipped in dry-run, along with the build it gates.
 
