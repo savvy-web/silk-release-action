@@ -48,7 +48,13 @@ import { PublishTarget, PublishabilityDetector, WorkspaceDiscovery, WorkspacePac
 import { ConfigProvider, Effect, Layer, Option, Redacted } from "effect";
 import { ChangesetConfig } from "../../../src/release/changeset-config.js";
 import type { BuildSbomResult, DetectedRelease, PublishInputArgs } from "../../../src/release/publish.js";
-import { detectReleases, runBuildAndSbom, runPublishTargets, userNpmrcPath } from "../../../src/release/publish.js";
+import {
+	detectReleases,
+	planWorkspaces,
+	runBuildAndSbom,
+	runPublishTargets,
+	userNpmrcPath,
+} from "../../../src/release/publish.js";
 import type { PublishPackagesResult } from "../../../src/release/types.js";
 import { matchesIgnorePattern } from "../../../src/utils/detect-repo-type.js";
 
@@ -641,6 +647,44 @@ describe("detectReleases", () => {
 });
 
 // ─── runBuildAndSbom ──────────────────────────────────────────────────────────
+
+describe("planWorkspaces", () => {
+	// `DetectedRelease.path` is absolute (SBOM and pack read from it); the wire
+	// value is the repo-relative path the schema promises.
+	it.effect("reports a package directory relative to the repository root", () =>
+		Effect.gen(function* () {
+			const cwd = process.cwd();
+			const absolute = join(cwd, "packages", "foo");
+			const pkg = makeWsPkg("@test/foo", "1.0.0", absolute);
+			const plan = yield* planWorkspaces([makeDetected("@test/foo", "1.0.0", absolute)]).pipe(
+				Effect.provide(
+					Layer.mergeAll(
+						makeWorkspaceDiscoveryLayer([pkg]),
+						makePublishabilityLayer(new Map([[pkg.name, [makeNpmTarget(pkg.name, absolute)]]])),
+					),
+				),
+			);
+			expect(plan).toHaveLength(1);
+			expect(plan[0]?.path).toBe(join("packages", "foo"));
+		}),
+	);
+
+	it.effect("reports the repository root itself as '.'", () =>
+		Effect.gen(function* () {
+			const cwd = process.cwd();
+			const pkg = makeWsPkg("@test/root", "1.0.0", cwd);
+			const plan = yield* planWorkspaces([makeDetected("@test/root", "1.0.0", cwd)]).pipe(
+				Effect.provide(
+					Layer.mergeAll(
+						makeWorkspaceDiscoveryLayer([pkg]),
+						makePublishabilityLayer(new Map([[pkg.name, [makeNpmTarget(pkg.name, cwd)]]])),
+					),
+				),
+			);
+			expect(plan[0]?.path).toBe(".");
+		}),
+	);
+});
 
 describe("runBuildAndSbom", () => {
 	const buildArgs: PublishInputArgs = {

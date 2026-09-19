@@ -53,6 +53,8 @@ describe("ReleaseOutput schema", () => {
 			packagesPublished: 1,
 			packagesRecovered: 0,
 			packagesFailed: 0,
+			packagesConfirmed: 0,
+			packagesHeld: 0,
 			tagsCreated: 1,
 			releasesCreated: 1,
 		},
@@ -61,6 +63,7 @@ describe("ReleaseOutput schema", () => {
 			workspaces: {
 				"@savvy-web/foo": {
 					version: "1.2.0",
+					path: "packages/foo",
 					kind: "github-with-packages",
 					success: true,
 					outcome: "published",
@@ -77,6 +80,9 @@ describe("ReleaseOutput schema", () => {
 								url: "https://npm.pkg.github.com/",
 							},
 							url: "https://github.com/orgs/savvy-web/packages/npm/package/foo",
+							tarballUrl: null,
+							available: false,
+							availability: { status: "skipped", waitedMs: 0 },
 							error: null,
 							recovery: null,
 							tarballDigest: "sha512-abc",

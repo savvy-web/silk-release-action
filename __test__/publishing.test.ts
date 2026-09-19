@@ -8,16 +8,17 @@
 // `runReleases` fails, the phase
 //
 //   1. keeps going (close-linked-issues still runs),
-//   2. still collects tag SHAs,
-//   3. still EMITS OUTPUTS describing what actually published, and only THEN
-//   4. fails the effect, with a message carrying the re-run contract.
+//   2. still EMITS OUTPUTS describing what actually published, and only THEN
+//   3. fails the effect, with a message carrying the re-run contract.
 //
 // Ordering is the whole design: failing at the failure site would skip (3), and
 // a consumer reading `result` could not tell which packages reached a registry.
 // Every assertion below is written so that reverting the failure to a swallow,
 // or hoisting it above `emitPublishing`, turns a test red.
 
-import { Effect, Layer, Logger } from "effect";
+import { Repo, RepoRef } from "@effected/github";
+import { NpmRegistry, PublishedVersion } from "@effected/npm";
+import { Effect, Layer, Logger, Option } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ReleasesError } from "../src/release/errors.js";
 import type { PublishPackagesResult } from "../src/release/types.js";
@@ -29,7 +30,6 @@ const runBuildAndSbomMock = vi.hoisted(() => vi.fn());
 const runPublishTargetsMock = vi.hoisted(() => vi.fn());
 const runReleasesMock = vi.hoisted(() => vi.fn());
 const closeLinkedIssuesMock = vi.hoisted(() => vi.fn());
-const revParseMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../src/release/publish.js", () => ({
 	detectReleases: detectReleasesMock,
@@ -54,8 +54,9 @@ vi.mock("../src/utils/determine-tag-strategy.js", async (importOriginal) => ({
 	isMonorepoForTagging: () => Effect.succeed(false),
 }));
 
-const { ActionLogger, ActionOutputs, ActionState, DryRun } = await import("@effected/github-actions");
-const { Git } = await import("@effected/git");
+const { ActionEnvironment, ActionLogger, ActionOutputs, ActionState, DryRun } = await import(
+	"@effected/github-actions"
+);
 const { runPublishing } = await import("../src/steps/publishing.js");
 
 /** One package, one target, published — the "what actually published" fact. */
@@ -89,7 +90,24 @@ const PUBLISH_RESULT: PublishPackagesResult = {
 	successfulTargets: 1,
 };
 
-const INPUTS = { targetBranch: "main" } as unknown as Inputs;
+// `registryConfirmTimeout: 0` keeps every test here off the registry probe
+// (→ `skipped`); the one test that exercises the probe overrides it.
+const INPUTS = { targetBranch: "main", npmToken: "", registryConfirmTimeout: 0 } as unknown as Inputs;
+
+/** A registry that already serves every version asked of it, and counts the asks. */
+const seededRegistry = () => {
+	let calls = 0;
+	const layer = NpmRegistry.layerTest({
+		version: (name, version) =>
+			Effect.sync(() => {
+				calls += 1;
+				return Option.some(
+					PublishedVersion.make({ name, version, tarball: `https://registry.npmjs.org/${name}/-/pkg-${version}.tgz` }),
+				);
+			}),
+	});
+	return { layer, calls: () => calls };
+};
 
 /** Everything an assertion needs from one run of the step. */
 interface RunCapture {
@@ -101,7 +119,10 @@ interface RunCapture {
 	readonly text: string;
 }
 
-const run = async (): Promise<RunCapture> => {
+const run = async (
+	inputs: Inputs = INPUTS,
+	registry: Layer.Layer<NpmRegistry> = seededRegistry().layer,
+): Promise<RunCapture> => {
 	const lines: string[] = [];
 	let result: Record<string, unknown> | undefined;
 	const scalars: Record<string, string> = {};
@@ -113,7 +134,13 @@ const run = async (): Promise<RunCapture> => {
 
 	const layers = Layer.mergeAll(
 		Logger.layer([capture]),
-		ActionLogger.layerTest(),
+		// `resolveServerUrl` reads GITHUB_SERVER_URL for the package page URLs.
+		ActionEnvironment.layerTest({ GITHUB_SERVER_URL: "https://github.com" }),
+		// `layerTest`'s `group` is a pass-through; record each opening so a test
+		// can assert a group was — or was not — opened.
+		ActionLogger.layerTest({
+			group: (name, effect) => Effect.logInfo(`::group::${name}`).pipe(Effect.andThen(effect)),
+		}),
 		ActionOutputs.layerTest({
 			setJson: (name: string, value: unknown) =>
 				Effect.sync(() => {
@@ -131,14 +158,15 @@ const run = async (): Promise<RunCapture> => {
 		// `emitReleaseOutput` saves the encoded result for the post phase.
 		ActionState.layerTest({ save: () => Effect.void }),
 		DryRun.layerTest({ isDryRun: Effect.succeed(false) }),
-		Git.layerTest({ revParse: revParseMock }),
+		Layer.succeed(Repo, RepoRef.make({ owner: "savvy-web", repo: "silk-release-action" })),
+		registry,
 	);
 
 	// The mocked modules erase their real requirement channels at RUNTIME only —
 	// the types still name eight services apiece. The cast is at the harness
 	// boundary and states exactly that, matching the precedent in
 	// `publish-validation.test.ts`; nothing under test is cast.
-	const effect = runPublishing(INPUTS, 42).pipe(Effect.provide(layers)) as unknown as Effect.Effect<void, unknown>;
+	const effect = runPublishing(inputs, 42).pipe(Effect.provide(layers)) as unknown as Effect.Effect<void, unknown>;
 	const exit = await Effect.runPromise(Effect.result(effect));
 
 	return { exit, result, scalars, failedWith, text: lines.join("\n") };
@@ -148,7 +176,15 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	detectReleasesMock.mockReturnValue(Effect.succeed([{ name: "@scope/alpha", version: "1.2.3", path: "/tmp/alpha" }]));
 	planWorkspacesMock.mockReturnValue(
-		Effect.succeed([{ name: "@scope/alpha", version: "1.2.3", kind: "github-with-packages", resolvedPackages: 1 }]),
+		Effect.succeed([
+			{
+				name: "@scope/alpha",
+				version: "1.2.3",
+				kind: "github-with-packages",
+				resolvedPackages: 1,
+				path: "packages/alpha",
+			},
+		]),
 	);
 	runBuildAndSbomMock.mockReturnValue(
 		Effect.succeed({
@@ -160,9 +196,8 @@ beforeEach(() => {
 		}),
 	);
 	runPublishTargetsMock.mockReturnValue(Effect.succeed(PUBLISH_RESULT));
-	runReleasesMock.mockReturnValue(Effect.succeed({ success: true, releases: [], errors: [] }));
+	runReleasesMock.mockReturnValue(Effect.succeed({ success: true, releases: [], errors: [], tagShas: {} }));
 	closeLinkedIssuesMock.mockReturnValue(Effect.succeed({ closedCount: 2, failedCount: 0, issues: [] }));
-	revParseMock.mockReturnValue(Effect.succeed("abc1234"));
 });
 
 describe("runPublishing — happy path", () => {
@@ -170,8 +205,9 @@ describe("runPublishing — happy path", () => {
 		runReleasesMock.mockReturnValue(
 			Effect.succeed({
 				success: true,
-				releases: [{ tag: "v1.2.3", url: "https://example.test/r", id: 7, assets: [] }],
+				releases: [{ tag: "1.2.3", url: "https://example.test/r", id: 7, assets: [] }],
 				errors: [],
+				tagShas: { "1.2.3": "" },
 			}),
 		);
 
@@ -189,6 +225,76 @@ describe("runPublishing — happy path", () => {
 		expect(text).toContain(
 			"Release publishing: ✅ 1 workspace(s) versioned · 1 package(s) published to a registry · 1 GitHub release(s) created",
 		);
+	});
+
+	it("does not open the availability group when the ceiling is 0", async () => {
+		// The default INPUTS ceiling is 0, so nothing is probed; the group would be
+		// an empty heading over no work, and its absence is what proves the
+		// skip happens before the group opens rather than inside it.
+		const { exit, result, text } = await run();
+
+		expect(exit._tag).toBe("Success");
+		expect(text).not.toContain("::group::Confirm registry availability");
+		expect(text).not.toContain("Confirming ");
+		// The all-`skipped` map is still produced for every package.
+		const totals = result?.totals as { packagesConfirmed: number; packagesHeld: number };
+		expect(totals.packagesConfirmed).toBe(0);
+		expect(totals.packagesHeld).toBe(0);
+	});
+
+	it("confirms each npm target on the registry with the configured ceiling (#301)", async () => {
+		// The one test that lets the probe run: a positive ceiling and a registry
+		// that already serves the version, so the probe confirms on its first
+		// call and never waits.
+		runReleasesMock.mockReturnValue(
+			Effect.succeed({
+				success: true,
+				releases: [{ tag: "1.2.3", url: "https://example.test/r", id: 7, assets: [] }],
+				errors: [],
+				tagShas: { "1.2.3": "" },
+			}),
+		);
+		const registry = seededRegistry();
+		const { exit, result, text } = await run({ ...INPUTS, registryConfirmTimeout: 180 }, registry.layer);
+
+		expect(exit._tag).toBe("Success");
+		expect(registry.calls()).toBe(1);
+		// The ceiling reaches the step from `inputs.registryConfirmTimeout`.
+		expect(text).toContain("ceiling 180s");
+		// Ordering is the design: the probe runs AFTER tags and releases, so a
+		// scan hold never delays them.
+		expect(text).toContain("Created 1 release(s)");
+		expect(text).toContain("Confirming 1 npm version(s)");
+		expect(text.indexOf("Created 1 release(s)")).toBeLessThan(text.indexOf("Confirming 1 npm version(s)"));
+		const totals = result?.totals as { packagesConfirmed: number; packagesHeld: number };
+		expect(totals.packagesConfirmed).toBe(1);
+		expect(totals.packagesHeld).toBe(0);
+		const payload = result?.publish as {
+			workspaces: Record<
+				string,
+				{ packages: ReadonlyArray<{ available: boolean; availability: { status: string }; tarballUrl: string | null }> }
+			>;
+		};
+		const pkg = payload.workspaces["@scope/alpha"]?.packages[0];
+		expect(pkg?.available).toBe(true);
+		expect(pkg?.availability.status).toBe("confirmed");
+		expect(pkg?.tarballUrl).toBe("https://registry.npmjs.org/@test/pkg/-/pkg-1.2.3.tgz");
+	});
+
+	it("skips the probe, and reports every package as skipped, when the ceiling is 0", async () => {
+		const registry = seededRegistry();
+		const { result } = await run(INPUTS, registry.layer);
+
+		expect(registry.calls()).toBe(0);
+		const totals = result?.totals as { packagesConfirmed: number; packagesHeld: number };
+		expect(totals.packagesConfirmed).toBe(0);
+		expect(totals.packagesHeld).toBe(0);
+		const payload = result?.publish as {
+			workspaces: Record<string, { packages: ReadonlyArray<{ available: boolean; availability: { status: string } }> }>;
+		};
+		const pkg = payload.workspaces["@scope/alpha"]?.packages[0];
+		expect(pkg?.available).toBe(false);
+		expect(pkg?.availability).toEqual({ status: "skipped", waitedMs: 0 });
 	});
 });
 
@@ -239,19 +345,21 @@ describe("runPublishing — a runReleases failure fails the phase", () => {
 		expect(text).toContain("✅ 2 issue(s) closed");
 	});
 
-	it("STILL collects tag SHAs before failing", async () => {
+	it("STILL reports the tag, with an empty sha, when runReleases fails outright", async () => {
+		// `runReleasesMock` (this describe's `beforeEach`) rejects the whole
+		// step, so `steps/publishing.ts`'s catch fallback substitutes
+		// `tagShas: {}` — #402: the sha travels on `ReleasesReport.tagShas`,
+		// resolved at tag-creation time inside `processOneTag`, so a run where
+		// `runReleases` never got that far has nothing to read it from. The tag
+		// rides on the workspace as a SIBLING of `release`, so a run whose
+		// release creation failed — which is exactly this case — still reports
+		// the tag it meant to cut.
 		const { result } = await run();
 
-		expect(revParseMock).toHaveBeenCalled();
-		// The tag SHA now rides on the workspace's own release, so a consumer
-		// reads it without cross-referencing a separate tags array.
-		// The tag rides on the workspace as a SIBLING of `release`, so a run whose
-		// release creation failed — which is exactly this case — still reports the
-		// tag it did cut.
 		const payload = result?.publish as {
 			workspaces: Record<string, { tag: { sha: string } | null; release: unknown }>;
 		};
-		expect(payload.workspaces["@scope/alpha"]?.tag?.sha).toBe("abc1234");
+		expect(payload.workspaces["@scope/alpha"]?.tag?.sha).toBe("");
 		expect(payload.workspaces["@scope/alpha"]?.release).toBeNull();
 	});
 
@@ -286,8 +394,9 @@ describe("runPublishing — a runReleases failure fails the phase", () => {
 		runReleasesMock.mockReturnValue(
 			Effect.succeed({
 				success: false,
-				releases: [{ tag: "v1.2.3", url: "https://example.test/r", id: 7, assets: [] }],
+				releases: [{ tag: "1.2.3", url: "https://example.test/r", id: 7, assets: [] }],
 				errors: ["asset upload failed", "second failure"],
+				tagShas: { "1.2.3": "" },
 			}),
 		);
 

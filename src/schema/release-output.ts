@@ -1006,9 +1006,40 @@ const PublishedPackage = Schema.Struct({
 	url: Schema.NullOr(
 		Schema.String.annotate({
 			title: "Package URL",
-			description: "Web URL of the published package version. Null when the registry exposes no such page.",
+			description:
+				"Web page for this package version — npmjs.com, jsr.io or the repository's GitHub Packages page. Null for a custom registry.",
 		}),
 	),
+	tarballUrl: Schema.NullOr(
+		Schema.String.annotate({
+			title: "Tarball URL",
+			description:
+				"The registry's own download URL for this version's tarball, read back from the registry after publishing. Null when the version was not confirmed on the registry before the run finished (see `availability`), or when the registry is not probed.",
+			examples: ["https://registry.npmjs.org/@savvy-web/foo/-/foo-1.2.0.tgz"],
+		}),
+	),
+	available: Schema.Boolean.annotate({
+		title: "Available",
+		description:
+			"True when this exact version was confirmed resolvable on its registry before the run finished. Orthogonal to `success`: a package can be `success: true` (the upload landed) and `available: false` (the registry has not started serving it yet, or the probe was skipped). Read `availability.status` for which.",
+	}),
+	availability: Schema.Struct({
+		status: Schema.Literals(["confirmed", "held", "skipped"]).annotate({
+			identifier: "PackageAvailabilityStatus",
+			title: "Availability status",
+			description:
+				"`confirmed` — the exact `name@version` resolved on the registry within the ceiling. `held` — the publish succeeded but the version was not resolvable when the ceiling (`registry-confirm-timeout`) elapsed; npm holds new versions during publish-time malware scanning, usually for under three minutes and occasionally much longer. A held package IS published; downstream installs may need to retry. `skipped` — not probed: a non-npm registry, a dry-run, a ceiling of 0, a target that did not publish (`failed`), or a phase that aborted before the probe ran.",
+		}),
+		waitedMs: Schema.Int.annotate({
+			title: "Wait (ms)",
+			description: "Milliseconds spent probing this version. 0 when skipped.",
+		}),
+	}).annotate({
+		identifier: "PackageAvailability",
+		title: "Registry availability",
+		description:
+			"Whether — and how long it took until — the registry actually served this version after the publish call returned.",
+	}),
 	error: Schema.NullOr(
 		Schema.String.annotate({
 			title: "Error message",
@@ -1075,12 +1106,12 @@ const PublishTag = Schema.Struct({
 	name: Schema.String.annotate({
 		title: "Tag name",
 		description: "The git tag created for this workspace.",
-		examples: ["@effected/claude-code-plugin@0.14.0", "v1.2.0"],
+		examples: ["@effected/claude-code-plugin@0.14.0", "1.2.0"],
 	}),
 	sha: Schema.String.annotate({
 		title: "Tag SHA",
 		description:
-			"Commit SHA the tag points at. Empty string when the tag exists but the local clone could not resolve it — never null, so a consumer reading `.tag.sha` always gets a string.",
+			"Commit SHA the tag points at, taken from the tag-creation call itself. Empty string on a dry-run; when the tag could be neither created nor resolved; when no package was associated with the tag, so it was never processed; or when the releases step failed outright before any tag was processed. Never null, so a consumer reading `.tag.sha` always gets a string.",
 	}),
 }).annotate({
 	identifier: "PublishTag",
@@ -1107,6 +1138,11 @@ const PublishWorkspace = Schema.Struct({
 	version: Schema.String.annotate({
 		title: "Released version",
 		description: "The version this workspace was bumped to and released at.",
+	}),
+	path: Schema.String.annotate({
+		title: "Workspace path",
+		description: "Repo-relative directory of the workspace, e.g. `packages/foo`. `.` for a single-package repository.",
+		examples: ["packages/foo"],
 	}),
 	kind: Schema.Literals(["github-only", "github-with-packages"]).annotate({
 		identifier: "PublishWorkspaceKind",
@@ -1211,6 +1247,15 @@ const PublishTotals = Schema.Struct({
 		title: "Packages failed",
 		description: "Publications that were attempted and did not land.",
 	}),
+	packagesConfirmed: Schema.Int.annotate({
+		title: "Packages confirmed",
+		description: "Publications confirmed resolvable on their registry before the run finished.",
+	}),
+	packagesHeld: Schema.Int.annotate({
+		title: "Packages held",
+		description:
+			"Publications that succeeded but were not yet resolvable at the ceiling. Non-zero means a downstream install may hit `No matching version` for a few minutes; gate follow-on dispatches on this, not on `success`.",
+	}),
 	tagsCreated: Schema.Int.annotate({ title: "Tags created", description: "Git tags cut this run." }),
 	releasesCreated: Schema.Int.annotate({
 		title: "Releases created",
@@ -1261,8 +1306,11 @@ export const PublishOutput = Schema.Struct({
 	summary: Schema.String.annotate({
 		title: "Summary",
 		description:
-			"One human-readable sentence describing the whole run. Derived from `totals` and never authored independently, so it always agrees with the structured counts.",
-		examples: ["2 workspaces versioned · 0 packages published to a registry · 2 GitHub releases created"],
+			"One human-readable sentence describing the whole run. Derived from `totals` and never authored independently, so it always agrees with the structured counts. When `totals.packagesHeld` is non-zero the line ends with ` · N package(s) held by the registry`.",
+		examples: [
+			"2 workspace(s) versioned · 0 package(s) published to a registry · 2 GitHub release(s) created",
+			"1 workspace(s) versioned · 2 package(s) published to a registry · 1 GitHub release(s) created · 1 package(s) held by the registry",
+		],
 	}),
 	dryRun: annotatedDryRunField,
 	failure: Schema.NullOr(PublishFailure).annotate({

@@ -10,10 +10,12 @@ sources:
     resource: ../../src/schema/release-output.ts
   - id: projections-ts
     resource: ../../src/schema/projections.ts
-  - id: schema-5-2
+  - id: schema-6-0
     resource: ../../schemas/6.0/output.json
 generated:
   by: okfit/claude-code
+  at: 2026-09-19T01:42:17Z
+  body_sha256: 5dc42c7144d1c8cf2d09663cb13298548acbb283ee8800976fe642c7460afff2
 ---
 
 # The `result` output document
@@ -107,6 +109,60 @@ JSON payload or the check-run summary's embedded JSON block, where it would
 dominate the size and risk the check-summary byte cap.[^release-output-ts] A
 consumer reading `result` for the extracted release notes will not find them
 there by design; they are rendered, not carried.
+
+## Publish-phase package and workspace fields (#402, #301)
+
+`PublishWorkspace.path` is a **publish-phase-only** field: the repo-relative
+directory of the workspace (`packages/foo`, or `.` for a single-package
+repository). `ValidationWorkspace` carries no equivalent field — its plan
+has no directory to report — so a consumer must not expect `path` on a
+validation-phase workspace entry.[^release-output-ts]
+
+`PublishTag.sha` is populated from the tag-creation call itself — `headSha`
+on a fresh create or an idempotent recovery, the existing tag's sha on a
+diverged recovery — and is an empty string on a dry-run, when the tag could
+be neither created nor resolved, when no package was associated with the tag
+(so it was never processed), or when `runReleases` failed outright before any
+tag was processed; it is never `null`, so a consumer reading `.tag.sha` always
+gets a string.[^release-output-ts]
+
+`PublishedPackage.url` and `PublishedPackage.tarballUrl` are two different
+things that a `null` for npm used to conflate into one field. `url` is the
+human-facing package page — `npmjs.com/package/<name>/v/<version>` for npm,
+`jsr.io/<name>@<version>` for JSR, the repository's GitHub Packages page for
+`github-packages`, and `null` for a custom registry, since there is no
+generic page to link. `tarballUrl` is the registry's own download URL for
+the tarball, read back by the post-publish confirmation probe (below); it is
+`null` whenever that probe did not confirm the version before the run
+finished, or when the registry is not probed at all (JSR, GitHub Packages,
+custom).[^release-output-ts]
+
+## Post-publish registry confirmation (#301)
+
+A `200` from the publish call is not the same as the version being
+installable: npm's publish-time malware scan can hold a newly published
+version back from the registry for minutes, occasionally much longer. The
+`confirm-availability` step (Phase 3, after `runReleases` and before
+`emitPublishing`) polls the exact `name@version` of every successful npm
+target until it resolves or the `registry-confirm-timeout` input's ceiling
+elapses; a hold **never** changes `success` or `outcome` on the package or
+the workspace — the package *is* published, only not yet
+resolvable.[^release-output-ts] See
+[npm-publish-hold](../gotchas/npm-publish-hold.md).
+
+Per package, `available: boolean` is true only when
+`availability.status === "confirmed"`, and `availability` carries the status
+(`confirmed` | `held` | `skipped`) plus `waitedMs`. `skipped` covers every
+target the probe did not resolve: a non-npm registry, a dry-run, a ceiling of
+`0`, and any target the probe never reached at all — a failed publish or an
+aborted run.[^release-output-ts]
+
+At the top level, `PublishTotals` gains `packagesConfirmed` and
+`packagesHeld`; when `packagesHeld > 0`, the phase's `summary` appends
+`· N package(s) held by the registry`. A consumer wiring a follow-on
+dispatch (for example the shared release workflow's `packages-released`
+trigger) should gate on `totals.packagesHeld === 0`, not on
+`success`.[^release-output-ts]
 
 ## Every numeric field is an integer
 

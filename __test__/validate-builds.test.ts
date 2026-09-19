@@ -161,13 +161,11 @@ describe("validateBuilds", () => {
 	it("records a failure check run with annotations when the build emits TS errors", async () => {
 		const f = makeFixtures();
 
-		// Exit 0, but stderr matches the TypeScript error pattern — `success`
-		// flips to false because `buildError.includes("error")` is true.
 		const tsErrors =
 			"src/foo.ts:10:5 - error TS2322: Type 'string' is not assignable to type 'number'.\n" +
 			"src/bar.ts:20:3 - error TS2345: Argument of type 'number' is not assignable to parameter of type 'string'.\n";
 
-		const { result } = await runStage(f, { script: () => ({ exit: 0, stdout: "", stderr: tsErrors }) });
+		const { result } = await runStage(f, { script: () => ({ exit: 1, stdout: "", stderr: tsErrors }) });
 
 		expect(result.success).toBe(false);
 		expect(f.completed[0].conclusion).toBe("failure");
@@ -179,6 +177,54 @@ describe("validateBuilds", () => {
 		expect(output.annotations?.[0].startLine).toBe(10);
 		expect(output.annotations?.[0].endLine).toBe(10);
 		expect(output.annotations?.[0].level).toBe("failure");
+	});
+
+	it("parses annotations and the error summary from STDOUT when a turbo build fails", async () => {
+		const f = makeFixtures();
+
+		// Turbo (`--output-logs=full`) puts task diagnostics on stdout and
+		// leaves stderr empty. Issue #265: everything downstream of the log read
+		// stderr only, so this shape produced a red check with 0 errors.
+		const tsErrors =
+			"@savvy-web/foo:build: src/foo.ts:10:5 - error TS2322: Type 'string' is not assignable to type 'number'.\n" +
+			"@savvy-web/foo:build: src/bar.ts:20:3 - error TS2345: Argument of type 'number' is not assignable.\n" +
+			" ERROR  run failed: command exited (1)\n";
+
+		const { result } = await runStage(f, { script: () => ({ exit: 1, stdout: tsErrors, stderr: "" }) });
+
+		expect(result.success).toBe(false);
+		expect(f.completed[0].conclusion).toBe("failure");
+		const output = outputOf(f);
+		expect((output.annotations ?? []).length).toBe(2);
+		expect(output.annotations?.[0].path).toBe("src/foo.ts");
+		expect(output.summary).toContain("Build Errors");
+		expect(output.summary).toContain("error TS2322");
+		// `errors` reaches validation-checks.ts as the finding message; with an
+		// empty stderr it must fall back to the captured output, never "".
+		expect(result.errors).toContain("error TS2322");
+	});
+
+	it("keeps a build green when it exits 0 while printing the word error on stdout", async () => {
+		const f = makeFixtures();
+
+		// The regression #265 warned about: with stdout in scope, a substring
+		// grep would flip this red. The exit code is the sole verdict.
+		const stdout = "@savvy-web/error-handling:build: cache hit, replaying logs\nBuilt 3 packages, 0 errors\n";
+
+		const { result } = await runStage(f, { script: () => ({ exit: 0, stdout, stderr: "" }) });
+
+		expect(result.success).toBe(true);
+		expect(f.completed[0].conclusion).toBe("success");
+		expect(outputOf(f).annotations ?? []).toHaveLength(0);
+	});
+
+	it("keeps a build green when it exits 0 while printing the word error on stderr", async () => {
+		const f = makeFixtures();
+
+		const { result } = await runStage(f, { script: () => ({ exit: 0, stdout: "", stderr: "warning: 0 errors\n" }) });
+
+		expect(result.success).toBe(true);
+		expect(f.completed[0].conclusion).toBe("success");
 	});
 
 	it("treats a non-zero exit as a result, not an error", async () => {
@@ -227,7 +273,7 @@ describe("validateBuilds", () => {
 		// self-restoring via the suite's `cleanupTestEnvironment`, so a throw before
 		// a `finally` cannot leak the patch into every later test in the run.
 		vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-		await runStage(f, { script: () => ({ exit: 0, stdout: "", stderr: `${many}\n` }) });
+		await runStage(f, { script: () => ({ exit: 1, stdout: "", stderr: `${many}\n` }) });
 
 		// Slicing here would be redundant — the kit slices in `wireOutput`.
 		expect((outputOf(f).annotations ?? []).length).toBe(60);

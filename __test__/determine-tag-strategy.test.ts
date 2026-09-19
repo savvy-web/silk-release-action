@@ -131,7 +131,6 @@ describe("determine-tag-strategy", () => {
 								tokenEnv: "NPM_TOKEN",
 							},
 							success: true,
-							registryUrl: "https://www.npmjs.com/package/@org/pkg-a",
 						},
 					],
 				},

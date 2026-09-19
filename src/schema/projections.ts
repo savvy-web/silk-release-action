@@ -18,9 +18,13 @@ import type {
 	PublishWorkspacePlan,
 	ReleaseInfo,
 	TagInfo,
+	TargetAvailability,
 	ValidationFinding,
 	ValidationPackageResult,
 } from "../release/types.js";
+import { availabilityKey } from "../release/types.js";
+import type { PackagePageRepo } from "../utils/package-urls.js";
+import { packagePageUrl } from "../utils/package-urls.js";
 import {
 	summarizeBranchManagement,
 	summarizeReleaseWave,
@@ -357,6 +361,10 @@ export interface PublishInput {
 	readonly dryRun: boolean;
 	/** Null on a clean run. */
 	readonly failure: PublishFailureInput | null;
+	/** Registry availability probes, keyed by {@link availabilityKey}. */
+	readonly availability: ReadonlyMap<string, TargetAvailability>;
+	/** The repository (and GitHub host) every GitHub Packages page URL is relative to. */
+	readonly repo: PackagePageRepo;
 }
 
 type PackageOutcome = "published" | "recovered" | "failed" | "blocked";
@@ -386,9 +394,19 @@ const classifyPackage = (t: PackagePublishResult["targets"][number]): PackageOut
 const toPublishedPackage = (
 	workspaceVersion: string,
 	t: PackagePublishResult["targets"][number],
+	input: Pick<PublishInput, "availability" | "repo">,
 ): PublishOutput["publish"]["workspaces"][string]["packages"][number] => {
 	const outcome = classifyPackage(t);
 	const registry = t.target.registry ?? "jsr";
+	const kind = classifyRegistry(registry);
+	// No probe entry — a target the step never saw (an aborted run, or a
+	// target that did not publish) — reads as `skipped`, the same answer as a
+	// target the probe deliberately did not visit.
+	const probe = input.availability.get(availabilityKey(t.target.registry, t.target.name, workspaceVersion));
+	const availability =
+		probe === undefined
+			? { status: "skipped" as const, waitedMs: 0 }
+			: { status: probe.status, waitedMs: probe.waitedMs };
 	return {
 		// The name on the TARGET, not the workspace — a workspace may publish
 		// under a different name per registry.
@@ -398,10 +416,15 @@ const toPublishedPackage = (
 		outcome,
 		registry: {
 			name: registryDisplayName(registry),
-			type: classifyRegistry(registry),
+			type: kind,
 			url: registry,
 		},
-		url: t.registryUrl ?? null,
+		url: packagePageUrl(kind, t.target.name, workspaceVersion, input.repo),
+		tarballUrl: probe?.tarball ?? null,
+		// `available` never flips `success`: a hold is a finding beside the
+		// fact that the upload landed.
+		available: availability.status === "confirmed",
+		availability,
 		error: outcome === "failed" ? (t.error ?? null) : null,
 		recovery:
 			t.recovery !== undefined ? { localDigest: t.recovery.localDigest, remoteDigest: t.recovery.remoteDigest } : null,
@@ -449,7 +472,7 @@ export const toPublishOutput = (input: PublishInput): PublishOutput => {
 
 	for (const ws of input.plan) {
 		const result = resultByName.get(ws.name);
-		const packages = result === undefined ? [] : result.targets.map((t) => toPublishedPackage(ws.version, t));
+		const packages = result === undefined ? [] : result.targets.map((t) => toPublishedPackage(ws.version, t, input));
 
 		const tag = tagByWorkspace.get(ws.name) ?? sharedTag;
 		const releaseInfo = tag === undefined ? undefined : releaseByTag.get(tag.name);
@@ -493,6 +516,7 @@ export const toPublishOutput = (input: PublishInput): PublishOutput => {
 
 		workspaces[ws.name] = {
 			version: ws.version,
+			path: ws.path,
 			kind: ws.kind,
 			success,
 			outcome,
@@ -520,6 +544,8 @@ export const toPublishOutput = (input: PublishInput): PublishOutput => {
 		packagesPublished: allPackages.filter((p) => p.outcome === "published").length,
 		packagesRecovered: allPackages.filter((p) => p.outcome === "recovered").length,
 		packagesFailed: allPackages.filter((p) => p.outcome === "failed").length,
+		packagesConfirmed: allPackages.filter((p) => p.availability.status === "confirmed").length,
+		packagesHeld: allPackages.filter((p) => p.availability.status === "held").length,
 		tagsCreated: input.tags.length,
 		releasesCreated: input.releases.length,
 	};
@@ -549,6 +575,7 @@ export const toPublishOutput = (input: PublishInput): PublishOutput => {
 			workspaces: totals.workspaces,
 			packagesPublished: totals.packagesPublished,
 			releases: totals.releasesCreated,
+			packagesHeld: totals.packagesHeld,
 		}),
 		dryRun: input.dryRun,
 		failure:

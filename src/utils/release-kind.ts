@@ -120,9 +120,16 @@ export const tallyReleaseKinds = (targetCounts: Iterable<number>): ReleaseKindTa
  * GitHub releases as three separate facts, so a zero in the middle is
  * obviously the shape of the wave rather than a failure.
  *
+ * A registry hold (issue #301) is a finding appended after the three facts,
+ * never a change to them: a held package IS published, so the published
+ * count stays what it is and the suffix names how many are not yet
+ * resolvable. The suffix is omitted entirely when nothing is held, so the
+ * common line reads exactly as before.
+ *
  * @param args - The counts to render.
  * @returns One line, e.g.
- *   `2 package(s) versioned · 0 published to a registry · 2 GitHub release(s) created`.
+ *   `2 workspace(s) versioned · 0 package(s) published to a registry · 2 GitHub release(s) created`,
+ *   with ` · N package(s) held by the registry` appended when `packagesHeld > 0`.
  *
  * @public
  */
@@ -133,10 +140,13 @@ export const summarizeReleaseWave = (args: {
 	readonly packagesPublished: number;
 	/** GitHub releases created. */
 	readonly releases: number;
+	/** Publications that succeeded but were not yet resolvable on their registry at the ceiling. */
+	readonly packagesHeld: number;
 }): string =>
 	`${args.workspaces} workspace(s) versioned · ` +
 	`${args.packagesPublished} package(s) published to a registry · ` +
-	`${args.releases} GitHub release(s) created`;
+	`${args.releases} GitHub release(s) created` +
+	(args.packagesHeld > 0 ? ` · ${args.packagesHeld} package(s) held by the registry` : "");
 
 /**
  * The one-line account of what happened to a single workspace.

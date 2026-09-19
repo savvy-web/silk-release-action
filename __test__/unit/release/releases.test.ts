@@ -313,7 +313,10 @@ describe("runReleases", () => {
 				const release = makeGitHubReleaseLayer();
 				const attestation = makeAttestationLayer();
 
-				const tags: TagInfo[] = [makeTag("v1.0.0", "@test/pkg-a", "1.0.0"), makeTag("v2.0.0", "@test/pkg-b", "2.0.0")];
+				const tags: TagInfo[] = [
+					makeTag("@test/pkg-a@1.0.0", "@test/pkg-a", "1.0.0"),
+					makeTag("@test/pkg-b@2.0.0", "@test/pkg-b", "2.0.0"),
+				];
 				const publishResult = makePublishPackagesResult([
 					makePublishResult("@test/pkg-a", "1.0.0"),
 					makePublishResult("@test/pkg-b", "2.0.0"),
@@ -341,18 +344,25 @@ describe("runReleases", () => {
 				expect(result.success).toBe(true);
 				expect(result.errors).toHaveLength(0);
 				expect(result.releases).toHaveLength(2);
-				expect(result.releases.map((r) => r.tag)).toContain("v1.0.0");
-				expect(result.releases.map((r) => r.tag)).toContain("v2.0.0");
+				expect(result.releases.map((r) => r.tag)).toContain("@test/pkg-a@1.0.0");
+				expect(result.releases.map((r) => r.tag)).toContain("@test/pkg-b@2.0.0");
 
 				// Assert: two git tags were created
 				expect(tag.createCalls).toHaveLength(2);
-				expect(tag.createCalls.map((c) => c.tag)).toContain("v1.0.0");
-				expect(tag.createCalls.map((c) => c.tag)).toContain("v2.0.0");
+				expect(tag.createCalls.map((c) => c.tag)).toContain("@test/pkg-a@1.0.0");
+				expect(tag.createCalls.map((c) => c.tag)).toContain("@test/pkg-b@2.0.0");
 
 				// Assert: two GitHub releases were created
 				expect(release.createCalls).toHaveLength(2);
-				expect(release.createCalls.map((c) => c.tag)).toContain("v1.0.0");
-				expect(release.createCalls.map((c) => c.tag)).toContain("v2.0.0");
+				expect(release.createCalls.map((c) => c.tag)).toContain("@test/pkg-a@1.0.0");
+				expect(release.createCalls.map((c) => c.tag)).toContain("@test/pkg-b@2.0.0");
+
+				// #402: the tag sha is known here, at creation — the local clone
+				// never fetched the API-created tag, so `git rev-parse` was empty.
+				expect(result.tagShas).toEqual({
+					"@test/pkg-a@1.0.0": "0000000000000000000000000000000000000000",
+					"@test/pkg-b@2.0.0": "0000000000000000000000000000000000000000",
+				});
 			}),
 		);
 
@@ -362,7 +372,7 @@ describe("runReleases", () => {
 				const release = makeGitHubReleaseLayer();
 
 				const args: ReleasesInputArgs = {
-					tags: [makeTag("v1.2.3", "@test/pkg-sha", "1.2.3")],
+					tags: [makeTag("@test/pkg-sha@1.2.3", "@test/pkg-sha", "1.2.3")],
 					publishResult: makePublishPackagesResult([makePublishResult("@test/pkg-sha", "1.2.3")]),
 					packageManager: "pnpm",
 					dryRun: false,
@@ -378,7 +388,7 @@ describe("runReleases", () => {
 
 				yield* runReleases(args).pipe(Effect.provide(layers));
 
-				expect(tag.createCalls).toEqual([{ tag: "v1.2.3", sha: "feedface" }]);
+				expect(tag.createCalls).toEqual([{ tag: "@test/pkg-sha@1.2.3", sha: "feedface" }]);
 			}),
 		);
 	});
@@ -399,7 +409,7 @@ describe("runReleases", () => {
 					if (firstTarget) firstTarget.target.directory = tmpDir;
 
 					const args: ReleasesInputArgs = {
-						tags: [makeTag("v1.0.0", "@test/pkg-att", "1.0.0")],
+						tags: [makeTag("@test/pkg-att@1.0.0", "@test/pkg-att", "1.0.0")],
 						publishResult,
 						packageManager: "pnpm",
 						dryRun: false,
@@ -447,7 +457,7 @@ describe("runReleases", () => {
 					}
 
 					const args: ReleasesInputArgs = {
-						tags: [makeTag("v1.0.0", "@test/pkg-nodigest", "1.0.0")],
+						tags: [makeTag("@test/pkg-nodigest@1.0.0", "@test/pkg-nodigest", "1.0.0")],
 						publishResult,
 						packageManager: "pnpm",
 						dryRun: false,
@@ -493,7 +503,7 @@ describe("runReleases", () => {
 					if (firstTarget) firstTarget.target.directory = tmpDir;
 
 					const args: ReleasesInputArgs = {
-						tags: [makeTag("v1.0.0", "@test/pkg-signfail", "1.0.0")],
+						tags: [makeTag("@test/pkg-signfail@1.0.0", "@test/pkg-signfail", "1.0.0")],
 						publishResult,
 						packageManager: "pnpm",
 						dryRun: false,
@@ -526,16 +536,19 @@ describe("runReleases", () => {
 	describe("resilient batch: one release failure does not abort the other", () => {
 		it.effect("captures the failing release in errors but still creates the succeeding release", () =>
 			Effect.gen(function* () {
-				// Arrange: GitHubRelease.create fails for the first tag (v1.0.0)
+				// Arrange: GitHubRelease.create fails for the first tag (@test/pkg-a@1.0.0)
 				const tag = makeGitTagLayer();
 				const release = makeGitHubReleaseLayer({
 					create: (tagName) =>
-						tagName === "v1.0.0"
+						tagName === "@test/pkg-a@1.0.0"
 							? Effect.fail(GitHubError.rejected("GitHubRelease.create", 500, "Simulated create failure for pkg-a"))
 							: undefined,
 				});
 
-				const tags: TagInfo[] = [makeTag("v1.0.0", "@test/pkg-a", "1.0.0"), makeTag("v2.0.0", "@test/pkg-b", "2.0.0")];
+				const tags: TagInfo[] = [
+					makeTag("@test/pkg-a@1.0.0", "@test/pkg-a", "1.0.0"),
+					makeTag("@test/pkg-b@2.0.0", "@test/pkg-b", "2.0.0"),
+				];
 				const publishResult = makePublishPackagesResult([
 					makePublishResult("@test/pkg-a", "1.0.0"),
 					makePublishResult("@test/pkg-b", "2.0.0"),
@@ -560,16 +573,16 @@ describe("runReleases", () => {
 				const result: ReleasesReport = yield* runReleases(args).pipe(Effect.provide(layers));
 
 				// Assert: both git tags were created (tag step happens before release step)
-				expect(tag.createCalls.map((c) => c.tag)).toContain("v1.0.0");
-				expect(tag.createCalls.map((c) => c.tag)).toContain("v2.0.0");
+				expect(tag.createCalls.map((c) => c.tag)).toContain("@test/pkg-a@1.0.0");
+				expect(tag.createCalls.map((c) => c.tag)).toContain("@test/pkg-b@2.0.0");
 
-				// Assert: only one release succeeded (pkg-b / v2.0.0)
+				// Assert: only one release succeeded (pkg-b / @test/pkg-b@2.0.0)
 				expect(result.releases).toHaveLength(1);
-				expect(result.releases[0]?.tag).toBe("v2.0.0");
+				expect(result.releases[0]?.tag).toBe("@test/pkg-b@2.0.0");
 
-				// Assert: one error was captured for pkg-a / v1.0.0
+				// Assert: one error was captured for pkg-a / @test/pkg-a@1.0.0
 				expect(result.errors).toHaveLength(1);
-				expect(result.errors[0]).toMatch(/v1\.0\.0/);
+				expect(result.errors[0]).toContain("@test/pkg-a@1.0.0");
 
 				// Assert: overall success is false due to the error
 				expect(result.success).toBe(false);
@@ -581,12 +594,12 @@ describe("runReleases", () => {
 				// The recovery branches on the structural `kind`, not on the message.
 				const seeded = GitHubReleaseInfo.make({
 					id: 77,
-					tag: "v1.0.0",
-					name: "v1.0.0",
+					tag: "@test/pkg-exists@1.0.0",
+					name: "@test/pkg-exists@1.0.0",
 					body: "prior",
 					draft: false,
 					prerelease: false,
-					url: "https://github.com/test-owner/test-repo/releases/tag/v1.0.0",
+					url: "https://github.com/test-owner/test-repo/releases/tag/@test/pkg-exists@1.0.0",
 					uploadUrl: "https://uploads.github.com/releases/77/assets",
 				});
 
@@ -594,7 +607,7 @@ describe("runReleases", () => {
 					baseLayers(),
 					makeGitTagLayer().layer,
 					GitHubRelease.layerTest({
-						create: () => Effect.fail(GitHubError.alreadyExists("GitHubRelease.create", "v1.0.0")),
+						create: () => Effect.fail(GitHubError.alreadyExists("GitHubRelease.create", "@test/pkg-exists@1.0.0")),
 						getByTag: () => Effect.succeed(seeded),
 						listAssets: () => Effect.succeed([]),
 					}),
@@ -603,7 +616,7 @@ describe("runReleases", () => {
 				);
 
 				const args: ReleasesInputArgs = {
-					tags: [makeTag("v1.0.0", "@test/pkg-exists", "1.0.0")],
+					tags: [makeTag("@test/pkg-exists@1.0.0", "@test/pkg-exists", "1.0.0")],
 					publishResult: makePublishPackagesResult([makePublishResult("@test/pkg-exists", "1.0.0")]),
 					packageManager: "pnpm",
 					dryRun: false,
@@ -633,7 +646,7 @@ describe("runReleases", () => {
 				);
 
 				const args: ReleasesInputArgs = {
-					tags: [makeTag("v1.0.0", "@test/pkg-rejected", "1.0.0")],
+					tags: [makeTag("@test/pkg-rejected@1.0.0", "@test/pkg-rejected", "1.0.0")],
 					publishResult: makePublishPackagesResult([makePublishResult("@test/pkg-rejected", "1.0.0")]),
 					packageManager: "pnpm",
 					dryRun: false,
@@ -643,6 +656,11 @@ describe("runReleases", () => {
 
 				expect(result.success).toBe(false);
 				expect(result.errors).toHaveLength(1);
+				expect(result.releases).toHaveLength(0);
+				// #402: the tag sha is resolved at tag-creation time and reported
+				// regardless of the release failure that follows it — the tag really
+				// does exist at this sha even though no GitHub release does.
+				expect(result.tagShas["@test/pkg-rejected@1.0.0"]).toBe("0000000000000000000000000000000000000000");
 			}),
 		);
 	});
@@ -658,7 +676,7 @@ describe("runReleases", () => {
 				const release = makeGitHubReleaseLayer();
 
 				const args: ReleasesInputArgs = {
-					tags: [makeTag("v7.0.0", "@test/pkg-idem", "7.0.0")],
+					tags: [makeTag("@test/pkg-idem@7.0.0", "@test/pkg-idem", "7.0.0")],
 					publishResult: makePublishPackagesResult([makePublishResult("@test/pkg-idem", "7.0.0")]),
 					packageManager: "pnpm",
 					dryRun: false,
@@ -675,10 +693,11 @@ describe("runReleases", () => {
 				const result: ReleasesReport = yield* runReleases(args).pipe(Effect.provide(layers));
 
 				expect(tag.createCalls).toHaveLength(1);
-				expect(tag.resolveCalls).toEqual(["v7.0.0"]);
+				expect(tag.resolveCalls).toEqual(["@test/pkg-idem@7.0.0"]);
 				expect(release.createCalls).toHaveLength(1);
 				expect(result.success).toBe(true);
 				expect(result.releases).toHaveLength(1);
+				expect(result.tagShas["@test/pkg-idem@7.0.0"]).toBe(headSha);
 			}),
 		);
 
@@ -697,7 +716,7 @@ describe("runReleases", () => {
 			});
 
 			const args: ReleasesInputArgs = {
-				tags: [makeTag("v8.0.0", "@test/pkg-div", "8.0.0")],
+				tags: [makeTag("@test/pkg-div@8.0.0", "@test/pkg-div", "8.0.0")],
 				publishResult: makePublishPackagesResult([makePublishResult("@test/pkg-div", "8.0.0")]),
 				packageManager: "pnpm",
 				dryRun: false,
@@ -740,11 +759,13 @@ describe("runReleases", () => {
 			// The divergence path proceeded rather than aborting, and the warning
 			// names BOTH SHAs so the divergence is auditable after the fact.
 			expect(result.success).toBe(true);
-			expect(tag.resolveCalls).toEqual(["v8.0.0"]);
-			const warning = lines.find((l) => l.includes("::warning::") && l.includes("v8.0.0"));
+			expect(tag.resolveCalls).toEqual(["@test/pkg-div@8.0.0"]);
+			const warning = lines.find((l) => l.includes("::warning::") && l.includes("@test/pkg-div@8.0.0"));
 			expect(warning).toBeDefined();
 			expect(warning).toContain(headSha);
 			expect(warning).toContain(existingSha);
+			// A diverged tag reports the sha the tag ACTUALLY points at, not the head.
+			expect(result.tagShas["@test/pkg-div@8.0.0"]).toBe(existingSha);
 		});
 	});
 
@@ -755,7 +776,7 @@ describe("runReleases", () => {
 				const release = makeGitHubReleaseLayer();
 
 				const args: ReleasesInputArgs = {
-					tags: [makeTag("v3.0.0", "@test/pkg-c", "3.0.0")],
+					tags: [makeTag("@test/pkg-c@3.0.0", "@test/pkg-c", "3.0.0")],
 					publishResult: makePublishPackagesResult([makePublishResult("@test/pkg-c", "3.0.0")]),
 					packageManager: "pnpm",
 					dryRun: true,
@@ -777,8 +798,9 @@ describe("runReleases", () => {
 
 				expect(result.success).toBe(true);
 				expect(result.releases).toHaveLength(1);
-				expect(result.releases[0]?.tag).toBe("v3.0.0");
+				expect(result.releases[0]?.tag).toBe("@test/pkg-c@3.0.0");
 				expect(result.errors).toHaveLength(0);
+				expect(result.tagShas["@test/pkg-c@3.0.0"]).toBe("");
 			}),
 		);
 	});
@@ -831,7 +853,7 @@ describe("runReleases", () => {
 				}
 
 				const args: ReleasesInputArgs = {
-					tags: [makeTag("v4.0.0", "@test/pkg-d", "4.0.0")],
+					tags: [makeTag("@test/pkg-d@4.0.0", "@test/pkg-d", "4.0.0")],
 					publishResult,
 					packageManager: "pnpm",
 					dryRun: false,
@@ -901,7 +923,7 @@ describe("runReleases", () => {
 				}
 
 				const args: ReleasesInputArgs = {
-					tags: [makeTag("v4.0.0", "@test/pkg-d", "4.0.0")],
+					tags: [makeTag("@test/pkg-d@4.0.0", "@test/pkg-d", "4.0.0")],
 					publishResult,
 					packageManager: "pnpm",
 					dryRun: false,
@@ -971,7 +993,7 @@ describe("runReleases", () => {
 				if (firstTarget) firstTarget.target.directory = pkgDir;
 
 				const args: ReleasesInputArgs = {
-					tags: [makeTag("v9.0.0", "@test/pkg-meta", "9.0.0")],
+					tags: [makeTag("@test/pkg-meta@9.0.0", "@test/pkg-meta", "9.0.0")],
 					publishResult,
 					packageManager: "pnpm",
 					dryRun: false,
@@ -1058,7 +1080,7 @@ describe("runReleases", () => {
 				]);
 
 				const args: ReleasesInputArgs = {
-					tags: [makeTag("v5.0.0", "@test/pkg-gh", "5.0.0")],
+					tags: [makeTag("@test/pkg-gh@5.0.0", "@test/pkg-gh", "5.0.0")],
 					publishResult,
 					packageManager: "pnpm",
 					dryRun: false,
@@ -1111,7 +1133,7 @@ describe("runReleases", () => {
 				if (firstTarget) firstTarget.target.directory = tmpDir;
 
 				const args: ReleasesInputArgs = {
-					tags: [makeTag("v1.0.0", "@test/pkg-npm", "1.0.0")],
+					tags: [makeTag("@test/pkg-npm@1.0.0", "@test/pkg-npm", "1.0.0")],
 					publishResult,
 					packageManager: "pnpm",
 					dryRun: false,
@@ -1153,7 +1175,7 @@ describe("runReleases", () => {
 				const publishResult = makePublishPackagesResult([makePublishResult("@test/pkg-e", "6.0.0", tarballPath)]);
 
 				const args: ReleasesInputArgs = {
-					tags: [makeTag("v6.0.0", "@test/pkg-e", "6.0.0")],
+					tags: [makeTag("@test/pkg-e@6.0.0", "@test/pkg-e", "6.0.0")],
 					publishResult,
 					packageManager: "pnpm",
 					dryRun: false,

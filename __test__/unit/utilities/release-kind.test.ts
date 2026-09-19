@@ -72,8 +72,16 @@ describe("tallyReleaseKinds", () => {
 
 describe("summarizeReleaseWave", () => {
 	it("reports versioning, registry publishing and GitHub releases as three separate counts", () => {
-		expect(summarizeReleaseWave({ workspaces: 3, packagesPublished: 5, releases: 3 })).toBe(
+		expect(summarizeReleaseWave({ workspaces: 3, packagesPublished: 5, releases: 3, packagesHeld: 0 })).toBe(
 			"3 workspace(s) versioned · 5 package(s) published to a registry · 3 GitHub release(s) created",
+		);
+	});
+
+	// A hold is a finding appended to the line, never a change to the counts
+	// before it — the published count stays the published count.
+	it("appends the held count only when the registry is holding something", () => {
+		expect(summarizeReleaseWave({ workspaces: 1, packagesPublished: 2, releases: 1, packagesHeld: 1 })).toBe(
+			"1 workspace(s) versioned · 2 package(s) published to a registry · 1 GitHub release(s) created · 1 package(s) held by the registry",
 		);
 	});
 
@@ -81,7 +89,7 @@ describe("summarizeReleaseWave", () => {
 	// target(s)` was true and uninformative; this must still say that two
 	// packages were versioned and two releases were created.
 	it("still reports the versioning and the releases when nothing publishes to a registry", () => {
-		const line = summarizeReleaseWave({ workspaces: 2, packagesPublished: 0, releases: 2 });
+		const line = summarizeReleaseWave({ workspaces: 2, packagesPublished: 0, releases: 2, packagesHeld: 0 });
 		expect(line).toBe("2 workspace(s) versioned · 0 package(s) published to a registry · 2 GitHub release(s) created");
 		expect(line).toContain("2 workspace(s) versioned");
 		expect(line).toContain("2 GitHub release(s) created");

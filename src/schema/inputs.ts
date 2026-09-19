@@ -51,6 +51,7 @@ export const INPUT_NAMES = [
 	"sbom-config",
 	"custom-registries",
 	"on-build",
+	"registry-confirm-timeout",
 ] as const;
 
 /**
@@ -163,6 +164,12 @@ export interface Inputs extends BranchRefs {
 	 * decode here, typed, rather than silently configuring nothing.
 	 */
 	readonly customRegistries: ReadonlyArray<CustomRegistryAuth>;
+	/**
+	 * Ceiling, in whole seconds, on the post-publish registry-availability
+	 * probe. `0` disables it. Never a failure signal: a version still
+	 * unresolved at the ceiling is reported as held, not failed.
+	 */
+	readonly registryConfirmTimeout: number;
 }
 
 /**
@@ -210,6 +217,14 @@ const loadInputs: Config.Config<Inputs> = Config.all({
 	customRegistries: ActionInput.lines("custom-registries").pipe(
 		Config.withDefault([]),
 		Config.mapEffect(parseCustomRegistries),
+	),
+	registryConfirmTimeout: ActionInput.integer("registry-confirm-timeout").pipe(
+		Config.withDefault(180),
+		// `integer` already rejects fractions and prose; `Natural` adds the floor —
+		// a negative timeout would otherwise decode cleanly.
+		Config.mapEffect((value) =>
+			Schema.decodeUnknownEffect(Schema.Natural)(value).pipe(Effect.mapError((error) => new Config.ConfigError(error))),
+		),
 	),
 });
 

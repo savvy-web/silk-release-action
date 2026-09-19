@@ -161,15 +161,33 @@ inputs:
       commit, or otherwise mutate the repository, and the calling job's
       permissions are unchanged whether it is set or not.
 
-      Gating is strictly on the exit code -- unlike the build itself, the
-      command's stderr is not inspected, so a gate may print the word "error"
-      and still pass by exiting 0.
+      Gating is strictly on the exit code, the same as the build itself: a
+      gate may print the word "error" and still pass by exiting 0.
 
       Skipped in dry-run, along with the build it gates.
 
       Unset is a total no-op: no execution, no output change, no new log group.
     required: false
     default: ""
+  registry-confirm-timeout:
+    description: |
+      Seconds to wait, after publishing, for every npm package version to
+      become resolvable on its registry before the action finishes. npm holds
+      newly published versions back while its publish-time malware scan runs
+      (usually under three minutes, occasionally much longer); the publish
+      itself has already succeeded during the hold.
+
+      The probe is bounded by this value and never fails the release. A version
+      still unresolved at the ceiling is reported as held in the output
+      (`availability.status: "held"`, `totals.packagesHeld`). Set to 0 to skip
+      the probe. Only npm-registry targets are probed.
+
+      The probe reads anonymously, and npm answers 404 (not 401) for a private
+      package read without credentials, so a private npm package is reported
+      as held at the ceiling on every run unless `npm-token` is set. Pass
+      `npm-token`, or set this input to 0, for private packages.
+    required: false
+    default: "180"
 outputs:
   token:
     description: Generated GitHub App installation token (for use in subsequent steps)
