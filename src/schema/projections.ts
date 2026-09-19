@@ -403,6 +403,14 @@ const toPublishedPackage = (
 ): PublishOutput["publish"]["workspaces"][string]["packages"][number] => {
 	const outcome = classifyPackage(t);
 	const registry = t.target.registry ?? "jsr";
+	// No probe entry — a target the step never saw (an aborted run, or a
+	// target that did not publish) — reads as `skipped`, the same answer as a
+	// target the probe deliberately did not visit.
+	const probe = ctx.availability.get(availabilityKey(t.target.registry, t.target.name, workspaceVersion));
+	const availability =
+		probe === undefined
+			? { status: "skipped" as const, waitedMs: 0 }
+			: { status: probe.status, waitedMs: probe.waitedMs };
 	return {
 		// The name on the TARGET, not the workspace — a workspace may publish
 		// under a different name per registry.
@@ -421,8 +429,11 @@ const toPublishedPackage = (
 			version: workspaceVersion,
 			...ctx.repo,
 		}),
-		tarballUrl:
-			ctx.availability.get(availabilityKey(t.target.registry, t.target.name, workspaceVersion))?.tarball ?? null,
+		tarballUrl: probe?.tarball ?? null,
+		// `available` never flips `success`: a hold is a finding beside the
+		// fact that the upload landed.
+		available: availability.status === "confirmed",
+		availability,
 		error: outcome === "failed" ? (t.error ?? null) : null,
 		recovery:
 			t.recovery !== undefined ? { localDigest: t.recovery.localDigest, remoteDigest: t.recovery.remoteDigest } : null,
@@ -547,6 +558,8 @@ export const toPublishOutput = (input: PublishInput): PublishOutput => {
 		packagesPublished: allPackages.filter((p) => p.outcome === "published").length,
 		packagesRecovered: allPackages.filter((p) => p.outcome === "recovered").length,
 		packagesFailed: allPackages.filter((p) => p.outcome === "failed").length,
+		packagesConfirmed: allPackages.filter((p) => p.availability.status === "confirmed").length,
+		packagesHeld: allPackages.filter((p) => p.availability.status === "held").length,
 		tagsCreated: input.tags.length,
 		releasesCreated: input.releases.length,
 	};
@@ -576,6 +589,7 @@ export const toPublishOutput = (input: PublishInput): PublishOutput => {
 			workspaces: totals.workspaces,
 			packagesPublished: totals.packagesPublished,
 			releases: totals.releasesCreated,
+			packagesHeld: totals.packagesHeld,
 		}),
 		dryRun: input.dryRun,
 		failure:

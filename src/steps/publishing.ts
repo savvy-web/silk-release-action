@@ -69,6 +69,7 @@ import type {
 	PublishPackagesResult,
 	PublishWorkspacePlan,
 	ReleaseInfo,
+	TargetAvailability,
 } from "../release/types.js";
 import type { Inputs } from "../schema/inputs.js";
 import { emitReleaseOutput } from "../schema/outputs.js";
@@ -81,6 +82,7 @@ import { ensureFullHistory } from "../utils/ensure-full-history.js";
 import { grouped } from "../utils/grouped.js";
 import { releaseKindLabel, summarizeReleaseWave, tallyReleaseKinds } from "../utils/release-kind.js";
 import { sortReleasesTopologically } from "../utils/sort-releases-topologically.js";
+import { confirmAvailability } from "./confirm-availability.js";
 
 /**
  * The recovery instruction appended to every deferred Phase-3 failure message.
@@ -122,8 +124,11 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 
 			// `plan` is threaded into every emission, including the aborted ones —
 			// it is what keeps the wave's membership and each workspace's `kind`
-			// on the wire when the phase stops early. `availability` is empty here
-			// — the registry-probe wiring lands in a follow-on task.
+			// on the wire when the phase stops early. `availability` is the
+			// registry probe's answer (Step 6); the aborted emissions happen
+			// before that step runs and pass `noAvailability`, so every package
+			// they describe reads as `skipped`.
+			const noAvailability: ReadonlyMap<string, TargetAvailability> = new Map();
 			const emitPublishing = (
 				plan: ReadonlyArray<PublishWorkspacePlan>,
 				publishResult: PublishPackagesResult,
@@ -131,6 +136,7 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 				releases: ReadonlyArray<ReleaseInfo>,
 				tagShas: Record<string, string>,
 				failure: PublishFailureInput | null,
+				availability: ReadonlyMap<string, TargetAvailability>,
 			) =>
 				emitReleaseOutput(
 					outputs,
@@ -142,7 +148,7 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 						tagShas,
 						dryRun,
 						failure,
-						availability: new Map(),
+						availability,
 						repo: { owner, repo },
 					}),
 					{
@@ -191,7 +197,7 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 					totalTargets: 0,
 					successfulTargets: 0,
 				};
-				yield* emitPublishing([], empty, [], [], {}, null);
+				yield* emitPublishing([], empty, [], [], {}, null, noAvailability);
 				yield* Effect.logInfo("Release publishing: ✅ no packages were versioned — nothing to tag, release or publish");
 				return;
 			}
@@ -251,6 +257,7 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 						stage: "build",
 						reason: buildSbom.buildError ?? detail,
 					},
+					noAvailability,
 				);
 				yield* Effect.logInfo("Release publishing: ❌ aborted at Build & SBOM — nothing published");
 				yield* outputs.setFailed("Phase 3 aborted at Build & SBOM");
@@ -278,6 +285,7 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 						stage: "publish",
 						reason: `Published ${publishResult.successfulTargets}/${publishResult.totalTargets} target(s)`,
 					},
+					noAvailability,
 				);
 				yield* Effect.logInfo("Release publishing: ❌ failed at Publish");
 				yield* outputs.setFailed("Publishing failed");
@@ -349,6 +357,25 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 				);
 			}
 
+			// ── Step 6: Confirm registry availability (#301) ───────────────────────
+			// After tags and releases, so a scan hold never delays them; before the
+			// emission, so the output carries the answer. Never fails the phase —
+			// a version still unresolved at the ceiling is a `held` finding beside
+			// the package, not a flipped boolean. `inputs.npmToken` is "" when the
+			// input was not supplied; the step treats that as absent.
+			const availability = yield* logger.group(
+				"Confirm registry availability",
+				confirmAvailability(
+					publishResult.packages.flatMap((p) =>
+						p.targets
+							.filter((t) => t.success)
+							.map((t) => ({ name: t.target.name, version: p.version, registry: t.target.registry })),
+					),
+					{ ceilingSeconds: inputs.registryConfirmTimeout, dryRun, npmToken: inputs.npmToken },
+				),
+			);
+			const heldCount = [...availability.values()].filter((a) => a.status === "held").length;
+
 			// ── Emit outputs + final summary ───────────────────────────────────────
 			// `releasesResult.tagShas` travels every tag `runReleases` processed,
 			// resolved at tag-creation time inside `processOneTag` — reported even
@@ -366,6 +393,7 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 						? { stage: "linked-issues", reason: `${closeResult.failedCount} issue(s) failed to close` }
 						: null
 					: { stage: "releases", reason: releasesResult.errors.join("; ") },
+				availability,
 			);
 
 			// ── Deferred failure ───────────────────────────────────────────────────
@@ -412,6 +440,7 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 					workspaces: plan.length,
 					packagesPublished: publishResult.successfulTargets,
 					releases: releasesResult.releases.length,
+					packagesHeld: heldCount,
 				})}`,
 			);
 		}),

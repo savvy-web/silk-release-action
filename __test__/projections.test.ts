@@ -654,6 +654,90 @@ describe("toPublishOutput", () => {
 		const p = output.publish.workspaces["@savvy-web/foo"]?.packages[0];
 		expect(p?.url).toBe("https://www.npmjs.com/package/@savvy-web/foo/v/1.2.0");
 		expect(p?.tarballUrl).toBe("https://registry.npmjs.org/@savvy-web/foo/-/foo-1.2.0.tgz");
+		expect(p?.available).toBe(true);
+		expect(p?.availability).toEqual({ status: "confirmed", waitedMs: 1200 });
+		expect(output.totals.packagesConfirmed).toBe(1);
+		expect(output.totals.packagesHeld).toBe(0);
+		expect(output.summary).not.toContain("held");
+	});
+
+	it("reports a held package as still published, counts it, and says so in the summary", () => {
+		const pkg: PackagePublishResult = {
+			name: "@savvy-web/foo",
+			version: "1.2.0",
+			targets: [target({ success: true, status: "published" })],
+		};
+		pkg.targets[0].target.registry = "https://registry.npmjs.org/";
+		const availability = new Map<string, TargetAvailability>([
+			[
+				availabilityKey("https://registry.npmjs.org/", "@savvy-web/foo", "1.2.0"),
+				{ status: "held", waitedMs: 180000, tarball: null },
+			],
+		]);
+		const output = toPublishOutput({
+			...baseInput,
+			availability,
+			plan: planOf("@savvy-web/foo", "1.2.0", "github-with-packages", 1),
+			publishResult: {
+				...emptyResult,
+				packages: [pkg],
+				totalPackages: 1,
+				successfulPackages: 1,
+				totalTargets: 1,
+				successfulTargets: 1,
+			},
+			tags: [{ name: "@savvy-web/foo@1.2.0", packageName: "@savvy-web/foo", version: "1.2.0" }],
+			releases: [{ tag: "@savvy-web/foo@1.2.0", url: "https://example.com/r", id: 7, assets: [] }],
+			tagShas: { "@savvy-web/foo@1.2.0": "abc" },
+			dryRun: false,
+			failure: null,
+		});
+		const p = output.publish.workspaces["@savvy-web/foo"]?.packages[0];
+		// Published is published. A hold is a finding beside the fact, never a
+		// flipped boolean.
+		expect(p?.success).toBe(true);
+		expect(p?.outcome).toBe("published");
+		expect(p?.available).toBe(false);
+		expect(p?.availability).toEqual({ status: "held", waitedMs: 180000 });
+		expect(p?.tarballUrl).toBeNull();
+		expect(output.success).toBe(true);
+		expect(output.outcome).toBe("released");
+		expect(output.totals.packagesHeld).toBe(1);
+		expect(output.totals.packagesConfirmed).toBe(0);
+		expect(output.summary).toContain("1 package(s) held by the registry");
+	});
+
+	it("marks a package with no probe entry as skipped and not available", () => {
+		const pkg: PackagePublishResult = {
+			name: "@savvy-web/foo",
+			version: "1.2.0",
+			targets: [target({ success: true, status: "published" })],
+		};
+		pkg.targets[0].target.registry = "https://registry.npmjs.org/";
+		const output = toPublishOutput({
+			...baseInput,
+			availability: new Map(),
+			plan: planOf("@savvy-web/foo", "1.2.0", "github-with-packages", 1),
+			publishResult: {
+				...emptyResult,
+				packages: [pkg],
+				totalPackages: 1,
+				successfulPackages: 1,
+				totalTargets: 1,
+				successfulTargets: 1,
+			},
+			tags: [],
+			releases: [],
+			tagShas: {},
+			dryRun: false,
+			failure: null,
+		});
+		const p = output.publish.workspaces["@savvy-web/foo"]?.packages[0];
+		expect(p?.available).toBe(false);
+		expect(p?.availability).toEqual({ status: "skipped", waitedMs: 0 });
+		expect(output.totals.packagesConfirmed).toBe(0);
+		expect(output.totals.packagesHeld).toBe(0);
+		expect(output.summary).not.toContain("held");
 	});
 
 	// `recovered` and `published` are BOTH successes. Splitting `success` from
