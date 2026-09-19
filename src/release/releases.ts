@@ -460,11 +460,10 @@ const processOneTag = (
 
 		// ── Steps 2–5: build notes, create the release, upload assets, attest ────
 		// A separate inner `Effect.gen`/`.pipe(Effect.catch(...))` — not the
-		// outer one this used to be part of — so `tagSha`, resolved above,
-		// stays reportable in the catch handler below even when release
-		// creation itself fails. The tag already exists at that sha regardless
-		// of whether the GitHub release does.
-		return yield* Effect.gen(function* () {
+		// outer one this used to be part of — so `tagSha`, resolved above, is
+		// appended ONCE below, outside the catch boundary: the tag already
+		// exists at that sha regardless of whether the GitHub release does.
+		const [releaseInfo, error] = yield* Effect.gen(function* () {
 			// ── Step 2: Build release notes ─────────────────────────────────────────
 			const notes = yield* buildReleaseNotes(associatedPackages, owner);
 
@@ -800,16 +799,14 @@ const processOneTag = (
 			yield* Effect.logInfo(
 				`  ✅ release created — ${releaseData.id} (${associatedPackages.length} package(s), ${releaseAssetCount} asset(s))`,
 			);
-			return [releaseInfo, null, tagSha] as const;
+			return [releaseInfo, null] as const;
 		}).pipe(
 			Effect.catch((e: GitHubError) => {
 				const msg = `runReleases: failed to create release for ${tag.name}: ${e.message}`;
-				return Effect.gen(function* () {
-					yield* Effect.logWarning(msg);
-					return [null, msg, tagSha] as const;
-				});
+				return Effect.logWarning(msg).pipe(Effect.as([null, msg] as const));
 			}),
 		);
+		return [releaseInfo, error, tagSha] as const;
 	});
 
 // ─── runReleases ───────────────────────────────────────────────────────────────

@@ -54,7 +54,9 @@ vi.mock("../src/utils/determine-tag-strategy.js", async (importOriginal) => ({
 	isMonorepoForTagging: () => Effect.succeed(false),
 }));
 
-const { ActionLogger, ActionOutputs, ActionState, DryRun } = await import("@effected/github-actions");
+const { ActionEnvironment, ActionLogger, ActionOutputs, ActionState, DryRun } = await import(
+	"@effected/github-actions"
+);
 const { runPublishing } = await import("../src/steps/publishing.js");
 
 /** One package, one target, published — the "what actually published" fact. */
@@ -132,6 +134,8 @@ const run = async (
 
 	const layers = Layer.mergeAll(
 		Logger.layer([capture]),
+		// `resolveServerUrl` reads GITHUB_SERVER_URL for the package page URLs.
+		ActionEnvironment.layerTest({ GITHUB_SERVER_URL: "https://github.com" }),
 		// `layerTest`'s `group` is a pass-through; record each opening so a test
 		// can assert a group was — or was not — opened.
 		ActionLogger.layerTest({

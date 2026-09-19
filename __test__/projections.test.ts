@@ -564,7 +564,7 @@ describe("toPublishOutput", () => {
 
 	/** The two fields every `toPublishOutput` fixture call must carry now. */
 	const baseInput = {
-		repo: { owner: "savvy-web", repo: "foo" },
+		repo: { owner: "savvy-web", repo: "foo", serverUrl: "https://github.com" },
 		availability: new Map<string, TargetAvailability>(),
 	};
 

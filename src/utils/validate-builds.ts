@@ -369,15 +369,12 @@ export const validateBuilds = (
 		// `errors` is load-bearing: the check derivation renders it as the build
 		// finding's message and falls back to a generic string only when blank.
 		// stderr is preferred (the narrow stream is the reason); when the tool
-		// reported on stdout only, the tail of the combined output stands in so
-		// the finding never reads as the bare "Build failed".
-		const failureReason =
-			buildError !== ""
-				? buildError
-				: buildOutput
-						.split("\n")
-						.filter((l) => l !== "")
-						.slice(-40)
-						.join("\n");
-		return { success, errors: gateFailure ?? failureReason, checkId: checkRun.id, htmlUrl: checkRun.url };
+		// reported on stdout only, the same error-line excerpt the check run shows
+		// stands in, so the finding never reads as the bare "Build failed".
+		return {
+			success,
+			errors: gateFailure ?? (buildError !== "" ? buildError : errorSummary),
+			checkId: checkRun.id,
+			htmlUrl: checkRun.url,
+		};
 	});

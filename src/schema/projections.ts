@@ -23,6 +23,7 @@ import type {
 	ValidationPackageResult,
 } from "../release/types.js";
 import { availabilityKey } from "../release/types.js";
+import type { PackagePageRepo } from "../utils/package-urls.js";
 import { packagePageUrl } from "../utils/package-urls.js";
 import {
 	summarizeBranchManagement,
@@ -362,8 +363,8 @@ export interface PublishInput {
 	readonly failure: PublishFailureInput | null;
 	/** Registry availability probes, keyed by {@link availabilityKey}. */
 	readonly availability: ReadonlyMap<string, TargetAvailability>;
-	/** The repository every target's page URL is relative to. */
-	readonly repo: { readonly owner: string; readonly repo: string };
+	/** The repository (and GitHub host) every GitHub Packages page URL is relative to. */
+	readonly repo: PackagePageRepo;
 }
 
 type PackageOutcome = "published" | "recovered" | "failed" | "blocked";
@@ -389,24 +390,19 @@ const classifyPackage = (t: PackagePublishResult["targets"][number]): PackageOut
 	return t.success ? "published" : "failed";
 };
 
-/** Repository identity + availability probes, threaded into {@link toPublishedPackage}. */
-interface PublishedPackageContext {
-	readonly availability: ReadonlyMap<string, TargetAvailability>;
-	readonly repo: { readonly owner: string; readonly repo: string };
-}
-
 /** Map an internal target result onto one published-package entry. */
 const toPublishedPackage = (
 	workspaceVersion: string,
 	t: PackagePublishResult["targets"][number],
-	ctx: PublishedPackageContext,
+	input: Pick<PublishInput, "availability" | "repo">,
 ): PublishOutput["publish"]["workspaces"][string]["packages"][number] => {
 	const outcome = classifyPackage(t);
 	const registry = t.target.registry ?? "jsr";
+	const kind = classifyRegistry(registry);
 	// No probe entry — a target the step never saw (an aborted run, or a
 	// target that did not publish) — reads as `skipped`, the same answer as a
 	// target the probe deliberately did not visit.
-	const probe = ctx.availability.get(availabilityKey(t.target.registry, t.target.name, workspaceVersion));
+	const probe = input.availability.get(availabilityKey(t.target.registry, t.target.name, workspaceVersion));
 	const availability =
 		probe === undefined
 			? { status: "skipped" as const, waitedMs: 0 }
@@ -420,15 +416,10 @@ const toPublishedPackage = (
 		outcome,
 		registry: {
 			name: registryDisplayName(registry),
-			type: classifyRegistry(registry),
+			type: kind,
 			url: registry,
 		},
-		url: packagePageUrl({
-			registry: t.target.registry,
-			name: t.target.name,
-			version: workspaceVersion,
-			...ctx.repo,
-		}),
+		url: packagePageUrl(kind, t.target.name, workspaceVersion, input.repo),
 		tarballUrl: probe?.tarball ?? null,
 		// `available` never flips `success`: a hold is a finding beside the
 		// fact that the upload landed.
@@ -481,12 +472,7 @@ export const toPublishOutput = (input: PublishInput): PublishOutput => {
 
 	for (const ws of input.plan) {
 		const result = resultByName.get(ws.name);
-		const packages =
-			result === undefined
-				? []
-				: result.targets.map((t) =>
-						toPublishedPackage(ws.version, t, { availability: input.availability, repo: input.repo }),
-					);
+		const packages = result === undefined ? [] : result.targets.map((t) => toPublishedPackage(ws.version, t, input));
 
 		const tag = tagByWorkspace.get(ws.name) ?? sharedTag;
 		const releaseInfo = tag === undefined ? undefined : releaseByTag.get(tag.name);

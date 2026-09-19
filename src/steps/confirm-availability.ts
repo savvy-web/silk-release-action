@@ -27,6 +27,7 @@
  * @module steps/confirm-availability
  */
 
+import { ActionLogger } from "@effected/github-actions";
 import type { RegistryCredential } from "@effected/npm";
 import { NpmRegistry, classifyRegistry } from "@effected/npm";
 import { Clock, Duration, Effect, Option, Redacted, Schedule } from "effect";
@@ -124,26 +125,6 @@ const probeOne = (
 		return { status: "held", waitedMs, tarball: null };
 	});
 
-/**
- * Whether {@link confirmAvailability} would probe anything at all.
- *
- * @remarks
- * The caller uses this to skip the "Confirm registry availability" log group
- * when nothing will be probed — a dry-run, a ceiling of `0`, or no npm
- * targets — rather than opening an empty heading. The same predicate gates
- * the probe itself, so the group and the work cannot disagree.
- *
- * @param targets - The successfully published targets.
- * @param options - Ceiling and dry-run flag.
- * @returns `true` when at least one npm target will be polled.
- *
- * @public
- */
-export const willProbe = (
-	targets: ReadonlyArray<AvailabilityTarget>,
-	options: Pick<ConfirmAvailabilityOptions, "ceilingSeconds" | "dryRun">,
-): boolean => !options.dryRun && options.ceilingSeconds > 0 && npmTargetsOf(targets).length > 0;
-
 /** The subset of targets that live on an npm-classified registry. */
 const npmTargetsOf = (targets: ReadonlyArray<AvailabilityTarget>): ReadonlyArray<AvailabilityTarget> =>
 	targets.filter((t) => t.registry !== null && classifyRegistry(t.registry) === "npm");
@@ -167,12 +148,12 @@ const npmTargetsOf = (targets: ReadonlyArray<AvailabilityTarget>): ReadonlyArray
 export const confirmAvailability = (
 	targets: ReadonlyArray<AvailabilityTarget>,
 	options: ConfirmAvailabilityOptions,
-): Effect.Effect<ReadonlyMap<string, TargetAvailability>, never, NpmRegistry> =>
+): Effect.Effect<ReadonlyMap<string, TargetAvailability>, never, NpmRegistry | ActionLogger> =>
 	Effect.gen(function* () {
 		const result = new Map<string, TargetAvailability>();
 		for (const t of targets) result.set(availabilityKey(t.registry, t.name, t.version), SKIPPED);
-		if (!willProbe(targets, options)) return result;
 		const npmTargets = npmTargetsOf(targets);
+		if (options.dryRun || options.ceilingSeconds <= 0 || npmTargets.length === 0) return result;
 
 		// `Inputs.npmToken` defaults to "" for an unsupplied input; treat it as
 		// absent, as `publish.ts` does.
@@ -183,12 +164,21 @@ export const confirmAvailability = (
 
 		const ceiling = Duration.millis(Math.round(options.ceilingSeconds * 1000));
 		const schedule = options.schedule ?? defaultSchedule;
-		yield* Effect.logInfo(
-			`Confirming ${npmTargets.length} npm version(s) on the registry (ceiling ${options.ceilingSeconds}s)`,
+		const logger = yield* ActionLogger;
+		// The group opens here, past the early return, so a dry-run, a ceiling
+		// of 0 or a wave with no npm targets never leaves an empty heading.
+		const outcomes = yield* logger.group(
+			"Confirm registry availability",
+			Effect.logInfo(
+				`Confirming ${npmTargets.length} npm version(s) on the registry (ceiling ${options.ceilingSeconds}s)`,
+			).pipe(
+				Effect.andThen(
+					Effect.forEach(npmTargets, (t) => probeOne(t, credential, ceiling, schedule), {
+						concurrency: "unbounded",
+					}),
+				),
+			),
 		);
-		const outcomes = yield* Effect.forEach(npmTargets, (t) => probeOne(t, credential, ceiling, schedule), {
-			concurrency: "unbounded",
-		});
 		npmTargets.forEach((t, i) => {
 			const outcome = outcomes[i];
 			if (outcome !== undefined) result.set(availabilityKey(t.registry, t.name, t.version), outcome);

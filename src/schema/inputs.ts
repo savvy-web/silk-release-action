@@ -79,17 +79,6 @@ const WorkflowPhaseSchema = Schema.Literals([
 ]) satisfies Schema.Codec<WorkflowPhase, string>;
 
 /**
- * A whole, non-negative second count.
- *
- * @remarks
- * `ActionInput.integer` already rejects a fractional or non-numeric value
- * (`Config.Int` underneath); `Schema.Natural` adds the floor
- * `registry-confirm-timeout` needs but `ActionInput.integer` does not
- * enforce on its own — a negative timeout would otherwise decode cleanly.
- */
-const NonNegativeIntSchema = Schema.Natural;
-
-/**
  * The two branch names a release flow works between.
  *
  * @remarks
@@ -231,10 +220,10 @@ const loadInputs: Config.Config<Inputs> = Config.all({
 	),
 	registryConfirmTimeout: ActionInput.integer("registry-confirm-timeout").pipe(
 		Config.withDefault(180),
+		// `integer` already rejects fractions and prose; `Natural` adds the floor —
+		// a negative timeout would otherwise decode cleanly.
 		Config.mapEffect((value) =>
-			Schema.decodeUnknownEffect(NonNegativeIntSchema)(value).pipe(
-				Effect.mapError((error) => new Config.ConfigError(error)),
-			),
+			Schema.decodeUnknownEffect(Schema.Natural)(value).pipe(Effect.mapError((error) => new Config.ConfigError(error))),
 		),
 	),
 });

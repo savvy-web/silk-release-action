@@ -8,38 +8,42 @@
  * is worse than null.
  */
 
-import { classifyRegistry } from "@effected/npm";
+import type { RegistryKind } from "@effected/npm";
+import { unscopedPackageName } from "./github-urls.js";
 
-/** Input for {@link packagePageUrl}. */
-export interface PackagePageArgs {
-	/** Registry URL as resolved on the target; `null` for JSR. */
-	readonly registry: string | null;
-	readonly name: string;
-	readonly version: string;
+/** The repository (and GitHub host) a GitHub Packages page is addressed under. */
+export interface PackagePageRepo {
 	readonly owner: string;
 	readonly repo: string;
+	/** `GITHUB_SERVER_URL` as resolved by `resolveServerUrl` — never hardcoded, for GHES. */
+	readonly serverUrl: string;
 }
-
-const unscoped = (name: string): string => (name.startsWith("@") ? (name.split("/")[1] ?? name) : name);
 
 /**
  * The web page for a published package version, or `null` when the registry
  * kind exposes no known page (custom registries).
  *
- * @param args - The package's identity and the target's owning repository.
+ * @param kind - The registry kind, as `classifyRegistry` reports it.
+ * @param name - The package name on the target.
+ * @param version - The published version.
+ * @param repo - The owning repository, for the GitHub Packages page.
  * @returns The page URL, or `null` for a custom registry.
  *
  * @public
  */
-export const packagePageUrl = (args: PackagePageArgs): string | null => {
-	if (args.registry === null) return `https://jsr.io/${args.name}@${args.version}`;
-	switch (classifyRegistry(args.registry)) {
+export const packagePageUrl = (
+	kind: RegistryKind,
+	name: string,
+	version: string,
+	repo: PackagePageRepo,
+): string | null => {
+	switch (kind) {
 		case "npm":
-			return `https://www.npmjs.com/package/${args.name}/v/${args.version}`;
-		case "github-packages":
-			return `https://github.com/${args.owner}/${args.repo}/pkgs/npm/${unscoped(args.name)}`;
+			return `https://www.npmjs.com/package/${name}/v/${version}`;
 		case "jsr":
-			return `https://jsr.io/${args.name}@${args.version}`;
+			return `https://jsr.io/${name}@${version}`;
+		case "github-packages":
+			return `${repo.serverUrl}/${repo.owner}/${repo.repo}/pkgs/npm/${unscopedPackageName(name)}`;
 		default:
 			return null;
 	}

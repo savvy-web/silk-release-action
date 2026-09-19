@@ -18,6 +18,7 @@
  */
 
 import { describe, expect, it } from "@effect/vitest";
+import { ActionLogger } from "@effected/github-actions";
 import { NpmRegistry, PublishedVersion, RegistryReadError } from "@effected/npm";
 import { Effect, Layer, Logger, Option, Schedule } from "effect";
 import { availabilityKey } from "../src/release/types.js";
@@ -43,7 +44,7 @@ const registryAfter = (misses: number) => {
 };
 
 const fast = Schedule.spaced("1 millis");
-const base = Logger.layer([]);
+const base = Layer.mergeAll(Logger.layer([]), ActionLogger.layerTest());
 
 describe("confirmAvailability", () => {
 	it.live("confirms a version that resolves after a few misses and records the tarball", () =>
