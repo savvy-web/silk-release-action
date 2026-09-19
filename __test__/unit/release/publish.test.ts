@@ -1018,10 +1018,12 @@ describe("runPublishTargets", () => {
 			}),
 		);
 
-		it.effect("packs and publishes through the pinned npm@11 dlx executor, never the ambient npm", () =>
+		it.effect("packs and publishes through the pinned npm@12 dlx executor, never the ambient npm", () =>
 			Effect.gen(function* () {
-				// The pin is what makes OIDC trusted publishing possible at all: runners
-				// ship npm 10.x, which cannot do it, and npm 12's publish is broken.
+				// The pin is what makes OIDC trusted publishing possible at all: Node
+				// 22/24 runner images ship npm 10.x, which cannot do it. The line is 12
+				// (not 11, not `latest`): `@effected/npm` >= 0.14.2 reads npm 12's
+				// name-keyed `pack --json`, and 12.0.2 bundles sigstore again.
 				const pub = makePackagePublishLayer();
 				const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, `/tmp/test/${PACK_NAME}`);
 				const target = makeNpmTarget(PACK_NAME, `/tmp/test/${PACK_NAME}`);
@@ -1033,7 +1035,7 @@ describe("runPublishTargets", () => {
 
 				const executor = pub.publishTarballCalls[0]?.options.executor;
 				expect(executor).toBeDefined();
-				expect(JSON.stringify(executor)).toContain("npm@11");
+				expect(JSON.stringify(executor)).toContain("npm@12");
 			}),
 		);
 

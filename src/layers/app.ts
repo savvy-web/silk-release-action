@@ -131,9 +131,10 @@ export const makeAppLayer = (dryRun: boolean): Layer.Layer<AppServices, never, A
 	const npmRegistry = NpmRegistry.layer.pipe(Layer.provide(FetchHttpClient.layer));
 
 	// `PackagePublish` dispatches npm through `LocalExec`: `NpmExecutor.dlx`
-	// resolves to `pnpm dlx npm@11` through that launcher. A dlx executor with no
+	// resolves to `pnpm dlx npm@12` through that launcher. A dlx executor with no
 	// launcher fails typed rather than silently falling back to the runner's
-	// bundled npm 10.x, which cannot do OIDC trusted publishing.
+	// bundled npm, which on Node 22/24 images is 10.x and cannot do OIDC
+	// trusted publishing.
 	//
 	// `LocalExec` is REQUIRED here, not built here. It comes from
 	// `Workspaces.localExecLayer()` in `release/layers.ts`, bound against the one

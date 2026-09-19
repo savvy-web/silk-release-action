@@ -12,11 +12,15 @@ sources:
     resource: ../../src/release/layers.ts
 generated:
   by: okfit/claude-code
-  at: 2026-09-13T19:54:03Z
-  body_sha256: cc8caf19aa90717bf38a090dcc035c084ff10460296d5f602b8ec43c5db176dc
+  at: 2026-09-19T21:02:16Z
+  body_sha256: 50679bef6476c149758e3eb447518c59ac5ae6f8bf3fb578da253231d1c12fb7
 ---
 
 # Pin the npm publish CLI to 11.x via the package manager's dlx launcher
+
+> Superseded by [Pin the npm publish CLI to 12.x](pin-npm-12.md): both
+> reasons for holding at 11 are gone (`@effected/npm` ≥ 0.14.2 decodes
+> npm 12's `pack --json`; `npm@12.0.2` bundles `sigstore`).
 
 ## Context
 
