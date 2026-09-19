@@ -83,11 +83,11 @@ const WorkflowPhaseSchema = Schema.Literals([
  *
  * @remarks
  * `ActionInput.integer` already rejects a fractional or non-numeric value
- * (`Config.Int` underneath); this check adds the floor `registry-confirm-timeout`
- * needs but `ActionInput.integer` does not enforce on its own — a negative
- * timeout would otherwise decode cleanly.
+ * (`Config.Int` underneath); `Schema.Natural` adds the floor
+ * `registry-confirm-timeout` needs but `ActionInput.integer` does not
+ * enforce on its own — a negative timeout would otherwise decode cleanly.
  */
-const NonNegativeIntSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+const NonNegativeIntSchema = Schema.Natural;
 
 /**
  * The two branch names a release flow works between.
