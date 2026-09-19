@@ -181,6 +181,11 @@ inputs:
       still unresolved at the ceiling is reported as held in the output
       (`availability.status: "held"`, `totals.packagesHeld`). Set to 0 to skip
       the probe. Only npm-registry targets are probed.
+
+      The probe reads anonymously, and npm answers 404 (not 401) for a private
+      package read without credentials, so a private npm package is reported
+      as held at the ceiling on every run unless `npm-token` is set. Pass
+      `npm-token`, or set this input to 0, for private packages.
     required: false
     default: "180"
 outputs:

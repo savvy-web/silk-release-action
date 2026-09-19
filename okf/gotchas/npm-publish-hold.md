@@ -24,8 +24,8 @@ sources:
     resource: "https://github.com/savvy-web/silk-runtime-action/actions/runs/35233728336/job/105244177242"
 generated:
   by: okfit/claude-code
-  at: 2026-09-19T01:03:58Z
-  body_sha256: 2d00ba68057a988884e36c17f0c67801be3498dd8002b1920f88f178a03c0e76
+  at: 2026-09-19T01:20:34Z
+  body_sha256: 4cad8d89673b3925c8db2236b54febb2fdbb96265b5d846b68e8b22b8eee83b0
 status: draft
 ---
 
@@ -74,6 +74,14 @@ summary.[^confirm-availability-ts] A green run with
 `totals.packagesHeld > 0` is still a real release — it means the bytes
 landed and the registry has not started serving them yet, not that
 anything needs to be redone.
+
+**Private packages.** The probe reads the registry anonymously, and npm
+answers `404` — not `401` — for a private package read without
+credentials, so the probe cannot tell an unauthorized read from a hold.
+A private npm package is therefore reported `held` at the ceiling on
+every run unless `npm-token` is passed (the probe reads with it when
+present); pass `npm-token`, or set `registry-confirm-timeout: 0`, for
+private packages.[^confirm-availability-ts]
 
 A consumer wiring a follow-on dispatch on this action's output — notably
 the shared release workflow's `packages-released` trigger — should gate
