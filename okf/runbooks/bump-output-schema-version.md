@@ -17,6 +17,8 @@ sources:
     resource: npm:@effected/schemastore-cli
 generated:
   by: okfit/claude-code
+  at: 2026-09-15T16:08:54Z
+  body_sha256: 14e5ac4ea4d55adca56cff22d7a4d1485a89c13ad288c1a991a2e4e58534be48
 status: draft
 ---
 

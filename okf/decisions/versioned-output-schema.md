@@ -13,6 +13,8 @@ sources:
     resource: ../../src/schema/release-output.ts
 generated:
   by: okfit/claude-code
+  at: 2026-09-15T16:08:54Z
+  body_sha256: f9fb79423fc031eff6856a35f662528595ad9cc0746f2eb26f97b16969dff87e
 ---
 
 # Version the output JSON Schema under its own path per release

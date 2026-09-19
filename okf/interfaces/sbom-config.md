@@ -14,6 +14,8 @@ sources:
     resource: ../../src/release/validation.ts
 generated:
   by: okfit/claude-code
+  at: 2026-09-15T16:08:54Z
+  body_sha256: a3cd15369a47c88985bcca36e0064d50a195e31451aacdf970d8b243df6428a5
 ---
 
 # SBOM configuration
