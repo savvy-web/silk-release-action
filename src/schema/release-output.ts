@@ -1006,7 +1006,16 @@ const PublishedPackage = Schema.Struct({
 	url: Schema.NullOr(
 		Schema.String.annotate({
 			title: "Package URL",
-			description: "Web URL of the published package version. Null when the registry exposes no such page.",
+			description:
+				"Web page for this package version — npmjs.com, jsr.io or the repository's GitHub Packages page. Null for a custom registry.",
+		}),
+	),
+	tarballUrl: Schema.NullOr(
+		Schema.String.annotate({
+			title: "Tarball URL",
+			description:
+				"The registry's own download URL for this version's tarball, read back from the registry after publishing. Null when the version was not confirmed on the registry before the run finished (see `availability`), or when the registry is not probed.",
+			examples: ["https://registry.npmjs.org/@savvy-web/foo/-/foo-1.2.0.tgz"],
 		}),
 	),
 	error: Schema.NullOr(

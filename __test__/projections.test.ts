@@ -8,8 +8,10 @@ import type {
 	PackagePublishResult,
 	PublishPackagesResult,
 	PublishWorkspacePlan,
+	TargetAvailability,
 	ValidationPackageResult,
 } from "../src/release/types.js";
+import { availabilityKey } from "../src/release/types.js";
 import { toBranchManagementOutput, toPublishOutput, toValidationOutput } from "../src/schema/projections.js";
 import { SCHEMA_URL } from "../src/schema/release-output.js";
 
@@ -560,6 +562,12 @@ describe("toPublishOutput", () => {
 		successfulTargets: 0,
 	};
 
+	/** The two fields every `toPublishOutput` fixture call must carry now. */
+	const baseInput = {
+		repo: { owner: "savvy-web", repo: "foo" },
+		availability: new Map<string, TargetAvailability>(),
+	};
+
 	it("projects a clean publish, keyed by workspace name", () => {
 		const pkg: PackagePublishResult = {
 			name: "@savvy-web/foo",
@@ -567,12 +575,12 @@ describe("toPublishOutput", () => {
 			targets: [
 				target({
 					success: true,
-					registryUrl: "https://github.com/foo/pkgs",
 					tarballDigest: "sha256:deadbeef",
 				}),
 			],
 		};
 		const output = toPublishOutput({
+			...baseInput,
 			plan: planOf("@savvy-web/foo", "1.2.0", "github-with-packages", 1),
 			publishResult: {
 				...emptyResult,
@@ -602,6 +610,50 @@ describe("toPublishOutput", () => {
 		expect(ws?.tag).toEqual({ name: "@savvy-web/foo@1.2.0", sha: "abc123" });
 		expect(output.publish.order).toEqual(["@savvy-web/foo"]);
 		expect(ws?.path).toBe("packages/foo");
+
+		// The target fixture's registry is GitHub Packages — the page URL is the
+		// repository's packages page, by the target's unscoped name. No
+		// availability entry was recorded, so `tarballUrl` is null.
+		const pkg0 = ws?.packages[0];
+		expect(pkg0?.url).toBe("https://github.com/savvy-web/foo/pkgs/npm/foo");
+		expect(pkg0?.tarballUrl).toBeNull();
+	});
+
+	it("takes tarballUrl from a confirmed availability probe", () => {
+		const pkg: PackagePublishResult = {
+			name: "@savvy-web/foo",
+			version: "1.2.0",
+			targets: [target({ success: true, status: "published", registry: "https://registry.npmjs.org/" })],
+		};
+		// `target()` sets target.registry from the fixture; override it:
+		pkg.targets[0].target.registry = "https://registry.npmjs.org/";
+		const availability = new Map<string, TargetAvailability>([
+			[
+				availabilityKey("https://registry.npmjs.org/", "@savvy-web/foo", "1.2.0"),
+				{ status: "confirmed", waitedMs: 1200, tarball: "https://registry.npmjs.org/@savvy-web/foo/-/foo-1.2.0.tgz" },
+			],
+		]);
+		const output = toPublishOutput({
+			...baseInput,
+			availability,
+			plan: planOf("@savvy-web/foo", "1.2.0", "github-with-packages", 1),
+			publishResult: {
+				...emptyResult,
+				packages: [pkg],
+				totalPackages: 1,
+				successfulPackages: 1,
+				totalTargets: 1,
+				successfulTargets: 1,
+			},
+			tags: [],
+			releases: [],
+			tagShas: {},
+			dryRun: false,
+			failure: null,
+		});
+		const p = output.publish.workspaces["@savvy-web/foo"]?.packages[0];
+		expect(p?.url).toBe("https://www.npmjs.com/package/@savvy-web/foo/v/1.2.0");
+		expect(p?.tarballUrl).toBe("https://registry.npmjs.org/@savvy-web/foo/-/foo-1.2.0.tgz");
 	});
 
 	// `recovered` and `published` are BOTH successes. Splitting `success` from
@@ -621,6 +673,7 @@ describe("toPublishOutput", () => {
 			],
 		};
 		const output = toPublishOutput({
+			...baseInput,
 			plan: planOf("@savvy-web/foo", "1.2.0", "github-with-packages", 1),
 			publishResult: {
 				...emptyResult,
@@ -662,6 +715,7 @@ describe("toPublishOutput", () => {
 			],
 		};
 		const output = toPublishOutput({
+			...baseInput,
 			plan: planOf("@savvy-web/foo", "1.2.0", "github-with-packages", 1),
 			publishResult: { ...emptyResult, success: false, packages: [pkg], totalPackages: 1, totalTargets: 1 },
 			tags: [],
@@ -681,6 +735,7 @@ describe("toPublishOutput", () => {
 
 	it("reports the tag sha from tagShas even when no release was created", () => {
 		const output = toPublishOutput({
+			...baseInput,
 			plan: planOf("@savvy-web/foo", "1.2.0", "github-only", 0),
 			publishResult: {
 				...emptyResult,
@@ -704,6 +759,7 @@ describe("toPublishOutput", () => {
 
 	it("reports an empty tag sha when tagShas does not contain the tag", () => {
 		const output = toPublishOutput({
+			...baseInput,
 			plan: planOf("@savvy-web/foo", "1.2.0", "github-only", 0),
 			publishResult: {
 				...emptyResult,
@@ -723,6 +779,7 @@ describe("toPublishOutput", () => {
 	// that is the intended, complete outcome — not a degraded registry publish.
 	it("reports a github-only workspace as released, with no packages", () => {
 		const output = toPublishOutput({
+			...baseInput,
 			plan: planOf("@effected/claude-code-plugin", "0.14.0", "github-only", 0),
 			publishResult: {
 				...emptyResult,
@@ -765,6 +822,7 @@ describe("toPublishOutput", () => {
 	// because it emitted `packages: []` and dropped the build error entirely.
 	it("keeps every workspace on the wire when the phase aborts at the build gate", () => {
 		const output = toPublishOutput({
+			...baseInput,
 			plan: [
 				{
 					name: "@effected/claude-code-plugin",
@@ -826,6 +884,7 @@ describe("toPublishOutput", () => {
 			targets: [target({ success: true })],
 		};
 		const output = toPublishOutput({
+			...baseInput,
 			plan: [
 				{
 					name: "@savvy-web/first",
@@ -876,6 +935,7 @@ describe("toPublishOutput", () => {
 			targets: [target({ success: false, status: "failed", error: "boom" })],
 		};
 		const output = toPublishOutput({
+			...baseInput,
 			plan: [
 				{
 					name: "@savvy-web/ok",
@@ -911,6 +971,7 @@ describe("toPublishOutput", () => {
 	// nothing failed. This is what replaces `noop`.
 	it("reports an empty wave as nothing-to-release, and as a success", () => {
 		const output = toPublishOutput({
+			...baseInput,
 			plan: [],
 			publishResult: emptyResult,
 			tags: [],
@@ -934,6 +995,7 @@ describe("toPublishOutput", () => {
 			targets: [target({ success: true, targetName: "@savvy-web/published-under-another-name" })],
 		};
 		const output = toPublishOutput({
+			...baseInput,
 			plan: planOf("@savvy-web/workspace-name", "1.0.0", "github-with-packages", 1),
 			publishResult: { ...emptyResult, packages: [pkg], totalPackages: 1, totalTargets: 1, successfulTargets: 1 },
 			tags: [],

@@ -57,6 +57,7 @@
  * @module steps/publishing
  */
 
+import { Repo } from "@effected/github";
 import { ActionLogger, ActionOutputs, DryRun } from "@effected/github-actions";
 import { Effect } from "effect";
 import { PublishError, ReleasesError } from "../release/errors.js";
@@ -117,10 +118,12 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 			const { targetBranch } = inputs;
 			const dryRun = yield* (yield* DryRun).isDryRun;
 			const packageManager = yield* detectPackageManager;
+			const { owner, repo } = yield* Repo;
 
 			// `plan` is threaded into every emission, including the aborted ones —
 			// it is what keeps the wave's membership and each workspace's `kind`
-			// on the wire when the phase stops early.
+			// on the wire when the phase stops early. `availability` is empty here
+			// — the registry-probe wiring lands in a follow-on task.
 			const emitPublishing = (
 				plan: ReadonlyArray<PublishWorkspacePlan>,
 				publishResult: PublishPackagesResult,
@@ -129,10 +132,24 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 				tagShas: Record<string, string>,
 				failure: PublishFailureInput | null,
 			) =>
-				emitReleaseOutput(outputs, toPublishOutput({ plan, publishResult, tags, releases, tagShas, dryRun, failure }), {
-					packageCount: plan.length,
-					releasePrNumber: mergedReleasePRNumber !== undefined ? mergedReleasePRNumber : null,
-				});
+				emitReleaseOutput(
+					outputs,
+					toPublishOutput({
+						plan,
+						publishResult,
+						tags,
+						releases,
+						tagShas,
+						dryRun,
+						failure,
+						availability: new Map(),
+						repo: { owner, repo },
+					}),
+					{
+						packageCount: plan.length,
+						releasePrNumber: mergedReleasePRNumber !== undefined ? mergedReleasePRNumber : null,
+					},
+				);
 
 			// ── Prelude (detail) ───────────────────────────────────────────────────
 			yield* Effect.logDebug(`Detected package manager: ${packageManager}`);

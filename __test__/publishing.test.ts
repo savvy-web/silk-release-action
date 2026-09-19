@@ -16,6 +16,7 @@
 // Every assertion below is written so that reverting the failure to a swallow,
 // or hoisting it above `emitPublishing`, turns a test red.
 
+import { Repo, RepoRef } from "@effected/github";
 import { Effect, Layer, Logger } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ReleasesError } from "../src/release/errors.js";
@@ -128,6 +129,7 @@ const run = async (): Promise<RunCapture> => {
 		// `emitReleaseOutput` saves the encoded result for the post phase.
 		ActionState.layerTest({ save: () => Effect.void }),
 		DryRun.layerTest({ isDryRun: Effect.succeed(false) }),
+		Layer.succeed(Repo, RepoRef.make({ owner: "savvy-web", repo: "silk-release-action" })),
 	);
 
 	// The mocked modules erase their real requirement channels at RUNTIME only —

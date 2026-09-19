@@ -254,7 +254,6 @@ export interface PublishResult {
 	output: string;
 	error: string;
 	exitCode?: number | undefined; // Exit code from publish command
-	registryUrl?: string | undefined; // URL to the published package
 	attestationUrl?: string | undefined; // URL to provenance/attestation
 	/** True if publish failed because version already exists */
 	alreadyPublished?: boolean | undefined;

@@ -49,7 +49,6 @@ export interface TargetPublishResult {
 				readonly remoteDigest: string;
 		  }
 		| undefined;
-	registryUrl?: string | undefined;
 	attestationUrl?: string | undefined;
 	/**
 	 * npm's native trusted-publishing provenance URL — the Sigstore
@@ -421,6 +420,50 @@ export interface PublishWorkspacePlan {
 	/** Repo-relative workspace directory, e.g. `packages/foo`. */
 	readonly path: string;
 }
+
+/**
+ * Whether a (registry, name, version) target's tarball was confirmed present
+ * on the registry before the run finished checking.
+ *
+ * @remarks
+ * `"confirmed"` means the probe found the tarball and read back its URL.
+ * `"held"` means the probe ran but the registry had not yet surfaced the
+ * version (propagation lag) by the time the run gave up waiting. `"skipped"`
+ * means no probe ran at all for this target.
+ *
+ * @public
+ */
+export type AvailabilityStatus = "confirmed" | "held" | "skipped";
+
+/**
+ * The result of probing a registry for one published (registry, name,
+ * version) target, keyed by {@link availabilityKey}.
+ *
+ * @public
+ */
+export interface TargetAvailability {
+	readonly status: AvailabilityStatus;
+	readonly waitedMs: number;
+	/** Registry tarball URL from the confirmation probe; null unless `confirmed`. */
+	readonly tarball: string | null;
+}
+
+/**
+ * The map key for a {@link TargetAvailability} entry.
+ *
+ * @remarks
+ * `registry` is `null` for JSR — normalised to the literal `"jsr"` segment so
+ * a JSR target and an npm target named identically cannot collide.
+ *
+ * @param registry - The target's registry URL, or `null` for JSR.
+ * @param name - The package name as published to this target.
+ * @param version - The published version.
+ * @returns The map key.
+ *
+ * @public
+ */
+export const availabilityKey = (registry: string | null, name: string, version: string): string =>
+	`${registry ?? "jsr"}|${name}@${version}`;
 
 /** Where the publish phase stopped, and why. */
 export interface PublishFailureInput {

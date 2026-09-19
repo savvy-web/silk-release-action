@@ -78,6 +78,7 @@ describe("ReleaseOutput schema", () => {
 								url: "https://npm.pkg.github.com/",
 							},
 							url: "https://github.com/orgs/savvy-web/packages/npm/package/foo",
+							tarballUrl: null,
 							error: null,
 							recovery: null,
 							tarballDigest: "sha512-abc",

@@ -18,9 +18,12 @@ import type {
 	PublishWorkspacePlan,
 	ReleaseInfo,
 	TagInfo,
+	TargetAvailability,
 	ValidationFinding,
 	ValidationPackageResult,
 } from "../release/types.js";
+import { availabilityKey } from "../release/types.js";
+import { packagePageUrl } from "../utils/package-urls.js";
 import {
 	summarizeBranchManagement,
 	summarizeReleaseWave,
@@ -357,6 +360,10 @@ export interface PublishInput {
 	readonly dryRun: boolean;
 	/** Null on a clean run. */
 	readonly failure: PublishFailureInput | null;
+	/** Registry availability probes, keyed by {@link availabilityKey}. */
+	readonly availability: ReadonlyMap<string, TargetAvailability>;
+	/** The repository every target's page URL is relative to. */
+	readonly repo: { readonly owner: string; readonly repo: string };
 }
 
 type PackageOutcome = "published" | "recovered" | "failed" | "blocked";
@@ -382,10 +389,17 @@ const classifyPackage = (t: PackagePublishResult["targets"][number]): PackageOut
 	return t.success ? "published" : "failed";
 };
 
+/** Repository identity + availability probes, threaded into {@link toPublishedPackage}. */
+interface PublishedPackageContext {
+	readonly availability: ReadonlyMap<string, TargetAvailability>;
+	readonly repo: { readonly owner: string; readonly repo: string };
+}
+
 /** Map an internal target result onto one published-package entry. */
 const toPublishedPackage = (
 	workspaceVersion: string,
 	t: PackagePublishResult["targets"][number],
+	ctx: PublishedPackageContext,
 ): PublishOutput["publish"]["workspaces"][string]["packages"][number] => {
 	const outcome = classifyPackage(t);
 	const registry = t.target.registry ?? "jsr";
@@ -401,7 +415,14 @@ const toPublishedPackage = (
 			type: classifyRegistry(registry),
 			url: registry,
 		},
-		url: t.registryUrl ?? null,
+		url: packagePageUrl({
+			registry: t.target.registry,
+			name: t.target.name,
+			version: workspaceVersion,
+			...ctx.repo,
+		}),
+		tarballUrl:
+			ctx.availability.get(availabilityKey(t.target.registry, t.target.name, workspaceVersion))?.tarball ?? null,
 		error: outcome === "failed" ? (t.error ?? null) : null,
 		recovery:
 			t.recovery !== undefined ? { localDigest: t.recovery.localDigest, remoteDigest: t.recovery.remoteDigest } : null,
@@ -449,7 +470,12 @@ export const toPublishOutput = (input: PublishInput): PublishOutput => {
 
 	for (const ws of input.plan) {
 		const result = resultByName.get(ws.name);
-		const packages = result === undefined ? [] : result.targets.map((t) => toPublishedPackage(ws.version, t));
+		const packages =
+			result === undefined
+				? []
+				: result.targets.map((t) =>
+						toPublishedPackage(ws.version, t, { availability: input.availability, repo: input.repo }),
+					);
 
 		const tag = tagByWorkspace.get(ws.name) ?? sharedTag;
 		const releaseInfo = tag === undefined ? undefined : releaseByTag.get(tag.name);
