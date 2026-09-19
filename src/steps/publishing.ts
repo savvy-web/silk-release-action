@@ -57,30 +57,27 @@
  * @module steps/publishing
  */
 
-import { Git } from "@effected/git";
+import { Repo } from "@effected/github";
 import { ActionLogger, ActionOutputs, DryRun } from "@effected/github-actions";
 import { Effect } from "effect";
 import { PublishError, ReleasesError } from "../release/errors.js";
 import type { DetectedRelease } from "../release/publish.js";
 import { detectReleases, planWorkspaces, runBuildAndSbom, runPublishTargets } from "../release/publish.js";
 import { runReleases } from "../release/releases.js";
-import type {
-	PublishFailureInput,
-	PublishPackagesResult,
-	PublishWorkspacePlan,
-	ReleaseInfo,
-} from "../release/types.js";
+import type { PublishPackagesResult, ReleaseInfo, TargetAvailability } from "../release/types.js";
 import type { Inputs } from "../schema/inputs.js";
 import { emitReleaseOutput } from "../schema/outputs.js";
+import type { PublishInput } from "../schema/projections.js";
 import { toPublishOutput } from "../schema/projections.js";
 import { closeLinkedIssues } from "../utils/close-linked-issues.js";
 import { detectPackageManager } from "../utils/detect-package-manager.js";
-import type { TagInfo } from "../utils/determine-tag-strategy.js";
 import { determineTagStrategy, isMonorepoForTagging } from "../utils/determine-tag-strategy.js";
 import { ensureFullHistory } from "../utils/ensure-full-history.js";
+import { resolveServerUrl } from "../utils/github-urls.js";
 import { grouped } from "../utils/grouped.js";
 import { releaseKindLabel, summarizeReleaseWave, tallyReleaseKinds } from "../utils/release-kind.js";
 import { sortReleasesTopologically } from "../utils/sort-releases-topologically.js";
+import { confirmAvailability } from "./confirm-availability.js";
 
 /**
  * The recovery instruction appended to every deferred Phase-3 failure message.
@@ -118,22 +115,36 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 			const { targetBranch } = inputs;
 			const dryRun = yield* (yield* DryRun).isDryRun;
 			const packageManager = yield* detectPackageManager;
+			const { owner, repo } = yield* Repo;
+			const serverUrl = yield* resolveServerUrl();
 
 			// `plan` is threaded into every emission, including the aborted ones —
 			// it is what keeps the wave's membership and each workspace's `kind`
-			// on the wire when the phase stops early.
+			// on the wire when the phase stops early. `availability` is the
+			// registry probe's answer (Step 6); the aborted emissions happen
+			// before that step runs and pass `noAvailability`, so every package
+			// they describe reads as `skipped`.
+			const noAvailability: ReadonlyMap<string, TargetAvailability> = new Map();
 			const emitPublishing = (
-				plan: ReadonlyArray<PublishWorkspacePlan>,
-				publishResult: PublishPackagesResult,
-				tags: ReadonlyArray<TagInfo>,
-				releases: ReadonlyArray<ReleaseInfo>,
-				tagShas: Record<string, string>,
-				failure: PublishFailureInput | null,
+				stage: Pick<PublishInput, "plan" | "publishResult" | "failure"> &
+					Partial<Pick<PublishInput, "tags" | "releases" | "tagShas" | "availability">>,
 			) =>
-				emitReleaseOutput(outputs, toPublishOutput({ plan, publishResult, tags, releases, tagShas, dryRun, failure }), {
-					packageCount: plan.length,
-					releasePrNumber: mergedReleasePRNumber !== undefined ? mergedReleasePRNumber : null,
-				});
+				emitReleaseOutput(
+					outputs,
+					toPublishOutput({
+						tags: [],
+						releases: [],
+						tagShas: {},
+						availability: noAvailability,
+						...stage,
+						dryRun,
+						repo: { owner, repo, serverUrl },
+					}),
+					{
+						packageCount: stage.plan.length,
+						releasePrNumber: mergedReleasePRNumber !== undefined ? mergedReleasePRNumber : null,
+					},
+				);
 
 			// ── Prelude (detail) ───────────────────────────────────────────────────
 			yield* Effect.logDebug(`Detected package manager: ${packageManager}`);
@@ -175,7 +186,7 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 					totalTargets: 0,
 					successfulTargets: 0,
 				};
-				yield* emitPublishing([], empty, [], [], {}, null);
+				yield* emitPublishing({ plan: [], publishResult: empty, failure: null });
 				yield* Effect.logInfo("Release publishing: ✅ no packages were versioned — nothing to tag, release or publish");
 				return;
 			}
@@ -225,17 +236,11 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 					successfulTargets: 0,
 					...(buildSbom.buildError !== undefined ? { buildError: buildSbom.buildError } : {}),
 				};
-				yield* emitPublishing(
+				yield* emitPublishing({
 					plan,
-					failed,
-					[],
-					[],
-					{},
-					{
-						stage: "build",
-						reason: buildSbom.buildError ?? detail,
-					},
-				);
+					publishResult: failed,
+					failure: { stage: "build", reason: buildSbom.buildError ?? detail },
+				});
 				yield* Effect.logInfo("Release publishing: ❌ aborted at Build & SBOM — nothing published");
 				yield* outputs.setFailed("Phase 3 aborted at Build & SBOM");
 				// FAIL, do not return. `setFailed` only annotates; the exit code comes
@@ -252,17 +257,14 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 				yield* Effect.logError(
 					`❌ Published ${publishResult.successfulTargets}/${publishResult.totalTargets} target(s) — aborting before releases`,
 				);
-				yield* emitPublishing(
+				yield* emitPublishing({
 					plan,
 					publishResult,
-					[],
-					[],
-					{},
-					{
+					failure: {
 						stage: "publish",
 						reason: `Published ${publishResult.successfulTargets}/${publishResult.totalTargets} target(s)`,
 					},
-				);
+				});
 				yield* Effect.logInfo("Release publishing: ❌ failed at Publish");
 				yield* outputs.setFailed("Publishing failed");
 				// FAIL, do not return — see the note on `PublishError`. Returning here
@@ -305,7 +307,7 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 				Effect.catch((e) =>
 					Effect.gen(function* () {
 						yield* Effect.logWarning(`runReleases failed: ${String(e)}`);
-						return { success: false, releases: [] as ReleaseInfo[], errors: [String(e)] };
+						return { success: false, releases: [] as ReleaseInfo[], errors: [String(e)], tagShas: {} };
 					}),
 				),
 			);
@@ -333,34 +335,46 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 				);
 			}
 
+			// ── Step 6: Confirm registry availability (#301) ───────────────────────
+			// After tags and releases, so a scan hold never delays them; before the
+			// emission, so the output carries the answer. Never fails the phase —
+			// a version still unresolved at the ceiling is a `held` finding beside
+			// the package, not a flipped boolean. `inputs.npmToken` is "" when the
+			// input was not supplied; the step treats that as absent.
+			const availability = yield* confirmAvailability(
+				publishResult.packages.flatMap((p) =>
+					p.targets
+						.filter((t) => t.success)
+						.map((t) => ({ name: t.target.name, version: p.version, registry: t.target.registry })),
+				),
+				{ ceilingSeconds: inputs.registryConfirmTimeout, dryRun, npmToken: inputs.npmToken },
+			);
+			const heldCount = [...availability.values()].filter((a) => a.status === "held").length;
+
 			// ── Emit outputs + final summary ───────────────────────────────────────
-			const git = yield* Git;
-			const tagShas: Record<string, string> = {};
-			for (const tag of tagStrategy.tags) {
-				// `Effect.result`, so a tag the local clone has not fetched reports an
-				// empty sha instead of failing the phase after everything published.
-				// `Git.revParse` fails typed (`UnknownRefError`) where the raw form
-				// reported a non-zero exit code, and trims for us.
-				const rev = yield* Effect.result(git.revParse(process.cwd(), tag.name));
-				tagShas[tag.name] = rev._tag === "Success" ? rev.success : "";
-			}
-			yield* emitPublishing(
+			// `releasesResult.tagShas` travels every tag `runReleases` processed,
+			// resolved at tag-creation time inside `processOneTag` — reported even
+			// when the GitHub release that follows fails, and unconditionally set
+			// per tag regardless of that outcome. No local `git rev-parse` needed
+			// here, and none would find a tag this clone never fetched.
+			yield* emitPublishing({
 				plan,
 				publishResult,
-				tagStrategy.tags,
-				releasesResult.releases,
-				tagShas,
-				releasesResult.success
+				tags: tagStrategy.tags,
+				releases: releasesResult.releases,
+				tagShas: releasesResult.tagShas,
+				failure: releasesResult.success
 					? closeResult !== null && closeResult.failedCount > 0
 						? { stage: "linked-issues", reason: `${closeResult.failedCount} issue(s) failed to close` }
 						: null
 					: { stage: "releases", reason: releasesResult.errors.join("; ") },
-			);
+				availability,
+			});
 
 			// ── Deferred failure ───────────────────────────────────────────────────
-			// Everything above has run: the follow-on close-linked-issues work, the
-			// tag-SHA collection and the output emission. Only now is it safe to
-			// fail, because `result` already describes the packages that DID publish.
+			// Everything above has run: the follow-on close-linked-issues work and the
+			// output emission. Only now is it safe to fail, because `result` already
+			// describes the packages that DID publish.
 			//
 			// This is `ReleasesError`, not `PublishError`: the publish succeeded
 			// (Step 4 gates Step 5), and `PublishError`'s reason union has no member
@@ -401,6 +415,7 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 					workspaces: plan.length,
 					packagesPublished: publishResult.successfulTargets,
 					releases: releasesResult.releases.length,
+					packagesHeld: heldCount,
 				})}`,
 			);
 		}),

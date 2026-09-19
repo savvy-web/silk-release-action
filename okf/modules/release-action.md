@@ -7,8 +7,8 @@ resource: ../../src
 status: draft
 generated:
   by: okfit/claude-code
-  at: 2026-09-13T19:54:03Z
-  body_sha256: 6369dcf260d9579f663de66d97595cbd8604746fe5dd2206f11ebbf2dd02f60f
+  at: 2026-09-19T01:42:17Z
+  body_sha256: 4bea190b9aced6e0473f58bc0c4410cdff097472681aaf30e4eb2ae93fe81d78
 sources:
   - id: src-main
     resource: ../../src/main.ts
@@ -118,7 +118,7 @@ Triggers on a non-release push to `main`; `steps/branch-management.ts` is the ph
 Triggers on a push to the release branch. `steps/validation.ts` holds only the order the six extractions run in and the values that flow between them; failure posture is fail-the-job, catching only to tear down in-flight check runs (`cleanupValidationChecks`) before re-raising untouched.
 
 1. `steps/link-issues.ts` — finds closed issues via `linkIssuesFromCommits`, reports as a check run.
-2. `steps/build-validation.ts` — runs every package's build (`validateBuilds`), reports as a check run.
+2. `steps/build-validation.ts` — runs every package's build (`validateBuilds`, `utils/validate-builds.ts`), reports as a check run. The build's verdict is its **exit code alone** — no grep for the word `error`, which over combined output would fire on a `0 errors` line or a package named `*-error-*`. Annotations and the check run's error excerpt are parsed from **stdout+stderr** (turbo puts task diagnostics on stdout); the finding message (`errors`) is stderr, falling back to that same error-line excerpt when stderr is empty. The `on-build` gate is exit-code-only too, with its output reproduced verbatim.
 3. `steps/publish-validation.ts` — the publish / release-notes / SBOM region; names the twelve former mutable bindings as one optional `ValidationReport` plus a default.
 4. `release/validation-checks.ts` — the pure derivation (below).
 5. `steps/per-step-checks.ts` — three per-step check runs, created after the canonical projection so `applyCheckUrls` can patch URLs in afterward.
@@ -136,14 +136,14 @@ Every check-run summary passes through `capCheckSummary` (`src/utils/create-vali
 
 ## Phase 3: release publishing
 
-Triggers on merge of the release PR to `main`. `steps/publishing.ts` is the phase body; orchestration lives in `src/release/`. Failure posture is fail-the-job — a failed build/SBOM gate or a partial publish raises `PublishError` rather than returning, since returning is what once let a partial publish report a green run.
+Triggers on merge of the release PR to `main`. `steps/publishing.ts` is the phase body; orchestration lives in `src/release/`. Failure posture is fail-the-job — a failed build/SBOM gate or a partial publish raises `PublishError` rather than returning, since returning is what once let a partial publish report a green run. A `runReleases` failure or a linked issue that could not be closed raises `ReleasesError` **deferred** to the end of the step, after the close-linked-issues follow-on, the availability probe and the output emission have run, so `result` still describes what published.
 
 1. **`detectReleases`** (`release/publish.ts`) — detects released packages from the merged PR's file diff (PR-first) or commit diff (fallback), drops changeset-ignored names via `ChangesetConfig.isIgnored`.
 2. **`planWorkspaces`** — deliberately ahead of the build/SBOM gate: resolves every detected workspace's publish targets before anything is built and classifies each as `github-with-packages` or [`github-only`](../glossary/github-only.md) via `utils/release-kind.ts`. Manifest-only resolution is cheap and cannot fail, so an aborted run still reports every workspace's kind and intended publication count.
 3. **`runBuildAndSbom`** — runs `ci:build` once, then generates one CycloneDX SBOM per package that resolved a publish target; a `github-only` workspace is named in `sbomSkipped` rather than getting a stray unattached SBOM. Aborts the phase on a build failure.
 4. **`runPublishTargets`** — publishes packages: resolves targets, sorts topologically (idempotent re-sort), and calls `publishDirectoryGroup` per unique build directory. Aborts before any releases unless every target published or recovered (`publishResult.success` is all-or-nothing).
 5. **`runReleases`** (`release/releases.ts`) — creates Git tags (sha-aware idempotency) and GitHub releases, uploads group-keyed assets, creates SLSA provenance and SBOM attestations (idempotent: checks for an existing attestation first). One attestation per build directory, not per target.
-6. **`buildPublishSummary`** (`release/report.ts`) — generates the sticky-comment publish summary and Check Run output.
+6. **`confirmAvailability`** (`steps/confirm-availability.ts`) — after `runReleases` and the close-linked-issues follow-on, before `emitPublishing`, so a hold never delays tags or releases: polls every successful npm target's exact `name@version` on its registry until it resolves or `registry-confirm-timeout` elapses, concurrently, under its own `Confirm registry availability` log group (opened only when there is something to probe — not on dry-run, ceiling `0`, or a wave with no npm target). Requires `NpmRegistry | ActionLogger`; the `npm-token` arrives as an option from the decoded `Inputs`, not a second input read. Never fails the run and never flips `success`/`outcome` — a held package is published, just not yet resolvable. See [npm-publish-hold](../gotchas/npm-publish-hold.md).
 
 Ordering is established **once, at the source**: immediately after `detectReleases`, `steps/publishing.ts` sorts the detected set dependency-first via `sortReleasesTopologically`, so tag strategy, build & SBOM, publish, and releases all run in the same order — previously only `runPublishTargets` sorted while the rest consumed alphabetical detection order.
 
@@ -173,7 +173,7 @@ Ordering is established **once, at the source**: immediately after `detectReleas
 
 **Close-before-comment idempotence** — for each linked issue: an already-`CLOSED` issue is skipped rather than re-closed; the close happens before the comment, so a failed close posts no comment and a successful one is visible to the next run as `CLOSED`; the comment itself goes through `GitHubIssue.commentOnce` with a `CommentMarker` carrying the release PR number, so a re-run of the same release skips the comment while a later release closing a reopened issue still posts. **The marker lookup is create-or-skip and not atomic** — two racing runs can both post — which is why the close-before-comment ordering stays load-bearing rather than being replaced by the marker alone.
 
-This phase exists separately from the close-linked-issues follow-on inside `steps/publishing.ts` (which degrades to a warning, as housekeeping after a successful release) because a workflow may route the merge-that-publishes and the merge-that-only-closes-issues independently.
+This phase exists separately from the close-linked-issues follow-on inside `steps/publishing.ts` (which runs after a successful publish and, like a `runReleases` failure, fails the phase with a deferred `ReleasesError` only after the output has been emitted — housekeeping that silently did not happen is what a re-run exists to fix) because a workflow may route the merge-that-publishes and the merge-that-only-closes-issues independently.
 
 ## Module dependency graph
 
@@ -240,8 +240,10 @@ main.ts  (guard + Action.run only)
         |     utils/determine-tag-strategy.ts (between publish and releases)
         |     release/releases.ts -> GitHubRelease + GitTag + ArtifactMetadata
         |                           + Attestation + OidcTokenIssuer
-        |     release/report.ts (buildPublishSummary, ...)
-        |     utils/close-linked-issues.ts (follow-on, degrades to warning)
+        |     steps/confirm-availability.ts -> NpmRegistry (post-publish probe, never fails)
+        |     utils/package-urls.ts (per-registry package page URL; tarball URL comes from the probe)
+        |     release/report.ts (getPackagePageUrl, for release notes)
+        |     utils/close-linked-issues.ts (follow-on; a failed close fails the phase after emission)
         |
         +-- steps/close-issues.ts  (Phase 3a)
               utils/event-payload.ts (schema-decoded webhook payload)

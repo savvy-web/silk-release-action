@@ -10,10 +10,12 @@ sources:
     resource: ../../__test__/auto-merge.test.ts
   - id: effect-vitest-doc
     resource: ../../__test__/CLAUDE.effect-vitest.md
+  - id: confirm-availability-test
+    resource: ../../__test__/confirm-availability.test.ts
 generated:
   by: okfit/claude-code
-  at: 2026-09-13T19:54:03Z
-  body_sha256: 5700d0b7b93122ff809dc93e00f60435ac20489574ea7cd2f5e3838c9eeeafe2
+  at: 2026-09-19T01:42:17Z
+  body_sha256: 2af7bf204531ccb84c90b3679fe355178941a5247dfc1f1427f107086c97a079
 status: draft
 ---
 
@@ -66,9 +68,15 @@ Keep plain `it()`, deliberately, in four cases:
    changing what is being tested under the guise of a runner migration.
 
 `it.effect` always installs a virtual `TestClock`, so a suite driving a
-real `Effect.sleep` backoff hangs to the Vitest timeout under it with no
-message naming the clock; that is a fifth reason a specific suite may
-stay on plain `it()` with fake timers, distinct from the four above.
+real `Effect.sleep` backoff or an `Effect.repeat` schedule hangs to the
+Vitest timeout under it with no message naming the clock. For an Effect
+body that must run on real time, use `it.live` from `@effect/vitest` —
+the same runner without the test services — with the cadence injected so
+the real wait is milliseconds; `confirm-availability.test.ts` is the one
+file doing this today.[^confirm-availability-test] `it.live` installs no
+`TestConsole` either, so provide `Logger.layer([])` to keep log lines out
+of the reporter. Plain `it()` with fake timers remains the fifth reason
+only when the body is not an Effect.
 
 Import `vi` from `"vitest"` directly, never through `@effect/vitest`.
 Vitest hoists `vi.mock(...)` calls above all imports at the module level;
@@ -83,3 +91,4 @@ evaluated. This is the failure mode `it.effect` exists to prevent; write
 `it.effect(() => Effect.gen(...))` whenever the body is an Effect.
 
 [^auto-merge-test]: `../../__test__/auto-merge.test.ts`
+[^confirm-availability-test]: `../../__test__/confirm-availability.test.ts`

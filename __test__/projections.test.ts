@@ -8,8 +8,10 @@ import type {
 	PackagePublishResult,
 	PublishPackagesResult,
 	PublishWorkspacePlan,
+	TargetAvailability,
 	ValidationPackageResult,
 } from "../src/release/types.js";
+import { availabilityKey } from "../src/release/types.js";
 import { toBranchManagementOutput, toPublishOutput, toValidationOutput } from "../src/schema/projections.js";
 import { SCHEMA_URL } from "../src/schema/release-output.js";
 
@@ -548,7 +550,8 @@ describe("toPublishOutput", () => {
 		version: string,
 		kind: "github-with-packages" | "github-only",
 		resolvedPackages: number,
-	): PublishWorkspacePlan[] => [{ name, version, kind, resolvedPackages }];
+		path = "packages/foo",
+	): PublishWorkspacePlan[] => [{ name, version, kind, resolvedPackages, path }];
 
 	const emptyResult: PublishPackagesResult = {
 		success: true,
@@ -559,6 +562,12 @@ describe("toPublishOutput", () => {
 		successfulTargets: 0,
 	};
 
+	/** The two fields every `toPublishOutput` fixture call must carry now. */
+	const baseInput = {
+		repo: { owner: "savvy-web", repo: "foo", serverUrl: "https://github.com" },
+		availability: new Map<string, TargetAvailability>(),
+	};
+
 	it("projects a clean publish, keyed by workspace name", () => {
 		const pkg: PackagePublishResult = {
 			name: "@savvy-web/foo",
@@ -566,12 +575,12 @@ describe("toPublishOutput", () => {
 			targets: [
 				target({
 					success: true,
-					registryUrl: "https://github.com/foo/pkgs",
 					tarballDigest: "sha256:deadbeef",
 				}),
 			],
 		};
 		const output = toPublishOutput({
+			...baseInput,
 			plan: planOf("@savvy-web/foo", "1.2.0", "github-with-packages", 1),
 			publishResult: {
 				...emptyResult,
@@ -600,6 +609,135 @@ describe("toPublishOutput", () => {
 		expect(ws?.success).toBe(true);
 		expect(ws?.tag).toEqual({ name: "@savvy-web/foo@1.2.0", sha: "abc123" });
 		expect(output.publish.order).toEqual(["@savvy-web/foo"]);
+		expect(ws?.path).toBe("packages/foo");
+
+		// The target fixture's registry is GitHub Packages — the page URL is the
+		// repository's packages page, by the target's unscoped name. No
+		// availability entry was recorded, so `tarballUrl` is null.
+		const pkg0 = ws?.packages[0];
+		expect(pkg0?.url).toBe("https://github.com/savvy-web/foo/pkgs/npm/foo");
+		expect(pkg0?.tarballUrl).toBeNull();
+	});
+
+	it("takes tarballUrl from a confirmed availability probe", () => {
+		const pkg: PackagePublishResult = {
+			name: "@savvy-web/foo",
+			version: "1.2.0",
+			targets: [target({ success: true, status: "published", registry: "https://registry.npmjs.org/" })],
+		};
+		// `target()` sets target.registry from the fixture; override it:
+		pkg.targets[0].target.registry = "https://registry.npmjs.org/";
+		const availability = new Map<string, TargetAvailability>([
+			[
+				availabilityKey("https://registry.npmjs.org/", "@savvy-web/foo", "1.2.0"),
+				{ status: "confirmed", waitedMs: 1200, tarball: "https://registry.npmjs.org/@savvy-web/foo/-/foo-1.2.0.tgz" },
+			],
+		]);
+		const output = toPublishOutput({
+			...baseInput,
+			availability,
+			plan: planOf("@savvy-web/foo", "1.2.0", "github-with-packages", 1),
+			publishResult: {
+				...emptyResult,
+				packages: [pkg],
+				totalPackages: 1,
+				successfulPackages: 1,
+				totalTargets: 1,
+				successfulTargets: 1,
+			},
+			tags: [],
+			releases: [],
+			tagShas: {},
+			dryRun: false,
+			failure: null,
+		});
+		const p = output.publish.workspaces["@savvy-web/foo"]?.packages[0];
+		expect(p?.url).toBe("https://www.npmjs.com/package/@savvy-web/foo/v/1.2.0");
+		expect(p?.tarballUrl).toBe("https://registry.npmjs.org/@savvy-web/foo/-/foo-1.2.0.tgz");
+		expect(p?.available).toBe(true);
+		expect(p?.availability).toEqual({ status: "confirmed", waitedMs: 1200 });
+		expect(output.totals.packagesConfirmed).toBe(1);
+		expect(output.totals.packagesHeld).toBe(0);
+		expect(output.summary).not.toContain("held");
+	});
+
+	it("reports a held package as still published, counts it, and says so in the summary", () => {
+		const pkg: PackagePublishResult = {
+			name: "@savvy-web/foo",
+			version: "1.2.0",
+			targets: [target({ success: true, status: "published" })],
+		};
+		pkg.targets[0].target.registry = "https://registry.npmjs.org/";
+		const availability = new Map<string, TargetAvailability>([
+			[
+				availabilityKey("https://registry.npmjs.org/", "@savvy-web/foo", "1.2.0"),
+				{ status: "held", waitedMs: 180000, tarball: null },
+			],
+		]);
+		const output = toPublishOutput({
+			...baseInput,
+			availability,
+			plan: planOf("@savvy-web/foo", "1.2.0", "github-with-packages", 1),
+			publishResult: {
+				...emptyResult,
+				packages: [pkg],
+				totalPackages: 1,
+				successfulPackages: 1,
+				totalTargets: 1,
+				successfulTargets: 1,
+			},
+			tags: [{ name: "@savvy-web/foo@1.2.0", packageName: "@savvy-web/foo", version: "1.2.0" }],
+			releases: [{ tag: "@savvy-web/foo@1.2.0", url: "https://example.com/r", id: 7, assets: [] }],
+			tagShas: { "@savvy-web/foo@1.2.0": "abc" },
+			dryRun: false,
+			failure: null,
+		});
+		const p = output.publish.workspaces["@savvy-web/foo"]?.packages[0];
+		// Published is published. A hold is a finding beside the fact, never a
+		// flipped boolean.
+		expect(p?.success).toBe(true);
+		expect(p?.outcome).toBe("published");
+		expect(p?.available).toBe(false);
+		expect(p?.availability).toEqual({ status: "held", waitedMs: 180000 });
+		expect(p?.tarballUrl).toBeNull();
+		expect(output.success).toBe(true);
+		expect(output.outcome).toBe("released");
+		expect(output.totals.packagesHeld).toBe(1);
+		expect(output.totals.packagesConfirmed).toBe(0);
+		expect(output.summary).toContain("1 package(s) held by the registry");
+	});
+
+	it("marks a package with no probe entry as skipped and not available", () => {
+		const pkg: PackagePublishResult = {
+			name: "@savvy-web/foo",
+			version: "1.2.0",
+			targets: [target({ success: true, status: "published" })],
+		};
+		pkg.targets[0].target.registry = "https://registry.npmjs.org/";
+		const output = toPublishOutput({
+			...baseInput,
+			availability: new Map(),
+			plan: planOf("@savvy-web/foo", "1.2.0", "github-with-packages", 1),
+			publishResult: {
+				...emptyResult,
+				packages: [pkg],
+				totalPackages: 1,
+				successfulPackages: 1,
+				totalTargets: 1,
+				successfulTargets: 1,
+			},
+			tags: [],
+			releases: [],
+			tagShas: {},
+			dryRun: false,
+			failure: null,
+		});
+		const p = output.publish.workspaces["@savvy-web/foo"]?.packages[0];
+		expect(p?.available).toBe(false);
+		expect(p?.availability).toEqual({ status: "skipped", waitedMs: 0 });
+		expect(output.totals.packagesConfirmed).toBe(0);
+		expect(output.totals.packagesHeld).toBe(0);
+		expect(output.summary).not.toContain("held");
 	});
 
 	// `recovered` and `published` are BOTH successes. Splitting `success` from
@@ -619,6 +757,7 @@ describe("toPublishOutput", () => {
 			],
 		};
 		const output = toPublishOutput({
+			...baseInput,
 			plan: planOf("@savvy-web/foo", "1.2.0", "github-with-packages", 1),
 			publishResult: {
 				...emptyResult,
@@ -660,6 +799,7 @@ describe("toPublishOutput", () => {
 			],
 		};
 		const output = toPublishOutput({
+			...baseInput,
 			plan: planOf("@savvy-web/foo", "1.2.0", "github-with-packages", 1),
 			publishResult: { ...emptyResult, success: false, packages: [pkg], totalPackages: 1, totalTargets: 1 },
 			tags: [],
@@ -677,10 +817,53 @@ describe("toPublishOutput", () => {
 		expect(output.success).toBe(false);
 	});
 
+	it("reports the tag sha from tagShas even when no release was created", () => {
+		const output = toPublishOutput({
+			...baseInput,
+			plan: planOf("@savvy-web/foo", "1.2.0", "github-only", 0),
+			publishResult: {
+				...emptyResult,
+				packages: [{ name: "@savvy-web/foo", version: "1.2.0", targets: [] }],
+				totalPackages: 1,
+			},
+			tags: [{ name: "@savvy-web/foo@1.2.0", packageName: "@savvy-web/foo", version: "1.2.0" }],
+			releases: [],
+			// The whole point: the sha is resolved at tag-creation time and
+			// reported through `tagShas` independently of whether a GitHub
+			// release exists — a release failure must not discard it.
+			tagShas: { "@savvy-web/foo@1.2.0": "abc123" },
+			dryRun: false,
+			failure: { stage: "releases", reason: "boom" },
+		});
+		expect(output.publish.workspaces["@savvy-web/foo"]?.tag).toEqual({
+			name: "@savvy-web/foo@1.2.0",
+			sha: "abc123",
+		});
+	});
+
+	it("reports an empty tag sha when tagShas does not contain the tag", () => {
+		const output = toPublishOutput({
+			...baseInput,
+			plan: planOf("@savvy-web/foo", "1.2.0", "github-only", 0),
+			publishResult: {
+				...emptyResult,
+				packages: [{ name: "@savvy-web/foo", version: "1.2.0", targets: [] }],
+				totalPackages: 1,
+			},
+			tags: [{ name: "@savvy-web/foo@1.2.0", packageName: "@savvy-web/foo", version: "1.2.0" }],
+			releases: [],
+			tagShas: {},
+			dryRun: false,
+			failure: { stage: "releases", reason: "boom" },
+		});
+		expect(output.publish.workspaces["@savvy-web/foo"]?.tag).toEqual({ name: "@savvy-web/foo@1.2.0", sha: "" });
+	});
+
 	// The effected shape: a private tracking workspace. It publishes nothing and
 	// that is the intended, complete outcome — not a degraded registry publish.
 	it("reports a github-only workspace as released, with no packages", () => {
 		const output = toPublishOutput({
+			...baseInput,
 			plan: planOf("@effected/claude-code-plugin", "0.14.0", "github-only", 0),
 			publishResult: {
 				...emptyResult,
@@ -723,9 +906,22 @@ describe("toPublishOutput", () => {
 	// because it emitted `packages: []` and dropped the build error entirely.
 	it("keeps every workspace on the wire when the phase aborts at the build gate", () => {
 		const output = toPublishOutput({
+			...baseInput,
 			plan: [
-				{ name: "@effected/claude-code-plugin", version: "0.14.0", kind: "github-only", resolvedPackages: 0 },
-				{ name: "@savvy-web/foo", version: "1.2.0", kind: "github-with-packages", resolvedPackages: 2 },
+				{
+					name: "@effected/claude-code-plugin",
+					version: "0.14.0",
+					kind: "github-only",
+					resolvedPackages: 0,
+					path: "packages/claude-code-plugin",
+				},
+				{
+					name: "@savvy-web/foo",
+					version: "1.2.0",
+					kind: "github-with-packages",
+					resolvedPackages: 2,
+					path: "packages/foo",
+				},
 			],
 			publishResult: { ...emptyResult, success: false, totalPackages: 2 },
 			tags: [],
@@ -772,10 +968,29 @@ describe("toPublishOutput", () => {
 			targets: [target({ success: true })],
 		};
 		const output = toPublishOutput({
+			...baseInput,
 			plan: [
-				{ name: "@savvy-web/first", version: "1.0.0", kind: "github-with-packages", resolvedPackages: 1 },
-				{ name: "@savvy-web/second", version: "1.0.0", kind: "github-with-packages", resolvedPackages: 1 },
-				{ name: "@savvy-web/third", version: "1.0.0", kind: "github-with-packages", resolvedPackages: 1 },
+				{
+					name: "@savvy-web/first",
+					version: "1.0.0",
+					kind: "github-with-packages",
+					resolvedPackages: 1,
+					path: "packages/first",
+				},
+				{
+					name: "@savvy-web/second",
+					version: "1.0.0",
+					kind: "github-with-packages",
+					resolvedPackages: 1,
+					path: "packages/second",
+				},
+				{
+					name: "@savvy-web/third",
+					version: "1.0.0",
+					kind: "github-with-packages",
+					resolvedPackages: 1,
+					path: "packages/third",
+				},
 			],
 			// Only the FIRST workspace reached the publish step; the other two
 			// never did, so they are blocked at positions 1 and 2.
@@ -804,9 +1019,22 @@ describe("toPublishOutput", () => {
 			targets: [target({ success: false, status: "failed", error: "boom" })],
 		};
 		const output = toPublishOutput({
+			...baseInput,
 			plan: [
-				{ name: "@savvy-web/ok", version: "1.0.0", kind: "github-with-packages", resolvedPackages: 1 },
-				{ name: "@savvy-web/bad", version: "1.0.0", kind: "github-with-packages", resolvedPackages: 1 },
+				{
+					name: "@savvy-web/ok",
+					version: "1.0.0",
+					kind: "github-with-packages",
+					resolvedPackages: 1,
+					path: "packages/ok",
+				},
+				{
+					name: "@savvy-web/bad",
+					version: "1.0.0",
+					kind: "github-with-packages",
+					resolvedPackages: 1,
+					path: "packages/bad",
+				},
 			],
 			publishResult: { ...emptyResult, success: false, packages: [ok, bad], totalPackages: 2, totalTargets: 2 },
 			tags: [],
@@ -827,6 +1055,7 @@ describe("toPublishOutput", () => {
 	// nothing failed. This is what replaces `noop`.
 	it("reports an empty wave as nothing-to-release, and as a success", () => {
 		const output = toPublishOutput({
+			...baseInput,
 			plan: [],
 			publishResult: emptyResult,
 			tags: [],
@@ -850,6 +1079,7 @@ describe("toPublishOutput", () => {
 			targets: [target({ success: true, targetName: "@savvy-web/published-under-another-name" })],
 		};
 		const output = toPublishOutput({
+			...baseInput,
 			plan: planOf("@savvy-web/workspace-name", "1.0.0", "github-with-packages", 1),
 			publishResult: { ...emptyResult, packages: [pkg], totalPackages: 1, totalTargets: 1, successfulTargets: 1 },
 			tags: [],

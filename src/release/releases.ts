@@ -63,6 +63,14 @@ export interface ReleasesReport {
 	readonly releases: ReadonlyArray<ReleaseInfo>;
 	/** Human-readable error strings accumulated over the batch. */
 	readonly errors: ReadonlyArray<string>;
+	/**
+	 * Commit sha each processed tag points at, keyed by `TagInfo.name`. Known
+	 * at tag-creation time regardless of whether the GitHub release that
+	 * follows succeeds — a release failure must not discard a tag sha the
+	 * batch already resolved. `""` on dry-run, when no packages were
+	 * associated with the tag, or when both create and resolve failed.
+	 */
+	readonly tagShas: Readonly<Record<string, string>>;
 }
 
 /**
@@ -360,8 +368,14 @@ const attestAsset = (
  * Process a single tag: create the git tag, create the GitHub release, upload
  * assets, attest each asset, and write the storage record for GitHub Packages.
  *
- * Returns a tuple `[ReleaseInfo | null, string | null]` — the release info and
- * an error string (mutually exclusive).
+ * Returns a triple `[ReleaseInfo | null, string | null, string]` — the
+ * release info, an error string (mutually exclusive), and the tag's commit
+ * sha. The sha is resolved by the tag-creation step, which cannot itself
+ * fail (every recovery branch resolves to a value), so it is reported
+ * unconditionally — including when the GitHub release created afterward
+ * fails and `releaseInfo` comes back `null`. `""` when no packages were
+ * associated with the tag or on dry-run, since no tag is created in either
+ * case.
  */
 const processOneTag = (
 	tag: TagInfo,
@@ -370,14 +384,14 @@ const processOneTag = (
 	repo: string,
 	headSha: string,
 	dryRun: boolean,
-): Effect.Effect<readonly [ReleaseInfo | null, string | null], never, ReleasesServices> =>
+): Effect.Effect<readonly [ReleaseInfo | null, string | null, string], never, ReleasesServices> =>
 	Effect.gen(function* () {
 		const serverUrl = yield* resolveServerUrl();
 		yield* Effect.logDebug(`runReleases: processing ${tag.name}`);
 
 		if (associatedPackages.length === 0) {
 			yield* Effect.logWarning(`runReleases: no packages found for tag ${tag.name}`);
-			return [null, null] as const;
+			return [null, null, ""] as const;
 		}
 
 		// ── Dry-run shortcut ─────────────────────────────────────────────────────
@@ -391,6 +405,7 @@ const processOneTag = (
 					assets: [],
 				} satisfies ReleaseInfo,
 				null,
+				"",
 			] as const;
 		}
 
@@ -400,8 +415,9 @@ const processOneTag = (
 		// from a different commit. Here a divergence is reported and left alone.
 		const gitTagSvc = yield* GitTag;
 
-		yield* gitTagSvc.create(tag.name, headSha).pipe(
+		const tagSha: string = yield* gitTagSvc.create(tag.name, headSha).pipe(
 			Effect.tap(() => Effect.logInfo(`  🏷 ${tag.name} · created at ${headSha}`)),
+			Effect.as(headSha),
 			Effect.catch((createErr: GitHubError) =>
 				// Distinguish the idempotent "tag already exists at the right SHA"
 				// case from a true divergence. Resolve the existing tag's SHA and
@@ -417,6 +433,7 @@ const processOneTag = (
 										`runReleases: tag ${tag.name} already at ${headSha} — idempotent recovery, proceeding`,
 									);
 									yield* Effect.logInfo(`  🏷 ${tag.name} · already at ${headSha} — idempotent recovery`);
+									return headSha;
 								})
 							: Effect.gen(function* () {
 									yield* Effect.logWarning(
@@ -425,6 +442,7 @@ const processOneTag = (
 									yield* Effect.logInfo(
 										`  🏷 ${tag.name} · diverged — existing ${existingSha} ≠ head ${headSha} (proceeding)`,
 									);
+									return existingSha;
 								}),
 					),
 					Effect.catch((resolveErr: GitHubError) =>
@@ -433,353 +451,363 @@ const processOneTag = (
 								`runReleases: tag ${tag.name} create failed (${createErr.kind}) and resolve failed (${resolveErr.kind}) — proceeding`,
 							);
 							yield* Effect.logInfo(`  🏷 ${tag.name} · create+resolve failed — proceeding`);
+							return "";
 						}),
 					),
 				),
 			),
 		);
 
-		// ── Step 2: Build release notes ───────────────────────────────────────────
-		const notes = yield* buildReleaseNotes(associatedPackages, owner);
+		// ── Steps 2–5: build notes, create the release, upload assets, attest ────
+		// A separate inner `Effect.gen`/`.pipe(Effect.catch(...))` — not the
+		// outer one this used to be part of — so `tagSha`, resolved above, is
+		// appended ONCE below, outside the catch boundary: the tag already
+		// exists at that sha regardless of whether the GitHub release does.
+		const [releaseInfo, error] = yield* Effect.gen(function* () {
+			// ── Step 2: Build release notes ─────────────────────────────────────────
+			const notes = yield* buildReleaseNotes(associatedPackages, owner);
 
-		// ── Step 3: Create GitHub release ─────────────────────────────────────────
-		const releaseSvc = yield* GitHubRelease;
+			// ── Step 3: Create GitHub release ───────────────────────────────────────
+			const releaseSvc = yield* GitHubRelease;
 
-		const releaseData: GitHubReleaseInfo = yield* releaseSvc
-			.create({
-				tag: tag.name,
-				name: tag.name,
-				body: notes.trim(),
-				draft: false,
-				prerelease: tag.version.includes("-"),
-			})
-			.pipe(
-				// On re-run the release may already exist — fall back to getByTag.
-				// Branch on the structural `kind`, never on the rendered message: the
-				// predecessor matched `/already_exists|already exists/i` against a
-				// free-text reason string.
-				Effect.catchIf(
-					(createErr: GitHubError) => createErr.kind === "alreadyExists",
-					() => releaseSvc.getByTag(tag.name),
+			const releaseData: GitHubReleaseInfo = yield* releaseSvc
+				.create({
+					tag: tag.name,
+					name: tag.name,
+					body: notes.trim(),
+					draft: false,
+					prerelease: tag.version.includes("-"),
+				})
+				.pipe(
+					// On re-run the release may already exist — fall back to getByTag.
+					// Branch on the structural `kind`, never on the rendered message: the
+					// predecessor matched `/already_exists|already exists/i` against a
+					// free-text reason string.
+					Effect.catchIf(
+						(createErr: GitHubError) => createErr.kind === "alreadyExists",
+						() => releaseSvc.getByTag(tag.name),
+					),
+				);
+
+			yield* Effect.logDebug(`runReleases: release object ready — ${releaseData.id}`);
+
+			// ── Step 4: Upload assets and attest ────────────────────────────────────
+
+			// Pre-fetch existing release assets for idempotency: if a re-run
+			// encounters an asset name already attached to this release, skip the
+			// upload and reuse the existing URL (ports `uploadAssetIdempotent` +
+			// the `existingAssetsByName` pre-fetch from `create-github-releases.ts`).
+			const existingAssetsByName = yield* releaseSvc.listAssets(releaseData.id).pipe(
+				Effect.map((assets) => new Map(assets.map((a) => [a.name, { url: a.url, size: a.size }] as const))),
+				Effect.catch((e: GitHubError) =>
+					Effect.gen(function* () {
+						yield* Effect.logWarning(`runReleases: failed to list existing assets for ${tag.name}: ${e.message}`);
+						return new Map<string, { url: string; size: number }>();
+					}),
 				),
 			);
 
-		yield* Effect.logDebug(`runReleases: release object ready — ${releaseData.id}`);
+			const assets: AssetInfo[] = [];
+			const releaseInfo: ReleaseInfo = {
+				tag: tag.name,
+				url: releaseTagUrl(serverUrl, owner, repo, tag.name),
+				id: releaseData.id,
+				assets,
+			};
 
-		// ── Step 4: Upload assets and attest ──────────────────────────────────────
+			// Mutable release-notes string; updated after asset uploads to replace
+			// placeholder cells (📦 / 📄) with real download URLs, then pushed back
+			// to GitHub via `GitHubRelease.update` (same pattern as original).
+			let releaseNotes = notes;
 
-		// Pre-fetch existing release assets for idempotency: if a re-run
-		// encounters an asset name already attached to this release, skip the
-		// upload and reuse the existing URL (ports `uploadAssetIdempotent` +
-		// the `existingAssetsByName` pre-fetch from `create-github-releases.ts`).
-		const existingAssetsByName = yield* releaseSvc.listAssets(releaseData.id).pipe(
-			Effect.map((assets) => new Map(assets.map((a) => [a.name, { url: a.url, size: a.size }] as const))),
-			Effect.catch((e: GitHubError) =>
-				Effect.gen(function* () {
-					yield* Effect.logWarning(`runReleases: failed to list existing assets for ${tag.name}: ${e.message}`);
-					return new Map<string, { url: string; size: number }>();
-				}),
-			),
-		);
+			for (const pkg of associatedPackages) {
+				const targetsWithTarballs = pkg.targets.filter((t) => t.success && t.tarballPath);
 
-		const assets: AssetInfo[] = [];
-		const releaseInfo: ReleaseInfo = {
-			tag: tag.name,
-			url: releaseTagUrl(serverUrl, owner, repo, tag.name),
-			id: releaseData.id,
-			assets,
-		};
-
-		// Mutable release-notes string; updated after asset uploads to replace
-		// placeholder cells (📦 / 📄) with real download URLs, then pushed back
-		// to GitHub via `GitHubRelease.update` (same pattern as original).
-		let releaseNotes = notes;
-
-		for (const pkg of associatedPackages) {
-			const targetsWithTarballs = pkg.targets.filter((t) => t.success && t.tarballPath);
-
-			if (targetsWithTarballs.length === 0) {
-				yield* Effect.logWarning(`runReleases: no tarball path for ${pkg.name}@${pkg.version} — skipping asset upload`);
-				continue;
-			}
-
-			const uploadedPaths = new Set<string>();
-
-			// Accumulate SBOM / API-doc URLs so we can replace placeholder cells.
-			// Keyed by package name (NOT directory) because the summary table
-			// has one row per `(package, registry)` pair, and the placeholder
-			// regex anchors on the package name to identify which rows to
-			// rewrite. Two targets of the same package share one SBOM upload
-			// and one API doc, so a single map entry covers every row for
-			// that package.
-			const sbomAssetUrls = new Map<string, string>();
-			const apiDocAssetUrls = new Map<string, string>();
-
-			for (const targetResult of targetsWithTarballs) {
-				const artifactPath = targetResult.tarballPath;
-				if (!artifactPath) continue;
-				if (uploadedPaths.has(artifactPath)) continue;
-				uploadedPaths.add(artifactPath);
-
-				if (!existsSync(artifactPath)) {
-					yield* Effect.logWarning(`runReleases: tarball not found at ${artifactPath} — skipping`);
+				if (targetsWithTarballs.length === 0) {
+					yield* Effect.logWarning(
+						`runReleases: no tarball path for ${pkg.name}@${pkg.version} — skipping asset upload`,
+					);
 					continue;
 				}
 
-				const group = getGroupId(targetResult.target.directory);
-				const originalFileName = basename(artifactPath);
-				const fileName = insertGroupToken(originalFileName, group);
+				const uploadedPaths = new Set<string>();
 
-				// ── Tarball upload (idempotent) ─────────────────────────────────────
-				const existing = existingAssetsByName.get(fileName);
-				let assetUrl: string;
-				let assetSize: number;
+				// Accumulate SBOM / API-doc URLs so we can replace placeholder cells.
+				// Keyed by package name (NOT directory) because the summary table
+				// has one row per `(package, registry)` pair, and the placeholder
+				// regex anchors on the package name to identify which rows to
+				// rewrite. Two targets of the same package share one SBOM upload
+				// and one API doc, so a single map entry covers every row for
+				// that package.
+				const sbomAssetUrls = new Map<string, string>();
+				const apiDocAssetUrls = new Map<string, string>();
 
-				if (existing) {
-					yield* Effect.logDebug(`runReleases: asset ${fileName} already attached — reusing`);
-					assetUrl = existing.url;
-					assetSize = existing.size;
-				} else {
-					const fileContent = readFileSync(artifactPath);
-					yield* Effect.logDebug(`runReleases: uploading asset ${fileName}`);
+				for (const targetResult of targetsWithTarballs) {
+					const artifactPath = targetResult.tarballPath;
+					if (!artifactPath) continue;
+					if (uploadedPaths.has(artifactPath)) continue;
+					uploadedPaths.add(artifactPath);
 
-					const asset = yield* releaseSvc
-						.uploadAsset(releaseData, {
-							name: fileName,
-							data: fileContent,
-							contentType: "application/octet-stream",
-						})
-						.pipe(
-							Effect.catch((e: GitHubError) =>
-								Effect.gen(function* () {
-									yield* Effect.logWarning(`runReleases: upload failed for ${fileName}: ${e.message}`);
-									return null;
-								}),
+					if (!existsSync(artifactPath)) {
+						yield* Effect.logWarning(`runReleases: tarball not found at ${artifactPath} — skipping`);
+						continue;
+					}
+
+					const group = getGroupId(targetResult.target.directory);
+					const originalFileName = basename(artifactPath);
+					const fileName = insertGroupToken(originalFileName, group);
+
+					// ── Tarball upload (idempotent) ─────────────────────────────────────
+					const existing = existingAssetsByName.get(fileName);
+					let assetUrl: string;
+					let assetSize: number;
+
+					if (existing) {
+						yield* Effect.logDebug(`runReleases: asset ${fileName} already attached — reusing`);
+						assetUrl = existing.url;
+						assetSize = existing.size;
+					} else {
+						const fileContent = readFileSync(artifactPath);
+						yield* Effect.logDebug(`runReleases: uploading asset ${fileName}`);
+
+						const asset = yield* releaseSvc
+							.uploadAsset(releaseData, {
+								name: fileName,
+								data: fileContent,
+								contentType: "application/octet-stream",
+							})
+							.pipe(
+								Effect.catch((e: GitHubError) =>
+									Effect.gen(function* () {
+										yield* Effect.logWarning(`runReleases: upload failed for ${fileName}: ${e.message}`);
+										return null;
+									}),
+								),
+							);
+
+						if (asset === null) continue;
+
+						yield* Effect.logDebug(`runReleases: uploaded ${fileName} → ${asset.url}`);
+						assetUrl = asset.url;
+						assetSize = asset.size;
+						existingAssetsByName.set(fileName, { url: asset.url, size: asset.size });
+					}
+
+					// Attest the asset. A target with no recorded digest is NOT attested:
+					// the predecessor substituted `sha256:<filename>` here, which
+					// `InTotoSubject` accepted verbatim and signed, publishing an
+					// attestation whose subject digest was a file name. The kit validates
+					// the digest, so that path now reports and skips.
+					const attestationUrl =
+						targetResult.tarballDigest === undefined
+							? yield* Effect.logWarning(
+									`runReleases: no tarball digest for ${pkg.name}@${pkg.version} — skipping attestation for ${fileName}`,
+								).pipe(Effect.as(undefined))
+							: yield* attestAsset(artifactPath, pkg.name, pkg.version, targetResult.tarballDigest);
+
+					assets.push({
+						name: fileName,
+						downloadUrl: assetUrl,
+						size: assetSize,
+						attestationUrl,
+						registry: targetResult.target.registry ?? undefined,
+					});
+
+					// Storage record for GitHub Packages
+					if (
+						classifyRegistry(targetResult.target.registry ?? undefined) === "github-packages" &&
+						targetResult.tarballDigest !== undefined
+					) {
+						const storageIds = yield* createStorageRecord(pkg.name, pkg.version, targetResult.tarballDigest);
+						if (storageIds && storageIds.length > 0) {
+							yield* Effect.logDebug(
+								`runReleases: storage record created for ${pkg.name}@${pkg.version} (IDs: ${storageIds.join(",")})`,
+							);
+						}
+					}
+
+					// ── SBOM meta copy ──────────────────────────────────────────────────
+					// Runs after publish succeeded, so it degrades to a warning like the
+					// meta tar below: the meta bundle is a best-effort doc-builder asset,
+					// and a malformed pre-existing tsdoctor.json must not abort the release.
+					if (targetResult.sbomPath) {
+						const sbomPath = targetResult.sbomPath;
+						yield* Effect.try({
+							try: () => copySbomIntoMeta(sbomPath, targetResult.target.directory),
+							catch: (cause) => (cause instanceof Error ? cause.message : String(cause)),
+						}).pipe(
+							Effect.catch((message) =>
+								Effect.logWarning(`runReleases: sbom meta copy failed for ${basename(sbomPath)}: ${message}`),
 							),
 						);
-
-					if (asset === null) continue;
-
-					yield* Effect.logDebug(`runReleases: uploaded ${fileName} → ${asset.url}`);
-					assetUrl = asset.url;
-					assetSize = asset.size;
-					existingAssetsByName.set(fileName, { url: asset.url, size: asset.size });
-				}
-
-				// Attest the asset. A target with no recorded digest is NOT attested:
-				// the predecessor substituted `sha256:<filename>` here, which
-				// `InTotoSubject` accepted verbatim and signed, publishing an
-				// attestation whose subject digest was a file name. The kit validates
-				// the digest, so that path now reports and skips.
-				const attestationUrl =
-					targetResult.tarballDigest === undefined
-						? yield* Effect.logWarning(
-								`runReleases: no tarball digest for ${pkg.name}@${pkg.version} — skipping attestation for ${fileName}`,
-							).pipe(Effect.as(undefined))
-						: yield* attestAsset(artifactPath, pkg.name, pkg.version, targetResult.tarballDigest);
-
-				assets.push({
-					name: fileName,
-					downloadUrl: assetUrl,
-					size: assetSize,
-					attestationUrl,
-					registry: targetResult.target.registry ?? undefined,
-				});
-
-				// Storage record for GitHub Packages
-				if (
-					classifyRegistry(targetResult.target.registry ?? undefined) === "github-packages" &&
-					targetResult.tarballDigest !== undefined
-				) {
-					const storageIds = yield* createStorageRecord(pkg.name, pkg.version, targetResult.tarballDigest);
-					if (storageIds && storageIds.length > 0) {
-						yield* Effect.logDebug(
-							`runReleases: storage record created for ${pkg.name}@${pkg.version} (IDs: ${storageIds.join(",")})`,
-						);
 					}
-				}
 
-				// ── SBOM meta copy ──────────────────────────────────────────────────
-				// Runs after publish succeeded, so it degrades to a warning like the
-				// meta tar below: the meta bundle is a best-effort doc-builder asset,
-				// and a malformed pre-existing tsdoctor.json must not abort the release.
-				if (targetResult.sbomPath) {
-					const sbomPath = targetResult.sbomPath;
-					yield* Effect.try({
-						try: () => copySbomIntoMeta(sbomPath, targetResult.target.directory),
-						catch: (cause) => (cause instanceof Error ? cause.message : String(cause)),
-					}).pipe(
-						Effect.catch((message) =>
-							Effect.logWarning(`runReleases: sbom meta copy failed for ${basename(sbomPath)}: ${message}`),
-						),
-					);
-				}
+					// ── Meta bundle (api + tsconfig + sbom) — unattested doc-builder asset ──
+					const metaDir = metaDirFor(targetResult.target.directory);
+					if (existsSync(metaDir)) {
+						const metaName = insertGroupToken(originalFileName, group, ".meta.tgz");
+						if (!existingAssetsByName.has(metaName)) {
+							const metaOut = join(dirname(metaDir), metaName);
+							yield* tarMetaFolder(metaDir, metaOut).pipe(
+								Effect.catch((e) => Effect.logWarning(`runReleases: meta tar failed for ${metaName}: ${e.message}`)),
+							);
+							if (existsSync(metaOut)) {
+								const metaAsset = yield* releaseSvc
+									.uploadAsset(releaseData, {
+										name: metaName,
+										data: readFileSync(metaOut),
+										contentType: "application/gzip",
+									})
+									.pipe(Effect.catch(() => Effect.succeed(null)));
+								if (metaAsset !== null) {
+									existingAssetsByName.set(metaName, { url: metaAsset.url, size: metaAsset.size });
+									assets.push({ name: metaName, downloadUrl: metaAsset.url, size: metaAsset.size });
+								}
+							}
+						}
+					}
 
-				// ── Meta bundle (api + tsconfig + sbom) — unattested doc-builder asset ──
-				const metaDir = metaDirFor(targetResult.target.directory);
-				if (existsSync(metaDir)) {
-					const metaName = insertGroupToken(originalFileName, group, ".meta.tgz");
-					if (!existingAssetsByName.has(metaName)) {
-						const metaOut = join(dirname(metaDir), metaName);
-						yield* tarMetaFolder(metaDir, metaOut).pipe(
-							Effect.catch((e) => Effect.logWarning(`runReleases: meta tar failed for ${metaName}: ${e.message}`)),
-						);
-						if (existsSync(metaOut)) {
-							const metaAsset = yield* releaseSvc
+					// ── SBOM upload ─────────────────────────────────────────────────────
+					if (targetResult.sbomPath && existsSync(targetResult.sbomPath)) {
+						const sbomFileName = insertGroupToken(originalFileName, group, ".sbom.json");
+						const sbomExisting = existingAssetsByName.get(sbomFileName);
+
+						if (sbomExisting) {
+							yield* Effect.logDebug(`runReleases: SBOM ${sbomFileName} already attached — reusing`);
+							sbomAssetUrls.set(pkg.name, sbomExisting.url);
+						} else {
+							const sbomContent = readFileSync(targetResult.sbomPath);
+							yield* Effect.logDebug(`runReleases: uploading SBOM ${sbomFileName}`);
+
+							const sbomAsset = yield* releaseSvc
 								.uploadAsset(releaseData, {
-									name: metaName,
-									data: readFileSync(metaOut),
-									contentType: "application/gzip",
+									name: sbomFileName,
+									data: sbomContent,
+									contentType: "application/json",
 								})
-								.pipe(Effect.catch(() => Effect.succeed(null)));
-							if (metaAsset !== null) {
-								existingAssetsByName.set(metaName, { url: metaAsset.url, size: metaAsset.size });
-								assets.push({ name: metaName, downloadUrl: metaAsset.url, size: metaAsset.size });
+								.pipe(
+									Effect.catch((e: GitHubError) =>
+										Effect.gen(function* () {
+											yield* Effect.logWarning(`runReleases: SBOM upload failed for ${sbomFileName}: ${e.message}`);
+											return null;
+										}),
+									),
+								);
+
+							if (sbomAsset !== null) {
+								yield* Effect.logDebug(`runReleases: uploaded SBOM ${sbomFileName} → ${sbomAsset.url}`);
+								sbomAssetUrls.set(pkg.name, sbomAsset.url);
+								existingAssetsByName.set(sbomFileName, { url: sbomAsset.url, size: sbomAsset.size });
+								assets.push({
+									name: sbomFileName,
+									downloadUrl: sbomAsset.url,
+									size: sbomAsset.size,
+								});
+							}
+						}
+					}
+
+					// ── API doc upload ──────────────────────────────────────────────────
+					const apiDocPath = findApiDocFile(targetResult.target.directory, pkg.name);
+					if (apiDocPath) {
+						const apiDocFileName = insertGroupToken(originalFileName, group, ".api.json");
+						const apiExisting = existingAssetsByName.get(apiDocFileName);
+
+						if (apiExisting) {
+							yield* Effect.logDebug(`runReleases: API doc ${apiDocFileName} already attached — reusing`);
+							apiDocAssetUrls.set(pkg.name, apiExisting.url);
+						} else {
+							const apiDocContent = readFileSync(apiDocPath);
+							yield* Effect.logDebug(`runReleases: uploading API doc ${apiDocFileName}`);
+
+							const apiDocAsset = yield* releaseSvc
+								.uploadAsset(releaseData, {
+									name: apiDocFileName,
+									data: apiDocContent,
+									contentType: "application/json",
+								})
+								.pipe(
+									Effect.catch((e: GitHubError) =>
+										Effect.gen(function* () {
+											yield* Effect.logWarning(
+												`runReleases: API doc upload failed for ${apiDocFileName}: ${e.message}`,
+											);
+											return null;
+										}),
+									),
+								);
+
+							if (apiDocAsset !== null) {
+								yield* Effect.logDebug(`runReleases: uploaded API doc ${apiDocFileName} → ${apiDocAsset.url}`);
+								apiDocAssetUrls.set(pkg.name, apiDocAsset.url);
+								existingAssetsByName.set(apiDocFileName, { url: apiDocAsset.url, size: apiDocAsset.size });
+								assets.push({
+									name: apiDocFileName,
+									downloadUrl: apiDocAsset.url,
+									size: apiDocAsset.size,
+								});
 							}
 						}
 					}
 				}
 
-				// ── SBOM upload ─────────────────────────────────────────────────────
-				if (targetResult.sbomPath && existsSync(targetResult.sbomPath)) {
-					const sbomFileName = insertGroupToken(originalFileName, group, ".sbom.json");
-					const sbomExisting = existingAssetsByName.get(sbomFileName);
+				// Replace SBOM and API-doc placeholder cells with real download
+				// links. The maps are keyed by package name; the regex anchors
+				// on the package's row identifier (`@scope/name@version` in the
+				// Package cell) so every row owned by that package — one per
+				// registry — gets the link, and rows owned by a DIFFERENT
+				// package are left alone. The `g` flag is required because a
+				// single package commonly has multiple targets (one row each)
+				// sharing the same SBOM/API doc upload.
+				const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+				// `$` in a String.replace replacement string is a backreference
+				// sigil (`$1`, `$&`, `$$`); a literal `$` must be doubled. Asset
+				// URLs do not contain `$` today, but escape defensively in case a
+				// future GitHub URL scheme does.
+				const escapeRepl = (s: string) => s.replace(/\$/g, "$$$$");
 
-					if (sbomExisting) {
-						yield* Effect.logDebug(`runReleases: SBOM ${sbomFileName} already attached — reusing`);
-						sbomAssetUrls.set(pkg.name, sbomExisting.url);
-					} else {
-						const sbomContent = readFileSync(targetResult.sbomPath);
-						yield* Effect.logDebug(`runReleases: uploading SBOM ${sbomFileName}`);
-
-						const sbomAsset = yield* releaseSvc
-							.uploadAsset(releaseData, {
-								name: sbomFileName,
-								data: sbomContent,
-								contentType: "application/json",
-							})
-							.pipe(
-								Effect.catch((e: GitHubError) =>
-									Effect.gen(function* () {
-										yield* Effect.logWarning(`runReleases: SBOM upload failed for ${sbomFileName}: ${e.message}`);
-										return null;
-									}),
-								),
-							);
-
-						if (sbomAsset !== null) {
-							yield* Effect.logDebug(`runReleases: uploaded SBOM ${sbomFileName} → ${sbomAsset.url}`);
-							sbomAssetUrls.set(pkg.name, sbomAsset.url);
-							existingAssetsByName.set(sbomFileName, { url: sbomAsset.url, size: sbomAsset.size });
-							assets.push({
-								name: sbomFileName,
-								downloadUrl: sbomAsset.url,
-								size: sbomAsset.size,
-							});
-						}
-					}
+				for (const [pkgName, sbomUrl] of sbomAssetUrls) {
+					const escapedPkg = escapeRe(pkgName);
+					releaseNotes = releaseNotes.replace(
+						new RegExp(`(\\| [^|\\n]+ \\| [^|\\n]*${escapedPkg}@[^|\\n]+ \\|) 📦 \\|`, "g"),
+						`$1 [📦](${escapeRepl(sbomUrl)}) |`,
+					);
 				}
 
-				// ── API doc upload ──────────────────────────────────────────────────
-				const apiDocPath = findApiDocFile(targetResult.target.directory, pkg.name);
-				if (apiDocPath) {
-					const apiDocFileName = insertGroupToken(originalFileName, group, ".api.json");
-					const apiExisting = existingAssetsByName.get(apiDocFileName);
-
-					if (apiExisting) {
-						yield* Effect.logDebug(`runReleases: API doc ${apiDocFileName} already attached — reusing`);
-						apiDocAssetUrls.set(pkg.name, apiExisting.url);
-					} else {
-						const apiDocContent = readFileSync(apiDocPath);
-						yield* Effect.logDebug(`runReleases: uploading API doc ${apiDocFileName}`);
-
-						const apiDocAsset = yield* releaseSvc
-							.uploadAsset(releaseData, {
-								name: apiDocFileName,
-								data: apiDocContent,
-								contentType: "application/json",
-							})
-							.pipe(
-								Effect.catch((e: GitHubError) =>
-									Effect.gen(function* () {
-										yield* Effect.logWarning(`runReleases: API doc upload failed for ${apiDocFileName}: ${e.message}`);
-										return null;
-									}),
-								),
-							);
-
-						if (apiDocAsset !== null) {
-							yield* Effect.logDebug(`runReleases: uploaded API doc ${apiDocFileName} → ${apiDocAsset.url}`);
-							apiDocAssetUrls.set(pkg.name, apiDocAsset.url);
-							existingAssetsByName.set(apiDocFileName, { url: apiDocAsset.url, size: apiDocAsset.size });
-							assets.push({
-								name: apiDocFileName,
-								downloadUrl: apiDocAsset.url,
-								size: apiDocAsset.size,
-							});
-						}
-					}
+				for (const [pkgName, apiDocUrl] of apiDocAssetUrls) {
+					const escapedPkg = escapeRe(pkgName);
+					releaseNotes = releaseNotes.replace(
+						new RegExp(`(\\| [^|\\n]+ \\| [^|\\n]*${escapedPkg}@[^|\\n]+ \\|(?: [^|\\n]+ \\|)?) 📄 \\|`, "g"),
+						`$1 [📄](${escapeRepl(apiDocUrl)}) |`,
+					);
 				}
 			}
 
-			// Replace SBOM and API-doc placeholder cells with real download
-			// links. The maps are keyed by package name; the regex anchors
-			// on the package's row identifier (`@scope/name@version` in the
-			// Package cell) so every row owned by that package — one per
-			// registry — gets the link, and rows owned by a DIFFERENT
-			// package are left alone. The `g` flag is required because a
-			// single package commonly has multiple targets (one row each)
-			// sharing the same SBOM/API doc upload.
-			const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-			// `$` in a String.replace replacement string is a backreference
-			// sigil (`$1`, `$&`, `$$`); a literal `$` must be doubled. Asset
-			// URLs do not contain `$` today, but escape defensively in case a
-			// future GitHub URL scheme does.
-			const escapeRepl = (s: string) => s.replace(/\$/g, "$$$$");
-
-			for (const [pkgName, sbomUrl] of sbomAssetUrls) {
-				const escapedPkg = escapeRe(pkgName);
-				releaseNotes = releaseNotes.replace(
-					new RegExp(`(\\| [^|\\n]+ \\| [^|\\n]*${escapedPkg}@[^|\\n]+ \\|) 📦 \\|`, "g"),
-					`$1 [📦](${escapeRepl(sbomUrl)}) |`,
-				);
+			// ── Step 5: Refresh release body with real asset links ────────────────────
+			if (releaseInfo.assets.length > 0) {
+				yield* releaseSvc
+					.update(releaseData.id, { body: releaseNotes.trim() })
+					.pipe(
+						Effect.catch((e: GitHubError) =>
+							Effect.logWarning(`runReleases: failed to update release body for ${tag.name}: ${e.message}`),
+						),
+					);
+				yield* Effect.logDebug(`runReleases: updated release body with asset links for ${tag.name}`);
 			}
 
-			for (const [pkgName, apiDocUrl] of apiDocAssetUrls) {
-				const escapedPkg = escapeRe(pkgName);
-				releaseNotes = releaseNotes.replace(
-					new RegExp(`(\\| [^|\\n]+ \\| [^|\\n]*${escapedPkg}@[^|\\n]+ \\|(?: [^|\\n]+ \\|)?) 📄 \\|`, "g"),
-					`$1 [📄](${escapeRepl(apiDocUrl)}) |`,
-				);
-			}
-		}
-
-		// ── Step 5: Refresh release body with real asset links ────────────────────
-		if (releaseInfo.assets.length > 0) {
-			yield* releaseSvc
-				.update(releaseData.id, { body: releaseNotes.trim() })
-				.pipe(
-					Effect.catch((e: GitHubError) =>
-						Effect.logWarning(`runReleases: failed to update release body for ${tag.name}: ${e.message}`),
-					),
-				);
-			yield* Effect.logDebug(`runReleases: updated release body with asset links for ${tag.name}`);
-		}
-
-		const releaseAssetCount = releaseInfo.assets.length;
-		yield* Effect.logInfo(
-			`  ✅ release created — ${releaseData.id} (${associatedPackages.length} package(s), ${releaseAssetCount} asset(s))`,
+			const releaseAssetCount = releaseInfo.assets.length;
+			yield* Effect.logInfo(
+				`  ✅ release created — ${releaseData.id} (${associatedPackages.length} package(s), ${releaseAssetCount} asset(s))`,
+			);
+			return [releaseInfo, null] as const;
+		}).pipe(
+			Effect.catch((e: GitHubError) => {
+				const msg = `runReleases: failed to create release for ${tag.name}: ${e.message}`;
+				return Effect.logWarning(msg).pipe(Effect.as([null, msg] as const));
+			}),
 		);
-		return [releaseInfo, null] as const;
-	}).pipe(
-		Effect.catch((e: GitHubError) => {
-			const msg = `runReleases: failed to create release for ${tag.name}: ${e.message}`;
-			return Effect.gen(function* () {
-				yield* Effect.logWarning(msg);
-				return [null, msg] as const;
-			});
-		}),
-	);
+		return [releaseInfo, error, tagSha] as const;
+	});
 
 // ─── runReleases ───────────────────────────────────────────────────────────────
 
@@ -810,6 +838,7 @@ export const runReleases = (args: ReleasesInputArgs): Effect.Effect<ReleasesRepo
 						success: true,
 						releases: [],
 						errors: [],
+						tagShas: {},
 					} satisfies ReleasesReport;
 				}
 
@@ -826,6 +855,7 @@ export const runReleases = (args: ReleasesInputArgs): Effect.Effect<ReleasesRepo
 
 				const releases: ReleaseInfo[] = [];
 				const errors: string[] = [];
+				const tagShas: Record<string, string> = {};
 
 				for (const tag of args.tags) {
 					// Find packages associated with this tag (mirrors the original logic)
@@ -836,10 +866,11 @@ export const runReleases = (args: ReleasesInputArgs): Effect.Effect<ReleasesRepo
 						return pkg.name === tag.packageName;
 					});
 
-					const [releaseInfo, error] = yield* logger.group(
+					const [releaseInfo, error, tagSha] = yield* logger.group(
 						`Release · ${tag.packageName}@${tag.version}`,
 						processOneTag(tag, associatedPackages, owner, repo, headSha, args.dryRun),
 					);
+					tagShas[tag.name] = tagSha;
 
 					if (error !== null) {
 						errors.push(error);
@@ -861,6 +892,7 @@ export const runReleases = (args: ReleasesInputArgs): Effect.Effect<ReleasesRepo
 					success: errors.length === 0,
 					releases,
 					errors,
+					tagShas,
 				} satisfies ReleasesReport;
 			}),
 		);

@@ -108,10 +108,17 @@ export const releaseTagUrl = (serverUrl: string, owner: string, repo: string, ta
  *
  * @public
  */
-export const orgPackagePageUrl = (serverUrl: string, owner: string, packageName: string): string => {
-	const unscoped = packageName.startsWith("@") ? (packageName.split("/")[1] ?? packageName) : packageName;
-	return `${serverUrl}/orgs/${owner}/packages/npm/package/${unscoped}`;
-};
+export const orgPackagePageUrl = (serverUrl: string, owner: string, packageName: string): string =>
+	`${serverUrl}/orgs/${owner}/packages/npm/package/${unscopedPackageName(packageName)}`;
+
+/**
+ * The package name without its `@scope/` prefix — what GitHub Packages URLs
+ * address a package by.
+ *
+ * @public
+ */
+export const unscopedPackageName = (packageName: string): string =>
+	packageName.startsWith("@") ? (packageName.split("/")[1] ?? packageName) : packageName;
 
 /**
  * A link to a published package artifact on GitHub Packages.
