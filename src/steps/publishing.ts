@@ -126,9 +126,10 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 				publishResult: PublishPackagesResult,
 				tags: ReadonlyArray<TagInfo>,
 				releases: ReadonlyArray<ReleaseInfo>,
+				tagShas: Record<string, string>,
 				failure: PublishFailureInput | null,
 			) =>
-				emitReleaseOutput(outputs, toPublishOutput({ plan, publishResult, tags, releases, dryRun, failure }), {
+				emitReleaseOutput(outputs, toPublishOutput({ plan, publishResult, tags, releases, tagShas, dryRun, failure }), {
 					packageCount: plan.length,
 					releasePrNumber: mergedReleasePRNumber !== undefined ? mergedReleasePRNumber : null,
 				});
@@ -173,7 +174,7 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 					totalTargets: 0,
 					successfulTargets: 0,
 				};
-				yield* emitPublishing([], empty, [], [], null);
+				yield* emitPublishing([], empty, [], [], {}, null);
 				yield* Effect.logInfo("Release publishing: ✅ no packages were versioned — nothing to tag, release or publish");
 				return;
 			}
@@ -223,10 +224,17 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 					successfulTargets: 0,
 					...(buildSbom.buildError !== undefined ? { buildError: buildSbom.buildError } : {}),
 				};
-				yield* emitPublishing(plan, failed, [], [], {
-					stage: "build",
-					reason: buildSbom.buildError ?? detail,
-				});
+				yield* emitPublishing(
+					plan,
+					failed,
+					[],
+					[],
+					{},
+					{
+						stage: "build",
+						reason: buildSbom.buildError ?? detail,
+					},
+				);
 				yield* Effect.logInfo("Release publishing: ❌ aborted at Build & SBOM — nothing published");
 				yield* outputs.setFailed("Phase 3 aborted at Build & SBOM");
 				// FAIL, do not return. `setFailed` only annotates; the exit code comes
@@ -243,10 +251,17 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 				yield* Effect.logError(
 					`❌ Published ${publishResult.successfulTargets}/${publishResult.totalTargets} target(s) — aborting before releases`,
 				);
-				yield* emitPublishing(plan, publishResult, [], [], {
-					stage: "publish",
-					reason: `Published ${publishResult.successfulTargets}/${publishResult.totalTargets} target(s)`,
-				});
+				yield* emitPublishing(
+					plan,
+					publishResult,
+					[],
+					[],
+					{},
+					{
+						stage: "publish",
+						reason: `Published ${publishResult.successfulTargets}/${publishResult.totalTargets} target(s)`,
+					},
+				);
 				yield* Effect.logInfo("Release publishing: ❌ failed at Publish");
 				yield* outputs.setFailed("Publishing failed");
 				// FAIL, do not return — see the note on `PublishError`. Returning here
@@ -289,7 +304,7 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 				Effect.catch((e) =>
 					Effect.gen(function* () {
 						yield* Effect.logWarning(`runReleases failed: ${String(e)}`);
-						return { success: false, releases: [] as ReleaseInfo[], errors: [String(e)] };
+						return { success: false, releases: [] as ReleaseInfo[], errors: [String(e)], tagShas: {} };
 					}),
 				),
 			);
@@ -318,14 +333,17 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 			}
 
 			// ── Emit outputs + final summary ───────────────────────────────────────
-			// The tag sha travels on `ReleaseInfo.tagSha`, set at creation time in
-			// `processOneTag` — no local `git rev-parse` needed here, and none would
-			// find a tag this clone never fetched.
+			// `releasesResult.tagShas` travels every tag `runReleases` processed,
+			// resolved at tag-creation time inside `processOneTag` — reported even
+			// when the GitHub release that follows fails, and unconditionally set
+			// per tag regardless of that outcome. No local `git rev-parse` needed
+			// here, and none would find a tag this clone never fetched.
 			yield* emitPublishing(
 				plan,
 				publishResult,
 				tagStrategy.tags,
 				releasesResult.releases,
+				releasesResult.tagShas,
 				releasesResult.success
 					? closeResult !== null && closeResult.failedCount > 0
 						? { stage: "linked-issues", reason: `${closeResult.failedCount} issue(s) failed to close` }

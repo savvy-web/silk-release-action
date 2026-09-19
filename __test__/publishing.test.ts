@@ -156,7 +156,7 @@ beforeEach(() => {
 		}),
 	);
 	runPublishTargetsMock.mockReturnValue(Effect.succeed(PUBLISH_RESULT));
-	runReleasesMock.mockReturnValue(Effect.succeed({ success: true, releases: [], errors: [] }));
+	runReleasesMock.mockReturnValue(Effect.succeed({ success: true, releases: [], errors: [], tagShas: {} }));
 	closeLinkedIssuesMock.mockReturnValue(Effect.succeed({ closedCount: 2, failedCount: 0, issues: [] }));
 });
 
@@ -165,8 +165,9 @@ describe("runPublishing — happy path", () => {
 		runReleasesMock.mockReturnValue(
 			Effect.succeed({
 				success: true,
-				releases: [{ tag: "v1.2.3", url: "https://example.test/r", id: 7, assets: [], tagSha: "" }],
+				releases: [{ tag: "v1.2.3", url: "https://example.test/r", id: 7, assets: [] }],
 				errors: [],
+				tagShas: { "v1.2.3": "" },
 			}),
 		);
 
@@ -235,13 +236,14 @@ describe("runPublishing — a runReleases failure fails the phase", () => {
 	});
 
 	it("STILL reports the tag, with an empty sha, when runReleases fails outright", async () => {
-		// `runReleasesMock` (this describe's `beforeEach`) fails the whole step, so
-		// no `ReleaseInfo` was ever produced for this tag — #402: the sha now
-		// travels on `ReleaseInfo.tagSha`, set at tag-creation time inside
-		// `processOneTag`, so a run where that never happened has nothing to read
-		// it from. The tag rides on the workspace as a SIBLING of `release`, so a
-		// run whose release creation failed — which is exactly this case — still
-		// reports the tag it meant to cut.
+		// `runReleasesMock` (this describe's `beforeEach`) rejects the whole
+		// step, so `steps/publishing.ts`'s catch fallback substitutes
+		// `tagShas: {}` — #402: the sha travels on `ReleasesReport.tagShas`,
+		// resolved at tag-creation time inside `processOneTag`, so a run where
+		// `runReleases` never got that far has nothing to read it from. The tag
+		// rides on the workspace as a SIBLING of `release`, so a run whose
+		// release creation failed — which is exactly this case — still reports
+		// the tag it meant to cut.
 		const { result } = await run();
 
 		const payload = result?.publish as {
@@ -282,8 +284,9 @@ describe("runPublishing — a runReleases failure fails the phase", () => {
 		runReleasesMock.mockReturnValue(
 			Effect.succeed({
 				success: false,
-				releases: [{ tag: "v1.2.3", url: "https://example.test/r", id: 7, assets: [], tagSha: "" }],
+				releases: [{ tag: "v1.2.3", url: "https://example.test/r", id: 7, assets: [] }],
 				errors: ["asset upload failed", "second failure"],
+				tagShas: { "v1.2.3": "" },
 			}),
 		);
 

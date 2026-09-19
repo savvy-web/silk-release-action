@@ -582,7 +582,8 @@ describe("toPublishOutput", () => {
 				successfulTargets: 1,
 			},
 			tags: [{ name: "@savvy-web/foo@1.2.0", packageName: "@savvy-web/foo", version: "1.2.0" }],
-			releases: [{ tag: "@savvy-web/foo@1.2.0", url: "https://example.com/r", id: 7, assets: [], tagSha: "abc123" }],
+			releases: [{ tag: "@savvy-web/foo@1.2.0", url: "https://example.com/r", id: 7, assets: [] }],
+			tagShas: { "@savvy-web/foo@1.2.0": "abc123" },
 			dryRun: false,
 			failure: null,
 		});
@@ -628,7 +629,8 @@ describe("toPublishOutput", () => {
 				successfulTargets: 1,
 			},
 			tags: [{ name: "@savvy-web/foo@1.2.0", packageName: "@savvy-web/foo", version: "1.2.0" }],
-			releases: [{ tag: "@savvy-web/foo@1.2.0", url: "https://example.com/r", id: 7, assets: [], tagSha: "" }],
+			releases: [{ tag: "@savvy-web/foo@1.2.0", url: "https://example.com/r", id: 7, assets: [] }],
+			tagShas: {},
 			dryRun: false,
 			failure: null,
 		});
@@ -662,6 +664,7 @@ describe("toPublishOutput", () => {
 			publishResult: { ...emptyResult, success: false, packages: [pkg], totalPackages: 1, totalTargets: 1 },
 			tags: [],
 			releases: [],
+			tagShas: {},
 			dryRun: false,
 			failure: { stage: "publish", reason: "integrity mismatch" },
 		});
@@ -674,7 +677,7 @@ describe("toPublishOutput", () => {
 		expect(output.success).toBe(false);
 	});
 
-	it("reports an empty tag sha when the tag exists but no release was created", () => {
+	it("reports the tag sha from tagShas even when no release was created", () => {
 		const output = toPublishOutput({
 			plan: planOf("@savvy-web/foo", "1.2.0", "github-only", 0),
 			publishResult: {
@@ -684,10 +687,33 @@ describe("toPublishOutput", () => {
 			},
 			tags: [{ name: "@savvy-web/foo@1.2.0", packageName: "@savvy-web/foo", version: "1.2.0" }],
 			releases: [],
+			// The whole point: the sha is resolved at tag-creation time and
+			// reported through `tagShas` independently of whether a GitHub
+			// release exists — a release failure must not discard it.
+			tagShas: { "@savvy-web/foo@1.2.0": "abc123" },
 			dryRun: false,
 			failure: { stage: "releases", reason: "boom" },
 		});
-		// The sha travels on ReleaseInfo; with no release there is nothing to read it from.
+		expect(output.publish.workspaces["@savvy-web/foo"]?.tag).toEqual({
+			name: "@savvy-web/foo@1.2.0",
+			sha: "abc123",
+		});
+	});
+
+	it("reports an empty tag sha when tagShas does not contain the tag", () => {
+		const output = toPublishOutput({
+			plan: planOf("@savvy-web/foo", "1.2.0", "github-only", 0),
+			publishResult: {
+				...emptyResult,
+				packages: [{ name: "@savvy-web/foo", version: "1.2.0", targets: [] }],
+				totalPackages: 1,
+			},
+			tags: [{ name: "@savvy-web/foo@1.2.0", packageName: "@savvy-web/foo", version: "1.2.0" }],
+			releases: [],
+			tagShas: {},
+			dryRun: false,
+			failure: { stage: "releases", reason: "boom" },
+		});
 		expect(output.publish.workspaces["@savvy-web/foo"]?.tag).toEqual({ name: "@savvy-web/foo@1.2.0", sha: "" });
 	});
 
@@ -705,15 +731,8 @@ describe("toPublishOutput", () => {
 			tags: [
 				{ name: "@effected/claude-code-plugin@0.14.0", packageName: "@effected/claude-code-plugin", version: "0.14.0" },
 			],
-			releases: [
-				{
-					tag: "@effected/claude-code-plugin@0.14.0",
-					url: "https://example.com/r",
-					id: 42,
-					assets: [],
-					tagSha: "abc123",
-				},
-			],
+			releases: [{ tag: "@effected/claude-code-plugin@0.14.0", url: "https://example.com/r", id: 42, assets: [] }],
+			tagShas: { "@effected/claude-code-plugin@0.14.0": "abc123" },
 			dryRun: false,
 			failure: null,
 		});
@@ -751,6 +770,7 @@ describe("toPublishOutput", () => {
 			publishResult: { ...emptyResult, success: false, totalPackages: 2 },
 			tags: [],
 			releases: [],
+			tagShas: {},
 			dryRun: false,
 			failure: { stage: "build", reason: "tsc --noEmit: 3 errors" },
 		});
@@ -802,6 +822,7 @@ describe("toPublishOutput", () => {
 			publishResult: { ...emptyResult, success: false, packages: [ok], totalPackages: 3, totalTargets: 1 },
 			tags: [],
 			releases: [],
+			tagShas: {},
 			dryRun: false,
 			failure: { stage: "publish", reason: "aborted" },
 		});
@@ -830,6 +851,7 @@ describe("toPublishOutput", () => {
 			publishResult: { ...emptyResult, success: false, packages: [ok, bad], totalPackages: 2, totalTargets: 2 },
 			tags: [],
 			releases: [],
+			tagShas: {},
 			dryRun: false,
 			failure: { stage: "publish", reason: "Published 1/2 target(s)" },
 		});
@@ -849,6 +871,7 @@ describe("toPublishOutput", () => {
 			publishResult: emptyResult,
 			tags: [],
 			releases: [],
+			tagShas: {},
 			dryRun: false,
 			failure: null,
 		});
@@ -871,6 +894,7 @@ describe("toPublishOutput", () => {
 			publishResult: { ...emptyResult, packages: [pkg], totalPackages: 1, totalTargets: 1, successfulTargets: 1 },
 			tags: [],
 			releases: [],
+			tagShas: {},
 			dryRun: false,
 			failure: null,
 		});

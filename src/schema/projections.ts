@@ -352,6 +352,8 @@ export interface PublishInput {
 	readonly publishResult: PublishPackagesResult;
 	readonly tags: ReadonlyArray<TagInfo>;
 	readonly releases: ReadonlyArray<ReleaseInfo>;
+	/** Resolved tag-name → commit SHA, keyed by `TagInfo.name`. */
+	readonly tagShas: Readonly<Record<string, string>>;
 	readonly dryRun: boolean;
 	/** Null on a clean run. */
 	readonly failure: PublishFailureInput | null;
@@ -455,7 +457,7 @@ export const toPublishOutput = (input: PublishInput): PublishOutput => {
 		// tag first and the GitHub release second, so a failure between them
 		// leaves a real tag and no release — a state the output has to be able
 		// to express.
-		const tagEntry = tag === undefined ? null : { name: tag.name, sha: releaseInfo?.tagSha ?? "" };
+		const tagEntry = tag === undefined ? null : { name: tag.name, sha: input.tagShas[tag.name] ?? "" };
 		const release =
 			releaseInfo === undefined
 				? null

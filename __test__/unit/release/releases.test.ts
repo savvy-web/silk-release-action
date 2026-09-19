@@ -356,10 +356,10 @@ describe("runReleases", () => {
 
 				// #402: the tag sha is known here, at creation — the local clone
 				// never fetched the API-created tag, so `git rev-parse` was empty.
-				expect(result.releases.map((r) => r.tagSha)).toEqual([
-					"0000000000000000000000000000000000000000",
-					"0000000000000000000000000000000000000000",
-				]);
+				expect(result.tagShas).toEqual({
+					"v1.0.0": "0000000000000000000000000000000000000000",
+					"v2.0.0": "0000000000000000000000000000000000000000",
+				});
 			}),
 		);
 
@@ -650,6 +650,11 @@ describe("runReleases", () => {
 
 				expect(result.success).toBe(false);
 				expect(result.errors).toHaveLength(1);
+				expect(result.releases).toHaveLength(0);
+				// #402: the tag sha is resolved at tag-creation time and reported
+				// regardless of the release failure that follows it — the tag really
+				// does exist at this sha even though no GitHub release does.
+				expect(result.tagShas["v1.0.0"]).toBe("0000000000000000000000000000000000000000");
 			}),
 		);
 	});
@@ -686,7 +691,7 @@ describe("runReleases", () => {
 				expect(release.createCalls).toHaveLength(1);
 				expect(result.success).toBe(true);
 				expect(result.releases).toHaveLength(1);
-				expect(result.releases[0]?.tagSha).toBe(headSha);
+				expect(result.tagShas["v7.0.0"]).toBe(headSha);
 			}),
 		);
 
@@ -754,7 +759,7 @@ describe("runReleases", () => {
 			expect(warning).toContain(headSha);
 			expect(warning).toContain(existingSha);
 			// A diverged tag reports the sha the tag ACTUALLY points at, not the head.
-			expect(result.releases[0]?.tagSha).toBe(existingSha);
+			expect(result.tagShas["v8.0.0"]).toBe(existingSha);
 		});
 	});
 
@@ -789,7 +794,7 @@ describe("runReleases", () => {
 				expect(result.releases).toHaveLength(1);
 				expect(result.releases[0]?.tag).toBe("v3.0.0");
 				expect(result.errors).toHaveLength(0);
-				expect(result.releases.every((r) => r.tagSha === "")).toBe(true);
+				expect(result.tagShas["v3.0.0"]).toBe("");
 			}),
 		);
 	});
