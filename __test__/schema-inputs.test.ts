@@ -176,6 +176,42 @@ describe("readInputs", () => {
 		}),
 	);
 
+	it.effect("defaults registry-confirm-timeout to 180 seconds", () =>
+		Effect.gen(function* () {
+			const inputs = yield* readInputs.pipe(Effect.provide(provide({})));
+			expect(inputs.registryConfirmTimeout).toBe(180);
+		}),
+	);
+
+	it.effect("reads registry-confirm-timeout as whole seconds and accepts 0", () =>
+		Effect.gen(function* () {
+			const zero = yield* readInputs.pipe(Effect.provide(provide({ "registry-confirm-timeout": "0" })));
+			expect(zero.registryConfirmTimeout).toBe(0);
+
+			const sixHundred = yield* readInputs.pipe(Effect.provide(provide({ "registry-confirm-timeout": "600" })));
+			expect(sixHundred.registryConfirmTimeout).toBe(600);
+		}),
+	);
+
+	it.effect("fails the decode on a negative or non-integer registry-confirm-timeout", () =>
+		Effect.gen(function* () {
+			const negative = yield* Effect.exit(
+				readInputs.pipe(Effect.provide(provide({ "registry-confirm-timeout": "-1" }))),
+			);
+			expect(negative._tag).toBe("Failure");
+
+			const fractional = yield* Effect.exit(
+				readInputs.pipe(Effect.provide(provide({ "registry-confirm-timeout": "2.5" }))),
+			);
+			expect(fractional._tag).toBe("Failure");
+
+			const nonNumeric = yield* Effect.exit(
+				readInputs.pipe(Effect.provide(provide({ "registry-confirm-timeout": "soon" }))),
+			);
+			expect(nonNumeric._tag).toBe("Failure");
+		}),
+	);
+
 	it.effect("should fail on an unrecognised phase rather than routing to the no-op arm", () =>
 		Effect.gen(function* () {
 			// The behaviour the `as WorkflowPhase` cast in main.ts does not have: a

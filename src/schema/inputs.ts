@@ -51,6 +51,7 @@ export const INPUT_NAMES = [
 	"sbom-config",
 	"custom-registries",
 	"on-build",
+	"registry-confirm-timeout",
 ] as const;
 
 /**
@@ -76,6 +77,17 @@ const WorkflowPhaseSchema = Schema.Literals([
 	"close-issues",
 	"none",
 ]) satisfies Schema.Codec<WorkflowPhase, string>;
+
+/**
+ * A whole, non-negative second count.
+ *
+ * @remarks
+ * `ActionInput.integer` already rejects a fractional or non-numeric value
+ * (`Config.Int` underneath); this check adds the floor `registry-confirm-timeout`
+ * needs but `ActionInput.integer` does not enforce on its own — a negative
+ * timeout would otherwise decode cleanly.
+ */
+const NonNegativeIntSchema = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
 /**
  * The two branch names a release flow works between.
@@ -163,6 +175,12 @@ export interface Inputs extends BranchRefs {
 	 * decode here, typed, rather than silently configuring nothing.
 	 */
 	readonly customRegistries: ReadonlyArray<CustomRegistryAuth>;
+	/**
+	 * Ceiling, in whole seconds, on the post-publish registry-availability
+	 * probe. `0` disables it. Never a failure signal: a version still
+	 * unresolved at the ceiling is reported as held, not failed.
+	 */
+	readonly registryConfirmTimeout: number;
 }
 
 /**
@@ -210,6 +228,14 @@ const loadInputs: Config.Config<Inputs> = Config.all({
 	customRegistries: ActionInput.lines("custom-registries").pipe(
 		Config.withDefault([]),
 		Config.mapEffect(parseCustomRegistries),
+	),
+	registryConfirmTimeout: ActionInput.integer("registry-confirm-timeout").pipe(
+		Config.withDefault(180),
+		Config.mapEffect((value) =>
+			Schema.decodeUnknownEffect(NonNegativeIntSchema)(value).pipe(
+				Effect.mapError((error) => new Config.ConfigError(error)),
+			),
+		),
 	),
 });
 

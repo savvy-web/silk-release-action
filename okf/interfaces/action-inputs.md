@@ -16,8 +16,8 @@ sources:
     resource: ../../src/utils/custom-registries.ts
 generated:
   by: okfit/claude-code
-  at: 2026-09-13T19:54:03Z
-  body_sha256: 16a4dbf28389f64afa2f99b64a303632a863053ab8536def22c10ee0ada8df0e
+  at: 2026-09-19T00:34:28Z
+  body_sha256: a252a34a09413d3218055d08925b9e17a8791c92bb7c58029b67b4449b198bca
 ---
 
 # Action inputs and outputs
@@ -48,6 +48,7 @@ them.
 | `sbom-config` | no | `""` | SBOM metadata JSON — see `../interfaces/sbom-config.md`. |
 | `custom-registries` | no | `""` | Custom registry auth, one registry per line — see format below. |
 | `on-build` | no | `""` | Command run after the validation build; a non-zero exit fails Phase 2. Gate only: stderr is not inspected, and it must not mutate the repository. Skipped in dry-run along with the build it gates; unset is a total no-op. |
+| `registry-confirm-timeout` | no | `"180"` | Seconds to wait, after publishing, for every npm package version to become resolvable on its registry before the action finishes; `0` skips the probe. Never fails the run — a version still unresolved at the ceiling is reported as held. |
 
 Every input is decoded exactly once, in `src/schema/inputs.ts`, against typed
 literal unions rather than cast — the convention this contract depends on is

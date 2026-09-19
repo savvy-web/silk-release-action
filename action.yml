@@ -169,6 +169,20 @@ inputs:
       Unset is a total no-op: no execution, no output change, no new log group.
     required: false
     default: ""
+  registry-confirm-timeout:
+    description: |
+      Seconds to wait, after publishing, for every npm package version to
+      become resolvable on its registry before the action finishes. npm holds
+      newly published versions back while its publish-time malware scan runs
+      (usually under three minutes, occasionally much longer); the publish
+      itself has already succeeded during the hold.
+
+      The probe is bounded by this value and never fails the release. A version
+      still unresolved at the ceiling is reported as held in the output
+      (`availability.status: "held"`, `totals.packagesHeld`). Set to 0 to skip
+      the probe. Only npm-registry targets are probed.
+    required: false
+    default: "180"
 outputs:
   token:
     description: Generated GitHub App installation token (for use in subsequent steps)

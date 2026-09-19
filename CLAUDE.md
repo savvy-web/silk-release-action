@@ -60,6 +60,7 @@ For full architecture, module dependency graph, and per-module documentation: `o
 | `sbom-config` | No | `""` | SBOM metadata JSON (schema-validated) |
 | `custom-registries` | No | `""` | Custom registry auth (one per line) |
 | `on-build` | No | `""` | Command run after the validation build; a non-zero exit fails Phase 2. Gate only — exit code is read, stderr is not; must not mutate the repo. Skipped in dry-run along with the build it gates; unset is a total no-op |
+| `registry-confirm-timeout` | No | `180` | Seconds to wait after publishing for each npm version to resolve on its registry; `0` skips. Never fails the run — an unresolved version is reported as `held` |
 
 ### Authentication Model
 
