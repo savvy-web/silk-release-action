@@ -24,8 +24,8 @@ sources:
     resource: "https://github.com/savvy-web/silk-runtime-action/actions/runs/35233728336/job/105244177242"
 generated:
   by: okfit/claude-code
-  at: 2026-09-19T01:20:34Z
-  body_sha256: 4cad8d89673b3925c8db2236b54febb2fdbb96265b5d846b68e8b22b8eee83b0
+  at: 2026-09-19T01:42:17Z
+  body_sha256: d7b35670d242f5af52d5e000d630783b206018fcfefec670abdbfc12c144d1ce
 status: draft
 ---
 
@@ -65,7 +65,11 @@ exact `name@version` until it resolves or the `registry-confirm-timeout`
 input's ceiling elapses (default 180s, `0`
 disables).[^confirm-availability-ts] The result is reported, never
 hidden and never used to fail the run — a hold does not change `success`
-or `outcome`, because the package genuinely is published. Per package,
+or `outcome`, because the package genuinely is published. This is the
+Phase-3 instance of the rule
+[degraded-steps-contribute-findings](../decisions/degraded-steps-contribute-findings.md)
+states for Phase 2: a degraded step contributes a finding, never flips a
+boolean. Per package,
 `available: boolean` and `availability.status` distinguish `confirmed`
 from `held` (and `skipped` for non-npm targets, dry-run, or ceiling `0`);
 at the top level, `totals.packagesHeld` counts them and a non-zero count

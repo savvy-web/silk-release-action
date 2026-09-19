@@ -10,12 +10,12 @@ sources:
     resource: ../../src/schema/release-output.ts
   - id: projections-ts
     resource: ../../src/schema/projections.ts
-  - id: schema-5-2
+  - id: schema-6-0
     resource: ../../schemas/6.0/output.json
 generated:
   by: okfit/claude-code
-  at: 2026-09-19T01:08:34Z
-  body_sha256: 3e8ea732e53dec3620b41e38490bd3ecf26b542724a67c007384bb3d5459074c
+  at: 2026-09-19T01:42:17Z
+  body_sha256: 5dc42c7144d1c8cf2d09663cb13298548acbb283ee8800976fe642c7460afff2
 ---
 
 # The `result` output document
@@ -120,9 +120,11 @@ validation-phase workspace entry.[^release-output-ts]
 
 `PublishTag.sha` is populated from the tag-creation call itself — `headSha`
 on a fresh create or an idempotent recovery, the existing tag's sha on a
-diverged recovery — and is an empty string only on a dry-run or when the tag
-could be neither created nor resolved; it is never `null`, so a consumer
-reading `.tag.sha` always gets a string.[^release-output-ts]
+diverged recovery — and is an empty string on a dry-run, when the tag could
+be neither created nor resolved, when no package was associated with the tag
+(so it was never processed), or when `runReleases` failed outright before any
+tag was processed; it is never `null`, so a consumer reading `.tag.sha` always
+gets a string.[^release-output-ts]
 
 `PublishedPackage.url` and `PublishedPackage.tarballUrl` are two different
 things that a `null` for npm used to conflate into one field. `url` is the
