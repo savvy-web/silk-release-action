@@ -61,6 +61,7 @@ describe("ReleaseOutput schema", () => {
 			workspaces: {
 				"@savvy-web/foo": {
 					version: "1.2.0",
+					path: "packages/foo",
 					kind: "github-with-packages",
 					success: true,
 					outcome: "published",

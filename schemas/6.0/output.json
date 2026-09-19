@@ -1491,7 +1491,7 @@
 				"sha": {
 					"type": "string",
 					"title": "Tag SHA",
-					"description": "Commit SHA the tag points at. Empty string when the tag exists but the local clone could not resolve it — never null, so a consumer reading `.tag.sha` always gets a string."
+					"description": "Commit SHA the tag points at, taken from the tag-creation call itself. Empty string only on a dry-run or when the tag could be neither created nor resolved — never null, so a consumer reading `.tag.sha` always gets a string."
 				}
 			},
 			"required": ["name", "sha"],
@@ -1558,6 +1558,12 @@
 					"title": "Released version",
 					"description": "The version this workspace was bumped to and released at."
 				},
+				"path": {
+					"type": "string",
+					"title": "Workspace path",
+					"description": "Repo-relative directory of the workspace, e.g. `packages/foo`. `.` for a single-package repository.",
+					"examples": ["packages/foo"]
+				},
 				"kind": {
 					"$ref": "#/$defs/PublishWorkspaceKind"
 				},
@@ -1608,7 +1614,7 @@
 					"description": "The GitHub release created for this workspace. Null when none was created — either the phase aborted before releases ran (`outcome: blocked`) or release creation itself failed. Null therefore means *not present*, distinct from an empty `packages` array which means *none were meant to exist*."
 				}
 			},
-			"required": ["version", "kind", "success", "outcome", "summary", "packages", "tag", "release"],
+			"required": ["version", "path", "kind", "success", "outcome", "summary", "packages", "tag", "release"],
 			"additionalProperties": false,
 			"title": "Workspace release",
 			"description": "Everything that happened to one workspace: what it is, whether it worked, the packages it put on registries, and the GitHub release it produced."

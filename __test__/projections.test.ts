@@ -548,7 +548,8 @@ describe("toPublishOutput", () => {
 		version: string,
 		kind: "github-with-packages" | "github-only",
 		resolvedPackages: number,
-	): PublishWorkspacePlan[] => [{ name, version, kind, resolvedPackages }];
+		path = "packages/foo",
+	): PublishWorkspacePlan[] => [{ name, version, kind, resolvedPackages, path }];
 
 	const emptyResult: PublishPackagesResult = {
 		success: true,
@@ -600,6 +601,7 @@ describe("toPublishOutput", () => {
 		expect(ws?.success).toBe(true);
 		expect(ws?.tag).toEqual({ name: "@savvy-web/foo@1.2.0", sha: "abc123" });
 		expect(output.publish.order).toEqual(["@savvy-web/foo"]);
+		expect(ws?.path).toBe("packages/foo");
 	});
 
 	// `recovered` and `published` are BOTH successes. Splitting `success` from
@@ -764,8 +766,20 @@ describe("toPublishOutput", () => {
 	it("keeps every workspace on the wire when the phase aborts at the build gate", () => {
 		const output = toPublishOutput({
 			plan: [
-				{ name: "@effected/claude-code-plugin", version: "0.14.0", kind: "github-only", resolvedPackages: 0 },
-				{ name: "@savvy-web/foo", version: "1.2.0", kind: "github-with-packages", resolvedPackages: 2 },
+				{
+					name: "@effected/claude-code-plugin",
+					version: "0.14.0",
+					kind: "github-only",
+					resolvedPackages: 0,
+					path: "packages/claude-code-plugin",
+				},
+				{
+					name: "@savvy-web/foo",
+					version: "1.2.0",
+					kind: "github-with-packages",
+					resolvedPackages: 2,
+					path: "packages/foo",
+				},
 			],
 			publishResult: { ...emptyResult, success: false, totalPackages: 2 },
 			tags: [],
@@ -813,9 +827,27 @@ describe("toPublishOutput", () => {
 		};
 		const output = toPublishOutput({
 			plan: [
-				{ name: "@savvy-web/first", version: "1.0.0", kind: "github-with-packages", resolvedPackages: 1 },
-				{ name: "@savvy-web/second", version: "1.0.0", kind: "github-with-packages", resolvedPackages: 1 },
-				{ name: "@savvy-web/third", version: "1.0.0", kind: "github-with-packages", resolvedPackages: 1 },
+				{
+					name: "@savvy-web/first",
+					version: "1.0.0",
+					kind: "github-with-packages",
+					resolvedPackages: 1,
+					path: "packages/first",
+				},
+				{
+					name: "@savvy-web/second",
+					version: "1.0.0",
+					kind: "github-with-packages",
+					resolvedPackages: 1,
+					path: "packages/second",
+				},
+				{
+					name: "@savvy-web/third",
+					version: "1.0.0",
+					kind: "github-with-packages",
+					resolvedPackages: 1,
+					path: "packages/third",
+				},
 			],
 			// Only the FIRST workspace reached the publish step; the other two
 			// never did, so they are blocked at positions 1 and 2.
@@ -845,8 +877,20 @@ describe("toPublishOutput", () => {
 		};
 		const output = toPublishOutput({
 			plan: [
-				{ name: "@savvy-web/ok", version: "1.0.0", kind: "github-with-packages", resolvedPackages: 1 },
-				{ name: "@savvy-web/bad", version: "1.0.0", kind: "github-with-packages", resolvedPackages: 1 },
+				{
+					name: "@savvy-web/ok",
+					version: "1.0.0",
+					kind: "github-with-packages",
+					resolvedPackages: 1,
+					path: "packages/ok",
+				},
+				{
+					name: "@savvy-web/bad",
+					version: "1.0.0",
+					kind: "github-with-packages",
+					resolvedPackages: 1,
+					path: "packages/bad",
+				},
 			],
 			publishResult: { ...emptyResult, success: false, packages: [ok, bad], totalPackages: 2, totalTargets: 2 },
 			tags: [],

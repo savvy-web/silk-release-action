@@ -144,7 +144,15 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	detectReleasesMock.mockReturnValue(Effect.succeed([{ name: "@scope/alpha", version: "1.2.3", path: "/tmp/alpha" }]));
 	planWorkspacesMock.mockReturnValue(
-		Effect.succeed([{ name: "@scope/alpha", version: "1.2.3", kind: "github-with-packages", resolvedPackages: 1 }]),
+		Effect.succeed([
+			{
+				name: "@scope/alpha",
+				version: "1.2.3",
+				kind: "github-with-packages",
+				resolvedPackages: 1,
+				path: "packages/alpha",
+			},
+		]),
 	);
 	runBuildAndSbomMock.mockReturnValue(
 		Effect.succeed({

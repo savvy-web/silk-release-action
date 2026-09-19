@@ -493,6 +493,7 @@ export const toPublishOutput = (input: PublishInput): PublishOutput => {
 
 		workspaces[ws.name] = {
 			version: ws.version,
+			path: ws.path,
 			kind: ws.kind,
 			success,
 			outcome,

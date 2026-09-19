@@ -1108,6 +1108,11 @@ const PublishWorkspace = Schema.Struct({
 		title: "Released version",
 		description: "The version this workspace was bumped to and released at.",
 	}),
+	path: Schema.String.annotate({
+		title: "Workspace path",
+		description: "Repo-relative directory of the workspace, e.g. `packages/foo`. `.` for a single-package repository.",
+		examples: ["packages/foo"],
+	}),
 	kind: Schema.Literals(["github-only", "github-with-packages"]).annotate({
 		identifier: "PublishWorkspaceKind",
 		title: "Workspace kind",

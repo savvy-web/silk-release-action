@@ -418,6 +418,8 @@ export interface PublishWorkspacePlan {
 	readonly kind: ReleaseKind;
 	/** Intended (package, registry) publications resolved before publishing began. */
 	readonly resolvedPackages: number;
+	/** Repo-relative workspace directory, e.g. `packages/foo`. */
+	readonly path: string;
 }
 
 /** Where the publish phase stopped, and why. */

@@ -1073,6 +1073,7 @@ export const planWorkspaces = (
 				version: rel.version,
 				kind: releaseKindOf(resolved.targets.length),
 				resolvedPackages: resolved.targets.length,
+				path: rel.path,
 			});
 		}
 		return plan;
