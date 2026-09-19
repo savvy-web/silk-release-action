@@ -389,6 +389,7 @@ const processOneTag = (
 					url: releaseTagUrl(serverUrl, owner, repo, tag.name),
 					id: 0,
 					assets: [],
+					tagSha: "",
 				} satisfies ReleaseInfo,
 				null,
 			] as const;
@@ -400,8 +401,9 @@ const processOneTag = (
 		// from a different commit. Here a divergence is reported and left alone.
 		const gitTagSvc = yield* GitTag;
 
-		yield* gitTagSvc.create(tag.name, headSha).pipe(
+		const tagSha: string = yield* gitTagSvc.create(tag.name, headSha).pipe(
 			Effect.tap(() => Effect.logInfo(`  🏷 ${tag.name} · created at ${headSha}`)),
+			Effect.as(headSha),
 			Effect.catch((createErr: GitHubError) =>
 				// Distinguish the idempotent "tag already exists at the right SHA"
 				// case from a true divergence. Resolve the existing tag's SHA and
@@ -417,6 +419,7 @@ const processOneTag = (
 										`runReleases: tag ${tag.name} already at ${headSha} — idempotent recovery, proceeding`,
 									);
 									yield* Effect.logInfo(`  🏷 ${tag.name} · already at ${headSha} — idempotent recovery`);
+									return headSha;
 								})
 							: Effect.gen(function* () {
 									yield* Effect.logWarning(
@@ -425,6 +428,7 @@ const processOneTag = (
 									yield* Effect.logInfo(
 										`  🏷 ${tag.name} · diverged — existing ${existingSha} ≠ head ${headSha} (proceeding)`,
 									);
+									return existingSha;
 								}),
 					),
 					Effect.catch((resolveErr: GitHubError) =>
@@ -433,6 +437,7 @@ const processOneTag = (
 								`runReleases: tag ${tag.name} create failed (${createErr.kind}) and resolve failed (${resolveErr.kind}) — proceeding`,
 							);
 							yield* Effect.logInfo(`  🏷 ${tag.name} · create+resolve failed — proceeding`);
+							return "";
 						}),
 					),
 				),
@@ -488,6 +493,7 @@ const processOneTag = (
 			url: releaseTagUrl(serverUrl, owner, repo, tag.name),
 			id: releaseData.id,
 			assets,
+			tagSha,
 		};
 
 		// Mutable release-notes string; updated after asset uploads to replace

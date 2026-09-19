@@ -353,6 +353,13 @@ describe("runReleases", () => {
 				expect(release.createCalls).toHaveLength(2);
 				expect(release.createCalls.map((c) => c.tag)).toContain("v1.0.0");
 				expect(release.createCalls.map((c) => c.tag)).toContain("v2.0.0");
+
+				// #402: the tag sha is known here, at creation — the local clone
+				// never fetched the API-created tag, so `git rev-parse` was empty.
+				expect(result.releases.map((r) => r.tagSha)).toEqual([
+					"0000000000000000000000000000000000000000",
+					"0000000000000000000000000000000000000000",
+				]);
 			}),
 		);
 
@@ -679,6 +686,7 @@ describe("runReleases", () => {
 				expect(release.createCalls).toHaveLength(1);
 				expect(result.success).toBe(true);
 				expect(result.releases).toHaveLength(1);
+				expect(result.releases[0]?.tagSha).toBe(headSha);
 			}),
 		);
 
@@ -745,6 +753,8 @@ describe("runReleases", () => {
 			expect(warning).toBeDefined();
 			expect(warning).toContain(headSha);
 			expect(warning).toContain(existingSha);
+			// A diverged tag reports the sha the tag ACTUALLY points at, not the head.
+			expect(result.releases[0]?.tagSha).toBe(existingSha);
 		});
 	});
 
@@ -779,6 +789,7 @@ describe("runReleases", () => {
 				expect(result.releases).toHaveLength(1);
 				expect(result.releases[0]?.tag).toBe("v3.0.0");
 				expect(result.errors).toHaveLength(0);
+				expect(result.releases.every((r) => r.tagSha === "")).toBe(true);
 			}),
 		);
 	});

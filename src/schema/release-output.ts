@@ -1080,7 +1080,7 @@ const PublishTag = Schema.Struct({
 	sha: Schema.String.annotate({
 		title: "Tag SHA",
 		description:
-			"Commit SHA the tag points at. Empty string when the tag exists but the local clone could not resolve it — never null, so a consumer reading `.tag.sha` always gets a string.",
+			"Commit SHA the tag points at, taken from the tag-creation call itself. Empty string only on a dry-run or when the tag could be neither created nor resolved — never null, so a consumer reading `.tag.sha` always gets a string.",
 	}),
 }).annotate({
 	identifier: "PublishTag",

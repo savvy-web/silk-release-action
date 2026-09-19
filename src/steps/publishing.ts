@@ -57,7 +57,6 @@
  * @module steps/publishing
  */
 
-import { Git } from "@effected/git";
 import { ActionLogger, ActionOutputs, DryRun } from "@effected/github-actions";
 import { Effect } from "effect";
 import { PublishError, ReleasesError } from "../release/errors.js";
@@ -127,10 +126,9 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 				publishResult: PublishPackagesResult,
 				tags: ReadonlyArray<TagInfo>,
 				releases: ReadonlyArray<ReleaseInfo>,
-				tagShas: Record<string, string>,
 				failure: PublishFailureInput | null,
 			) =>
-				emitReleaseOutput(outputs, toPublishOutput({ plan, publishResult, tags, releases, tagShas, dryRun, failure }), {
+				emitReleaseOutput(outputs, toPublishOutput({ plan, publishResult, tags, releases, dryRun, failure }), {
 					packageCount: plan.length,
 					releasePrNumber: mergedReleasePRNumber !== undefined ? mergedReleasePRNumber : null,
 				});
@@ -175,7 +173,7 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 					totalTargets: 0,
 					successfulTargets: 0,
 				};
-				yield* emitPublishing([], empty, [], [], {}, null);
+				yield* emitPublishing([], empty, [], [], null);
 				yield* Effect.logInfo("Release publishing: ✅ no packages were versioned — nothing to tag, release or publish");
 				return;
 			}
@@ -225,17 +223,10 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 					successfulTargets: 0,
 					...(buildSbom.buildError !== undefined ? { buildError: buildSbom.buildError } : {}),
 				};
-				yield* emitPublishing(
-					plan,
-					failed,
-					[],
-					[],
-					{},
-					{
-						stage: "build",
-						reason: buildSbom.buildError ?? detail,
-					},
-				);
+				yield* emitPublishing(plan, failed, [], [], {
+					stage: "build",
+					reason: buildSbom.buildError ?? detail,
+				});
 				yield* Effect.logInfo("Release publishing: ❌ aborted at Build & SBOM — nothing published");
 				yield* outputs.setFailed("Phase 3 aborted at Build & SBOM");
 				// FAIL, do not return. `setFailed` only annotates; the exit code comes
@@ -252,17 +243,10 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 				yield* Effect.logError(
 					`❌ Published ${publishResult.successfulTargets}/${publishResult.totalTargets} target(s) — aborting before releases`,
 				);
-				yield* emitPublishing(
-					plan,
-					publishResult,
-					[],
-					[],
-					{},
-					{
-						stage: "publish",
-						reason: `Published ${publishResult.successfulTargets}/${publishResult.totalTargets} target(s)`,
-					},
-				);
+				yield* emitPublishing(plan, publishResult, [], [], {
+					stage: "publish",
+					reason: `Published ${publishResult.successfulTargets}/${publishResult.totalTargets} target(s)`,
+				});
 				yield* Effect.logInfo("Release publishing: ❌ failed at Publish");
 				yield* outputs.setFailed("Publishing failed");
 				// FAIL, do not return — see the note on `PublishError`. Returning here
@@ -334,22 +318,14 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 			}
 
 			// ── Emit outputs + final summary ───────────────────────────────────────
-			const git = yield* Git;
-			const tagShas: Record<string, string> = {};
-			for (const tag of tagStrategy.tags) {
-				// `Effect.result`, so a tag the local clone has not fetched reports an
-				// empty sha instead of failing the phase after everything published.
-				// `Git.revParse` fails typed (`UnknownRefError`) where the raw form
-				// reported a non-zero exit code, and trims for us.
-				const rev = yield* Effect.result(git.revParse(process.cwd(), tag.name));
-				tagShas[tag.name] = rev._tag === "Success" ? rev.success : "";
-			}
+			// The tag sha travels on `ReleaseInfo.tagSha`, set at creation time in
+			// `processOneTag` — no local `git rev-parse` needed here, and none would
+			// find a tag this clone never fetched.
 			yield* emitPublishing(
 				plan,
 				publishResult,
 				tagStrategy.tags,
 				releasesResult.releases,
-				tagShas,
 				releasesResult.success
 					? closeResult !== null && closeResult.failedCount > 0
 						? { stage: "linked-issues", reason: `${closeResult.failedCount} issue(s) failed to close` }
@@ -358,9 +334,9 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 			);
 
 			// ── Deferred failure ───────────────────────────────────────────────────
-			// Everything above has run: the follow-on close-linked-issues work, the
-			// tag-SHA collection and the output emission. Only now is it safe to
-			// fail, because `result` already describes the packages that DID publish.
+			// Everything above has run: the follow-on close-linked-issues work and the
+			// output emission. Only now is it safe to fail, because `result` already
+			// describes the packages that DID publish.
 			//
 			// This is `ReleasesError`, not `PublishError`: the publish succeeded
 			// (Step 4 gates Step 5), and `PublishError`'s reason union has no member

@@ -325,6 +325,12 @@ export interface ReleaseInfo {
 	id: number;
 	/** Uploaded assets */
 	assets: AssetInfo[];
+	/**
+	 * Commit the tag points at. Known at creation: `headSha` when the tag was
+	 * created or already sat at the head, the existing sha when it diverged,
+	 * `""` on dry-run or when neither create nor resolve succeeded.
+	 */
+	tagSha: string;
 }
 
 /**

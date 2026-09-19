@@ -8,9 +8,8 @@
 // `runReleases` fails, the phase
 //
 //   1. keeps going (close-linked-issues still runs),
-//   2. still collects tag SHAs,
-//   3. still EMITS OUTPUTS describing what actually published, and only THEN
-//   4. fails the effect, with a message carrying the re-run contract.
+//   2. still EMITS OUTPUTS describing what actually published, and only THEN
+//   3. fails the effect, with a message carrying the re-run contract.
 //
 // Ordering is the whole design: failing at the failure site would skip (3), and
 // a consumer reading `result` could not tell which packages reached a registry.
@@ -29,7 +28,6 @@ const runBuildAndSbomMock = vi.hoisted(() => vi.fn());
 const runPublishTargetsMock = vi.hoisted(() => vi.fn());
 const runReleasesMock = vi.hoisted(() => vi.fn());
 const closeLinkedIssuesMock = vi.hoisted(() => vi.fn());
-const revParseMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../src/release/publish.js", () => ({
 	detectReleases: detectReleasesMock,
@@ -55,7 +53,6 @@ vi.mock("../src/utils/determine-tag-strategy.js", async (importOriginal) => ({
 }));
 
 const { ActionLogger, ActionOutputs, ActionState, DryRun } = await import("@effected/github-actions");
-const { Git } = await import("@effected/git");
 const { runPublishing } = await import("../src/steps/publishing.js");
 
 /** One package, one target, published — the "what actually published" fact. */
@@ -131,7 +128,6 @@ const run = async (): Promise<RunCapture> => {
 		// `emitReleaseOutput` saves the encoded result for the post phase.
 		ActionState.layerTest({ save: () => Effect.void }),
 		DryRun.layerTest({ isDryRun: Effect.succeed(false) }),
-		Git.layerTest({ revParse: revParseMock }),
 	);
 
 	// The mocked modules erase their real requirement channels at RUNTIME only —
@@ -162,7 +158,6 @@ beforeEach(() => {
 	runPublishTargetsMock.mockReturnValue(Effect.succeed(PUBLISH_RESULT));
 	runReleasesMock.mockReturnValue(Effect.succeed({ success: true, releases: [], errors: [] }));
 	closeLinkedIssuesMock.mockReturnValue(Effect.succeed({ closedCount: 2, failedCount: 0, issues: [] }));
-	revParseMock.mockReturnValue(Effect.succeed("abc1234"));
 });
 
 describe("runPublishing — happy path", () => {
@@ -170,7 +165,7 @@ describe("runPublishing — happy path", () => {
 		runReleasesMock.mockReturnValue(
 			Effect.succeed({
 				success: true,
-				releases: [{ tag: "v1.2.3", url: "https://example.test/r", id: 7, assets: [] }],
+				releases: [{ tag: "v1.2.3", url: "https://example.test/r", id: 7, assets: [], tagSha: "" }],
 				errors: [],
 			}),
 		);
@@ -239,19 +234,20 @@ describe("runPublishing — a runReleases failure fails the phase", () => {
 		expect(text).toContain("✅ 2 issue(s) closed");
 	});
 
-	it("STILL collects tag SHAs before failing", async () => {
+	it("STILL reports the tag, with an empty sha, when runReleases fails outright", async () => {
+		// `runReleasesMock` (this describe's `beforeEach`) fails the whole step, so
+		// no `ReleaseInfo` was ever produced for this tag — #402: the sha now
+		// travels on `ReleaseInfo.tagSha`, set at tag-creation time inside
+		// `processOneTag`, so a run where that never happened has nothing to read
+		// it from. The tag rides on the workspace as a SIBLING of `release`, so a
+		// run whose release creation failed — which is exactly this case — still
+		// reports the tag it meant to cut.
 		const { result } = await run();
 
-		expect(revParseMock).toHaveBeenCalled();
-		// The tag SHA now rides on the workspace's own release, so a consumer
-		// reads it without cross-referencing a separate tags array.
-		// The tag rides on the workspace as a SIBLING of `release`, so a run whose
-		// release creation failed — which is exactly this case — still reports the
-		// tag it did cut.
 		const payload = result?.publish as {
 			workspaces: Record<string, { tag: { sha: string } | null; release: unknown }>;
 		};
-		expect(payload.workspaces["@scope/alpha"]?.tag?.sha).toBe("abc1234");
+		expect(payload.workspaces["@scope/alpha"]?.tag?.sha).toBe("");
 		expect(payload.workspaces["@scope/alpha"]?.release).toBeNull();
 	});
 
@@ -286,7 +282,7 @@ describe("runPublishing — a runReleases failure fails the phase", () => {
 		runReleasesMock.mockReturnValue(
 			Effect.succeed({
 				success: false,
-				releases: [{ tag: "v1.2.3", url: "https://example.test/r", id: 7, assets: [] }],
+				releases: [{ tag: "v1.2.3", url: "https://example.test/r", id: 7, assets: [], tagSha: "" }],
 				errors: ["asset upload failed", "second failure"],
 			}),
 		);
