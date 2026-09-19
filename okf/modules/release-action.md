@@ -7,8 +7,8 @@ resource: ../../src
 status: draft
 generated:
   by: okfit/claude-code
-  at: 2026-09-19T01:01:32Z
-  body_sha256: c02395ddc417fa6a101e977460b828e2fb28369fa4742fd02fed3c7880c6554f
+  at: 2026-09-19T01:08:34Z
+  body_sha256: 9b762d45445ce25bf5545b707a69ab41d2b618b9f58e8b49e8d595ae96c0169a
 sources:
   - id: src-main
     resource: ../../src/main.ts
@@ -144,7 +144,6 @@ Triggers on merge of the release PR to `main`. `steps/publishing.ts` is the phas
 4. **`runPublishTargets`** — publishes packages: resolves targets, sorts topologically (idempotent re-sort), and calls `publishDirectoryGroup` per unique build directory. Aborts before any releases unless every target published or recovered (`publishResult.success` is all-or-nothing).
 5. **`runReleases`** (`release/releases.ts`) — creates Git tags (sha-aware idempotency) and GitHub releases, uploads group-keyed assets, creates SLSA provenance and SBOM attestations (idempotent: checks for an existing attestation first). One attestation per build directory, not per target.
 6. **`confirmAvailability`** (`steps/confirm-availability.ts`) — after `runReleases`, before `emitPublishing`, so a hold never delays tags or releases: polls every successful npm target's exact `name@version` on its registry until it resolves or `registry-confirm-timeout` elapses, concurrently. Never fails the run and never flips `success`/`outcome` — a held package is published, just not yet resolvable. See [npm-publish-hold](../gotchas/npm-publish-hold.md).
-7. **`buildPublishSummary`** (`release/report.ts`) — generates the sticky-comment publish summary and Check Run output.
 
 Ordering is established **once, at the source**: immediately after `detectReleases`, `steps/publishing.ts` sorts the detected set dependency-first via `sortReleasesTopologically`, so tag strategy, build & SBOM, publish, and releases all run in the same order — previously only `runPublishTargets` sorted while the rest consumed alphabetical detection order.
 

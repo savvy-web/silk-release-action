@@ -14,8 +14,8 @@ sources:
     resource: ../../schemas/6.0/output.json
 generated:
   by: okfit/claude-code
-  at: 2026-09-19T01:01:32Z
-  body_sha256: 578cabfaac9b067a39c713b12c97060e59c2feaf708ec8e50e56e11e911f6c0f
+  at: 2026-09-19T01:08:34Z
+  body_sha256: 3e8ea732e53dec3620b41e38490bd3ecf26b542724a67c007384bb3d5459074c
 ---
 
 # The `result` output document
@@ -112,10 +112,11 @@ there by design; they are rendered, not carried.
 
 ## Publish-phase package and workspace fields (#402, #301)
 
-`PublishWorkspace.path` is the repo-relative directory of the workspace
-(`packages/foo`, or `.` for a single-package repository); the validation
-phase carries the same field only when its own plan already resolved a
-directory, rather than fabricating one.[^release-output-ts]
+`PublishWorkspace.path` is a **publish-phase-only** field: the repo-relative
+directory of the workspace (`packages/foo`, or `.` for a single-package
+repository). `ValidationWorkspace` carries no equivalent field — its plan
+has no directory to report — so a consumer must not expect `path` on a
+validation-phase workspace entry.[^release-output-ts]
 
 `PublishTag.sha` is populated from the tag-creation call itself — `headSha`
 on a fresh create or an idempotent recovery, the existing tag's sha on a
