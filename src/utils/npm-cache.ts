@@ -9,9 +9,9 @@
  * library (`@savvy-web/github-action-effects` 2.2.1, savvy-web/systems commit
  * `546c57d9`) fixed this by splicing `--cache <RUNNER_TEMP>/silk-npm-cache`
  * into every npm invocation. The v4 rebuild moved npm execution onto
- * `@effected/npm` (`NpmExecutor.dlx("npm@11")`), which offers no arg-splicing
+ * `@effected/npm` (`NpmExecutor.dlx("npm@12")`), which offers no arg-splicing
  * seam — but npm honors the `npm_config_cache` environment variable in every
- * dispatch form, including `pnpm dlx npm@11`, and spawned children inherit
+ * dispatch form, including `pnpm dlx npm@12`, and spawned children inherit
  * `process.env`.
  */
 

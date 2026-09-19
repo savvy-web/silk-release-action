@@ -1,0 +1,26 @@
+[
+  {
+    "id": "@fixture/public-package@1.0.0",
+    "name": "@fixture/public-package",
+    "version": "1.0.0",
+    "size": 266,
+    "unpackedSize": 197,
+    "shasum": "af7ca62c89ddc111e31ef08fa33c0cfcf1d6bef3",
+    "integrity": "sha512-ccB0M/QG9cvueOYWL3oTg49KfwyF4SHdZRupJ+hxYdxp+ParAexPvfDNPLWo8BW0ihC5pWk9Hq1H7L9Tvbm74Q==",
+    "filename": "fixture-public-package-1.0.0.tgz",
+    "files": [
+      {
+        "path": ".changeset/config.json",
+        "size": 118,
+        "mode": 420
+      },
+      {
+        "path": "package.json",
+        "size": 79,
+        "mode": 420
+      }
+    ],
+    "entryCount": 2,
+    "bundled": []
+  }
+]

@@ -35,7 +35,7 @@ const WorkspacesLive = Workspaces.layerWithGit();
  * @remarks
  * `Workspaces.localExecLayer()` requires `PackageManagerDetector | WorkspaceRoot`
  * and asks the detected manager what its run-a-local-tool argv looks like, so
- * `NpmExecutor.dlx` resolves to (e.g.) `pnpm dlx npm@11` in a pnpm workspace and
+ * `NpmExecutor.dlx` resolves to (e.g.) `pnpm dlx npm@12` in a pnpm workspace and
  * to the npm equivalent in an npm one. It replaces the static
  * `LocalExec.layerFor("pnpm", { directory: process.cwd() })` that
  * `layers/app.ts` used to mint, which asserted pnpm regardless of what the

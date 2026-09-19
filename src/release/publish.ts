@@ -89,18 +89,34 @@ export interface DetectedRelease {
  *
  * @remarks
  * **Pinned deliberately, and the pin is load-bearing.** OIDC trusted publishing
- * needs npm ≥ 11.5.1 and GitHub-hosted runners ship 10.x, so the runner's
- * ambient npm cannot publish this way at all; npm 12's publish is separately
- * broken (it ships without sigstore). `NpmExecutor.dlx` resolves through the
- * project's `LocalExec` launcher — `pnpm dlx npm@11` here — and **fails typed**
- * when no launcher is provided rather than degrading to the ambient npm, which
- * is the whole point: a silent downgrade would reintroduce the OIDC failure
- * invisibly.
+ * needs npm ≥ 11.5.1 and GitHub-hosted runners ship whatever their Node image
+ * bundles (10.x on Node 22/24 images, 11.x on Node 26), so the runner's ambient
+ * npm cannot be relied on to publish this way at all. `NpmExecutor.dlx`
+ * resolves through the project's `LocalExec` launcher — `pnpm dlx npm@12`
+ * here — and **fails typed** when no launcher is provided rather than
+ * degrading to the ambient npm, which is the whole point: a silent downgrade
+ * would reintroduce the OIDC failure invisibly.
+ *
+ * The line is `npm@12` (a major, not `latest`): npm 12.0.0 changed
+ * `pack --json` from an array to a name-keyed object and shipped without its
+ * bundled `sigstore` (npm/cli#9722); both are behind us — `@effected/npm`
+ * ≥ 0.14.2 decodes both `pack --json` shapes, and 12.0.2 bundles `sigstore`
+ * again. `npm@12.0.2`'s `engines.node` is `^22.22.2 || ^24.15.0 || >=26.0.0`;
+ * the pin was moved with `devEngines.runtime` on Node 26.9.0, and lowering
+ * that floor below 24.15 buys an `npm warn cli` on every call.
  *
  * This replaces the predecessor's `packageManager` option, which was repeated
  * on five method signatures to express this one thing.
+ *
+ * Exported so `__test__/unit/release/npm-pin-pack.test.ts` can drive the real
+ * `PackagePublish.layer` with this executor over output recorded from the
+ * pinned npm, proving the pin and the installed `@effected/npm` decode each
+ * other — the two are independently versioned, and this is the only place
+ * they meet.
+ *
+ * @internal
  */
-const NPM_EXECUTOR = NpmExecutor.dlx("npm@11");
+export const NPM_EXECUTOR: NpmExecutor = NpmExecutor.dlx("npm@12");
 
 /**
  * The `.npmrc` `setupAuth` writes to and `npm publish` reads from.
