@@ -10,7 +10,7 @@ Every `npm pack` and `npm publish` the action runs now goes through `pnpm dlx np
 
 ## Tests
 
-* Added an integration test that fetches the pinned npm through the same pnpm launcher the action uses and drives `PackagePublish.dryRun` against a fixture package, so the pin and the installed `@effected/npm` are proven to decode each other by a real subprocess rather than a fixture
+* Added a suite that drives the real `PackagePublish` service with the pinned executor over `pack --json` output recorded from the actual npm 11.19.1 and 12.0.2 binaries, so the pin and the installed `@effected/npm` are proven to decode each other without a network fetch in CI
 
 ## Dependencies
 

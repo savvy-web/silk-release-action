@@ -12,13 +12,13 @@ sources:
   - id: publish
     resource: ../../src/release/publish.ts
   - id: pair-test
-    resource: ../../__test__/integration/npm-pin-pack.int.test.ts
+    resource: ../../__test__/unit/release/npm-pin-pack.test.ts
   - id: issue-424
     resource: https://github.com/savvy-web/silk-release-action/issues/424
 generated:
   by: okfit/claude-code
-  at: 2026-09-19T21:02:16Z
-  body_sha256: 87dce35e9768808b67d7f55ff2a5bef626102c76b50025baed8d919dd7b655bb
+  at: 2026-09-19T21:14:04Z
+  body_sha256: 1b3ffeecaf4128f4d067b6d2ab481de589974d311fa59461bc4f5edfa8856f00
 ---
 
 # Pin the npm publish CLI to 12.x via the package manager's dlx launcher
@@ -54,14 +54,21 @@ than degrading), and never `latest`. The kit is `@effected/npm` ≥ 0.14.2
 (via `@effected/pnpm-plugin-effect` ≥ 0.8.15).
 
 The pin and the kit's `pack --json` parser are versioned independently
-and only meet at runtime, so the pair is proven by a real subprocess, not
-a fixture: `__test__/integration/npm-pin-pack.int.test.ts`[^pair-test]
-runs the pinned npm through the same pnpm launcher and drives
-`PackagePublish.dryRun` against a fixture package — the exact call
-`publish-validation` makes. It also asserts the exported `NPM_EXECUTOR`
-carries `npm@12`, so the test reads the pin the action ships rather than
-a copy of it. **Moving the pin again means moving that test with it**, and
-running it against the kit actually installed.
+and only meet at runtime, so the pair is proven against the kit's real
+decoder, not a hand-written shape:
+`__test__/unit/release/npm-pin-pack.test.ts`[^pair-test] runs the real
+`PackagePublish.layer` and the real pnpm `LocalExec` launcher with only the
+spawner scripted, replaying `pack --dry-run --json` output recorded from
+the actual npm 11.19.1 and 12.0.2 binaries
+(`__test__/unit/release/fixtures/npm-pack-json/`). It asserts the argv is
+`pnpm dlx npm@12 …`, that both shapes decode, and — as the positive
+control — that unreadable output still fails typed with `kind: "output"`.
+It reads the exported `NPM_EXECUTOR`, not a copy of the spec. A live
+subprocess against the registry was rejected for CI: it would make the
+suite depend on registry reachability for a property that only changes
+when the pin moves. **Moving the pin again means re-recording the fixture
+from the new binary**, and running the suite against the kit actually
+installed.
 
 ## Alternatives rejected
 
@@ -90,5 +97,5 @@ through one launcher, so a dry-run passing remains a real signal about
 what the publish will do.
 
 [^publish]: `../../src/release/publish.ts`
-[^pair-test]: `../../__test__/integration/npm-pin-pack.int.test.ts`
+[^pair-test]: `../../__test__/unit/release/npm-pin-pack.test.ts`
 [^issue-424]: <https://github.com/savvy-web/silk-release-action/issues/424>

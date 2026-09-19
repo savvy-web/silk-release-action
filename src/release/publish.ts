@@ -108,10 +108,11 @@ export interface DetectedRelease {
  * This replaces the predecessor's `packageManager` option, which was repeated
  * on five method signatures to express this one thing.
  *
- * Exported so `__test__/integration/npm-pin-pack.int.test.ts` can run the
- * REAL pinned npm through the installed `@effected/npm` and prove the pair
- * still decodes each other — the pin and the kit's `pack --json` parser are
- * independently versioned, and this is the only place the two meet.
+ * Exported so `__test__/unit/release/npm-pin-pack.test.ts` can drive the real
+ * `PackagePublish.layer` with this executor over output recorded from the
+ * pinned npm, proving the pin and the installed `@effected/npm` decode each
+ * other — the two are independently versioned, and this is the only place
+ * they meet.
  *
  * @internal
  */
