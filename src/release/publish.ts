@@ -7,7 +7,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { Run } from "@effected/commands";
 import type { GitHubError, Repo } from "@effected/github";
 import { Attestation, GitHubCommit, GitHubContent, PullRequest } from "@effected/github";
@@ -1073,7 +1073,9 @@ export const planWorkspaces = (
 				version: rel.version,
 				kind: releaseKindOf(resolved.targets.length),
 				resolvedPackages: resolved.targets.length,
-				path: rel.path,
+				// `DetectedRelease.path` stays absolute (SBOM and pack read from it);
+				// the wire contract is repo-relative, with the root itself as ".".
+				path: relative(process.cwd(), rel.path) || ".",
 			});
 		}
 		return plan;

@@ -125,6 +125,30 @@ const probeOne = (
 	});
 
 /**
+ * Whether {@link confirmAvailability} would probe anything at all.
+ *
+ * @remarks
+ * The caller uses this to skip the "Confirm registry availability" log group
+ * when nothing will be probed — a dry-run, a ceiling of `0`, or no npm
+ * targets — rather than opening an empty heading. The same predicate gates
+ * the probe itself, so the group and the work cannot disagree.
+ *
+ * @param targets - The successfully published targets.
+ * @param options - Ceiling and dry-run flag.
+ * @returns `true` when at least one npm target will be polled.
+ *
+ * @public
+ */
+export const willProbe = (
+	targets: ReadonlyArray<AvailabilityTarget>,
+	options: Pick<ConfirmAvailabilityOptions, "ceilingSeconds" | "dryRun">,
+): boolean => !options.dryRun && options.ceilingSeconds > 0 && npmTargetsOf(targets).length > 0;
+
+/** The subset of targets that live on an npm-classified registry. */
+const npmTargetsOf = (targets: ReadonlyArray<AvailabilityTarget>): ReadonlyArray<AvailabilityTarget> =>
+	targets.filter((t) => t.registry !== null && classifyRegistry(t.registry) === "npm");
+
+/**
  * Probe every npm target for its exact version. Never fails; see the module
  * remarks.
  *
@@ -146,10 +170,9 @@ export const confirmAvailability = (
 ): Effect.Effect<ReadonlyMap<string, TargetAvailability>, never, NpmRegistry> =>
 	Effect.gen(function* () {
 		const result = new Map<string, TargetAvailability>();
-		const probe = !options.dryRun && options.ceilingSeconds > 0;
-		const npmTargets = targets.filter((t) => t.registry !== null && classifyRegistry(t.registry) === "npm");
 		for (const t of targets) result.set(availabilityKey(t.registry, t.name, t.version), SKIPPED);
-		if (!probe || npmTargets.length === 0) return result;
+		if (!willProbe(targets, options)) return result;
+		const npmTargets = npmTargetsOf(targets);
 
 		// `Inputs.npmToken` defaults to "" for an unsupplied input; treat it as
 		// absent, as `publish.ts` does.

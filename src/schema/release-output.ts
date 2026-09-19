@@ -1028,7 +1028,7 @@ const PublishedPackage = Schema.Struct({
 			identifier: "PackageAvailabilityStatus",
 			title: "Availability status",
 			description:
-				"`confirmed` — the exact `name@version` resolved on the registry within the ceiling. `held` — the publish succeeded but the version was not resolvable when the ceiling (`registry-confirm-timeout`) elapsed; npm holds new versions during publish-time malware scanning, usually for under three minutes and occasionally much longer. A held package IS published; downstream installs may need to retry. `skipped` — not probed: a non-npm registry, a dry-run, or a ceiling of 0.",
+				"`confirmed` — the exact `name@version` resolved on the registry within the ceiling. `held` — the publish succeeded but the version was not resolvable when the ceiling (`registry-confirm-timeout`) elapsed; npm holds new versions during publish-time malware scanning, usually for under three minutes and occasionally much longer. A held package IS published; downstream installs may need to retry. `skipped` — not probed: a non-npm registry, a dry-run, a ceiling of 0, a target that did not publish (`failed`), or a phase that aborted before the probe ran.",
 		}),
 		waitedMs: Schema.Int.annotate({
 			title: "Wait (ms)",
@@ -1106,12 +1106,12 @@ const PublishTag = Schema.Struct({
 	name: Schema.String.annotate({
 		title: "Tag name",
 		description: "The git tag created for this workspace.",
-		examples: ["@effected/claude-code-plugin@0.14.0", "v1.2.0"],
+		examples: ["@effected/claude-code-plugin@0.14.0", "1.2.0"],
 	}),
 	sha: Schema.String.annotate({
 		title: "Tag SHA",
 		description:
-			"Commit SHA the tag points at, taken from the tag-creation call itself. Empty string only on a dry-run or when the tag could be neither created nor resolved — never null, so a consumer reading `.tag.sha` always gets a string.",
+			"Commit SHA the tag points at, taken from the tag-creation call itself. Empty string on a dry-run; when the tag could be neither created nor resolved; when no package was associated with the tag, so it was never processed; or when the releases step failed outright before any tag was processed. Never null, so a consumer reading `.tag.sha` always gets a string.",
 	}),
 }).annotate({
 	identifier: "PublishTag",

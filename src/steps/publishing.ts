@@ -82,7 +82,7 @@ import { ensureFullHistory } from "../utils/ensure-full-history.js";
 import { grouped } from "../utils/grouped.js";
 import { releaseKindLabel, summarizeReleaseWave, tallyReleaseKinds } from "../utils/release-kind.js";
 import { sortReleasesTopologically } from "../utils/sort-releases-topologically.js";
-import { confirmAvailability } from "./confirm-availability.js";
+import { confirmAvailability, willProbe } from "./confirm-availability.js";
 
 /**
  * The recovery instruction appended to every deferred Phase-3 failure message.
@@ -363,17 +363,18 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 			// a version still unresolved at the ceiling is a `held` finding beside
 			// the package, not a flipped boolean. `inputs.npmToken` is "" when the
 			// input was not supplied; the step treats that as absent.
-			const availability = yield* logger.group(
-				"Confirm registry availability",
-				confirmAvailability(
-					publishResult.packages.flatMap((p) =>
-						p.targets
-							.filter((t) => t.success)
-							.map((t) => ({ name: t.target.name, version: p.version, registry: t.target.registry })),
-					),
-					{ ceilingSeconds: inputs.registryConfirmTimeout, dryRun, npmToken: inputs.npmToken },
-				),
+			// The group opens only when something will be probed: an empty heading
+			// over a dry-run, a ceiling of 0 or a wave with no npm targets is noise.
+			const availabilityTargets = publishResult.packages.flatMap((p) =>
+				p.targets
+					.filter((t) => t.success)
+					.map((t) => ({ name: t.target.name, version: p.version, registry: t.target.registry })),
 			);
+			const availabilityOptions = { ceilingSeconds: inputs.registryConfirmTimeout, dryRun, npmToken: inputs.npmToken };
+			const confirm = confirmAvailability(availabilityTargets, availabilityOptions);
+			const availability = willProbe(availabilityTargets, availabilityOptions)
+				? yield* logger.group("Confirm registry availability", confirm)
+				: yield* confirm;
 			const heldCount = [...availability.values()].filter((a) => a.status === "held").length;
 
 			// ── Emit outputs + final summary ───────────────────────────────────────

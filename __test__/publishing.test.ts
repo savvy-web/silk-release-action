@@ -132,7 +132,11 @@ const run = async (
 
 	const layers = Layer.mergeAll(
 		Logger.layer([capture]),
-		ActionLogger.layerTest(),
+		// `layerTest`'s `group` is a pass-through; record each opening so a test
+		// can assert a group was — or was not — opened.
+		ActionLogger.layerTest({
+			group: (name, effect) => Effect.logInfo(`::group::${name}`).pipe(Effect.andThen(effect)),
+		}),
 		ActionOutputs.layerTest({
 			setJson: (name: string, value: unknown) =>
 				Effect.sync(() => {
@@ -197,9 +201,9 @@ describe("runPublishing — happy path", () => {
 		runReleasesMock.mockReturnValue(
 			Effect.succeed({
 				success: true,
-				releases: [{ tag: "v1.2.3", url: "https://example.test/r", id: 7, assets: [] }],
+				releases: [{ tag: "1.2.3", url: "https://example.test/r", id: 7, assets: [] }],
 				errors: [],
-				tagShas: { "v1.2.3": "" },
+				tagShas: { "1.2.3": "" },
 			}),
 		);
 
@@ -219,6 +223,21 @@ describe("runPublishing — happy path", () => {
 		);
 	});
 
+	it("does not open the availability group when the ceiling is 0", async () => {
+		// The default INPUTS ceiling is 0, so nothing is probed; the group would be
+		// an empty heading over no work, and its absence is what proves the
+		// skip happens before the group opens rather than inside it.
+		const { exit, result, text } = await run();
+
+		expect(exit._tag).toBe("Success");
+		expect(text).not.toContain("::group::Confirm registry availability");
+		expect(text).not.toContain("Confirming ");
+		// The all-`skipped` map is still produced for every package.
+		const totals = result?.totals as { packagesConfirmed: number; packagesHeld: number };
+		expect(totals.packagesConfirmed).toBe(0);
+		expect(totals.packagesHeld).toBe(0);
+	});
+
 	it("confirms each npm target on the registry with the configured ceiling (#301)", async () => {
 		// The one test that lets the probe run: a positive ceiling and a registry
 		// that already serves the version, so the probe confirms on its first
@@ -226,9 +245,9 @@ describe("runPublishing — happy path", () => {
 		runReleasesMock.mockReturnValue(
 			Effect.succeed({
 				success: true,
-				releases: [{ tag: "v1.2.3", url: "https://example.test/r", id: 7, assets: [] }],
+				releases: [{ tag: "1.2.3", url: "https://example.test/r", id: 7, assets: [] }],
 				errors: [],
-				tagShas: { "v1.2.3": "" },
+				tagShas: { "1.2.3": "" },
 			}),
 		);
 		const registry = seededRegistry();
@@ -240,6 +259,8 @@ describe("runPublishing — happy path", () => {
 		expect(text).toContain("ceiling 180s");
 		// Ordering is the design: the probe runs AFTER tags and releases, so a
 		// scan hold never delays them.
+		expect(text).toContain("Created 1 release(s)");
+		expect(text).toContain("Confirming 1 npm version(s)");
 		expect(text.indexOf("Created 1 release(s)")).toBeLessThan(text.indexOf("Confirming 1 npm version(s)"));
 		const totals = result?.totals as { packagesConfirmed: number; packagesHeld: number };
 		expect(totals.packagesConfirmed).toBe(1);
@@ -369,9 +390,9 @@ describe("runPublishing — a runReleases failure fails the phase", () => {
 		runReleasesMock.mockReturnValue(
 			Effect.succeed({
 				success: false,
-				releases: [{ tag: "v1.2.3", url: "https://example.test/r", id: 7, assets: [] }],
+				releases: [{ tag: "1.2.3", url: "https://example.test/r", id: 7, assets: [] }],
 				errors: ["asset upload failed", "second failure"],
-				tagShas: { "v1.2.3": "" },
+				tagShas: { "1.2.3": "" },
 			}),
 		);
 
