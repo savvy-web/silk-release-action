@@ -59,7 +59,7 @@
 		"@effect/vitest": "catalog:effect",
 		"@effected/memfs": "catalog:effected",
 		"@effected/schemastore-cli": "catalog:effected",
-		"@okfit/plugin": "^0.4.5",
+		"@okfit/plugin": "^0.5.0",
 		"@savvy-web/github-action-builder": "^2.4.5",
 		"@savvy-web/silk": "^4.2.6",
 		"@vitest-agent/plugin": "^4.1.6",
@@ -78,7 +78,7 @@
 		"runtime": [
 			{
 				"name": "node",
-				"version": "26.9.0",
+				"version": "26.10.0",
 				"onFail": "ignore"
 			}
 		]
