@@ -470,7 +470,7 @@ const processOneTag = (
 			// ── Step 3: Create GitHub release ───────────────────────────────────────
 			const releaseSvc = yield* GitHubRelease;
 
-			const releaseData: GitHubReleaseInfo = yield* releaseSvc
+			const { release: releaseData, recovered } = yield* releaseSvc
 				.create({
 					tag: tag.name,
 					name: tag.name,
@@ -479,17 +479,29 @@ const processOneTag = (
 					prerelease: tag.version.includes("-"),
 				})
 				.pipe(
+					Effect.map((release: GitHubReleaseInfo) => ({ release, recovered: false })),
 					// On re-run the release may already exist — fall back to getByTag.
-					// Branch on the structural `kind`, never on the rendered message: the
-					// predecessor matched `/already_exists|already exists/i` against a
-					// free-text reason string.
+					// `rejected` is included because GitHub's real answer for a duplicate
+					// release is a 422 whose `errors[]` entry carries
+					// `code: "already_exists"` and no `message`, which `@effected/github`
+					// 0.12 classifies as `rejected`, not `alreadyExists` — every
+					// recovery run failed on it (spencerbeggs/effected run 36013476331).
+					// Asking GitHub whether the release exists is the structural answer;
+					// a lookup that finds nothing reports the ORIGINAL create failure.
 					Effect.catchIf(
-						(createErr: GitHubError) => createErr.kind === "alreadyExists",
-						() => releaseSvc.getByTag(tag.name),
+						(createErr: GitHubError) => createErr.kind === "alreadyExists" || createErr.kind === "rejected",
+						(createErr) =>
+							releaseSvc.getByTag(tag.name).pipe(
+								Effect.map((release) => ({ release, recovered: true })),
+								Effect.catch(() => Effect.fail(createErr)),
+							),
 					),
 				);
 
 			yield* Effect.logDebug(`runReleases: release object ready — ${releaseData.id}`);
+			if (recovered) {
+				yield* Effect.logInfo(`  ♻️ release ${tag.name} already exists — idempotent recovery`);
+			}
 
 			// ── Step 4: Upload assets and attest ────────────────────────────────────
 
@@ -797,7 +809,7 @@ const processOneTag = (
 
 			const releaseAssetCount = releaseInfo.assets.length;
 			yield* Effect.logInfo(
-				`  ✅ release created — ${releaseData.id} (${associatedPackages.length} package(s), ${releaseAssetCount} asset(s))`,
+				`  ✅ release ${recovered ? "recovered" : "created"} — ${releaseData.id} (${associatedPackages.length} package(s), ${releaseAssetCount} asset(s))`,
 			);
 			return [releaseInfo, null] as const;
 		}).pipe(
