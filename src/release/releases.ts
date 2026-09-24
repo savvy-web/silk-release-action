@@ -13,8 +13,8 @@
 
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import type { Attestation, GitHubError, ReleaseInfo as GitHubReleaseInfo } from "@effected/github";
-import { ArtifactMetadata, GitHubRelease, GitTag, Repo, StorageRecordInput } from "@effected/github";
+import type { Attestation, ReleaseInfo as GitHubReleaseInfo } from "@effected/github";
+import { ArtifactMetadata, GitHubError, GitHubRelease, GitTag, Repo, StorageRecordInput } from "@effected/github";
 import type { OidcTokenIssuer } from "@effected/github-actions";
 import { ActionEnvironment, ActionLogger } from "@effected/github-actions";
 import { classifyRegistry, registryDisplayName } from "@effected/npm";
@@ -481,20 +481,16 @@ const processOneTag = (
 				.pipe(
 					Effect.map((release: GitHubReleaseInfo) => ({ release, recovered: false })),
 					// On re-run the release may already exist — fall back to getByTag.
-					// `rejected` is included because GitHub's real answer for a duplicate
-					// release is a 422 whose `errors[]` entry carries
-					// `code: "already_exists"` and no `message`, which `@effected/github`
-					// 0.12 classifies as `rejected`, not `alreadyExists` — every
-					// recovery run failed on it (spencerbeggs/effected run 36013476331).
-					// Asking GitHub whether the release exists is the structural answer;
-					// a lookup that finds nothing reports the ORIGINAL create failure.
-					Effect.catchIf(
-						(createErr: GitHubError) => createErr.kind === "alreadyExists" || createErr.kind === "rejected",
-						(createErr) =>
-							releaseSvc.getByTag(tag.name).pipe(
-								Effect.map((release) => ({ release, recovered: true })),
-								Effect.catch(() => Effect.fail(createErr)),
-							),
+					// GitHub answers a duplicate release with a 422 whose `errors[]`
+					// entry carries `code: "already_exists"`; the kit classifies that
+					// as `alreadyExists`. Any other create failure is reported as-is.
+					// A lookup that finds nothing reports the ORIGINAL create failure,
+					// not the lookup's own error.
+					Effect.catchIf(GitHubError.hasKind("alreadyExists"), (createErr) =>
+						releaseSvc.getByTag(tag.name).pipe(
+							Effect.map((release) => ({ release, recovered: true })),
+							Effect.catch(() => Effect.fail(createErr)),
+						),
 					),
 				);
 

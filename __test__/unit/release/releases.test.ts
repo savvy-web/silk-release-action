@@ -50,6 +50,38 @@ const tarSpawner = ScriptedSpawner.make((command) =>
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
 
+/**
+ * The throwable octokit raises for a 422, shaped as `@octokit/request-error`
+ * does (`status` + `response.data`). The kit reads it structurally, so this is
+ * exactly what `GitHubError.fromOctokit` sees on the wire.
+ */
+const octokit422 = (errors: ReadonlyArray<Record<string, string>>): Error =>
+	Object.assign(new Error("Validation Failed"), {
+		status: 422,
+		response: {
+			headers: {},
+			data: {
+				message: "Validation Failed",
+				errors,
+				documentation_url: "https://docs.github.com/rest/releases/releases#create-a-release",
+				status: "422",
+			},
+		},
+	});
+
+/**
+ * GitHub's real answer to creating a release whose tag already has one — the
+ * `already_exists` code with no `message` — run through the kit's own
+ * classifier, so the tests prove the kit answers `alreadyExists` rather than
+ * assuming it with a hand-built `GitHubError.alreadyExists`.
+ */
+const duplicateReleaseError = (): GitHubError =>
+	GitHubError.fromOctokit(
+		"GitHubRelease.create",
+		octokit422([{ resource: "Release", code: "already_exists", field: "tag_name" }]),
+		0,
+	);
+
 /** A valid SHA-256 hex digest, so `Sha256Digest.parse` accepts the subject. */
 const DIGEST_HEX = "a".repeat(64);
 
@@ -589,9 +621,23 @@ describe("runReleases", () => {
 			}),
 		);
 
-		it.effect("recovers an already-existing release via getByTag on `alreadyExists`", () =>
+		it("the kit classifies GitHub's real duplicate-release 422 as `alreadyExists`", () => {
+			// The precondition the recovery below rests on, pinned against the
+			// kit's own classifier rather than assumed: the real payload carries
+			// the code and no `message`. The control proves the classifier is not
+			// answering `alreadyExists` for every 422.
+			expect(duplicateReleaseError().kind).toBe("alreadyExists");
+			expect(
+				GitHubError.fromOctokit(
+					"GitHubRelease.create",
+					octokit422([{ resource: "Release", code: "invalid", field: "tag_name" }]),
+					0,
+				).kind,
+			).toBe("rejected");
+		});
+
+		it.effect("recovers an already-existing release via getByTag on GitHub's duplicate 422", () =>
 			Effect.gen(function* () {
-				// The recovery branches on the structural `kind`, not on the message.
 				const seeded = GitHubReleaseInfo.make({
 					id: 77,
 					tag: "@test/pkg-exists@1.0.0",
@@ -607,7 +653,7 @@ describe("runReleases", () => {
 					baseLayers(),
 					makeGitTagLayer().layer,
 					GitHubRelease.layerTest({
-						create: () => Effect.fail(GitHubError.alreadyExists("GitHubRelease.create", "@test/pkg-exists@1.0.0")),
+						create: () => Effect.fail(duplicateReleaseError()),
 						getByTag: () => Effect.succeed(seeded),
 						listAssets: () => Effect.succeed([]),
 					}),
@@ -625,40 +671,22 @@ describe("runReleases", () => {
 				const result: ReleasesReport = yield* runReleases(args).pipe(Effect.provide(layers));
 
 				expect(result.success).toBe(true);
+				expect(result.errors).toHaveLength(0);
 				expect(result.releases[0]?.id).toBe(77);
 			}),
 		);
 
-		it.effect("recovers an existing release when GitHub's duplicate 422 arrives classified as `rejected`", () =>
+		it.effect("reports the original create failure when a duplicate 422 has no release to recover", () =>
 			Effect.gen(function* () {
-				// GitHub answers a duplicate release with
-				// `errors: [{ resource: "Release", code: "already_exists", field: "tag_name" }]`
-				// and no `message`; `@effected/github` 0.12 classifies that as
-				// `rejected`, so a kind-only check failed every recovery run
-				// (spencerbeggs/effected run 36013476331). The lookup decides instead.
-				const seeded = GitHubReleaseInfo.make({
-					id: 78,
-					tag: "@test/pkg-dup@1.0.0",
-					name: "@test/pkg-dup@1.0.0",
-					body: "prior",
-					draft: false,
-					prerelease: false,
-					url: "https://github.com/test-owner/test-repo/releases/tag/@test/pkg-dup@1.0.0",
-					uploadUrl: "https://uploads.github.com/releases/78/assets",
-				});
+				// An `alreadyExists` create whose lookup finds nothing must be reported
+				// with the CREATE error, not the lookup's `notFound`, and never turned
+				// into a success.
 				const layers = Layer.mergeAll(
 					baseLayers(),
 					makeGitTagLayer().layer,
 					GitHubRelease.layerTest({
-						create: () =>
-							Effect.fail(
-								GitHubError.rejected(
-									"GitHubRelease.create",
-									422,
-									'Validation Failed: {"resource":"Release","code":"already_exists","field":"tag_name"}',
-								),
-							),
-						getByTag: () => Effect.succeed(seeded),
+						create: () => Effect.fail(duplicateReleaseError()),
+						getByTag: (tagName) => Effect.fail(GitHubError.notFound("GitHubRelease.getByTag", tagName)),
 						listAssets: () => Effect.succeed([]),
 					}),
 					makeAttestationLayer().layer,
@@ -666,31 +694,59 @@ describe("runReleases", () => {
 				);
 
 				const args: ReleasesInputArgs = {
-					tags: [makeTag("@test/pkg-dup@1.0.0", "@test/pkg-dup", "1.0.0")],
-					publishResult: makePublishPackagesResult([makePublishResult("@test/pkg-dup", "1.0.0")]),
+					tags: [makeTag("@test/pkg-orphan@1.0.0", "@test/pkg-orphan", "1.0.0")],
+					publishResult: makePublishPackagesResult([makePublishResult("@test/pkg-orphan", "1.0.0")]),
 					packageManager: "pnpm",
 					dryRun: false,
 				};
 
 				const result: ReleasesReport = yield* runReleases(args).pipe(Effect.provide(layers));
 
-				expect(result.success).toBe(true);
-				expect(result.errors).toHaveLength(0);
-				expect(result.releases[0]?.id).toBe(78);
+				expect(result.success).toBe(false);
+				expect(result.errors).toHaveLength(1);
+				expect(result.errors[0]).toContain("GitHubRelease.create failed (422)");
+				expect(result.errors[0]).not.toContain("GitHubRelease.getByTag");
+				expect(result.releases).toHaveLength(0);
+				// #402: the tag sha is resolved at tag-creation time and reported
+				// regardless of the release failure that follows it — the tag really
+				// does exist at this sha even though no GitHub release does.
+				expect(result.tagShas["@test/pkg-orphan@1.0.0"]).toBe("0000000000000000000000000000000000000000");
 			}),
 		);
 
-		it.effect("reports the original create failure when a `rejected` create has no release to recover", () =>
+		it.effect("does not attempt recovery for a `rejected` create", () =>
 			Effect.gen(function* () {
-				// The mutation guard for the branch above: a `rejected` create with no
-				// release behind it must be reported with the CREATE error, not the
-				// lookup's `notFound`, and never turned into a success.
+				// Only `alreadyExists` is recoverable. A 422 that is not a duplicate is
+				// reported as-is, and the lookup is never asked — even when a release
+				// with that tag happens to exist.
+				let getByTagCalls = 0;
+				const seeded = GitHubReleaseInfo.make({
+					id: 79,
+					tag: "@test/pkg-rejected@1.0.0",
+					name: "@test/pkg-rejected@1.0.0",
+					body: "prior",
+					draft: false,
+					prerelease: false,
+					url: "https://github.com/test-owner/test-repo/releases/tag/@test/pkg-rejected@1.0.0",
+					uploadUrl: "https://uploads.github.com/releases/79/assets",
+				});
 				const layers = Layer.mergeAll(
 					baseLayers(),
 					makeGitTagLayer().layer,
 					GitHubRelease.layerTest({
-						create: () => Effect.fail(GitHubError.rejected("GitHubRelease.create", 422, "validation failed")),
-						getByTag: (tagName) => Effect.fail(GitHubError.notFound("GitHubRelease.getByTag", tagName)),
+						create: () =>
+							Effect.fail(
+								GitHubError.fromOctokit(
+									"GitHubRelease.create",
+									octokit422([{ resource: "Release", code: "invalid", field: "tag_name" }]),
+									0,
+								),
+							),
+						getByTag: () =>
+							Effect.sync(() => {
+								getByTagCalls++;
+								return seeded;
+							}),
 						listAssets: () => Effect.succeed([]),
 					}),
 					makeAttestationLayer().layer,
@@ -706,14 +762,11 @@ describe("runReleases", () => {
 
 				const result: ReleasesReport = yield* runReleases(args).pipe(Effect.provide(layers));
 
+				expect(getByTagCalls).toBe(0);
 				expect(result.success).toBe(false);
 				expect(result.errors).toHaveLength(1);
-				expect(result.errors[0]).toContain("validation failed");
+				expect(result.errors[0]).toContain("GitHubRelease.create failed (422)");
 				expect(result.releases).toHaveLength(0);
-				// #402: the tag sha is resolved at tag-creation time and reported
-				// regardless of the release failure that follows it — the tag really
-				// does exist at this sha even though no GitHub release does.
-				expect(result.tagShas["@test/pkg-rejected@1.0.0"]).toBe("0000000000000000000000000000000000000000");
 			}),
 		);
 	});
