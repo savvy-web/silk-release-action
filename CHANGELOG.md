@@ -1,5 +1,17 @@
 # @savvy-web/silk-release-action
 
+## 5.5.6
+
+### Bug Fixes
+
+- Fixed Phase 3 recovery runs failing when the GitHub releases already exist. GitHub answers a duplicate release with a `422` that the GitHub client classified as a rejection rather than "already exists", so each existing release was reported as an error. The action now looks up the release by tag and reuses it. If no release is found, it reports the original error. [#447][#447]
+
+### Thanks
+
+Thanks to [@spencerbeggs](https://github.com/spencerbeggs) for their contributions!
+
+[#447]: https://github.com/savvy-web/silk-release-action/pull/447
+
 ## 5.5.5
 
 ### Bug Fixes
