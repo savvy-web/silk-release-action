@@ -1039,6 +1039,33 @@ describe("runPublishTargets", () => {
 			}),
 		);
 
+		it.effect("publishes with npm's local prefix moved to RUNNER_TEMP, off the repository and its devEngines", () =>
+			Effect.gen(function* () {
+				// npm 11/12 check the project's `devEngines` before every command, so
+				// a pnpm workspace declaring `devEngines.packageManager: pnpm` failed
+				// every `npm publish` from the repository root with EBADDEVENGINES
+				// (spencerbeggs/effected run 36013476331). `--prefix` moves npm's
+				// local prefix somewhere with no package.json to check.
+				const pub = makePackagePublishLayer();
+				const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, `/tmp/test/${PACK_NAME}`);
+				const target = makeNpmTarget(PACK_NAME, `/tmp/test/${PACK_NAME}`);
+				const detected: DetectedRelease[] = [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)];
+
+				yield* runPublishTargets(detected).pipe(
+					Effect.provide(
+						Layer.merge(
+							makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [target]),
+							ActionEnvironment.layerTest({ RUNNER_TEMP: "/runner/_temp" }),
+						),
+					),
+				);
+
+				const executor = pub.publishTarballCalls[0]?.options.executor;
+				expect(executor?.spec).toBe("npm@12");
+				expect(executor?.extraArgs).toEqual(["--prefix", "/runner/_temp/silk-npm-prefix"]);
+			}),
+		);
+
 		// NOT `it.effect`: this test spies on the real `console.log` to assert on
 		// `ActionLogger`'s rendered publish tree. `it.effect` installs
 		// `TestConsole`, which intercepts the same `ConsoleRef` the logger writes

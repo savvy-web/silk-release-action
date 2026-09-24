@@ -41,6 +41,7 @@ import { ChildProcess } from "effect/unstable/process";
 import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
 import type { CustomRegistryAuth } from "../utils/custom-registries.js";
 import { getGroupId } from "../utils/group-id.js";
+import { npmPrefixDir } from "../utils/npm-cache.js";
 import { releaseKindLabel, releaseKindOf, tallyReleaseKinds } from "../utils/release-kind.js";
 import { sortReleasesTopologically } from "../utils/sort-releases-topologically.js";
 import { attestSubject, buildProvenancePredicate } from "./attest-helpers.js";
@@ -117,6 +118,43 @@ export interface DetectedRelease {
  * @internal
  */
 export const NPM_EXECUTOR: NpmExecutor = NpmExecutor.dlx("npm@12");
+
+/**
+ * The executor `npm publish <tarball>` runs through: {@link NPM_EXECUTOR}
+ * with npm's local prefix moved off the consumer's repository.
+ *
+ * @remarks
+ * npm 11 and 12 check the local project's `devEngines` before **every**
+ * command, not only the `run`/install commands whose static
+ * `checkDevEngines` flag says they should: `lib/npm.js` tests the instance's
+ * `checkDevEngines` *method*, which is always truthy. A pnpm workspace that
+ * declares `devEngines.packageManager: { name: "pnpm" }` therefore fails
+ * every publish with `EBADDEVENGINES` ("Invalid name "pnpm" does not match
+ * "npm""), and `onFail: "download"` does not help — npm treats it as
+ * `error`. `publishTarball` sets no working directory, so it inherited the
+ * repository root and hit exactly that; `pack` already escaped it by running
+ * in the built package directory.
+ *
+ * `--prefix` is the only thing that moves npm's local prefix without moving
+ * the child's working directory (npm reads `prefix` from the CLI alone for
+ * this; `npm_config_prefix` does not reach it). The directory need not exist:
+ * npm reads no `package.json` there, finds no `devEngines`, and creates
+ * nothing. What is given up is the repository's project-level `.npmrc` —
+ * nothing here reads it: auth goes to the user npmrc {@link userNpmrcPath}
+ * names, the registry is passed as `--registry`, and the tarball path is
+ * absolute. `--force` would also skip the check, but it additionally drops
+ * publish's prerelease-tag and "`latest` never moves backwards" guards.
+ *
+ * Deliberately not applied to `pack`/`dryRun`: they run with `cwd` set to the
+ * package directory and pack `.`, which a relocated prefix must not disturb.
+ *
+ * @param prefixDir - The directory npm should treat as its local prefix.
+ * @returns A copy of {@link NPM_EXECUTOR} that appends `--prefix <prefixDir>`.
+ *
+ * @internal
+ */
+export const npmPublishExecutor = (prefixDir: string): NpmExecutor =>
+	NPM_EXECUTOR.withExtraArgs(["--prefix", prefixDir]);
 
 /**
  * The `.npmrc` `setupAuth` writes to and `npm publish` reads from.
@@ -579,6 +617,7 @@ const publishDirectoryGroup = (
 	ghPkgsToken: string | null,
 	customTokens: ReadonlyMap<string, string>,
 	npmrcPath: string,
+	publishExecutor: NpmExecutor,
 	sbomPath: string | null,
 ): Effect.Effect<ReadonlyArray<TargetPublishResult>, never, PublishServices> =>
 	Effect.gen(function* () {
@@ -765,7 +804,7 @@ const publishDirectoryGroup = (
 						access: t.access,
 						provenance: t.provenance,
 						tokenAuth: isGhPkgs,
-						executor: NPM_EXECUTOR,
+						executor: publishExecutor,
 					})
 					.pipe(
 						Effect.map((r) => ({ ok: true as const, provenanceUrl: r.provenanceUrl })),
@@ -788,7 +827,7 @@ const publishDirectoryGroup = (
 							access: t.access,
 							provenance: false,
 							tokenAuth: true,
-							executor: NPM_EXECUTOR,
+							executor: publishExecutor,
 						})
 						.pipe(
 							Effect.map((r) => ({ ok: true as const, provenanceUrl: r.provenanceUrl })),
@@ -1451,6 +1490,10 @@ export const runPublishTargets = (
 		const environment = yield* ActionEnvironment;
 		const userconfig = yield* environment.getOptional("NPM_CONFIG_USERCONFIG");
 		const npmrcPath = userNpmrcPath(Option.isSome(userconfig) ? { NPM_CONFIG_USERCONFIG: userconfig.value } : {});
+		const runnerTemp = yield* environment.getOptional("RUNNER_TEMP");
+		const publishExecutor = npmPublishExecutor(
+			npmPrefixDir(Option.isSome(runnerTemp) ? { RUNNER_TEMP: runnerTemp.value } : {}),
+		);
 
 		if (detected.length === 0) {
 			return {
@@ -1569,6 +1612,7 @@ export const runPublishTargets = (
 							ghPkgsToken,
 							customTokens,
 							npmrcPath,
+							publishExecutor,
 							sbomPathForPackage,
 						),
 					);

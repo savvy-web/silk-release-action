@@ -1,7 +1,7 @@
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ensureNpmCacheEnv, npmCacheDir } from "../../../src/utils/npm-cache.js";
+import { ensureNpmCacheEnv, npmCacheDir, npmPrefixDir } from "../../../src/utils/npm-cache.js";
 
 describe("npmCacheDir", () => {
 	it("should return a silk-npm-cache path under RUNNER_TEMP when RUNNER_TEMP is set", () => {
@@ -24,6 +24,16 @@ describe("npmCacheDir", () => {
 
 		// Then
 		expect(result).toBe(join(tmpdir(), "silk-npm-cache"));
+	});
+});
+
+describe("npmPrefixDir", () => {
+	it("returns a silk-npm-prefix path under RUNNER_TEMP when RUNNER_TEMP is set", () => {
+		expect(npmPrefixDir({ RUNNER_TEMP: "/Users/runner/work/_temp" })).toBe("/Users/runner/work/_temp/silk-npm-prefix");
+	});
+
+	it("falls back to os.tmpdir() when RUNNER_TEMP is unset", () => {
+		expect(npmPrefixDir({})).toBe(join(tmpdir(), "silk-npm-prefix"));
 	});
 });
 

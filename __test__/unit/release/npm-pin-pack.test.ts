@@ -27,7 +27,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { LocalExec, ScriptedSpawner } from "@effected/commands";
 import { PackagePublish, PublishError } from "@effected/npm";
 import { Effect, Layer } from "effect";
-import { NPM_EXECUTOR } from "../../../src/release/publish.js";
+import { NPM_EXECUTOR, npmPublishExecutor } from "../../../src/release/publish.js";
 
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const packageDir = fileURLToPath(new URL("../../integration/fixtures/public-package", import.meta.url));
@@ -99,6 +99,27 @@ describe("npm pin × @effected/npm pack --json", () => {
 			expect(outcome.ok).toBe(true);
 			expect(outcome.fileCount).toBe(2);
 			expect(outcome.unpackedSize).toBe(197);
+		}),
+	);
+
+	// The publish executor's `--prefix` must reach npm's argv through the real
+	// kit, not only sit on the value: `withExtraArgs` is the kit's seam, and
+	// this is where a kit change that stopped honouring it would show.
+	it.effect("dispatches `publish` with `--prefix`, so npm never reads the repository's devEngines", () =>
+		Effect.gen(function* () {
+			const { spawner, layer } = makeHarness("");
+			const publish = yield* PackagePublish.pipe(Effect.provide(layer));
+			yield* publish.publishTarball("/abs/pkg-1.0.0.tgz", {
+				registry: "https://registry.npmjs.org/",
+				executor: npmPublishExecutor("/runner/_temp/silk-npm-prefix"),
+			});
+
+			const args = spawner.spawns[0]?.args ?? [];
+			expect(args.slice(0, 2)).toEqual(["dlx", "npm@12"]);
+			expect(args).toContain("publish");
+			const at = args.indexOf("--prefix");
+			expect(at).toBeGreaterThan(args.indexOf("publish"));
+			expect(args[at + 1]).toBe("/runner/_temp/silk-npm-prefix");
 		}),
 	);
 
