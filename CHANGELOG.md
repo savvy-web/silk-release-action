@@ -1,5 +1,21 @@
 # @savvy-web/silk-release-action
 
+## 5.5.8
+
+### Dependencies
+
+| Dependency | Type | Action | From | To |
+| --- | --- | --- | --- | --- |
+| @savvy-web/silk-effects | dependency | updated | ^9.1.2 | ^9.1.3 |
+
+[#453][#453]
+
+### Thanks
+
+Thanks to [@savvy-web-bot](https://github.com/apps/savvy-web-bot) for their contributions!
+
+[#453]: https://github.com/savvy-web/silk-release-action/pull/453
+
 ## 5.5.7
 
 ### Bug Fixes
