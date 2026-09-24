@@ -38,7 +38,7 @@ const onDisk = (dir, acc = []) => {
 
 /** Every test file vitest reports collecting, via `vitest list --json`. */
 const collected = () => {
-	const raw = execFileSync("npx", ["vitest", "list", "--json"], {
+	const raw = execFileSync("pnpm", ["exec", "vitest", "list", "--json"], {
 		cwd: ROOT,
 		encoding: "utf8",
 		maxBuffer: 64 * 1024 * 1024,

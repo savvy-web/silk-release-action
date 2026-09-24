@@ -32,6 +32,24 @@ export function npmCacheDir(env: Readonly<Record<string, string | undefined>> = 
 }
 
 /**
+ * The directory `npm publish` should treat as its local prefix, off the
+ * consumer's repository so npm finds no `devEngines` to reject.
+ *
+ * @remarks
+ * Never created: npm only looks for a `package.json` and an `.npmrc` there,
+ * and a missing directory has neither. See `npmPublishExecutor` in
+ * `release/publish.ts` for why the prefix moves at all.
+ *
+ * @param env - Environment record to read `RUNNER_TEMP` from. Defaults to
+ *   `process.env`.
+ * @returns `<RUNNER_TEMP>/silk-npm-prefix`, or `<os.tmpdir()>/silk-npm-prefix`
+ *   when `RUNNER_TEMP` is unset.
+ */
+export function npmPrefixDir(env: Readonly<Record<string, string | undefined>> = process.env): string {
+	return join(env.RUNNER_TEMP ?? tmpdir(), "silk-npm-prefix");
+}
+
+/**
  * Set `npm_config_cache` on `env` to {@link npmCacheDir}'s result, unless
  * `env.npm_config_cache` is already set — an explicitly configured cache is
  * always respected.
