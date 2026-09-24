@@ -629,16 +629,68 @@ describe("runReleases", () => {
 			}),
 		);
 
-		it.effect("does NOT recover a non-alreadyExists create failure", () =>
+		it.effect("recovers an existing release when GitHub's duplicate 422 arrives classified as `rejected`", () =>
 			Effect.gen(function* () {
-				// The mutation guard for the branch above: a `rejected` create must be
-				// reported, not silently turned into a `getByTag`.
+				// GitHub answers a duplicate release with
+				// `errors: [{ resource: "Release", code: "already_exists", field: "tag_name" }]`
+				// and no `message`; `@effected/github` 0.12 classifies that as
+				// `rejected`, so a kind-only check failed every recovery run
+				// (spencerbeggs/effected run 36013476331). The lookup decides instead.
+				const seeded = GitHubReleaseInfo.make({
+					id: 78,
+					tag: "@test/pkg-dup@1.0.0",
+					name: "@test/pkg-dup@1.0.0",
+					body: "prior",
+					draft: false,
+					prerelease: false,
+					url: "https://github.com/test-owner/test-repo/releases/tag/@test/pkg-dup@1.0.0",
+					uploadUrl: "https://uploads.github.com/releases/78/assets",
+				});
+				const layers = Layer.mergeAll(
+					baseLayers(),
+					makeGitTagLayer().layer,
+					GitHubRelease.layerTest({
+						create: () =>
+							Effect.fail(
+								GitHubError.rejected(
+									"GitHubRelease.create",
+									422,
+									'Validation Failed: {"resource":"Release","code":"already_exists","field":"tag_name"}',
+								),
+							),
+						getByTag: () => Effect.succeed(seeded),
+						listAssets: () => Effect.succeed([]),
+					}),
+					makeAttestationLayer().layer,
+					makeArtifactMetadataLayer().layer,
+				);
+
+				const args: ReleasesInputArgs = {
+					tags: [makeTag("@test/pkg-dup@1.0.0", "@test/pkg-dup", "1.0.0")],
+					publishResult: makePublishPackagesResult([makePublishResult("@test/pkg-dup", "1.0.0")]),
+					packageManager: "pnpm",
+					dryRun: false,
+				};
+
+				const result: ReleasesReport = yield* runReleases(args).pipe(Effect.provide(layers));
+
+				expect(result.success).toBe(true);
+				expect(result.errors).toHaveLength(0);
+				expect(result.releases[0]?.id).toBe(78);
+			}),
+		);
+
+		it.effect("reports the original create failure when a `rejected` create has no release to recover", () =>
+			Effect.gen(function* () {
+				// The mutation guard for the branch above: a `rejected` create with no
+				// release behind it must be reported with the CREATE error, not the
+				// lookup's `notFound`, and never turned into a success.
 				const layers = Layer.mergeAll(
 					baseLayers(),
 					makeGitTagLayer().layer,
 					GitHubRelease.layerTest({
 						create: () => Effect.fail(GitHubError.rejected("GitHubRelease.create", 422, "validation failed")),
-						getByTag: () => Effect.die(new Error("getByTag must not be reached")),
+						getByTag: (tagName) => Effect.fail(GitHubError.notFound("GitHubRelease.getByTag", tagName)),
 						listAssets: () => Effect.succeed([]),
 					}),
 					makeAttestationLayer().layer,
@@ -656,6 +708,7 @@ describe("runReleases", () => {
 
 				expect(result.success).toBe(false);
 				expect(result.errors).toHaveLength(1);
+				expect(result.errors[0]).toContain("validation failed");
 				expect(result.releases).toHaveLength(0);
 				// #402: the tag sha is resolved at tag-creation time and reported
 				// regardless of the release failure that follows it — the tag really
