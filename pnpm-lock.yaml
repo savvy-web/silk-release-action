@@ -9,8 +9,8 @@ importers:
         specifier: 0.11.1
         version: 0.11.1
       '@savvy-web/pnpm-plugin-silk':
-        specifier: 0.43.0
-        version: 0.43.0
+        specifier: 0.44.0
+        version: 0.44.0
     packageManagerDependencies:
       pnpm:
         specifier: 12.6.0+sha512.3ef68f951cb111ac204b4a5a16f0b2ddf0da56a96e0413e81d855d9f0b55ef926714709028e1cd00c405c2c5fb7b9e8ec4dc46777c805d0373c2f2ff00fd20ec
@@ -98,8 +98,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@savvy-web/pnpm-plugin-silk@0.43.0':
-    resolution: {integrity: sha512-jFZ2PYalKJhKHjnJ6JqU1OHlSJ9ZY0am4T3BxehQXwSpXIRgSGZuc3RCdZ3CsTlatbIP5f7M2JbIMczjhdX6kA==}
+  '@savvy-web/pnpm-plugin-silk@0.44.0':
+    resolution: {integrity: sha512-6GbxZtliXuGHKFzJGFkqqNAbZzErb42XvCLdnr29KVR3OwvwU+D1MxNPpfzKOkde/TlM/KLsciuNqqmCSS/Yag==}
 
   pnpm@12.6.0:
     resolution: {integrity: sha512-PvaPlRyxEawgS0paFvCy3fDaVqluBBPoHYVdnwtV75JnFHCQKOHNAMQFwsX7e56OxNxGd3yAXQNzwvL/AP0g7A==}
@@ -152,7 +152,7 @@ snapshots:
   '@pnpm/exe.win32-x64@12.6.0':
     optional: true
 
-  '@savvy-web/pnpm-plugin-silk@0.43.0': {}
+  '@savvy-web/pnpm-plugin-silk@0.44.0': {}
 
   pnpm@12.6.0:
     optionalDependencies:
