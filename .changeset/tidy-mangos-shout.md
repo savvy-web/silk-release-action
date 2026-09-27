@@ -16,8 +16,10 @@ in-progress change into a consumer's CI before it ships.
   with:
     phase: snapshot
     snapshot-tag: next
-    app-client-id: ${{ secrets.APP_CLIENT_ID }}
+    app-client-id: ${{ vars.APP_CLIENT_ID }}
     app-private-key: ${{ secrets.APP_PRIVATE_KEY }}
+    github-token: ${{ secrets.GITHUB_TOKEN }}
+    npm-token: ${{ secrets.NPM_TOKEN }}
 ```
 
 `snapshot` is never auto-detected — it only runs when a workflow sets
@@ -45,7 +47,9 @@ reads the registry without uploading.
 A snapshot run's `result` output carries a new `phase: "snapshot"` variant,
 and the job summary includes a ready-to-paste `overrides:` block for pinning
 the exact published versions — pin those versions, not the tag, since a
-partial or re-run snapshot is not a stable set.
+partial or re-run snapshot is not a stable set. When a published package
+depends on a sibling that was bumped but not published, the run warns and
+the summary lists the dangling pin; the run's outcome is unchanged.
 
 ## Bug Fixes
 
