@@ -47,3 +47,25 @@ export class ReleasesError extends Data.TaggedError("ReleasesError")<{
 	readonly message: string;
 	readonly cause?: unknown;
 }> {}
+
+/**
+ * Error from the snapshot phase.
+ *
+ * @remarks
+ * Raised only AFTER the phase has emitted its `result` output and job
+ * summary, so a partial publish is always readable (and pinnable) even though
+ * the run fails. Every reason has a constructor site in `steps/snapshot.ts`
+ * and a test in `__test__/snapshot.test.ts` that fires it.
+ *
+ * - `missing-tag` — `phase: snapshot` with no `snapshot-tag`.
+ * - `ref` — dispatched on a non-branch ref, or on the release or target branch.
+ * - `version` — the snapshot versioning failed (pre mode, config, a package
+ *   missing from the workspace).
+ * - `build` — `ci:build` failed; nothing was packed.
+ * - `publish` — at least one publication failed; others may have landed.
+ */
+export class SnapshotError extends Data.TaggedError("SnapshotError")<{
+	readonly reason: "missing-tag" | "ref" | "version" | "build" | "publish";
+	readonly message: string;
+	readonly cause?: unknown;
+}> {}
