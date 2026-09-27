@@ -352,11 +352,9 @@ describe("runNativeVersion", () => {
 		expect(Object.hasOwn(calls[0] as object, "snapshot")).toBe(false);
 	});
 
-	// CHARACTERIZATION: pins pre mode's refusal as a typed, non-transient
-	// `ReleasePlanError` — the spec names pre mode as a typed refusal, not a
-	// crash. Nothing in Step 3 changes `isTransient`'s classification, so this
-	// case is green both before and after this task's edit; it stays as a spec
-	// pin against a future change to the transient-pattern list.
+	// SPEC: pre mode's refusal is a typed, non-transient `ReleasePlanError` —
+	// not retried. Pinned so a change to `isTransient`'s pattern list is
+	// caught here.
 	it("surfaces a pre-mode refusal as the typed ReleasePlanError, unretried", async () => {
 		let attempts = 0;
 		const planner = Layer.succeed(Changesets.ReleasePlanner, {
