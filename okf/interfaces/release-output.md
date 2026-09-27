@@ -14,8 +14,8 @@ sources:
     resource: ../../schemas/6.0/output.json
 generated:
   by: okfit/claude-code
-  at: 2026-09-19T01:42:17Z
-  body_sha256: 5dc42c7144d1c8cf2d09663cb13298548acbb283ee8800976fe642c7460afff2
+  at: 2026-09-27T15:46:10Z
+  body_sha256: 120a4e8ea5216c2db81d523e170472f1f1942fc7e48098584e9efbde037dfc70
 ---
 
 # The `result` output document
@@ -49,14 +49,34 @@ iterates ahead of the action's 6.0.0). The full runbook for bumping it is
 the schema versioned under its own path rather than one root file is
 `../decisions/versioned-output-schema.md`.
 
-## The three-phase union
+## The phase union
 
 `ReleaseOutput` discriminates on `phase` into `BranchManagementOutput`
 (`phase: "branch-management"`), `ValidationOutput` (`phase: "validation"`),
-and `PublishOutput` (`phase: "publish"`).[^release-output-ts] Every variant
-shares the same top-level fields — `$schema`, `phase`,
-`success`, `outcome`, `summary`, `dryRun`, `failure`, `totals` — plus a
-phase-specific payload (`branchManagement`, `validation`, or `publish`).
+`PublishOutput` (`phase: "publish"`), and `SnapshotOutput`
+(`phase: "snapshot"`).[^release-output-ts] Every variant shares the same
+top-level fields — `$schema`, `phase`, `success`, `outcome`, `summary`,
+`dryRun`, `failure`, `totals` — plus a phase-specific payload
+(`branchManagement`, `validation`, `publish`, or the snapshot fields below).
+
+`SnapshotOutput` carries `tag` (the dist-tag the run published under) plus
+three top-level lists — `published`, `skipped`, `failed` — rather than a
+nested payload key, because the snapshot unit is the **publication** (one
+package published to one registry), not the workspace: nothing is tagged or
+released at the workspace level for a workspace-level object to describe.
+Each `published` entry carries the exact prerelease version to pin
+(`1.4.0-next-20260927051500`) — the tag moves with every run, so pinning
+the tag instead of the version is a bug waiting to happen. `outcome` draws
+from its own vocabulary: `published` (at least one version landed, none
+failed), `rehearsed` (a dry run — the `skipped` entries with reason
+`dry-run` are what would have published), `skipped` (versions were computed
+but every package was skipped — never published on that registry, or no
+registry target — a SUCCESS), `nothing-to-snapshot` (no pending
+changesets — a SUCCESS), `partial` (some versions published and at least
+one failed — the published ones ARE on the registry, so pin them exactly),
+`failed` (publications were attempted and none landed), and `blocked` (the
+run stopped before publishing; see `failure`). See
+`../decisions/snapshot-phase.md`.
 
 `success` and `outcome` are orthogonal by design, and this is the whole
 point of the v2 shape: `success` is the one boolean a consumer should gate

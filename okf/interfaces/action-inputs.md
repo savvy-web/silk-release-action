@@ -16,8 +16,8 @@ sources:
     resource: ../../src/utils/custom-registries.ts
 generated:
   by: okfit/claude-code
-  at: 2026-09-19T01:20:34Z
-  body_sha256: e2e15c21c38a262c6360df0380ae1d6043c5aeb14dff755f5f58ae1ac6cebbcc
+  at: 2026-09-27T15:46:10Z
+  body_sha256: 7443d7107f9d5a39f6768a0aab4a08410294e0963f66268cb767958fe1a66885
 ---
 
 # Action inputs and outputs
@@ -42,7 +42,8 @@ them.
 | `target-branch` | no | `main` | The branch the release PR targets. |
 | `auto-merge` | no | `""` | `merge`, `squash`, `rebase`, or empty to disable auto-merge on the release PR. |
 | `dry-run` | no | `"false"` | Rehearse without mutating — see Dry-run semantics below. |
-| `phase` | no | `""` | Explicit phase override, skipping auto-detection: `branch-management`, `validation`, `publishing`, `close-issues`, or `none`. |
+| `phase` | no | `""` | Explicit phase override, skipping auto-detection: `branch-management`, `validation`, `publishing`, `close-issues`, `snapshot`, or `none`. |
+| `snapshot-tag` | no | `""` | Dist-tag for `phase: snapshot`, and the prefix of its prerelease versions. Required with that phase, ignored otherwise. A letter then lowercase letters/digits/hyphens; `latest`, `x` and `v<digit>…` are refused, and a malformed value fails the run under any phase. |
 | `npm-token` | no | `""` | npm token for a first publish or an OIDC fallback. |
 | `strict-warnings` | no | `"false"` | Escalates warning-severity validation findings to check-run failures, blocking branch-protection-gated auto-merge. |
 | `sbom-config` | no | `""` | SBOM metadata JSON — see `../interfaces/sbom-config.md`. |
@@ -57,12 +58,17 @@ literal unions rather than cast — the convention this contract depends on is
 ### `phase` accepts `publishing`; the output discriminator is `publish`
 
 The `phase` input's accepted values are `branch-management`, `validation`,
-`publishing`, `close-issues`, and `none`.[^action-yml] The structured `result`
-output for that same run discriminates on `phase: "publish"`, not
-`"publishing"`.[^outputs-ts] A consumer that branches on the *input* spelling
-and reuses it to filter the *output* union will never match — the two
-vocabularies are related but not identical, and the mismatch is deliberate
-rather than a typo to "fix" on either side.
+`publishing`, `close-issues`, `snapshot`, and `none`.[^action-yml] The
+structured `result` output for that same run discriminates on
+`phase: "publish"`, not `"publishing"`.[^outputs-ts] A consumer that
+branches on the *input* spelling and reuses it to filter the *output* union
+will never match — the two vocabularies are related but not identical, and
+the mismatch is deliberate rather than a typo to "fix" on either side.
+`snapshot` is the one value spelled identically on both sides: the output
+discriminator for that phase is also `phase: "snapshot"`. It is also
+explicit-only — `detectWorkflowPhase` never returns it, so a workflow gets
+a snapshot run only by setting the input directly. See
+`../decisions/snapshot-phase.md`.
 
 ## Authentication model
 

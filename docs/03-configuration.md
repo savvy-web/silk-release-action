@@ -11,7 +11,8 @@
 | `target-branch` | No | `main` | Target branch for the release PR |
 | `auto-merge` | No | `""` | Enable auto-merge on the release PR: `merge`, `squash`, `rebase` or empty to disable. Requires branch protection with required status checks (see [Auto-merge](#auto-merge)) |
 | `dry-run` | No | `"false"` | Run in dry-run mode (preview only, no actual changes) |
-| `phase` | No | `""` | Explicitly set the workflow phase, skipping automatic detection. Values: `branch-management`, `validation`, `publishing`, `close-issues`, `none`. Any other value fails the run, naming the accepted set |
+| `phase` | No | `""` | Explicitly set the workflow phase, skipping automatic detection. Values: `branch-management`, `validation`, `publishing`, `close-issues`, `snapshot`, `none`. Any other value fails the run, naming the accepted set |
+| `snapshot-tag` | No | `""` | Dist-tag for a `phase: snapshot` run, and the prefix of its prerelease versions (`1.4.0-<tag>-<datetime>`). Required when phase is `snapshot`; ignored by every other phase. A letter then lowercase letters/digits/hyphens; `latest`, `x` and `v<digit>…` are refused, since npm rejects a dist-tag that parses as a semver range |
 | `npm-token` | No | `""` | NPM access token for publishing to npmjs.org. Only needed for first-time publish or when OIDC is not configured |
 | `strict-warnings` | No | `"false"` | When `"true"`, warning-severity validation findings escalate the per-step and unified check-run conclusions from `neutral` to `failure`, blocking anything that gates on check status — a branch-protection required check, and the auto-merge the `auto-merge` input enables. Errors always fail regardless of this setting |
 | `sbom-config` | No | `""` | SBOM metadata configuration (JSON string) for NTIA-compliant SBOM generation. Must conform to the `SilkReleaseConfig` schema |
@@ -26,7 +27,7 @@
 | `installation-id` | GitHub App installation ID |
 | `app-slug` | GitHub App slug (URL-friendly name) |
 | `result` | Structured JSON describing the run — see below |
-| `phase` | Phase that ran: `branch-management`, `validation`, `publish`, `close-issues`, `none` |
+| `phase` | Phase that ran: `branch-management`, `validation`, `publish`, `close-issues`, `snapshot`, `none` |
 | `status` | The phase's own outcome label. Branch management: `nothing-to-release`, `branch-created`, `branch-updated`, `branch-unchanged`, `conflicted`. Validation: `validated`, `nothing-to-release`, `build-failed`, `checks-failed`. Publish: `released`, `nothing-to-release`, `partial`, `failed`, `blocked` |
 | `succeeded` | Whether all intended work completed (or correctly did nothing) |
 | `package-count` | Number of packages the phase touched |
