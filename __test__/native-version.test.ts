@@ -318,4 +318,63 @@ describe("runNativeVersion", () => {
 		const exit = await run(runNativeVersion("/repo").pipe(Effect.provide(layer)));
 		expect(Exit.isSuccess(exit)).toBe(true);
 	});
+
+	/** A planner that records the options each `apply` receives. */
+	const recordingPlanner = (calls: Array<unknown>) =>
+		Layer.succeed(Changesets.ReleasePlanner, {
+			plan: () => Effect.die(new Error("plan not stubbed")),
+			preview: () => Effect.die(new Error("preview not stubbed")),
+			apply: (_root, options) =>
+				Effect.sync(() => {
+					calls.push(options);
+					return applied;
+				}),
+		});
+
+	it("forwards snapshot options to ReleasePlanner.apply beside the changelog modules", async () => {
+		const calls: Array<unknown> = [];
+		const layer = Layer.mergeAll(recordingPlanner(calls), inspectorValid, fsWithConfig, gitOver(noSpawns().layer));
+		const snapshot = { tag: "next", useCalculatedVersion: true, prereleaseTemplate: "{tag}-{datetime}" };
+
+		const exit = await run(runNativeVersion("/repo", { snapshot }).pipe(Effect.provide(layer)));
+
+		expect(Exit.isSuccess(exit)).toBe(true);
+		expect(calls).toEqual([{ changelogModules: CHANGELOG_MODULES, snapshot }]);
+	});
+
+	it("sends no snapshot key at all on a normal Phase-1 apply", async () => {
+		const calls: Array<unknown> = [];
+		const layer = Layer.mergeAll(recordingPlanner(calls), inspectorValid, fsWithConfig, gitOver(noSpawns().layer));
+
+		await run(runNativeVersion("/repo").pipe(Effect.provide(layer)));
+
+		expect(calls).toEqual([{ changelogModules: CHANGELOG_MODULES }]);
+		expect(Object.hasOwn(calls[0] as object, "snapshot")).toBe(false);
+	});
+
+	// CHARACTERIZATION: pins pre mode's refusal as a typed, non-transient
+	// `ReleasePlanError` — the spec names pre mode as a typed refusal, not a
+	// crash. Nothing in Step 3 changes `isTransient`'s classification, so this
+	// case is green both before and after this task's edit; it stays as a spec
+	// pin against a future change to the transient-pattern list.
+	it("surfaces a pre-mode refusal as the typed ReleasePlanError, unretried", async () => {
+		let attempts = 0;
+		const planner = Layer.succeed(Changesets.ReleasePlanner, {
+			plan: () => Effect.die(new Error("plan not stubbed")),
+			preview: () => Effect.die(new Error("preview not stubbed")),
+			apply: () =>
+				Effect.suspend(() => {
+					attempts += 1;
+					return Effect.fail(
+						new Changesets.ReleasePlanError({ phase: "apply", reason: "Snapshot release is not allowed in pre mode" }),
+					);
+				}),
+		});
+		const layer = Layer.mergeAll(planner, inspectorValid, fsWithConfig, gitOver(noSpawns().layer));
+
+		const exit = await run(runNativeVersion("/repo", { snapshot: { tag: "next" } }).pipe(Effect.provide(layer)));
+
+		expect(Exit.isFailure(exit)).toBe(true);
+		expect(attempts).toBe(1);
+	});
 });
