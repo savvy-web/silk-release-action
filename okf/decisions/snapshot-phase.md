@@ -15,8 +15,8 @@ sources:
     resource: ../../src/schema/release-output.ts
 generated:
   by: okfit/claude-code
-  at: 2026-09-27T16:16:05Z
-  body_sha256: af1c0e7019eb5c823fccbf501b04bda911439ea22f827af69adba0a24f451b3d
+  at: 2026-09-27T17:16:44Z
+  body_sha256: 620adcbd57542967bfaee91f02cd731805498af3931d41ad543a7d8ee540b199
 ---
 
 # An explicit-only snapshot phase, never a publish-phase flag
@@ -145,11 +145,14 @@ The phase is reachable only after a release moves the `v5` alias tag forward
 to a commit carrying it — a consumer pinned to an older major never sees
 `phase: snapshot` in its `action.yml`.
 
-npm trusted publishing working through nested reusable workflows (this
-action, called from a consumer's own workflow, called in turn from the shared
-release workflow) is a claim this decision has not independently verified;
-effected's own dogfood dispatch against this phase is the evidence that will
-confirm or refute it.
+npm trusted publishing works through nested reusable workflows (the
+consumer's `release.yml`, calling the shared `release.yml`, calling
+`release-snapshot.yml`, calling this action). effected's dogfood dispatch
+(run 36336110315, 2026-09-27) published `@effected/jsonl@0.7.1-dogfood-…`
+with Sigstore provenance, npm recorded the publisher as `GitHubActions
+<npm-oidc-no-reply@github.com>`, and no `NPM_TOKEN` fallback was used. The
+trusted-publisher configuration binds to the consumer's top-level
+`release.yml`, as it did for the interim job.
 
 Phase 3's `dry-run` input appears not to gate every upload path the same way
 the snapshot phase's dry-run does — tracked as
