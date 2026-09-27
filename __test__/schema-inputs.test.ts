@@ -116,6 +116,7 @@ describe("readInputs", () => {
 			expect(Option.isNone(inputs.autoMerge)).toBe(true);
 			expect(Option.isNone(inputs.phase)).toBe(true);
 			expect(Option.isNone(inputs.onBuild)).toBe(true);
+			expect(Option.isNone(inputs.snapshotTag)).toBe(true);
 		}),
 	);
 
@@ -218,6 +219,39 @@ describe("readInputs", () => {
 			// typo currently falls through to `default:` and skips the entire run.
 			const exit = yield* Effect.exit(readInputs.pipe(Effect.provide(provide({ phase: "validaton" }))));
 			expect(exit._tag).toBe("Failure");
+		}),
+	);
+
+	it.effect("decodes phase: snapshot and carries a valid snapshot-tag", () =>
+		Effect.gen(function* () {
+			const inputs = yield* readInputs.pipe(Effect.provide(provide({ phase: "snapshot", "snapshot-tag": "next" })));
+			expect(inputs.phase).toEqual(Option.some("snapshot"));
+			expect(inputs.snapshotTag).toEqual(Option.some("next"));
+		}),
+	);
+
+	it.effect("treats a blank snapshot-tag as absent", () =>
+		Effect.gen(function* () {
+			const inputs = yield* readInputs.pipe(Effect.provide(provide({ "snapshot-tag": "   " })));
+			expect(Option.isNone(inputs.snapshotTag)).toBe(true);
+		}),
+	);
+
+	it.effect("refuses latest in any case, and tags npm would read as a semver range", () =>
+		Effect.gen(function* () {
+			for (const tag of ["latest", "Latest", "LATEST", "x", "v1", "v2-beta", "1.0", "next tag", "-next"]) {
+				const exit = yield* Effect.exit(readInputs.pipe(Effect.provide(provide({ "snapshot-tag": tag }))));
+				expect(exit._tag, `snapshot-tag ${JSON.stringify(tag)} must be refused`).toBe("Failure");
+			}
+		}),
+	);
+
+	it.effect("accepts lowercase tags with digits and hyphens", () =>
+		Effect.gen(function* () {
+			for (const tag of ["next", "dogfood", "pr-123", "canary2", "vnext"]) {
+				const inputs = yield* readInputs.pipe(Effect.provide(provide({ "snapshot-tag": tag })));
+				expect(inputs.snapshotTag).toEqual(Option.some(tag));
+			}
 		}),
 	);
 

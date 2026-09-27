@@ -23,9 +23,14 @@ import { Duration, Effect, Option } from "effect";
 import { readEventPayload } from "./event-payload.js";
 
 /**
- * The five phases this action knows how to dispatch.
+ * The six phases this action knows how to dispatch.
+ *
+ * @remarks
+ * `snapshot` is **explicit-only**: nothing below ever returns it from
+ * detection. It exists solely as a `phase` input value, because a snapshot
+ * publish is a deliberate human dispatch, never a consequence of a push.
  */
-export type WorkflowPhase = "branch-management" | "validation" | "publishing" | "close-issues" | "none";
+export type WorkflowPhase = "branch-management" | "validation" | "publishing" | "close-issues" | "snapshot" | "none";
 
 /**
  * Phase detection result.

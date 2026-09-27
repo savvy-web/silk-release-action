@@ -450,4 +450,22 @@ describe("detectWorkflowPhase — explicit phase override", () => {
 		expect(result.isReleaseCommit).toBe(false);
 		expect(result.mergedReleasePRNumber).toBeUndefined();
 	});
+
+	it("returns an explicit snapshot phase verbatim with no API call", async () => {
+		const result = await runDetectFull({
+			ref: "refs/heads/feat/thing",
+			eventName: "workflow_dispatch",
+			options: { explicitPhase: "snapshot" },
+		});
+
+		expect(result.phase).toBe("snapshot");
+		expect(result.reason).toContain("Explicit phase provided");
+		expect(result.mergedReleasePRNumber).toBeUndefined();
+	});
+
+	it("never auto-detects snapshot: a workflow_dispatch on a feature branch without an explicit phase is none", async () => {
+		const result = await runDetectFull({ ref: "refs/heads/feat/thing", eventName: "workflow_dispatch" });
+
+		expect(result.phase).toBe("none");
+	});
 });

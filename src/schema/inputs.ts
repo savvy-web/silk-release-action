@@ -52,6 +52,7 @@ export const INPUT_NAMES = [
 	"custom-registries",
 	"on-build",
 	"registry-confirm-timeout",
+	"snapshot-tag",
 ] as const;
 
 /**
@@ -75,8 +76,35 @@ const WorkflowPhaseSchema = Schema.Literals([
 	"validation",
 	"publishing",
 	"close-issues",
+	"snapshot",
 	"none",
 ]) satisfies Schema.Codec<WorkflowPhase, string>;
+
+/**
+ * The accepted `snapshot-tag` values.
+ *
+ * @remarks
+ * The tag is both the npm dist-tag and the prerelease identifier prefix
+ * (`1.4.0-<tag>-<datetime>`), so it must be legal in both places: a letter,
+ * then lowercase letters, digits or hyphens. `latest` is refused because a
+ * snapshot must never move it. `x` and `v<digit>…` are refused because npm
+ * rejects any dist-tag that parses as a semver range. Uppercase already fails
+ * the pattern, so `Latest` is refused too. npm stays the final arbiter of
+ * anything this grammar admits.
+ *
+ * @public
+ */
+export const SnapshotTagSchema = Schema.String.check(
+	Schema.isPattern(/^[a-z][a-z0-9-]*$/, {
+		expected: "a lowercase dist-tag: a letter, then letters, digits or hyphens",
+	}),
+	Schema.makeFilter(
+		(tag: string) => tag !== "latest" || "`latest` is reserved for real releases; a snapshot never moves it",
+	),
+	Schema.makeFilter(
+		(tag: string) => !(tag === "x" || /^v\d/.test(tag)) || "npm refuses a dist-tag that parses as a semver range",
+	),
+);
 
 /**
  * The two branch names a release flow works between.
@@ -170,6 +198,16 @@ export interface Inputs extends BranchRefs {
 	 * unresolved at the ceiling is reported as held, not failed.
 	 */
 	readonly registryConfirmTimeout: number;
+	/**
+	 * The dist-tag for a `phase: snapshot` run, or `None` when unset.
+	 *
+	 * @remarks
+	 * Validated against {@link SnapshotTagSchema} here, so a malformed value
+	 * fails the decode under any phase. "Required when the phase is
+	 * `snapshot`" is a cross-field rule that the snapshot step enforces
+	 * (`SnapshotError reason: "missing-tag"`). Every other phase ignores it.
+	 */
+	readonly snapshotTag: Option.Option<string>;
 }
 
 /**
@@ -225,6 +263,17 @@ const loadInputs: Config.Config<Inputs> = Config.all({
 		Config.mapEffect((value) =>
 			Schema.decodeUnknownEffect(Schema.Natural)(value).pipe(Effect.mapError((error) => new Config.ConfigError(error))),
 		),
+	),
+	snapshotTag: ActionInput.string("snapshot-tag").pipe(
+		Config.withDefault(""),
+		Config.mapEffect((raw) => {
+			const value = raw.trim();
+			if (value === "") return Effect.succeedNone;
+			return Schema.decodeUnknownEffect(SnapshotTagSchema)(value).pipe(
+				Effect.map(Option.some),
+				Effect.mapError((error) => new Config.ConfigError(error)),
+			);
+		}),
 	),
 });
 
