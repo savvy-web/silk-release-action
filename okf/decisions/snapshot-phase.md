@@ -15,8 +15,8 @@ sources:
     resource: ../../src/schema/release-output.ts
 generated:
   by: okfit/claude-code
-  at: 2026-09-27T15:46:10Z
-  body_sha256: 372a8303096553f18b0122e8df75ed0655f4d6f66e73212297f1244951893748
+  at: 2026-09-27T16:16:05Z
+  body_sha256: af1c0e7019eb5c823fccbf501b04bda911439ea22f827af69adba0a24f451b3d
 ---
 
 # An explicit-only snapshot phase, never a publish-phase flag
@@ -152,8 +152,22 @@ effected's own dogfood dispatch against this phase is the evidence that will
 confirm or refute it.
 
 Phase 3's `dry-run` input appears not to gate every upload path the same way
-the snapshot phase's dry-run does — worth a follow-up issue once filed,
-rather than assumed identical here.
+the snapshot phase's dry-run does — tracked as
+[#459](https://github.com/savvy-web/silk-release-action/issues/459) rather
+than assumed identical here.
+
+A published snapshot can carry a **dangling internal dependency**.
+Changesets bumps the dependents of every bumped package and the build pins
+each internal dependency to its exact snapshot version, so when a bumped
+dependency is skipped (never published), fails, or is not uploaded, a
+published dependent pins a version no registry holds and an `overrides:`
+block naming it fails with `ETARGET`. `findDanglingDependencies`[^snapshot-utils]
+names each such pair from the dependent's runtime dependencies (production,
+peer, optional — never dev) as discovery reads them, against the applied
+release set and the publish result. Each pair is a logged warning and a
+"Dangling dependencies" job-summary section — a finding, never a verdict:
+`success`, `outcome` and the output schema are unchanged, per the
+degraded-steps rule.
 
 [^snapshot-step]: ../../src/steps/snapshot.ts
 [^snapshot-utils]: ../../src/utils/snapshot.ts

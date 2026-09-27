@@ -75,8 +75,13 @@ const PUBLISHED: PublishPackagesResult = {
 	successfulTargets: 1,
 };
 
+type DepKind = "dependencies" | "devDependencies" | "peerDependencies" | "optionalDependencies";
+
 /** WorkspaceDiscovery has no kit double (a gap); every member but getPackage dies. */
-const discovery = (paths: Record<string, string>) =>
+const discovery = (
+	paths: Record<string, string>,
+	manifests: Record<string, Partial<Record<DepKind, Record<string, string>>>> = {},
+) =>
 	Layer.succeed(WorkspaceDiscovery, {
 		info: () => Effect.die(new Error("info() not stubbed")),
 		listPackages: () => Effect.die(new Error("listPackages() not stubbed")),
@@ -92,6 +97,7 @@ const discovery = (paths: Record<string, string>) =>
 							packageJsonPath: `${path}/package.json`,
 							relativePath: name,
 							workspaceRoot: "/repo",
+							...manifests[name],
 						}),
 					);
 		},
@@ -112,19 +118,32 @@ interface RunCapture {
 	readonly summaries: string[];
 	/** Emission order across outputs, summary and failure, for ordering assertions. */
 	readonly events: string[];
+	/** Every `Warn`-level log line. */
+	readonly warnings: string[];
 }
 
 const run = async (
-	options: { inputs?: Inputs; ref?: string; dryRun?: boolean; paths?: Record<string, string> } = {},
+	options: {
+		inputs?: Inputs;
+		ref?: string;
+		dryRun?: boolean;
+		paths?: Record<string, string>;
+		manifests?: Record<string, Partial<Record<DepKind, Record<string, string>>>>;
+	} = {},
 ): Promise<RunCapture> => {
 	let result: Record<string, unknown> | undefined;
 	const scalars: Record<string, string> = {};
 	const failedWith: string[] = [];
 	const summaries: string[] = [];
 	const events: string[] = [];
+	const warnings: string[] = [];
 
 	const layers = Layer.mergeAll(
-		Logger.layer([]),
+		Logger.layer([
+			Logger.make(({ logLevel, message }) => {
+				if (logLevel === "Warn") warnings.push(String(message));
+			}),
+		]),
 		ActionEnvironment.layerTest({ GITHUB_REF: options.ref ?? "refs/heads/feat/lockfile-integrity" }),
 		ActionLogger.layerTest({ group: (_name, effect) => effect }),
 		ActionOutputs.layerTest({
@@ -152,7 +171,7 @@ const run = async (
 		}),
 		ActionState.layerTest({ save: () => Effect.void }),
 		DryRun.layerTest({ isDryRun: Effect.succeed(options.dryRun ?? false) }),
-		discovery(options.paths ?? { "@scope/alpha": "/repo/packages/alpha" }),
+		discovery(options.paths ?? { "@scope/alpha": "/repo/packages/alpha" }, options.manifests),
 	);
 
 	// The mocked modules erase their real requirement channels at runtime only.
@@ -163,7 +182,7 @@ const run = async (
 		unknown
 	>;
 	const exit = await Effect.runPromise(Effect.result(effect));
-	return { exit, result, scalars, failedWith, summaries, events };
+	return { exit, result, scalars, failedWith, summaries, events, warnings };
 };
 
 const failureOf = (capture: RunCapture): unknown => (capture.exit as { failure?: unknown }).failure;
@@ -331,6 +350,76 @@ describe("runSnapshot — stages", () => {
 
 		expect(runPublishTargetsMock.mock.calls[0]?.[3]).toEqual({ tag: "next", dryRun: true });
 		expect(c.result).toMatchObject({ outcome: "rehearsed", dryRun: true, published: [] });
+	});
+});
+
+describe("runSnapshot — dangling internal dependencies", () => {
+	const BETA_VERSION = "0.5.0-next-20260927051500";
+	const twoPackages = (betaTarget: ReturnType<typeof npmTarget>): PublishPackagesResult => ({
+		...PUBLISHED,
+		totalPackages: 2,
+		totalTargets: 2,
+		packages: [
+			{ name: "@scope/beta", version: BETA_VERSION, targets: [betaTarget] },
+			{ name: "@scope/alpha", version: VERSION, targets: [npmTarget()] },
+		],
+	});
+	const betaTarget = (overrides: Record<string, unknown> = {}) =>
+		npmTarget({
+			target: { ...npmTarget().target, name: "@scope/beta", directory: join(process.cwd(), "packages/beta/dist/npm") },
+			...overrides,
+		});
+	const paths = { "@scope/alpha": "/repo/packages/alpha", "@scope/beta": "/repo/packages/beta" };
+
+	beforeEach(() => {
+		runNativeVersionMock.mockReturnValue(
+			Effect.succeed({
+				...APPLIED,
+				releases: [
+					...APPLIED.releases,
+					{ name: "@scope/beta", type: "minor", oldVersion: "0.4.0", newVersion: BETA_VERSION },
+				],
+			}),
+		);
+	});
+
+	it("warns and adds a summary section when a published package depends on a never-published sibling, without failing", async () => {
+		runPublishTargetsMock.mockReturnValue(
+			Effect.succeed(twoPackages(betaTarget({ status: "skipped", skipReason: "never-published" }))),
+		);
+		const c = await run({ paths, manifests: { "@scope/alpha": { dependencies: { "@scope/beta": "workspace:*" } } } });
+
+		expect(c.exit._tag).toBe("Success");
+		expect(c.result).toMatchObject({ success: true, outcome: "published" });
+		expect(c.result).not.toHaveProperty("dangling");
+		expect(c.warnings).toHaveLength(1);
+		expect(c.warnings[0]).toContain(`@scope/alpha@${VERSION}`);
+		expect(c.warnings[0]).toContain(`@scope/beta@${BETA_VERSION}`);
+		const summary = c.summaries.join("\n");
+		expect(summary).toContain("Dangling dependencies");
+		expect(summary).toContain(`| \`@scope/alpha\` | \`@scope/beta\` | \`${BETA_VERSION}\` |`);
+	});
+
+	it("reports no dangling dependency when every bumped internal dependency was published", async () => {
+		runPublishTargetsMock.mockReturnValue(Effect.succeed(twoPackages(betaTarget())));
+		const c = await run({ paths, manifests: { "@scope/alpha": { dependencies: { "@scope/beta": "workspace:*" } } } });
+
+		expect(c.exit._tag).toBe("Success");
+		expect(c.warnings).toEqual([]);
+		expect(c.summaries.join("\n")).not.toContain("Dangling dependencies");
+	});
+
+	it("ignores a devDependency on an unpublished sibling: a consumer never installs it", async () => {
+		runPublishTargetsMock.mockReturnValue(
+			Effect.succeed(twoPackages(betaTarget({ status: "skipped", skipReason: "never-published" }))),
+		);
+		const c = await run({
+			paths,
+			manifests: { "@scope/alpha": { devDependencies: { "@scope/beta": "workspace:*" } } },
+		});
+
+		expect(c.warnings).toEqual([]);
+		expect(c.summaries.join("\n")).not.toContain("Dangling dependencies");
 	});
 });
 

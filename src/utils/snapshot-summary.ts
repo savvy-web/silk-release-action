@@ -10,6 +10,7 @@
 
 import { GitHubMarkdown } from "@effected/github-actions";
 import type { SnapshotOutput } from "../schema/release-output.js";
+import type { DanglingDependency } from "./snapshot.js";
 
 /**
  * A ready-to-paste pnpm `overrides:` block, one line per package name.
@@ -29,16 +30,24 @@ export const renderOverrides = (published: SnapshotOutput["published"]): string 
 	return ["overrides:", ...[...seen].map(([name, version]) => `  "${name}": "${version}"`)].join("\n");
 };
 
+/** The first line of a (possibly multi-line) publish error, trimmed; the full text is in the log. */
+const firstLine = (text: string): string => text.trim().split("\n")[0]?.trim() ?? "";
+
 /**
  * Render the snapshot job summary.
  *
  * @param output - The emitted snapshot output.
  * @param branch - The dispatched branch; empty when the run was refused before it was known.
+ * @param dangling - Published packages pinning an unpublished sibling; a finding, not in the output.
  * @returns GitHub-flavoured markdown.
  *
  * @public
  */
-export const renderSnapshotSummary = (output: SnapshotOutput, branch: string): string => {
+export const renderSnapshotSummary = (
+	output: SnapshotOutput,
+	branch: string,
+	dangling: ReadonlyArray<DanglingDependency> = [],
+): string => {
 	const code = GitHubMarkdown.code;
 	const parts: string[] = [
 		GitHubMarkdown.heading(`Snapshot ${code(output.tag)}${branch === "" ? "" : ` of ${code(branch)}`}`, 2),
@@ -58,6 +67,20 @@ export const renderSnapshotSummary = (output: SnapshotOutput, branch: string): s
 		);
 		parts.push(GitHubMarkdown.codeBlock(renderOverrides(output.published), "yaml"));
 	}
+	if (dangling.length > 0) {
+		parts.push(GitHubMarkdown.heading("Dangling dependencies", 3));
+		parts.push(
+			"These published packages depend on a sibling bumped in this snapshot but not published by it. " +
+				"Their pins on the versions below will not install (`ETARGET`), so an override naming the dependent " +
+				"fails until the dependency is published.",
+		);
+		parts.push(
+			GitHubMarkdown.table(
+				["Package", "Depends on", "Pinned version"],
+				dangling.map((d) => [code(d.dependent), code(d.dependency), code(d.version)]),
+			),
+		);
+	}
 	if (output.skipped.length > 0) {
 		parts.push(
 			GitHubMarkdown.table(
@@ -70,7 +93,7 @@ export const renderSnapshotSummary = (output: SnapshotOutput, branch: string): s
 		parts.push(
 			GitHubMarkdown.table(
 				["Failed", "Version", "Registry", "Error"],
-				output.failed.map((f) => [code(f.name), code(f.version), f.registry.name, f.error]),
+				output.failed.map((f) => [code(f.name), code(f.version), f.registry.name, firstLine(f.error)]),
 			),
 		);
 	}

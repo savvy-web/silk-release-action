@@ -5,6 +5,7 @@
  * @module utils/snapshot
  */
 
+import type { PublishPackagesResult, TargetPublishResult } from "../release/types.js";
 import type { BranchRefs } from "../schema/inputs.js";
 
 /**
@@ -64,4 +65,74 @@ export const checkSnapshotRef = (ref: string, branches: BranchRefs): SnapshotRef
 		};
 	}
 	return { ok: true, branch };
+};
+
+/**
+ * A published snapshot package whose manifest pins an internal dependency
+ * at a snapshot version that was not published in the same run.
+ *
+ * @public
+ */
+export interface DanglingDependency {
+	/** The published package that carries the pin. */
+	readonly dependent: string;
+	/** The dependent's snapshot version. */
+	readonly dependentVersion: string;
+	/** The bumped internal dependency that was not published. */
+	readonly dependency: string;
+	/** The dependency's snapshot version: the pin that will not install. */
+	readonly version: string;
+}
+
+/**
+ * Whether a target's version is on its registry after the run.
+ *
+ * @remarks
+ * The same classification `toSnapshotOutput` uses for its `published` list:
+ * an upload, or a version already present at an identical digest. A
+ * never-published or dry-run skip, a failure, and a reasonless skip are not.
+ */
+const landed = (t: TargetPublishResult): boolean =>
+	t.success &&
+	t.skipReason !== "never-published" &&
+	t.skipReason !== "dry-run" &&
+	!(t.status === "skipped" && t.skipReason === undefined);
+
+/**
+ * Find every published snapshot package that depends on a sibling bumped in
+ * this snapshot but not published by it.
+ *
+ * @remarks
+ * Changesets bumps the dependents of every bumped package, and the build
+ * pins each internal dependency to its exact snapshot version. A dependency
+ * that was skipped (never published), failed, or not uploaded therefore
+ * leaves its published dependents with a pin no registry can satisfy, and an
+ * `overrides:` block naming the dependent fails with `ETARGET`. Pure; a
+ * finding, never a verdict — it changes no `success` or `outcome`.
+ *
+ * @param releases - The applied snapshot bumps.
+ * @param runtimeDependencies - Each bumped package's runtime dependency names
+ * (production, peer and optional; never dev, which a consumer never installs).
+ * @param publishResult - The publish loop's result.
+ * @returns One entry per dangling (dependent, dependency) pair, in release order.
+ *
+ * @public
+ */
+export const findDanglingDependencies = (
+	releases: ReadonlyArray<{ readonly name: string; readonly newVersion: string }>,
+	runtimeDependencies: ReadonlyMap<string, ReadonlyArray<string>>,
+	publishResult: PublishPackagesResult,
+): ReadonlyArray<DanglingDependency> => {
+	const bumped = new Map(releases.map((r) => [r.name, r.newVersion]));
+	const published = new Set(publishResult.packages.filter((p) => p.targets.some(landed)).map((p) => p.name));
+	const dangling: DanglingDependency[] = [];
+	for (const release of releases) {
+		if (!published.has(release.name)) continue;
+		for (const dependency of runtimeDependencies.get(release.name) ?? []) {
+			const version = bumped.get(dependency);
+			if (version === undefined || published.has(dependency)) continue;
+			dangling.push({ dependent: release.name, dependentVersion: release.newVersion, dependency, version });
+		}
+	}
+	return dangling;
 };

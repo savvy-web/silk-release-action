@@ -9,7 +9,12 @@
  * **Stages:** refuse (tag, ref) → version (changesets snapshot, in the
  * working tree only) → build (`ci:build`, no SBOM) → publish (the Phase-3
  * target resolution, under the snapshot tag, skipping never-published
- * packages) → emit.
+ * packages) → dangling-dependency check → emit.
+ *
+ * **Dangling dependencies are a finding, not a failure.** A published
+ * package whose runtime dependency was bumped here but not published pins a
+ * version no registry holds. Each pair is a logged warning and a job-summary
+ * section; neither `success`, `outcome` nor the output schema changes.
  *
  * **Failure posture: fail-the-job, after emitting.** Every exit path, from a
  * refusal to a partial publish, first emits the `result` output and writes
@@ -44,7 +49,8 @@ import { detectPackageManager } from "../utils/detect-package-manager.js";
 import { ensureFullHistory } from "../utils/ensure-full-history.js";
 import { grouped } from "../utils/grouped.js";
 import { runNativeVersion } from "../utils/native-version.js";
-import { SNAPSHOT_PRERELEASE_TEMPLATE, checkSnapshotRef } from "../utils/snapshot.js";
+import type { DanglingDependency } from "../utils/snapshot.js";
+import { SNAPSHOT_PRERELEASE_TEMPLATE, checkSnapshotRef, findDanglingDependencies } from "../utils/snapshot.js";
 import { renderSnapshotSummary } from "../utils/snapshot-summary.js";
 import { sortReleasesTopologically } from "../utils/sort-releases-topologically.js";
 
@@ -79,6 +85,7 @@ export const runSnapshot = (inputs: Inputs) =>
 				releases: ReadonlyArray<SnapshotRelease>,
 				publishResult: PublishPackagesResult | null,
 				stop: Stop | null,
+				dangling: ReadonlyArray<DanglingDependency> = [],
 			): Effect.Effect<void, SnapshotError | ActionOutputError, ActionState> =>
 				Effect.gen(function* () {
 					const output = toSnapshotOutput({
@@ -91,7 +98,7 @@ export const runSnapshot = (inputs: Inputs) =>
 					});
 					yield* emitReleaseOutput(outputs, output, { packageCount: output.totals.published, releasePrNumber: null });
 					yield* outputs
-						.summary(renderSnapshotSummary(output, branch))
+						.summary(renderSnapshotSummary(output, branch, dangling))
 						.pipe(
 							Effect.catch((e) =>
 								Effect.logWarning(
@@ -151,6 +158,10 @@ export const runSnapshot = (inputs: Inputs) =>
 			// Locate every bumped package, then order dependency-first.
 			const discovery = yield* WorkspaceDiscovery;
 			const detectedByName = new Map<string, DetectedRelease>();
+			// Runtime dependency NAMES only (never dev: a consumer never installs
+			// them). Names do not change with versioning, so discovery's manifest
+			// read is exact; the pinned version comes from the applied releases.
+			const runtimeDependencies = new Map<string, ReadonlyArray<string>>();
 			const missing: string[] = [];
 			for (const release of releases) {
 				const found = yield* Effect.result(discovery.getPackage(release.name));
@@ -160,6 +171,11 @@ export const runSnapshot = (inputs: Inputs) =>
 						version: release.newVersion,
 						path: found.success.path,
 					});
+					runtimeDependencies.set(release.name, [
+						...Object.keys(found.success.dependencies),
+						...Object.keys(found.success.peerDependencies),
+						...Object.keys(found.success.optionalDependencies),
+					]);
 				} else {
 					missing.push(release.name);
 				}
@@ -189,16 +205,30 @@ export const runSnapshot = (inputs: Inputs) =>
 
 			// ── 4. Publish under the snapshot tag ──────────────────────────────
 			const publishResult = yield* runPublishTargets(detected, new Map(), inputs.customRegistries, { tag, dryRun });
+
+			// ── 5. Dangling internal dependencies (a finding, never a verdict) ─
+			const dangling = findDanglingDependencies(releases, runtimeDependencies, publishResult);
+			for (const d of dangling) {
+				yield* Effect.logWarning(
+					`Snapshot: ${d.dependent}@${d.dependentVersion} depends on ${d.dependency}@${d.version}, ` +
+						"which was bumped but not published — that pin will not install",
+				);
+			}
 			if (!publishResult.success) {
 				const landed = publishResult.packages.flatMap((p) => p.targets).filter((t) => t.status === "published").length;
-				return yield* finish(releases, publishResult, {
-					reason: "publish",
-					stage: "publish",
-					message:
-						`${landed} publication(s) landed before at least one failed — ` +
-						"pin the exact versions listed in the summary, never the tag",
-				});
+				return yield* finish(
+					releases,
+					publishResult,
+					{
+						reason: "publish",
+						stage: "publish",
+						message:
+							`${landed} publication(s) landed before at least one failed — ` +
+							"pin the exact versions listed in the summary, never the tag",
+					},
+					dangling,
+				);
 			}
-			yield* finish(releases, publishResult, null);
+			yield* finish(releases, publishResult, null, dangling);
 		}),
 	);

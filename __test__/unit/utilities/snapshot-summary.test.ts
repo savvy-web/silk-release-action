@@ -83,4 +83,44 @@ describe("renderSnapshotSummary", () => {
 	it("renders without a branch when the run was refused before the ref was known", () => {
 		expect(renderSnapshotSummary(output({ published: [] }), "")).toContain("Snapshot `next`");
 	});
+
+	it("renders only the first line of a multi-line publish error in the failed table", () => {
+		const md = renderSnapshotSummary(
+			output({
+				success: false,
+				outcome: "partial",
+				failed: [
+					{
+						name: "@scope/b",
+						version: "2.0.0-next-1",
+						registry: npm,
+						error:
+							"  E403 forbidden  \nnpm ERR! code E403\nnpm ERR! 403 Forbidden - PUT https://registry.npmjs.org/@scope%2fb",
+					},
+				],
+			}),
+			"feat/x",
+		);
+		expect(md).toContain("| E403 forbidden |");
+		expect(md).not.toContain("npm ERR!");
+	});
+
+	it("renders a dangling-dependencies section naming each pair, and says the pins will not install", () => {
+		const md = renderSnapshotSummary(output(), "feat/x", [
+			{
+				dependent: "@scope/a",
+				dependentVersion: "1.1.0-next-20260927051500",
+				dependency: "@scope/c",
+				version: "0.2.0-next-20260927051500",
+			},
+		]);
+		expect(md).toContain("Dangling dependencies");
+		expect(md).toContain("| `@scope/a` | `@scope/c` | `0.2.0-next-20260927051500` |");
+		expect(md).toMatch(/will not install/i);
+	});
+
+	it("omits the dangling-dependencies section when there are none", () => {
+		expect(renderSnapshotSummary(output(), "feat/x", [])).not.toContain("Dangling dependencies");
+		expect(renderSnapshotSummary(output(), "feat/x")).not.toContain("Dangling dependencies");
+	});
 });
