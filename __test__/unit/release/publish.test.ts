@@ -52,6 +52,7 @@ import {
 	detectReleases,
 	planWorkspaces,
 	runBuildAndSbom,
+	runCiBuild,
 	runPublishTargets,
 	userNpmrcPath,
 } from "../../../src/release/publish.js";
@@ -985,6 +986,46 @@ describe("runBuildAndSbom", () => {
 			}),
 		);
 	});
+});
+
+describe("runCiBuild", () => {
+	it.effect("runs `pnpm ci:build` once and reports ok on exit 0, generating nothing else", () =>
+		Effect.gen(function* () {
+			const spawner = ScriptedSpawner.make((command) =>
+				command === "pnpm" ? { exit: 0, stdout: "built", stderr: "" } : ScriptedSpawner.notFound(command),
+			);
+			const result = yield* runCiBuild("pnpm").pipe(Effect.provide(Layer.merge(loggerLayer, spawner.layer)));
+
+			expect(result).toEqual({ ok: true });
+			expect(spawner.spawns.map((s) => [s.command, ...s.args])).toEqual([["pnpm", "ci:build"]]);
+		}),
+	);
+
+	it.effect("uses `npm run ci:build` under npm", () =>
+		Effect.gen(function* () {
+			const spawner = ScriptedSpawner.make((command) =>
+				command === "npm" ? { exit: 0, stdout: "", stderr: "" } : ScriptedSpawner.notFound(command),
+			);
+			yield* runCiBuild("npm").pipe(Effect.provide(Layer.merge(loggerLayer, spawner.layer)));
+
+			expect(spawner.spawns.map((s) => [s.command, ...s.args])).toEqual([["npm", "run", "ci:build"]]);
+		}),
+	);
+
+	it.effect("reports ok: false with the stderr summary when ci:build exits non-zero", () =>
+		Effect.gen(function* () {
+			vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+			vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+			const spawner = ScriptedSpawner.make((command) =>
+				command === "pnpm" ? { exit: 2, stdout: "", stderr: "TS2345: nope" } : ScriptedSpawner.notFound(command),
+			);
+			const result = yield* runCiBuild("pnpm").pipe(Effect.provide(Layer.merge(loggerLayer, spawner.layer)));
+			vi.restoreAllMocks();
+
+			expect(result.ok).toBe(false);
+			expect(result.error).toContain("TS2345");
+		}),
+	);
 });
 
 // ─── runPublishTargets ────────────────────────────────────────────────────────

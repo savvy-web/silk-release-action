@@ -1187,6 +1187,64 @@ const buildErrorSummary = (stdout: string, stderr: string): string => {
 const BUILD_ERROR_SUMMARY_LINES = 20;
 
 /**
+ * Result of {@link runCiBuild}.
+ *
+ * @public
+ */
+export interface CiBuildResult {
+	/** True when `ci:build` exited 0. The verdict is the exit code alone. */
+	readonly ok: boolean;
+	/** One-line failure summary (see {@link buildErrorSummary}); absent on success. */
+	readonly error?: string | undefined;
+}
+
+/**
+ * Run the workspace's `ci:build` script once.
+ *
+ * @remarks
+ * The build half of {@link runBuildAndSbom}, extracted so the snapshot phase
+ * builds exactly as Phase 3 does, with the same argv, the same exit-code
+ * verdict and the same failure transcript (issue #262), without generating
+ * an SBOM. Never fails: a non-zero exit is a result, and so is a process
+ * that could not be spawned at all.
+ *
+ * @param packageManager - The detected package manager, for the argv.
+ * @returns Whether the build succeeded, plus a summary when it did not.
+ *
+ * @public
+ */
+export const runCiBuild = (
+	packageManager: string,
+): Effect.Effect<CiBuildResult, never, ChildProcessSpawner.ChildProcessSpawner> =>
+	Effect.gen(function* () {
+		const buildArgs = packageManager === "npm" ? ["run", "ci:build"] : ["ci:build"];
+		yield* Effect.logDebug(`runCiBuild: ${packageManager} ${buildArgs.join(" ")}`);
+
+		// `Run.collect` treats a non-zero exit as a RESULT, not a failure. The
+		// error channel fires only when the process could not be run at all.
+		const buildOutcome = yield* Effect.result(Run.collect(ChildProcess.make(packageManager, buildArgs)));
+		const build =
+			buildOutcome._tag === "Success"
+				? {
+						success: buildOutcome.success.exitCode === 0,
+						error: buildOutcome.success.stderr,
+						output: buildOutcome.success.stdout,
+					}
+				: { success: false, error: buildOutcome.failure.message, output: "" };
+
+		if (build.success) {
+			yield* Effect.logDebug(build.output);
+			yield* Effect.logInfo("  ✅ ci:build succeeded");
+			return { ok: true } satisfies CiBuildResult;
+		}
+		// Failure is exactly when the captured output is the product (issue
+		// #262): turbo writes task diagnostics to STDOUT, so both streams go out.
+		yield* emitBuildTranscript(build.output, build.error);
+		yield* Effect.logError(`ci:build failed — ${build.error}`);
+		return { ok: false, error: buildErrorSummary(build.output, build.error) } satisfies CiBuildResult;
+	});
+
+/**
  * Result of {@link runBuildAndSbom} — the Phase-3 Build & SBOM gate.
  *
  * @public
@@ -1272,47 +1330,12 @@ export const runBuildAndSbom = (
 			"Build & SBOM",
 			Effect.gen(function* () {
 				// ── Build (ci:build, once) ─────────────────────────────────────────
-				const buildArgs = args.packageManager === "npm" ? ["run", "ci:build"] : ["ci:build"];
-				yield* Effect.logDebug(`runBuildAndSbom: ${args.packageManager} ${buildArgs.join(" ")}`);
-
-				// `Run.collect` treats a non-zero exit as a RESULT, not a failure —
-				// the same split the predecessor's `execCapture` had, so the
-				// exit-code branch below is reached identically. The error channel
-				// fires only when the process could not be run at all.
-				const buildOutcome = yield* Effect.result(Run.collect(ChildProcess.make(args.packageManager, buildArgs)));
-
-				const build =
-					buildOutcome._tag === "Success"
-						? {
-								success: buildOutcome.success.exitCode === 0,
-								error: buildOutcome.success.stderr,
-								output: buildOutcome.success.stdout,
-							}
-						: { success: false, error: buildOutcome.failure.message, output: "" };
-
-				if (build.success) {
-					yield* Effect.logDebug(build.output);
-					yield* Effect.logInfo("  ✅ ci:build succeeded");
-				} else {
-					// **Failure is precisely when the captured output is the product**
-					// (issue #262). `Run.collect` buffers both streams; the success path
-					// can afford to drop them, but discarding them here left the compiler
-					// diagnostics in NO log — the group opened and went straight to the
-					// error annotation. Turbo runs with `--output-logs=full`, so the task
-					// diagnostics are on STDOUT, which is exactly the stream the old code
-					// never emitted on this path (it logged `stderr` only, and stderr
-					// carries little more than the echoed command line).
-					//
-					// Written straight through rather than through `Effect.log*`: a
-					// multi-hundred-line transcript re-prefixed per line by the logger is
-					// unreadable, and the same passthrough idiom is what Phase 2's
-					// `validate-builds` already uses.
-					yield* emitBuildTranscript(build.output, build.error);
-					yield* Effect.logError(`ci:build failed — ${build.error}`);
+				const build = yield* runCiBuild(args.packageManager);
+				if (!build.ok) {
 					yield* Effect.logWarning("  ❌ aborted — build failed");
 					return {
 						ok: false,
-						buildError: buildErrorSummary(build.output, build.error),
+						buildError: build.error ?? "ci:build failed",
 						sbomFailures: [],
 						sbomSkipped: [],
 						packageCount: detected.length,
