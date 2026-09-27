@@ -4,5 +4,3 @@ autoInstallPeers: true
 configDependencies:
   "@effected/pnpm-plugin-effect": 0.11.3+sha512-H/VrKZWQSTHce7zcUQW3ttm4HWhi+sfBDO00vcbZymU9ZJS0sZDLO4B3RGDP8+EEyQI6SPdlcj0f1RtUOGcxmQ==
   "@savvy-web/pnpm-plugin-silk": 0.44.0+sha512-6GbxZtliXuGHKFzJGFkqqNAbZzErb42XvCLdnr29KVR3OwvwU+D1MxNPpfzKOkde/TlM/KLsciuNqqmCSS/Yag==
-overrides:
-  "@savvy-web/silk-effects": file:../systems/packages/silk-effects/dist/prod/npm/pkg

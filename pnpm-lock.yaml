@@ -246,7 +246,6 @@ catalogs:
 overrides:
   '@effect/vitest>vitest': ^5.0.1
   '@microsoft/api-extractor>typescript': ^6.0.3
-  '@savvy-web/silk-effects': file:../systems/packages/silk-effects/dist/prod/npm/pkg
 
 importers:
 
@@ -298,8 +297,8 @@ importers:
         specifier: catalog:effected
         version: 0.17.0(effect@4.0.0-rc.117)
       '@savvy-web/silk-effects':
-        specifier: file:../systems/packages/silk-effects/dist/prod/npm/pkg
-        version: file:../systems/packages/silk-effects/dist/prod/npm/pkg(@effected/commands@0.9.0(effect@4.0.0-rc.117))(@effected/git@0.17.0(effect@4.0.0-rc.117))(@effected/templates@0.8.0(effect@4.0.0-rc.117))(@effected/workspaces@0.28.0(effect@4.0.0-rc.117))(effect@4.0.0-rc.117)
+        specifier: ^9.2.0
+        version: 9.2.0(@effected/commands@0.9.0(effect@4.0.0-rc.117))(@effected/git@0.17.0(effect@4.0.0-rc.117))(@effected/templates@0.8.0(effect@4.0.0-rc.117))(@effected/workspaces@0.28.0(effect@4.0.0-rc.117))(effect@4.0.0-rc.117)
       effect:
         specifier: catalog:effect
         version: 4.0.0-rc.117
@@ -1527,8 +1526,24 @@ packages:
       '@effected/workspaces': ^0.27.0
       effect: 4.0.0-rc.117
 
-  '@savvy-web/silk-effects@file:../systems/packages/silk-effects/dist/prod/npm/pkg':
-    resolution: {directory: ../systems/packages/silk-effects/dist/prod/npm/pkg, type: directory}
+  '@savvy-web/silk-core@0.4.7':
+    resolution: {integrity: sha512-BtIoHjo4uKeXMgL7pn0lLdTExHqZWtFgHsEY/T9PeabZuO55Q/5NoMd66b2NOiJGliYePXCZGtTW5MVXdgiMew==}
+    peerDependencies:
+      '@effected/templates': ^0.8.0
+      '@effected/workspaces': ^0.28.0
+      effect: 4.0.0-rc.117
+
+  '@savvy-web/silk-effects@9.1.4':
+    resolution: {integrity: sha512-UVr+R1bGnxu/DDZoRx4wOxLwW2go0G991vYAlZbpM6SOvg2FEtBSq9Y/bcwAvOyF9TtsvDvXxKwdc4d3krt7gQ==}
+    peerDependencies:
+      '@effected/commands': ^0.9.0
+      '@effected/git': ^0.17.0
+      '@effected/templates': ^0.8.0
+      '@effected/workspaces': ^0.27.0
+      effect: 4.0.0-rc.117
+
+  '@savvy-web/silk-effects@9.2.0':
+    resolution: {integrity: sha512-gpT2na4QIijqtWAZm7rUebWjaX9irXeLzwwJ+fTX8zV+7pogztQCjLb8cc/0UDNA3AwNqU+gxu0QbhyB/YNf4Q==}
     peerDependencies:
       '@effected/commands': ^0.9.0
       '@effected/git': ^0.17.0
@@ -4566,7 +4581,7 @@ snapshots:
       '@effected/git': 0.17.0(effect@4.0.0-rc.117)
       '@effected/templates': 0.8.0(effect@4.0.0-rc.117)
       '@effected/workspaces': 0.27.0(effect@4.0.0-rc.117)
-      '@savvy-web/silk-effects': file:../systems/packages/silk-effects/dist/prod/npm/pkg(@effected/commands@0.9.0(effect@4.0.0-rc.117))(@effected/git@0.17.0(effect@4.0.0-rc.117))(@effected/templates@0.8.0(effect@4.0.0-rc.117))(@effected/workspaces@0.27.0(effect@4.0.0-rc.117))(effect@4.0.0-rc.117)
+      '@savvy-web/silk-effects': 9.1.4(@effected/commands@0.9.0(effect@4.0.0-rc.117))(@effected/git@0.17.0(effect@4.0.0-rc.117))(@effected/templates@0.8.0(effect@4.0.0-rc.117))(@effected/workspaces@0.27.0(effect@4.0.0-rc.117))(effect@4.0.0-rc.117)
       effect: 4.0.0-rc.117
     transitivePeerDependencies:
       - supports-color
@@ -4582,7 +4597,7 @@ snapshots:
       '@effected/templates': 0.8.0(effect@4.0.0-rc.117)
       '@effected/workspaces': 0.27.0(effect@4.0.0-rc.117)
       '@effected/yaml': 0.17.0(effect@4.0.0-rc.117)
-      '@savvy-web/silk-effects': file:../systems/packages/silk-effects/dist/prod/npm/pkg(@effected/commands@0.9.0(effect@4.0.0-rc.117))(@effected/git@0.17.0(effect@4.0.0-rc.117))(@effected/templates@0.8.0(effect@4.0.0-rc.117))(@effected/workspaces@0.27.0(effect@4.0.0-rc.117))(effect@4.0.0-rc.117)
+      '@savvy-web/silk-effects': 9.1.4(@effected/commands@0.9.0(effect@4.0.0-rc.117))(@effected/git@0.17.0(effect@4.0.0-rc.117))(@effected/templates@0.8.0(effect@4.0.0-rc.117))(@effected/workspaces@0.27.0(effect@4.0.0-rc.117))(effect@4.0.0-rc.117)
       effect: 4.0.0-rc.117
     transitivePeerDependencies:
       - '@effected/config-file'
@@ -4617,7 +4632,7 @@ snapshots:
       '@effected/mcp': 0.2.0(@effected/engine@0.1.0(effect@4.0.0-rc.117))(effect@4.0.0-rc.117)
       '@effected/templates': 0.8.0(effect@4.0.0-rc.117)
       '@effected/workspaces': 0.27.0(effect@4.0.0-rc.117)
-      '@savvy-web/silk-effects': file:../systems/packages/silk-effects/dist/prod/npm/pkg(@effected/commands@0.9.0(effect@4.0.0-rc.117))(@effected/git@0.17.0(effect@4.0.0-rc.117))(@effected/templates@0.8.0(effect@4.0.0-rc.117))(@effected/workspaces@0.27.0(effect@4.0.0-rc.117))(effect@4.0.0-rc.117)
+      '@savvy-web/silk-effects': 9.1.4(@effected/commands@0.9.0(effect@4.0.0-rc.117))(@effected/git@0.17.0(effect@4.0.0-rc.117))(@effected/templates@0.8.0(effect@4.0.0-rc.117))(@effected/workspaces@0.27.0(effect@4.0.0-rc.117))(effect@4.0.0-rc.117)
       effect: 4.0.0-rc.117
     transitivePeerDependencies:
       - bufferutil
@@ -4632,30 +4647,27 @@ snapshots:
       '@effected/workspaces': 0.27.0(effect@4.0.0-rc.117)
       effect: 4.0.0-rc.117
 
-  '@savvy-web/silk-core@0.4.6(@effected/templates@0.8.0(effect@4.0.0-rc.117))(@effected/workspaces@0.28.0(effect@4.0.0-rc.117))(effect@4.0.0-rc.117)':
+  '@savvy-web/silk-core@0.4.7(@effected/templates@0.8.0(effect@4.0.0-rc.117))(@effected/workspaces@0.28.0(effect@4.0.0-rc.117))(effect@4.0.0-rc.117)':
     dependencies:
       '@effected/github-references': 0.5.0(effect@4.0.0-rc.117)
       '@effected/templates': 0.8.0(effect@4.0.0-rc.117)
       '@effected/workspaces': 0.28.0(effect@4.0.0-rc.117)
       effect: 4.0.0-rc.117
 
-  '@savvy-web/silk-effects@file:../systems/packages/silk-effects/dist/prod/npm/pkg(@effected/commands@0.9.0(effect@4.0.0-rc.117))(@effected/git@0.17.0(effect@4.0.0-rc.117))(@effected/templates@0.8.0(effect@4.0.0-rc.117))(@effected/workspaces@0.27.0(effect@4.0.0-rc.117))(effect@4.0.0-rc.117)':
+  '@savvy-web/silk-effects@9.1.4(@effected/commands@0.9.0(effect@4.0.0-rc.117))(@effected/git@0.17.0(effect@4.0.0-rc.117))(@effected/templates@0.8.0(effect@4.0.0-rc.117))(@effected/workspaces@0.27.0(effect@4.0.0-rc.117))(effect@4.0.0-rc.117)':
     dependencies:
       '@changesets/apply-release-plan': 8.1.1
-      '@changesets/assemble-release-plan': 7.0.0
       '@changesets/changelog-git': 1.0.0
       '@changesets/config': 4.0.1
       '@changesets/get-github-info': 1.0.1
       '@changesets/get-release-plan': 5.0.2
-      '@changesets/pre': 3.0.0
-      '@changesets/read': 1.0.1
       '@effected/commands': 0.9.0(effect@4.0.0-rc.117)
       '@effected/git': 0.17.0(effect@4.0.0-rc.117)
       '@effected/github-references': 0.5.0(effect@4.0.0-rc.117)
       '@effected/glob': 0.8.0(effect@4.0.0-rc.117)
       '@effected/jsonc': 0.13.0(effect@4.0.0-rc.117)
       '@effected/markdown': 0.12.1(@effected/jsonc@0.13.0(effect@4.0.0-rc.117))(@effected/toml@0.9.0(effect@4.0.0-rc.117))(@effected/yaml@0.17.0(effect@4.0.0-rc.117))(effect@4.0.0-rc.117)
-      '@effected/package-json': 0.18.0(effect@4.0.0-rc.117)
+      '@effected/package-json': 0.17.0(effect@4.0.0-rc.117)
       '@effected/templates': 0.8.0(effect@4.0.0-rc.117)
       '@effected/toml': 0.9.0(effect@4.0.0-rc.117)
       '@effected/walker': 0.12.0(@effected/glob@0.8.0(effect@4.0.0-rc.117))(effect@4.0.0-rc.117)
@@ -4676,7 +4688,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@savvy-web/silk-effects@file:../systems/packages/silk-effects/dist/prod/npm/pkg(@effected/commands@0.9.0(effect@4.0.0-rc.117))(@effected/git@0.17.0(effect@4.0.0-rc.117))(@effected/templates@0.8.0(effect@4.0.0-rc.117))(@effected/workspaces@0.28.0(effect@4.0.0-rc.117))(effect@4.0.0-rc.117)':
+  '@savvy-web/silk-effects@9.2.0(@effected/commands@0.9.0(effect@4.0.0-rc.117))(@effected/git@0.17.0(effect@4.0.0-rc.117))(@effected/templates@0.8.0(effect@4.0.0-rc.117))(@effected/workspaces@0.28.0(effect@4.0.0-rc.117))(effect@4.0.0-rc.117)':
     dependencies:
       '@changesets/apply-release-plan': 8.1.1
       '@changesets/assemble-release-plan': 7.0.0
@@ -4699,7 +4711,7 @@ snapshots:
       '@effected/workspaces': 0.28.0(effect@4.0.0-rc.117)
       '@effected/yaml': 0.17.0(effect@4.0.0-rc.117)
       '@manypkg/get-packages': 3.1.0
-      '@savvy-web/silk-core': 0.4.6(@effected/templates@0.8.0(effect@4.0.0-rc.117))(@effected/workspaces@0.28.0(effect@4.0.0-rc.117))(effect@4.0.0-rc.117)
+      '@savvy-web/silk-core': 0.4.7(@effected/templates@0.8.0(effect@4.0.0-rc.117))(@effected/workspaces@0.28.0(effect@4.0.0-rc.117))(effect@4.0.0-rc.117)
       effect: 4.0.0-rc.117
       mdast-util-heading-range: 4.0.0
       mdast-util-to-string: 4.0.0
@@ -4725,7 +4737,7 @@ snapshots:
       '@savvy-web/changelog': 1.0.8
       '@savvy-web/cli': 3.4.0(@effected/config-file@0.12.0(@effected/jsonc@0.13.0(effect@4.0.0-rc.117))(@effected/toml@0.9.0(effect@4.0.0-rc.117))(@effected/walker@0.12.0(@effected/glob@0.8.0(effect@4.0.0-rc.117))(effect@4.0.0-rc.117))(@effected/yaml@0.17.0(effect@4.0.0-rc.117))(effect@4.0.0-rc.117))(redis@6.2.1)
       '@savvy-web/mcp': 3.4.0(redis@6.2.1)
-      '@savvy-web/silk-effects': file:../systems/packages/silk-effects/dist/prod/npm/pkg(@effected/commands@0.9.0(effect@4.0.0-rc.117))(@effected/git@0.17.0(effect@4.0.0-rc.117))(@effected/templates@0.8.0(effect@4.0.0-rc.117))(@effected/workspaces@0.27.0(effect@4.0.0-rc.117))(effect@4.0.0-rc.117)
+      '@savvy-web/silk-effects': 9.1.4(@effected/commands@0.9.0(effect@4.0.0-rc.117))(@effected/git@0.17.0(effect@4.0.0-rc.117))(@effected/templates@0.8.0(effect@4.0.0-rc.117))(@effected/workspaces@0.27.0(effect@4.0.0-rc.117))(effect@4.0.0-rc.117)
       '@types/bun': 1.4.2
       '@types/node': 26.6.3
       '@vitest/coverage-istanbul': 5.0.2(vitest@5.0.2)
