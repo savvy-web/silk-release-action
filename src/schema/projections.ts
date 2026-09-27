@@ -10,6 +10,7 @@
  * normalising per-target status) happens here.
  */
 
+import { relative } from "node:path";
 import { classifyRegistry, registryDisplayName } from "@effected/npm";
 import type {
 	PackagePublishResult,
@@ -33,7 +34,7 @@ import {
 	summarizeWorkspace,
 	tallyReleaseKinds,
 } from "../utils/release-kind.js";
-import type { BranchManagementOutput, PublishOutput, ValidationOutput } from "./release-output.js";
+import type { BranchManagementOutput, PublishOutput, SnapshotOutput, ValidationOutput } from "./release-output.js";
 import { SCHEMA_URL } from "./release-output.js";
 
 /** Input for {@link toBranchManagementOutput}. */
@@ -592,4 +593,150 @@ export const toPublishOutput = (input: PublishInput): PublishOutput => {
 			workspaces,
 		},
 	};
+};
+
+// --- snapshot --------------------------------------------------------------
+
+/** Where a snapshot run stopped, when it did. */
+export interface SnapshotFailureInput {
+	readonly stage: "refused" | "version" | "build" | "publish";
+	readonly reason: string;
+}
+
+/** One applied snapshot bump. */
+export interface SnapshotRelease {
+	readonly name: string;
+	readonly newVersion: string;
+}
+
+/** Input for {@link toSnapshotOutput}. */
+export interface SnapshotInput {
+	readonly tag: string;
+	readonly dryRun: boolean;
+	/** Absolute workspace root; target directories are reported relative to it. */
+	readonly workspaceRoot: string;
+	/** The applied snapshot bumps; empty when there was nothing to snapshot or the run stopped first. */
+	readonly releases: ReadonlyArray<SnapshotRelease>;
+	/** Null when the run stopped before publishing. */
+	readonly publishResult: PublishPackagesResult | null;
+	readonly failure: SnapshotFailureInput | null;
+}
+
+type SnapshotPublished = SnapshotOutput["published"][number];
+type SnapshotSkipped = SnapshotOutput["skipped"][number];
+type SnapshotFailed = SnapshotOutput["failed"][number];
+
+/**
+ * Project a snapshot run into a {@link SnapshotOutput}.
+ *
+ * @remarks
+ * Pure. Each target lands in exactly one of three lists: `published`
+ * (uploaded, or already present at an identical digest), `skipped` (the
+ * never-published guard, a dry-run, or a workspace with no registry target),
+ * or `failed`. `success` is true only when the run did not stop and nothing
+ * failed. A skip is never a failure.
+ *
+ * @param input - The snapshot run's facts.
+ * @returns The phase-discriminated snapshot output.
+ *
+ * @public
+ */
+export const toSnapshotOutput = (input: SnapshotInput): SnapshotOutput => {
+	const published: SnapshotPublished[] = [];
+	const skipped: SnapshotSkipped[] = [];
+	const failed: SnapshotFailed[] = [];
+
+	for (const pkg of input.publishResult?.packages ?? []) {
+		if (pkg.targets.length === 0) {
+			skipped.push({ name: pkg.name, version: pkg.version, reason: "no-publish-target" });
+			continue;
+		}
+		for (const t of pkg.targets) {
+			const url = t.target.registry ?? "jsr";
+			const registry = { name: registryDisplayName(url), type: classifyRegistry(url), url };
+			if (!t.success) {
+				failed.push({ name: t.target.name, version: pkg.version, registry, error: t.error ?? "publish failed" });
+				continue;
+			}
+			if (t.skipReason === "never-published" || t.skipReason === "dry-run") {
+				skipped.push({ name: t.target.name, version: pkg.version, reason: t.skipReason });
+				continue;
+			}
+			// A `skipped` target with no reason can only be a JSR target, which
+			// target resolution already removes. Nothing reached a registry, so
+			// it is not reported as published.
+			if (t.status === "skipped" && t.skipReason === undefined) continue;
+			published.push({
+				name: t.target.name,
+				version: pkg.version,
+				registry,
+				directory: relative(input.workspaceRoot, t.target.directory) || ".",
+				tag: t.target.tag,
+			});
+		}
+	}
+
+	const rehearsed = skipped.filter((s) => s.reason === "dry-run").length;
+	const outcome: SnapshotOutput["outcome"] =
+		input.failure !== null && input.failure.stage !== "publish"
+			? "blocked"
+			: input.releases.length === 0
+				? "nothing-to-snapshot"
+				: failed.length > 0
+					? published.length > 0
+						? "partial"
+						: "failed"
+					: published.length > 0
+						? "published"
+						: rehearsed > 0
+							? "rehearsed"
+							: "skipped";
+
+	return {
+		$schema: SCHEMA_URL,
+		phase: "snapshot",
+		success: input.failure === null && failed.length === 0,
+		outcome,
+		summary: summarizeSnapshot(input, outcome, {
+			published: published.length,
+			skipped: skipped.length,
+			failed: failed.length,
+			rehearsed,
+		}),
+		dryRun: input.dryRun,
+		failure: input.failure === null ? null : { stage: input.failure.stage, reason: input.failure.reason },
+		totals: {
+			workspaces: input.releases.length,
+			published: published.length,
+			skipped: skipped.length,
+			failed: failed.length,
+		},
+		tag: input.tag,
+		published,
+		skipped,
+		failed,
+	};
+};
+
+/** The one-line account, derived from the counts beside it and never authored separately. */
+const summarizeSnapshot = (
+	input: SnapshotInput,
+	outcome: SnapshotOutput["outcome"],
+	counts: { readonly published: number; readonly skipped: number; readonly failed: number; readonly rehearsed: number },
+): string => {
+	const tag = `\`${input.tag}\``;
+	if (outcome === "blocked") {
+		return `Snapshot ${tag} stopped before publishing — ${input.failure?.stage}: ${input.failure?.reason}`;
+	}
+	if (outcome === "nothing-to-snapshot") return `No pending changesets — nothing to snapshot under ${tag}`;
+	const parts = [`${input.releases.length} workspace(s) versioned`];
+	parts.push(
+		input.dryRun
+			? `${counts.rehearsed} package(s) would publish under ${tag} (dry run)`
+			: `${counts.published} package(s) published under ${tag}`,
+	);
+	const otherSkips = counts.skipped - counts.rehearsed;
+	if (otherSkips > 0) parts.push(`${otherSkips} skipped`);
+	if (counts.failed > 0) parts.push(`${counts.failed} failed`);
+	return parts.join(" · ");
 };
