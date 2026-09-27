@@ -28,7 +28,7 @@
 | `app-slug` | GitHub App slug (URL-friendly name) |
 | `result` | Structured JSON describing the run — see below |
 | `phase` | Phase that ran: `branch-management`, `validation`, `publish`, `close-issues`, `snapshot`, `none` |
-| `status` | The phase's own outcome label. Branch management: `nothing-to-release`, `branch-created`, `branch-updated`, `branch-unchanged`, `conflicted`. Validation: `validated`, `nothing-to-release`, `build-failed`, `checks-failed`. Publish: `released`, `nothing-to-release`, `partial`, `failed`, `blocked` |
+| `status` | The phase's own outcome label. Branch management: `nothing-to-release`, `branch-created`, `branch-updated`, `branch-unchanged`, `conflicted`. Validation: `validated`, `nothing-to-release`, `build-failed`, `checks-failed`. Publish: `released`, `nothing-to-release`, `partial`, `failed`, `blocked`. Snapshot: `published`, `rehearsed`, `skipped`, `nothing-to-snapshot`, `partial`, `failed`, `blocked` |
 | `succeeded` | Whether all intended work completed (or correctly did nothing) |
 | `package-count` | Number of packages the phase touched |
 | `release-pr-number` | Release PR number, when one is involved (empty otherwise) |
