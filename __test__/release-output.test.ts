@@ -203,4 +203,39 @@ describe("ReleaseOutput schema", () => {
 		const encoded = Schema.encodeSync(ReleaseOutput)(branchSample) as Record<string, unknown>;
 		expect(Object.keys(encoded)[0]).toBe("$schema");
 	});
+
+	const snapshotSample: ReleaseOutput = {
+		$schema: SCHEMA_URL,
+		phase: "snapshot",
+		success: true,
+		outcome: "published",
+		summary: "1 workspace(s) versioned · 1 package(s) published under `next`",
+		dryRun: false,
+		failure: null,
+		totals: { workspaces: 1, published: 1, skipped: 1, failed: 0 },
+		tag: "next",
+		published: [
+			{
+				name: "@savvy-web/foo",
+				version: "1.3.0-next-20260927051500",
+				registry: { name: "npm", type: "npm", url: "https://registry.npmjs.org/" },
+				directory: "packages/foo/dist/npm",
+				tag: "next",
+			},
+		],
+		skipped: [{ name: "@savvy-web/brand-new", version: "0.1.0-next-20260927051500", reason: "never-published" }],
+		failed: [],
+	};
+
+	it("round-trips a snapshot output through the union and discriminates on phase", () => {
+		const encoded = Schema.encodeUnknownSync(ReleaseOutput)(snapshotSample);
+		const decoded = Schema.decodeUnknownSync(ReleaseOutput)(encoded);
+		expect(decoded).toEqual(snapshotSample);
+		expect(decoded.phase).toBe("snapshot");
+	});
+
+	it("rejects a snapshot skip reason outside the vocabulary", () => {
+		const bad = { ...snapshotSample, skipped: [{ name: "x", version: "1.0.0", reason: "because" }] };
+		expect(() => Schema.decodeUnknownSync(ReleaseOutput)(bad)).toThrow();
+	});
 });
