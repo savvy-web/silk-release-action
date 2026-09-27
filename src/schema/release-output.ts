@@ -2,7 +2,7 @@
  * The release action's structured JSON output contract.
  *
  * @remarks
- * `ReleaseOutput` is a `Schema.Union` of three phase structs, discriminated by
+ * `ReleaseOutput` is a `Schema.Union` of four phase structs, discriminated by
  * the `phase` literal. It is the single source of truth: the committed,
  * **version-labelled** document at `schemas/<version>/output.json`
  * (`schemas/6.0/output.json` today) is generated from it,
@@ -1329,13 +1329,155 @@ export const PublishOutput = Schema.Struct({
 /** The Phase 3 (publish) output type. */
 export type PublishOutput = Schema.Schema.Type<typeof PublishOutput>;
 
+// --- snapshot phase ------------------------------------------------------
+//
+// An explicit-only phase: unreleased versions published under a non-latest
+// dist-tag so a downstream can pin them from the registry. The unit here IS
+// the package publication, not the workspace: nothing is tagged or released
+// on GitHub, so there is no workspace-level artifact to report.
+
+const SnapshotPublishedPackage = Schema.Struct({
+	name: Schema.String.annotate({
+		title: "Package name",
+		description: "The name on the tarball: the target's published name, which is not necessarily the workspace's.",
+	}),
+	version: Schema.String.annotate({
+		title: "Snapshot version",
+		description:
+			"The exact prerelease version published, e.g. `1.4.0-next-20260927051500`. Pin THIS; the dist-tag moves with every snapshot run.",
+	}),
+	registry: PublishRegistry,
+	directory: Schema.String.annotate({
+		title: "Packed directory",
+		description: "Repo-relative directory the tarball was packed from (the target's built output).",
+	}),
+	tag: Schema.String.annotate({
+		title: "Dist-tag",
+		description: "The dist-tag this version was published under: always the run's snapshot tag, never `latest`.",
+	}),
+}).annotate({
+	identifier: "SnapshotPublishedPackage",
+	title: "Published snapshot",
+	description: "One package version published to one registry under the snapshot dist-tag.",
+});
+
+const SnapshotSkippedPackage = Schema.Struct({
+	name: Schema.String.annotate({ title: "Package name", description: "The skipped package or publication name." }),
+	version: Schema.String.annotate({
+		title: "Snapshot version",
+		description: "The snapshot version the package was bumped to in the job's working tree.",
+	}),
+	reason: Schema.Literals(["never-published", "no-publish-target", "dry-run"]).annotate({
+		identifier: "SnapshotSkipReason",
+		title: "Skip reason",
+		description:
+			"`never-published` — the registry has never seen this package; a first publish under a non-latest tag would also claim `latest`, so it is left to the real release. `no-publish-target` — the workspace publishes to no registry (a github-only workspace). `dry-run` — the run rehearsed; this version would have been published.",
+	}),
+}).annotate({
+	identifier: "SnapshotSkippedPackage",
+	title: "Skipped snapshot",
+	description: "A versioned package that was deliberately not published, with why.",
+});
+
+const SnapshotFailedPackage = Schema.Struct({
+	name: Schema.String.annotate({ title: "Package name", description: "The publication that failed." }),
+	version: Schema.String.annotate({ title: "Snapshot version", description: "The version that did not land." }),
+	registry: PublishRegistry,
+	error: Schema.String.annotate({ title: "Error message", description: "Why this publication failed." }),
+}).annotate({
+	identifier: "SnapshotFailedPackage",
+	title: "Failed snapshot",
+	description:
+		"A publication that was attempted (or refused by a guard) and did not land. Its presence makes `success` false.",
+});
+
+/** The snapshot-phase output. */
+export const SnapshotOutput = Schema.Struct({
+	$schema: annotatedSchemaUrlField,
+	phase: Schema.Literal("snapshot").annotate({
+		title: "Phase discriminator",
+		description: "`snapshot` identifies this as a snapshot-publish output.",
+	}),
+	success: annotatedSuccessField,
+	outcome: Schema.Literals([
+		"published",
+		"rehearsed",
+		"skipped",
+		"nothing-to-snapshot",
+		"partial",
+		"failed",
+		"blocked",
+	]).annotate({
+		identifier: "SnapshotOutcome",
+		title: "Phase outcome",
+		description:
+			"`published` — at least one version was published and none failed. `rehearsed` — a dry run; the `skipped` entries with reason `dry-run` are what would have been published. `skipped` — versions were computed but every package was skipped (never published, or no registry target); a SUCCESS. `nothing-to-snapshot` — no pending changesets; a SUCCESS. `partial` — some versions published and at least one failed; the published ones ARE on the registry, so pin them exactly. `failed` — publications were attempted and none landed. `blocked` — the run stopped before publishing; see `failure`.",
+	}),
+	summary: annotatedSummaryField,
+	dryRun: annotatedDryRunField,
+	failure: Schema.NullOr(
+		Schema.Struct({
+			stage: Schema.Literals(["refused", "version", "build", "publish"]).annotate({
+				identifier: "SnapshotFailureStage",
+				title: "Failure stage",
+				description:
+					"`refused` — a guard refused the run (no `snapshot-tag`, or a ref that is not a feature branch). `version` — the snapshot versioning failed (for example, changesets pre mode). `build` — `ci:build` failed, so nothing was packed. `publish` — at least one publication failed; others may have landed.",
+			}),
+			reason: Schema.String.annotate({
+				title: "Failure reason",
+				description: "WHAT went wrong, as a single-line summary.",
+			}),
+		}).annotate({ identifier: "SnapshotFailure", title: "Failure" }),
+	).annotate({ title: "Failure", description: "Why and where the phase failed. Null when `success` is true." }),
+	totals: Schema.Struct({
+		workspaces: Schema.Int.annotate({
+			title: "Workspaces versioned",
+			description: "Workspaces the snapshot bump versioned.",
+		}),
+		published: Schema.Int.annotate({ title: "Published", description: "Entries in `published`." }),
+		skipped: Schema.Int.annotate({ title: "Skipped", description: "Entries in `skipped`." }),
+		failed: Schema.Int.annotate({ title: "Failed", description: "Entries in `failed`." }),
+	}).annotate({
+		identifier: "SnapshotTotals",
+		title: "Totals",
+		description: "Aggregate counts over the three lists.",
+	}),
+	tag: Schema.String.annotate({ title: "Snapshot tag", description: "The dist-tag this run published under." }),
+	published: Schema.Array(SnapshotPublishedPackage).annotate({
+		title: "Published",
+		description:
+			"Every version this run put on a registry, in dependency-first order. Render a pnpm `overrides:` block from `name` and `version`.",
+	}),
+	skipped: Schema.Array(SnapshotSkippedPackage).annotate({
+		title: "Skipped",
+		description: "Every versioned package this run deliberately did not publish.",
+	}),
+	failed: Schema.Array(SnapshotFailedPackage).annotate({
+		title: "Failed",
+		description: "Every publication that did not land.",
+	}),
+}).annotate({
+	identifier: "SnapshotOutput",
+	title: "Snapshot output",
+	description:
+		"The structured `result` output emitted when the action runs with `phase: snapshot` (explicit only, never auto-detected). Versions pending changesets as `<next>-<tag>-<datetime>` prereleases in the job's working tree (never committed), builds, and publishes every already-published package under the snapshot dist-tag. No git tag, GitHub release, release PR, SBOM or GitHub attestation.",
+});
+
+/** The snapshot-phase output type. */
+export type SnapshotOutput = Schema.Schema.Type<typeof SnapshotOutput>;
+
 // --- the union -----------------------------------------------------------
 
 /** The phase-discriminated release output contract. */
-export const ReleaseOutput = Schema.Union([BranchManagementOutput, ValidationOutput, PublishOutput]).annotate({
+export const ReleaseOutput = Schema.Union([
+	BranchManagementOutput,
+	ValidationOutput,
+	PublishOutput,
+	SnapshotOutput,
+]).annotate({
 	identifier: "ReleaseOutput",
 	title: "Silk Release Action output",
 	description:
-		"The phase-discriminated release output contract. Use `phase` to discriminate to the right variant: `branch-management`, `validation` or `publish`. Every variant carries the same shared top-level fields — `$schema`, `phase`, `success`, `outcome`, `summary`, `dryRun`, `failure`, `totals` — plus a phase-specific payload. **`success` and `outcome` are orthogonal, and that is the point.** `success` is the boolean gate a consumer should filter on; `outcome` is the taxonomy saying what specifically happened, drawn from a per-phase enum. Keeping them separate means a filter written against `success` keeps working when a new `outcome` member is added. A run that had nothing to do is a SUCCESS — nothing failed — and says so through its outcome (`nothing-to-release`) rather than through a separate flag. `summary` is one human-readable sentence derived from the structured fields beside it, never authored independently, so it cannot drift from them. `failure` is null unless the phase failed, and names both the stage it stopped at and why. This replaced the v1 contract's four overlapping signals (`status`, `noop`, `succeeded`, `hasFailures`), whose definitions had already drifted from their own documentation.",
+		"The phase-discriminated release output contract. Use `phase` to discriminate to the right variant: `branch-management`, `validation`, `publish` or `snapshot`. Every variant carries the same shared top-level fields — `$schema`, `phase`, `success`, `outcome`, `summary`, `dryRun`, `failure`, `totals` — plus a phase-specific payload. **`success` and `outcome` are orthogonal, and that is the point.** `success` is the boolean gate a consumer should filter on; `outcome` is the taxonomy saying what specifically happened, drawn from a per-phase enum. Keeping them separate means a filter written against `success` keeps working when a new `outcome` member is added. A run that had nothing to do is a SUCCESS — nothing failed — and says so through its outcome (`nothing-to-release`) rather than through a separate flag. `summary` is one human-readable sentence derived from the structured fields beside it, never authored independently, so it cannot drift from them. `failure` is null unless the phase failed, and names both the stage it stopped at and why. This replaced the v1 contract's four overlapping signals (`status`, `noop`, `succeeded`, `hasFailures`), whose definitions had already drifted from their own documentation.",
 });
 export type ReleaseOutput = Schema.Schema.Type<typeof ReleaseOutput>;

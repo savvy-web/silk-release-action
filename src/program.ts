@@ -15,6 +15,7 @@
  * - `validation` — build validation, publish dry-runs, release-notes preview (Phase 2)
  * - `publishing` — multi-registry publish, GitHub releases, SBOM/attestation (Phase 3)
  * - `close-issues` — close issues linked to the merged release PR
+ * - `snapshot` — publish unreleased versions under a non-latest dist-tag (explicit-only, never detected)
  *
  * An absent or unrecognized phase falls through to a no-op.
  *
@@ -30,6 +31,7 @@ import { readInputs } from "./schema/inputs.js";
 import { branchManagement } from "./steps/branch-management.js";
 import { runCloseIssues } from "./steps/close-issues.js";
 import { runPublishing } from "./steps/publishing.js";
+import { runSnapshot } from "./steps/snapshot.js";
 import { runValidation } from "./steps/validation.js";
 import { detectWorkflowPhase } from "./utils/detect-workflow-phase.js";
 import { ensureNpmCacheEnv } from "./utils/npm-cache.js";
@@ -111,6 +113,9 @@ export const main = Effect.gen(function* () {
 			return;
 		case "close-issues":
 			yield* runCloseIssues();
+			return;
+		case "snapshot":
+			yield* runSnapshot(inputs);
 			return;
 		default:
 			yield* Effect.logInfo(`No-op phase: ${phaseResult.reason}`);

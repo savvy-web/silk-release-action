@@ -61,7 +61,16 @@ inputs:
     description: |
       Explicitly set the workflow phase to run, skipping automatic detection.
       Useful when phase was already determined by silk-router-action.
-      Valid values: branch-management, validation, publishing, close-issues, none
+      Valid values: branch-management, validation, publishing, close-issues,
+      snapshot, none.
+
+      `snapshot` is explicit-only (never auto-detected): it versions pending
+      changesets as `<next>-<snapshot-tag>-<datetime>` prereleases in this
+      job's working tree (never committed or pushed), runs `ci:build`, and
+      publishes every package the registry already knows under
+      `snapshot-tag`. No git tag, GitHub release, release PR, SBOM or GitHub
+      attestation. Refuses to run on the release or target branch, or on a
+      non-branch ref.
     required: false
     default: ""
   npm-token:
@@ -188,6 +197,23 @@ inputs:
       `npm-token`, or set this input to 0, for private packages.
     required: false
     default: "180"
+  snapshot-tag:
+    description: |
+      Dist-tag for a `phase: snapshot` run, and the prefix of its prerelease
+      versions (`1.4.0-<tag>-<datetime>`). Required when phase is snapshot;
+      ignored by every other phase.
+
+      A letter, then lowercase letters, digits or hyphens. `latest` is
+      refused (a snapshot never moves it), as is any value npm reads as a
+      semver range (`x`, `v1`). A malformed value fails the run under any
+      phase.
+
+      A package the registry has never seen is skipped, not published: a
+      first publish under a non-latest tag would also claim `latest`. Pin the
+      exact versions from the job summary, never the tag - a failed run can
+      leave a partial set published under it.
+    required: false
+    default: ""
 outputs:
   token:
     description: Generated GitHub App installation token (for use in subsequent steps)
@@ -199,16 +225,18 @@ outputs:
     description: |
       Structured JSON describing what the run did. A phase-discriminated object
       validated by
-      https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/5.2/silk-release-action.output-5.2.json.
+      https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/6.0/output.json.
       Parse it for the full contract; the scalars below mirror the common facts.
   phase:
-    description: "Phase that ran: branch-management, validation, or publish"
+    description: "Phase that ran: branch-management, validation, publish, or snapshot"
   status:
     description: |
       The phase's own outcome label. Branch management: nothing-to-release,
       branch-created, branch-updated, branch-unchanged, conflicted. Validation:
       validated, nothing-to-release, build-failed, checks-failed. Publish:
-      released, nothing-to-release, partial, failed, blocked.
+      released, nothing-to-release, partial, failed, blocked. Snapshot:
+      published, rehearsed, skipped, nothing-to-snapshot, partial, failed,
+      blocked.
   succeeded:
     description: Whether all intended work completed (or correctly did nothing)
   package-count:

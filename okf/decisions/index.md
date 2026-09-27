@@ -1,6 +1,7 @@
 # Decision
 
 * [A degraded Phase-2 step contributes a finding, never flips a boolean](degraded-steps-contribute-findings.md) - Every degrading Phase-2 step must add a finding the verdict can read rather than silently reverting to a default, because findings are the only thing deriveCheckConclusion reads; the publish-validation crash path enforces this, the remaining steps do not yet.
+* [An explicit-only snapshot phase, never a publish-phase flag](snapshot-phase.md) - \`phase: snapshot\` plus \`snapshot-tag\` publishes unreleased versions under a non-latest dist-tag through the same target-resolution and publish machinery as Phase 3, gated by a full-ref branch guard and never auto-detected.
 * [Check for an existing attestation before writing a new one](idempotent-attestation.md) - Before signing a fresh SLSA provenance or CycloneDX SBOM attestation, probe the GitHub attestation store for the subject digest and reuse an existing URL rather than writing a duplicate.
 * [Commits via the Git Data API, branch linking via GitBranch.createLinked](api-commits.md) - Release-branch commits are created through the Git Data API rather than git push, and branch-to-issue linking uses GitBranch.createLinked, the one operation with no REST equivalent.
 * [Disable the persistLocal composite action and its act smoke loop](no-local-composite-action.md) - action.config.ts sets persistLocal.enabled to false, so no \`.github/actions/local\` composite is emitted and act-test.yml is gone; re-enabling it is a deliberate decision to start using act, not a default to restore.

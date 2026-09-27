@@ -137,13 +137,37 @@ const withGithubTokenEnv = <A, E, R>(
 	);
 
 /**
+ * Options for {@link runNativeVersion}.
+ *
+ * @public
+ */
+export interface NativeVersionOptions {
+	/**
+	 * `changeset version --snapshot` parity, forwarded to
+	 * `ReleasePlanner.apply`. Absent for a real Phase-1 apply, which then sends
+	 * exactly what it always has: no `snapshot` key at all.
+	 */
+	readonly snapshot?: Changesets.SnapshotOptions | undefined;
+}
+
+/**
  * Natively apply pending changesets with a single reset-then-retry on
  * transient network failure.
+ *
+ * @remarks
+ * The snapshot phase shares this path whole: the same config gate, the same
+ * scoped `GITHUB_TOKEN` for the changelog fetch, the same reset-then-retry.
+ * A snapshot apply is just as non-idempotent as a real one, because it
+ * deletes the consumed changesets from the working tree.
+ *
+ * @param cwd - The workspace root to version.
+ * @param options - {@link NativeVersionOptions}; omit for Phase 1.
  *
  * @public
  */
 export const runNativeVersion = (
 	cwd: string,
+	options: NativeVersionOptions = {},
 ): Effect.Effect<
 	Changesets.AppliedRelease,
 	| ActionStateError
@@ -160,11 +184,18 @@ export const runNativeVersion = (
 		const git = yield* Git;
 		const planner = yield* Changesets.ReleasePlanner;
 
+		// Built once. The conditional spread keeps a Phase-1 apply's options
+		// object identical to what it sent before snapshots existed.
+		const applyOptions = {
+			changelogModules: CHANGELOG_MODULES,
+			...(options.snapshot !== undefined ? { snapshot: options.snapshot } : {}),
+		};
+
 		// A thunk, not a constructed Effect: `planner.apply` must be invoked fresh
 		// on the retry so a stateful test double (or the live service) actually
 		// runs again, rather than re-running the first attempt's already-settled
 		// Effect value.
-		const applyOnce = () => withGithubTokenEnv(planner.apply(cwd, { changelogModules: CHANGELOG_MODULES }));
+		const applyOnce = () => withGithubTokenEnv(planner.apply(cwd, applyOptions));
 
 		const first = yield* Effect.result(applyOnce());
 		if (first._tag === "Success") return first.success;

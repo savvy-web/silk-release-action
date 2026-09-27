@@ -7,8 +7,8 @@ resource: ../../src
 status: draft
 generated:
   by: okfit/claude-code
-  at: 2026-09-19T01:42:17Z
-  body_sha256: 4bea190b9aced6e0473f58bc0c4410cdff097472681aaf30e4eb2ae93fe81d78
+  at: 2026-09-27T15:46:10Z
+  body_sha256: 3c7c4e800ecad036ec62b9e158ae87a0d29dfdd11812a1c242aed97168bfbe89
 sources:
   - id: src-main
     resource: ../../src/main.ts
@@ -45,7 +45,7 @@ Three lifecycle scripts correspond to the GitHub Actions `pre`, `main`, and `pos
 
 ## Program composition and the `steps/` layer
 
-`src/program.ts`[^src-program] is composition only: read the inputs once, read the installation token back for identity diagnostics, resolve the workflow phase, and run the one step that phase names — a five-arm switch (`branch-management`, `validation`, `publishing`, `close-issues`, default no-op). `inputs.phase` is an `Option<WorkflowPhase>` decoded against the literal union rather than cast, so a typo fails the run instead of silently falling through to the no-op arm.
+`src/program.ts`[^src-program] is composition only: read the inputs once, read the installation token back for identity diagnostics, resolve the workflow phase, and run the one step that phase names — a six-arm switch (`branch-management`, `validation`, `publishing`, `close-issues`, `snapshot`, default no-op). `inputs.phase` is an `Option<WorkflowPhase>` decoded against the literal union rather than cast, so a typo fails the run instead of silently falling through to the no-op arm. `snapshot` is explicit-only: `detectWorkflowPhase` never returns it, so it is reachable only when a workflow sets `phase: snapshot` directly — see [snapshot-phase](../decisions/snapshot-phase.md).
 
 `src/steps/`[^src-steps] holds one module per phase body. Each module states its failure posture in its own module docs and in its error channel — `never` in the error channel means "this degrades" — verified directly against the module docs:
 
@@ -61,6 +61,7 @@ Three lifecycle scripts correspond to the GitHub Actions `pre`, `main`, and `pos
 | `steps/publish-validation-report.ts` | 2 | degrade-to-warning — invisible |
 | `steps/publishing.ts` | 3 | fail-the-job; raises `PublishError` rather than returning |
 | `steps/close-issues.ts` | 3a | fail-the-job; a missing PR number is a skip, not a failure |
+| `steps/snapshot.ts` | snapshot | fail-the-job after emitting; the summary write degrades to a warning |
 
 Two supporting extractions sit outside `steps/` because they do no I/O and declare no requirement channel: `src/release/validation-checks.ts` (`deriveValidationChecks` and `applyCheckUrls`, pure) and `src/utils/write-sections.ts` (the shared read-fold-refresh-post used by both phases' managed-comment writes).
 
@@ -95,6 +96,8 @@ Two supporting extractions sit outside `steps/` because they do no I/O and decla
 4. **Phase 2 (validation)** — a push to the release branch.
 5. **Phase 1 (branch-management)** — a push to `main` that is not a release commit.
 6. **None** — any other event; logs a skip and exits.
+
+**Snapshot** — explicit `phase: snapshot` only; never detected. See [snapshot-phase](../decisions/snapshot-phase.md).
 
 ## Phase 1: release branch management
 
@@ -175,6 +178,10 @@ Ordering is established **once, at the source**: immediately after `detectReleas
 
 This phase exists separately from the close-linked-issues follow-on inside `steps/publishing.ts` (which runs after a successful publish and, like a `runReleases` failure, fails the phase with a deferred `ReleasesError` only after the output has been emitted — housekeeping that silently did not happen is what a re-run exists to fix) because a workflow may route the merge-that-publishes and the merge-that-only-closes-issues independently.
 
+## Snapshot phase
+
+Explicit-only, never detected — see [snapshot-phase](../decisions/snapshot-phase.md) for the full decision. `steps/snapshot.ts` is the phase body: refuse (missing `snapshot-tag`, unreadable `GITHUB_REF`, or a ref the guard rejects) → version (native `ReleasePlanner.apply` with `snapshot: { tag, useCalculatedVersion: true, prereleaseTemplate: "{tag}-{datetime}" }`, working tree only) → build (`runCiBuild`, no SBOM) → publish (`runPublishTargets` under `SnapshotPublishOptions`, skipping never-published targets) → emit. Every exit path emits `result` and the job summary before failing, so a partial publish is still fully reported.
+
 ## Module dependency graph
 
 ```text
@@ -246,8 +253,17 @@ main.ts  (guard + Action.run only)
         |     utils/close-linked-issues.ts (follow-on; a failed close fails the phase after emission)
         |
         +-- steps/close-issues.ts  (Phase 3a)
-              utils/event-payload.ts (schema-decoded webhook payload)
-              utils/close-linked-issues.ts
+        |     utils/event-payload.ts (schema-decoded webhook payload)
+        |     utils/close-linked-issues.ts
+        |
+        +-- steps/snapshot.ts  (snapshot -- explicit-only, never detected)
+              utils/snapshot.ts (checkSnapshotRef, SNAPSHOT_PRERELEASE_TEMPLATE)
+              utils/native-version.ts (ReleasePlanner.apply, working tree only)
+              release/publish.ts
+                runCiBuild          -> LocalExec (no SBOM)
+                runPublishTargets   -> WorkspaceDiscovery + PublishabilityDetector
+                                     + PackagePublish + NpmRegistry, under SnapshotPublishOptions
+              utils/snapshot-summary.ts (renderSnapshotSummary, pure)
 
   Cross-cutting:
     release/layers.ts     WorkspacesLive (layerWithGit, ONE const)
@@ -256,7 +272,7 @@ main.ts  (guard + Action.run only)
                           ReleaseLive = the four above + ChangesetConfigLive
                                         + SilkPublishability.layerAdaptive
     schema/outputs.ts     emitReleaseOutput (all phases)
-    schema/projections.ts toBranchManagementOutput / toValidationOutput / toPublishOutput
+    schema/projections.ts toBranchManagementOutput / toValidationOutput / toPublishOutput / toSnapshotOutput
     utils/grouped.ts      collapsible Actions log groups (all phases)
     utils/github-urls.ts  instance-aware web URLs (GHES-correct)
     utils/summary-writer.ts  job-summary markdown

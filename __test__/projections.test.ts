@@ -3,6 +3,7 @@
  * results into ReleaseOutput phase structs.
  */
 
+import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import type {
 	PackagePublishResult,
@@ -12,8 +13,14 @@ import type {
 	ValidationPackageResult,
 } from "../src/release/types.js";
 import { availabilityKey } from "../src/release/types.js";
-import { toBranchManagementOutput, toPublishOutput, toValidationOutput } from "../src/schema/projections.js";
-import { SCHEMA_URL } from "../src/schema/release-output.js";
+import type { SnapshotInput } from "../src/schema/projections.js";
+import {
+	toBranchManagementOutput,
+	toPublishOutput,
+	toSnapshotOutput,
+	toValidationOutput,
+} from "../src/schema/projections.js";
+import { ReleaseOutput, SCHEMA_URL } from "../src/schema/release-output.js";
 
 describe("toBranchManagementOutput", () => {
 	it("projects a clean update with a release PR", () => {
@@ -1092,5 +1099,153 @@ describe("toPublishOutput", () => {
 		expect(output.publish.workspaces["@savvy-web/workspace-name"]?.packages[0]?.name).toBe(
 			"@savvy-web/published-under-another-name",
 		);
+	});
+});
+
+describe("toSnapshotOutput", () => {
+	const ROOT = "/repo";
+	const VERSION = "1.3.0-next-20260927051500";
+	const target = (overrides: Record<string, unknown> = {}) => ({
+		target: {
+			name: "@scope/alpha",
+			protocol: "npm" as const,
+			registry: "https://registry.npmjs.org/",
+			directory: "/repo/packages/alpha/dist/npm",
+			access: "public" as const,
+			provenance: true,
+			tag: "next",
+			tokenEnv: null,
+		},
+		success: true,
+		status: "published" as const,
+		...overrides,
+	});
+	const base = (packages: ReadonlyArray<unknown>): SnapshotInput => ({
+		tag: "next",
+		dryRun: false,
+		workspaceRoot: ROOT,
+		releases: [{ name: "@scope/alpha", newVersion: VERSION }],
+		publishResult: {
+			success: true,
+			// Fixture boundary: the literals above are shaped as PackagePublishResult.
+			packages: packages as PackagePublishResult[],
+			totalPackages: 1,
+			successfulPackages: 1,
+			totalTargets: 1,
+			successfulTargets: 1,
+		},
+		failure: null,
+	});
+
+	it("projects a clean snapshot: published entry with repo-relative directory and the snapshot tag", () => {
+		const out = toSnapshotOutput(base([{ name: "@scope/alpha", version: VERSION, targets: [target()] }]));
+
+		expect(out.phase).toBe("snapshot");
+		expect(out.success).toBe(true);
+		expect(out.outcome).toBe("published");
+		expect(out.published).toEqual([
+			{
+				name: "@scope/alpha",
+				version: VERSION,
+				registry: { name: expect.any(String), type: "npm", url: "https://registry.npmjs.org/" },
+				directory: "packages/alpha/dist/npm",
+				tag: "next",
+			},
+		]);
+		expect(out.totals).toEqual({ workspaces: 1, published: 1, skipped: 0, failed: 0 });
+		expect(() => Schema.encodeUnknownSync(ReleaseOutput)(out)).not.toThrow();
+	});
+
+	it("lists never-published and no-target packages as skipped, and calls an all-skipped run a success", () => {
+		const out = toSnapshotOutput({
+			...base([
+				{
+					name: "@scope/alpha",
+					version: VERSION,
+					targets: [target({ status: "skipped", skipReason: "never-published" })],
+				},
+				{ name: "@scope/tracking", version: VERSION, targets: [] },
+			]),
+			releases: [
+				{ name: "@scope/alpha", newVersion: VERSION },
+				{ name: "@scope/tracking", newVersion: VERSION },
+			],
+		});
+
+		expect(out.outcome).toBe("skipped");
+		expect(out.success).toBe(true);
+		expect(out.skipped).toEqual([
+			{ name: "@scope/alpha", version: VERSION, reason: "never-published" },
+			{ name: "@scope/tracking", version: VERSION, reason: "no-publish-target" },
+		]);
+	});
+
+	it("reports a partial failure: published stays listed, failed is listed, success is false", () => {
+		const out = toSnapshotOutput({
+			...base([
+				{
+					name: "@scope/alpha",
+					version: VERSION,
+					targets: [
+						target(),
+						target({
+							target: { ...target().target, name: "@scope/alpha-gh", registry: "https://npm.pkg.github.com/" },
+							success: false,
+							status: "failed",
+							error: "E403",
+						}),
+					],
+				},
+			]),
+			failure: { stage: "publish", reason: "published 1/2 target(s)" },
+		});
+
+		expect(out.outcome).toBe("partial");
+		expect(out.success).toBe(false);
+		expect(out.published).toHaveLength(1);
+		expect(out.failed).toEqual([
+			{
+				name: "@scope/alpha-gh",
+				version: VERSION,
+				registry: { name: expect.any(String), type: "github-packages", url: "https://npm.pkg.github.com/" },
+				error: "E403",
+			},
+		]);
+	});
+
+	it("reports a dry run as rehearsed, with the would-be versions under skipped", () => {
+		const out = toSnapshotOutput({
+			...base([
+				{ name: "@scope/alpha", version: VERSION, targets: [target({ status: "skipped", skipReason: "dry-run" })] },
+			]),
+			dryRun: true,
+		});
+
+		expect(out.outcome).toBe("rehearsed");
+		expect(out.dryRun).toBe(true);
+		expect(out.published).toEqual([]);
+		expect(out.skipped).toEqual([{ name: "@scope/alpha", version: VERSION, reason: "dry-run" }]);
+	});
+
+	it("reports no pending changesets as nothing-to-snapshot, a success", () => {
+		const out = toSnapshotOutput({ ...base([]), releases: [], publishResult: null });
+
+		expect(out.outcome).toBe("nothing-to-snapshot");
+		expect(out.success).toBe(true);
+		expect(out.summary).toMatch(/nothing to snapshot/i);
+	});
+
+	it("reports a refusal before any work as blocked, with the stage and reason", () => {
+		const out = toSnapshotOutput({
+			...base([]),
+			releases: [],
+			publishResult: null,
+			failure: { stage: "refused", reason: "refs/tags/v1.0.0 is not a branch" },
+		});
+
+		expect(out.outcome).toBe("blocked");
+		expect(out.success).toBe(false);
+		expect(out.failure).toEqual({ stage: "refused", reason: "refs/tags/v1.0.0 is not a branch" });
+		expect(out.summary).toContain("refs/tags/v1.0.0 is not a branch");
 	});
 });

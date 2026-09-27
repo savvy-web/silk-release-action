@@ -36,3 +36,12 @@ describe("program.ts npm-cache wiring", () => {
 		expect(callIndex).toBeLessThan(phaseDetectionIndex);
 	});
 });
+
+describe("program.ts snapshot routing", () => {
+	it("routes an explicit snapshot phase to runSnapshot(inputs)", () => {
+		const source = readFileSync(join(HERE, "..", "..", "src", "program.ts"), "utf8");
+
+		expect(/import\s*\{\s*runSnapshot\s*\}\s*from\s*["']\.\/steps\/snapshot\.js["']/.test(source)).toBe(true);
+		expect(/case "snapshot":\s*yield\* runSnapshot\(inputs\);\s*return;/.test(source)).toBe(true);
+	});
+});

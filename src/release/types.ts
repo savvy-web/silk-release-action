@@ -33,9 +33,9 @@ export interface TargetPublishResult {
 	 * Per-target skip reason. Lifted onto the target level so a fully-
 	 * recovered run can report which targets were recovered (the package-
 	 * level `PublishPackage.skipReason` only fires when every target was
-	 * skipped).
+	 * skipped). `never-published` and `dry-run` occur only in snapshot mode.
 	 */
-	skipReason?: "already-published-identical" | undefined;
+	skipReason?: "already-published-identical" | "never-published" | "dry-run" | undefined;
 	/**
 	 * Pair of digests when the orchestrator made a recovery decision — both
 	 * `status: "skipped"` with `skipReason: "already-published-identical"`

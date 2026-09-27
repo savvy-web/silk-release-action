@@ -71,6 +71,34 @@ export interface PublishInputArgs {
 	readonly mergedReleasePRNumber: number | undefined;
 }
 
+/**
+ * Snapshot-mode publishing, for the `snapshot` phase.
+ *
+ * @remarks
+ * **Absent means Phase 3, unchanged byte for byte:** no `tag` key on the
+ * upload (npm applies its own `latest`), no never-published probe, no
+ * built-version check, and attestations as before. Present, it adds exactly
+ * five things:
+ *
+ * 1. `tag` on every `publishTarball` call, including the token-auth retry.
+ * 2. A never-published probe per target, using that target's credential.
+ *    `[]` skips (`never-published`), because a first publish under a
+ *    non-latest tag would also claim `latest`. A read error fails the target.
+ * 3. A built-version check: the packed `version` must equal the applied
+ *    snapshot version.
+ * 4. No GitHub attestation. npm's own `--provenance` is the only one.
+ * 5. `dryRun`: pack and probe, then record `skipped`/`dry-run` instead of
+ *    uploading.
+ *
+ * @public
+ */
+export interface SnapshotPublishOptions {
+	/** The dist-tag every target publishes under. `latest` is refused at decode. */
+	readonly tag: string;
+	/** Rehearse: pack and read the registry, never upload. */
+	readonly dryRun: boolean;
+}
+
 // ─── Internal types ───────────────────────────────────────────────────────────
 
 /**
@@ -372,14 +400,16 @@ const detectFromCommit = (): Effect.Effect<
 // ─── Per-target publish ───────────────────────────────────────────────────────
 
 /** Build the legacy `ResolvedTarget` shape we carry on every `TargetPublishResult`. */
-const toLegacyTarget = (target: TargetSpec, protocol: "npm" | "jsr" = "npm") => ({
+const toLegacyTarget = (target: TargetSpec, protocol: "npm" | "jsr" = "npm", tag = "latest") => ({
 	name: target.name,
 	protocol,
 	registry: target.registry,
 	directory: target.directory,
 	access: target.access,
 	provenance: target.provenance,
-	tag: "latest" as const,
+	// The dist-tag this target published (or would publish) under. Phase 3
+	// passes none to npm, whose default is `latest`, so that is what it reports.
+	tag,
 	tokenEnv: null,
 });
 
@@ -619,10 +649,15 @@ const publishDirectoryGroup = (
 	npmrcPath: string,
 	publishExecutor: NpmExecutor,
 	sbomPath: string | null,
+	snapshot: SnapshotPublishOptions | undefined,
 ): Effect.Effect<ReadonlyArray<TargetPublishResult>, never, PublishServices> =>
 	Effect.gen(function* () {
 		const publishSvc = yield* PackagePublish;
 		const registrySvc = yield* NpmRegistry;
+		const distTag = snapshot?.tag ?? "latest";
+		const legacy = (t: TargetSpec) => toLegacyTarget(t, "npm", distTag);
+		let neverPublishedCount = 0;
+		let dryRunCount = 0;
 
 		// JSR targets are not handled here — split them off so the npm flow
 		// is uncluttered. Each JSR target records a skipped result.
@@ -639,7 +674,7 @@ const publishDirectoryGroup = (
 				`runPublishTargets: skipping JSR target for ${packageName}@${version} — JSR publishing is not yet supported in this orchestrator`,
 			);
 			results.push({
-				target: toLegacyTarget(t, "jsr"),
+				target: toLegacyTarget(t, "jsr", distTag),
 				success: true,
 				status: "skipped",
 			});
@@ -663,7 +698,7 @@ const publishDirectoryGroup = (
 			yield* Effect.logError(`[publish] ${packageName}: pack ${directory} failed — ${packOutcome.error}`);
 			for (const t of npmTargets) {
 				results.push({
-					target: toLegacyTarget(t),
+					target: legacy(t),
 					success: false,
 					status: "failed",
 					error: packOutcome.error,
@@ -675,6 +710,21 @@ const publishDirectoryGroup = (
 
 		const packResult = packOutcome.result;
 		const localIntegrity = packResult.integrity;
+
+		// ── Snapshot guard: the built bytes must carry the applied version ─────
+		// The version was bumped in the working tree and then built. A package
+		// whose build did not pick up the bump would publish a different
+		// version than the one reported, so fail every target loudly.
+		if (snapshot !== undefined && packResult.version !== version) {
+			const reason =
+				`built package version ${packResult.version} in ${directory} does not match the snapshot version ` +
+				`${version} — the build did not pick up the snapshot bump`;
+			yield* Effect.logError(`[publish] ${packageName}: ${reason}`);
+			for (const t of npmTargets) {
+				results.push({ target: legacy(t), success: false, status: "failed", error: reason });
+			}
+			return results;
+		}
 		yield* Effect.logInfo(
 			`  📦 pack: ${packResult.packedSize !== undefined ? humanizeSize(packResult.packedSize) : "sized"} · ${
 				packResult.fileCount ?? "?"
@@ -732,7 +782,7 @@ const publishDirectoryGroup = (
 				yield* Effect.logError(`[publish] ${t.registry}: cannot publish ${packResult.name} — ${reason}`);
 				yield* Effect.logWarning(`  ⬆ ${label} · no-token`);
 				results.push({
-					target: toLegacyTarget(t),
+					target: legacy(t),
 					success: false,
 					status: "failed",
 					error: reason,
@@ -760,6 +810,55 @@ const publishDirectoryGroup = (
 					.pipe(Effect.catch((e) => Effect.logWarning(`setupAuth failed for ${t.registry}: ${e.message}`)));
 			}
 
+			// ── Snapshot: never-published probe, with THIS target's credential ──
+			// Only an HTTP 404 reads as `[]` (see @effected/npm `versions`); any
+			// other failure fails the target, because treating an unreadable
+			// registry as "never published" silently skips packages that exist.
+			// npm also answers 404 to an ANONYMOUS read of a private package, so
+			// `[]` on a restricted target probed without a credential fails too.
+			if (snapshot !== undefined) {
+				const known = yield* Effect.result(
+					registrySvc.versions(packResult.name, {
+						registry: t.registry,
+						...(credential !== null ? { credential } : {}),
+					}),
+				);
+				if (known._tag === "Failure") {
+					const reason = `registry lookup failed — ${known.failure.message}; a snapshot never reads an unreadable registry as "never published"`;
+					yield* Effect.logError(`[publish] ${t.registry}: ${packResult.name} — ${reason}`);
+					yield* Effect.logWarning(`  ⬆ ${label} · lookup-failed`);
+					results.push({ target: legacy(t), success: false, status: "failed", error: reason, ...digestFields });
+					failedCount += 1;
+					continue;
+				}
+				if (known.success.length === 0) {
+					if (credential === null && t.access === "restricted") {
+						const reason =
+							"the registry answered 404 to an anonymous read of a restricted package, which is indistinguishable " +
+							"from a private package the probe cannot see; pass npm-token so the never-published check can authenticate";
+						yield* Effect.logError(`[publish] ${t.registry}: ${packResult.name} — ${reason}`);
+						yield* Effect.logWarning(`  ⬆ ${label} · unverifiable`);
+						results.push({ target: legacy(t), success: false, status: "failed", error: reason, ...digestFields });
+						failedCount += 1;
+						continue;
+					}
+					yield* Effect.logWarning(
+						`[publish] ${packResult.name} has never been published to ${t.registry}; skipped — a first publish ` +
+							`under a non-latest tag would also claim latest, so it belongs to the real release`,
+					);
+					yield* Effect.logInfo(`  ⬆ ${label} · skipped (never published)`);
+					results.push({
+						target: legacy(t),
+						success: true,
+						status: "skipped",
+						skipReason: "never-published",
+						...digestFields,
+					});
+					neverPublishedCount += 1;
+					continue;
+				}
+			}
+
 			const probe = yield* registrySvc
 				.version(packResult.name, packResult.version, {
 					registry: t.registry,
@@ -776,7 +875,7 @@ const publishDirectoryGroup = (
 				);
 				yield* Effect.logWarning(`  ⬆ ${label} · probe-failed`);
 				results.push({
-					target: toLegacyTarget(t),
+					target: legacy(t),
 					success: false,
 					status: "failed",
 					error: probe.error,
@@ -787,6 +886,14 @@ const publishDirectoryGroup = (
 			}
 
 			if (Option.isNone(probe.value)) {
+				if (snapshot?.dryRun === true) {
+					yield* Effect.logInfo(
+						`  ⬆ ${label} · dry-run — would publish ${packResult.name}@${packResult.version} under ${distTag}`,
+					);
+					results.push({ target: legacy(t), success: true, status: "skipped", skipReason: "dry-run", ...digestFields });
+					dryRunCount += 1;
+					continue;
+				}
 				// Not on registry → publish the pre-packed tarball.
 				yield* Effect.logDebug(
 					`[publish] ${t.registry}: ${packResult.name}@${packResult.version} not on registry; publishing tarball`,
@@ -805,6 +912,7 @@ const publishDirectoryGroup = (
 						provenance: t.provenance,
 						tokenAuth: isGhPkgs,
 						executor: publishExecutor,
+						...(snapshot !== undefined ? { tag: snapshot.tag } : {}),
 					})
 					.pipe(
 						Effect.map((r) => ({ ok: true as const, provenanceUrl: r.provenanceUrl })),
@@ -828,6 +936,7 @@ const publishDirectoryGroup = (
 							provenance: false,
 							tokenAuth: true,
 							executor: publishExecutor,
+							...(snapshot !== undefined ? { tag: snapshot.tag } : {}),
 						})
 						.pipe(
 							Effect.map((r) => ({ ok: true as const, provenanceUrl: r.provenanceUrl })),
@@ -841,7 +950,7 @@ const publishDirectoryGroup = (
 					);
 					yield* Effect.logWarning(`  ⬆ ${label} · publish-failed`);
 					results.push({
-						target: toLegacyTarget(t),
+						target: legacy(t),
 						success: false,
 						status: "failed",
 						error: publishOutcome.error,
@@ -853,7 +962,7 @@ const publishDirectoryGroup = (
 
 				yield* Effect.logInfo(`  ⬆ ${label} · published · ${registryHost(t.registry)}`);
 				results.push({
-					target: toLegacyTarget(t),
+					target: legacy(t),
 					success: true,
 					status: "published",
 					...digestFields,
@@ -875,7 +984,7 @@ const publishDirectoryGroup = (
 				);
 				yield* Effect.logInfo(`  ⬆ ${label} · skipped-identical (recovery)`);
 				results.push({
-					target: toLegacyTarget(t),
+					target: legacy(t),
 					success: true,
 					status: "skipped",
 					skipReason: "already-published-identical",
@@ -900,7 +1009,7 @@ const publishDirectoryGroup = (
 			);
 			yield* Effect.logWarning(`  ⬆ ${label} · failed-mismatch`);
 			results.push({
-				target: toLegacyTarget(t),
+				target: legacy(t),
 				success: false,
 				status: "failed",
 				error: `integrity mismatch — local ${localLabel} ≠ remote ${remoteLabel}`,
@@ -928,7 +1037,9 @@ const publishDirectoryGroup = (
 			sbomRecovered: false,
 		};
 		let attestationsRan = false;
-		if (anySuccess && groupProvenance) {
+		// Snapshot mode writes no GitHub attestation; npm's own provenance (if
+		// the target requested it) is the only one.
+		if (anySuccess && groupProvenance && snapshot === undefined) {
 			attestations = yield* runAttestationsForBuild(
 				packageName,
 				version,
@@ -990,6 +1101,8 @@ const publishDirectoryGroup = (
 		if (skippedIdenticalCount > 0) counts.push(`${skippedIdenticalCount} skipped-identical`);
 		if (mismatchCount > 0) counts.push(`${mismatchCount} mismatch`);
 		if (failedCount > 0) counts.push(`${failedCount} failed`);
+		if (neverPublishedCount > 0) counts.push(`${neverPublishedCount} never-published`);
+		if (dryRunCount > 0) counts.push(`${dryRunCount} dry-run`);
 		const attestNote: string[] = [];
 		if (npmProvenanceUrls.length > 0 || attestations.attestationUrl !== undefined) attestNote.push("provenance");
 		if (attestations.sbomAttestationUrl !== undefined) attestNote.push("SBOM");
@@ -1187,6 +1300,64 @@ const buildErrorSummary = (stdout: string, stderr: string): string => {
 const BUILD_ERROR_SUMMARY_LINES = 20;
 
 /**
+ * Result of {@link runCiBuild}.
+ *
+ * @public
+ */
+export interface CiBuildResult {
+	/** True when `ci:build` exited 0. The verdict is the exit code alone. */
+	readonly ok: boolean;
+	/** One-line failure summary (see {@link buildErrorSummary}); absent on success. */
+	readonly error?: string | undefined;
+}
+
+/**
+ * Run the workspace's `ci:build` script once.
+ *
+ * @remarks
+ * The build half of {@link runBuildAndSbom}, extracted so the snapshot phase
+ * builds exactly as Phase 3 does, with the same argv, the same exit-code
+ * verdict and the same failure transcript (issue #262), without generating
+ * an SBOM. Never fails: a non-zero exit is a result, and so is a process
+ * that could not be spawned at all.
+ *
+ * @param packageManager - The detected package manager, for the argv.
+ * @returns Whether the build succeeded, plus a summary when it did not.
+ *
+ * @public
+ */
+export const runCiBuild = (
+	packageManager: string,
+): Effect.Effect<CiBuildResult, never, ChildProcessSpawner.ChildProcessSpawner> =>
+	Effect.gen(function* () {
+		const buildArgs = packageManager === "npm" ? ["run", "ci:build"] : ["ci:build"];
+		yield* Effect.logDebug(`runCiBuild: ${packageManager} ${buildArgs.join(" ")}`);
+
+		// `Run.collect` treats a non-zero exit as a RESULT, not a failure. The
+		// error channel fires only when the process could not be run at all.
+		const buildOutcome = yield* Effect.result(Run.collect(ChildProcess.make(packageManager, buildArgs)));
+		const build =
+			buildOutcome._tag === "Success"
+				? {
+						success: buildOutcome.success.exitCode === 0,
+						error: buildOutcome.success.stderr,
+						output: buildOutcome.success.stdout,
+					}
+				: { success: false, error: buildOutcome.failure.message, output: "" };
+
+		if (build.success) {
+			yield* Effect.logDebug(build.output);
+			yield* Effect.logInfo("  ✅ ci:build succeeded");
+			return { ok: true } satisfies CiBuildResult;
+		}
+		// Failure is exactly when the captured output is the product (issue
+		// #262): turbo writes task diagnostics to STDOUT, so both streams go out.
+		yield* emitBuildTranscript(build.output, build.error);
+		yield* Effect.logError(`ci:build failed — ${build.error}`);
+		return { ok: false, error: buildErrorSummary(build.output, build.error) } satisfies CiBuildResult;
+	});
+
+/**
  * Result of {@link runBuildAndSbom} — the Phase-3 Build & SBOM gate.
  *
  * @public
@@ -1272,47 +1443,12 @@ export const runBuildAndSbom = (
 			"Build & SBOM",
 			Effect.gen(function* () {
 				// ── Build (ci:build, once) ─────────────────────────────────────────
-				const buildArgs = args.packageManager === "npm" ? ["run", "ci:build"] : ["ci:build"];
-				yield* Effect.logDebug(`runBuildAndSbom: ${args.packageManager} ${buildArgs.join(" ")}`);
-
-				// `Run.collect` treats a non-zero exit as a RESULT, not a failure —
-				// the same split the predecessor's `execCapture` had, so the
-				// exit-code branch below is reached identically. The error channel
-				// fires only when the process could not be run at all.
-				const buildOutcome = yield* Effect.result(Run.collect(ChildProcess.make(args.packageManager, buildArgs)));
-
-				const build =
-					buildOutcome._tag === "Success"
-						? {
-								success: buildOutcome.success.exitCode === 0,
-								error: buildOutcome.success.stderr,
-								output: buildOutcome.success.stdout,
-							}
-						: { success: false, error: buildOutcome.failure.message, output: "" };
-
-				if (build.success) {
-					yield* Effect.logDebug(build.output);
-					yield* Effect.logInfo("  ✅ ci:build succeeded");
-				} else {
-					// **Failure is precisely when the captured output is the product**
-					// (issue #262). `Run.collect` buffers both streams; the success path
-					// can afford to drop them, but discarding them here left the compiler
-					// diagnostics in NO log — the group opened and went straight to the
-					// error annotation. Turbo runs with `--output-logs=full`, so the task
-					// diagnostics are on STDOUT, which is exactly the stream the old code
-					// never emitted on this path (it logged `stderr` only, and stderr
-					// carries little more than the echoed command line).
-					//
-					// Written straight through rather than through `Effect.log*`: a
-					// multi-hundred-line transcript re-prefixed per line by the logger is
-					// unreadable, and the same passthrough idiom is what Phase 2's
-					// `validate-builds` already uses.
-					yield* emitBuildTranscript(build.output, build.error);
-					yield* Effect.logError(`ci:build failed — ${build.error}`);
+				const build = yield* runCiBuild(args.packageManager);
+				if (!build.ok) {
 					yield* Effect.logWarning("  ❌ aborted — build failed");
 					return {
 						ok: false,
-						buildError: buildErrorSummary(build.output, build.error),
+						buildError: build.error ?? "ci:build failed",
 						sbomFailures: [],
 						sbomSkipped: [],
 						packageCount: detected.length,
@@ -1440,6 +1576,9 @@ export const runPublishTargets = (
 	// `Inputs` record by `steps/publishing.ts` — the wiring whose absence was
 	// issue #215. Tokens stay `Redacted` until the declassification below.
 	customRegistries: ReadonlyArray<CustomRegistryAuth> = [],
+	// Snapshot mode (the `snapshot` phase). Absent for Phase 3, which is then
+	// unchanged — see `SnapshotPublishOptions`.
+	snapshot?: SnapshotPublishOptions,
 ): Effect.Effect<
 	PublishPackagesResult,
 	Config.ConfigError,
@@ -1614,6 +1753,7 @@ export const runPublishTargets = (
 							npmrcPath,
 							publishExecutor,
 							sbomPathForPackage,
+							snapshot,
 						),
 					);
 					targetResults.push(...groupResults);
@@ -1671,7 +1811,7 @@ export const runPublishTargets = (
 							directory: "",
 							access: "restricted" as const,
 							provenance: false,
-							tag: "latest" as const,
+							tag: snapshot?.tag ?? "latest",
 							tokenEnv: null,
 						},
 						success: false,

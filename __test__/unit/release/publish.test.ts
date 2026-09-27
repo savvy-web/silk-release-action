@@ -35,6 +35,7 @@ import {
 } from "@effected/github";
 import {
 	ActionEnvironment,
+	ActionInput,
 	ActionLogger,
 	ActionOutputs,
 	ActionState,
@@ -42,7 +43,7 @@ import {
 	OidcTokenIssuer,
 } from "@effected/github-actions";
 import type { PackagePublishShape, PublishOptions } from "@effected/npm";
-import { NpmRegistry, PackagePublish, PackedTarball, PublishError } from "@effected/npm";
+import { NpmRegistry, PackagePublish, PackedTarball, PublishError, RegistryReadError } from "@effected/npm";
 import { SIGSTORE_BUNDLE_V0_3_MEDIA_TYPE, SigstoreBundle, SigstoreSigner } from "@effected/sbom";
 import { PublishTarget, PublishabilityDetector, WorkspaceDiscovery, WorkspacePackage } from "@effected/workspaces";
 import { ConfigProvider, Effect, Layer, Option, Redacted } from "effect";
@@ -52,6 +53,7 @@ import {
 	detectReleases,
 	planWorkspaces,
 	runBuildAndSbom,
+	runCiBuild,
 	runPublishTargets,
 	userNpmrcPath,
 } from "../../../src/release/publish.js";
@@ -987,6 +989,46 @@ describe("runBuildAndSbom", () => {
 	});
 });
 
+describe("runCiBuild", () => {
+	it.effect("runs `pnpm ci:build` once and reports ok on exit 0, generating nothing else", () =>
+		Effect.gen(function* () {
+			const spawner = ScriptedSpawner.make((command) =>
+				command === "pnpm" ? { exit: 0, stdout: "built", stderr: "" } : ScriptedSpawner.notFound(command),
+			);
+			const result = yield* runCiBuild("pnpm").pipe(Effect.provide(Layer.merge(loggerLayer, spawner.layer)));
+
+			expect(result).toEqual({ ok: true });
+			expect(spawner.spawns.map((s) => [s.command, ...s.args])).toEqual([["pnpm", "ci:build"]]);
+		}),
+	);
+
+	it.effect("uses `npm run ci:build` under npm", () =>
+		Effect.gen(function* () {
+			const spawner = ScriptedSpawner.make((command) =>
+				command === "npm" ? { exit: 0, stdout: "", stderr: "" } : ScriptedSpawner.notFound(command),
+			);
+			yield* runCiBuild("npm").pipe(Effect.provide(Layer.merge(loggerLayer, spawner.layer)));
+
+			expect(spawner.spawns.map((s) => [s.command, ...s.args])).toEqual([["npm", "run", "ci:build"]]);
+		}),
+	);
+
+	it.effect("reports ok: false with the stderr summary when ci:build exits non-zero", () =>
+		Effect.gen(function* () {
+			vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+			vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+			const spawner = ScriptedSpawner.make((command) =>
+				command === "pnpm" ? { exit: 2, stdout: "", stderr: "TS2345: nope" } : ScriptedSpawner.notFound(command),
+			);
+			const result = yield* runCiBuild("pnpm").pipe(Effect.provide(Layer.merge(loggerLayer, spawner.layer)));
+			vi.restoreAllMocks();
+
+			expect(result.ok).toBe(false);
+			expect(result.error).toContain("TS2345");
+		}),
+	);
+});
+
 // ─── runPublishTargets ────────────────────────────────────────────────────────
 
 describe("runPublishTargets", () => {
@@ -1694,4 +1736,226 @@ describe("runPublishTargets", () => {
 			}),
 		);
 	});
+});
+
+describe("runPublishTargets — dist-tag and snapshot mode", () => {
+	const SNAPSHOT_VERSION = PACK_VERSION; // pack reports PACK_VERSION; keep them equal unless testing drift
+	const SNAPSHOT = { tag: "next", dryRun: false } as const;
+	/** A registry that already knows the package (an older version), but not this one. */
+	const knownPackageRegistry = () =>
+		NpmRegistry.layerSeeded({ registries: { "https://registry.npmjs.org/": { [PACK_NAME]: { "0.9.0": {} } } } });
+	const setup = (target: PublishTarget = makeNpmTarget(PACK_NAME, `/tmp/test/${PACK_NAME}`)) => {
+		const wsPkg = makeWsPkg(PACK_NAME, SNAPSHOT_VERSION, `/tmp/test/${PACK_NAME}`);
+		const detected: DetectedRelease[] = [makeDetected(PACK_NAME, SNAPSHOT_VERSION, wsPkg.path)];
+		return { wsPkg, detected, target };
+	};
+
+	it.effect("passes NO tag on a normal publish, so npm's own latest applies and argv is unchanged", () =>
+		Effect.gen(function* () {
+			const pub = makePackagePublishLayer();
+			const { wsPkg, detected, target } = setup();
+			const result = yield* runPublishTargets(detected).pipe(
+				Effect.provide(makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [target])),
+			);
+
+			expect(Object.hasOwn(pub.publishTarballCalls[0]?.options ?? {}, "tag")).toBe(false);
+			expect(result.packages[0]?.targets[0]?.target.tag).toBe("latest");
+		}),
+	);
+
+	it.effect("publishes under the snapshot tag and reports that tag on the target", () =>
+		Effect.gen(function* () {
+			const pub = makePackagePublishLayer();
+			const { wsPkg, detected, target } = setup();
+			const result = yield* runPublishTargets(detected, new Map(), [], SNAPSHOT).pipe(
+				Effect.provide(makeBaseLayers(pub.layer, knownPackageRegistry(), wsPkg, [target])),
+			);
+
+			expect(result.success).toBe(true);
+			expect(pub.publishTarballCalls).toHaveLength(1);
+			expect(pub.publishTarballCalls[0]?.options.tag).toBe("next");
+			expect(result.packages[0]?.targets[0]?.target.tag).toBe("next");
+			expect(result.packages[0]?.targets[0]?.status).toBe("published");
+		}),
+	);
+
+	it.effect("skips a package the registry has never seen, as a success, without uploading", () =>
+		Effect.gen(function* () {
+			const pub = makePackagePublishLayer();
+			const { wsPkg, detected, target } = setup();
+			const result = yield* runPublishTargets(detected, new Map(), [], SNAPSHOT).pipe(
+				Effect.provide(makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [target])),
+			);
+
+			const t = result.packages[0]?.targets[0];
+			expect(pub.publishTarballCalls).toHaveLength(0);
+			expect(t?.status).toBe("skipped");
+			expect(t?.skipReason).toBe("never-published");
+			expect(t?.success).toBe(true);
+			expect(result.success).toBe(true);
+		}),
+	);
+
+	it.effect("probes never-published WITH the target's credential", () =>
+		Effect.gen(function* () {
+			const probed: Array<{ name: string; registry: string | undefined; token: string | undefined }> = [];
+			const registry = NpmRegistry.layerTest({
+				versions: (name, target) =>
+					Effect.sync(() => {
+						const credential = target?.credential;
+						probed.push({
+							name,
+							registry: target?.registry,
+							token: credential?.kind === "token" ? Redacted.value(credential.token) : undefined,
+						});
+						return ["0.9.0"];
+					}),
+				version: () => Effect.succeed(Option.none()),
+			});
+			const gpr = new PublishTarget({
+				name: PACK_NAME,
+				registry: "https://npm.pkg.github.com/",
+				directory: `/tmp/test/${PACK_NAME}`,
+				access: "restricted",
+				provenance: false,
+			});
+			const pub = makePackagePublishLayer();
+			const { wsPkg, detected } = setup(gpr);
+			yield* runPublishTargets(detected, new Map(), [], SNAPSHOT).pipe(
+				Effect.provide(makeBaseLayers(pub.layer, registry, wsPkg, [gpr])),
+			);
+
+			// `actionStateLayer` serves the GitHub Packages token.
+			expect(probed).toEqual([
+				{ name: PACK_NAME, registry: "https://npm.pkg.github.com/", token: "ghp-fixture-token" },
+			]);
+		}),
+	);
+
+	it.effect("FAILS (never skips) when the never-published probe cannot read the registry", () =>
+		Effect.gen(function* () {
+			const registry = NpmRegistry.layerTest({
+				versions: (name, target) =>
+					Effect.fail(new RegistryReadError({ kind: "transport", package: name, registry: target?.registry ?? "" })),
+			});
+			const pub = makePackagePublishLayer();
+			const { wsPkg, detected, target } = setup();
+			const result = yield* runPublishTargets(detected, new Map(), [], SNAPSHOT).pipe(
+				Effect.provide(makeBaseLayers(pub.layer, registry, wsPkg, [target])),
+			);
+
+			const t = result.packages[0]?.targets[0];
+			expect(result.success).toBe(false);
+			expect(t?.status).toBe("failed");
+			expect(t?.skipReason).toBeUndefined();
+			expect(t?.error).toMatch(/registry lookup failed/);
+			expect(pub.publishTarballCalls).toHaveLength(0);
+		}),
+	);
+
+	it.effect("fails a restricted package whose anonymous probe reads [] instead of skipping it", () =>
+		Effect.gen(function* () {
+			const restricted = new PublishTarget({
+				name: PACK_NAME,
+				registry: "https://registry.npmjs.org/",
+				directory: `/tmp/test/${PACK_NAME}`,
+				access: "restricted",
+				provenance: false,
+			});
+			const pub = makePackagePublishLayer();
+			const { wsPkg, detected } = setup(restricted);
+			const result = yield* runPublishTargets(detected, new Map(), [], SNAPSHOT).pipe(
+				Effect.provide(makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [restricted])),
+			);
+
+			const t = result.packages[0]?.targets[0];
+			expect(t?.status).toBe("failed");
+			expect(t?.error).toMatch(/npm-token/);
+		}),
+	);
+
+	it.effect("fails every target when the built version does not match the applied snapshot version", () =>
+		Effect.gen(function* () {
+			const pub = makePackagePublishLayer(); // pack reports PACK_VERSION (1.0.0)
+			const wsPkg = makeWsPkg(PACK_NAME, "1.1.0-next-20260927051500", `/tmp/test/${PACK_NAME}`);
+			const detected = [makeDetected(PACK_NAME, "1.1.0-next-20260927051500", wsPkg.path)];
+			const target = makeNpmTarget(PACK_NAME, `/tmp/test/${PACK_NAME}`);
+			// No registry member is stubbed: a probe here would die, proving the guard ran first.
+			const result = yield* runPublishTargets(detected, new Map(), [], SNAPSHOT).pipe(
+				Effect.provide(makeBaseLayers(pub.layer, NpmRegistry.layerTest(), wsPkg, [target])),
+			);
+
+			expect(result.success).toBe(false);
+			expect(result.packages[0]?.targets[0]?.error).toMatch(/does not match the snapshot version/);
+			expect(pub.publishTarballCalls).toHaveLength(0);
+		}),
+	);
+
+	it.effect("writes no GitHub attestation in snapshot mode, even for a provenance target", () =>
+		Effect.gen(function* () {
+			const attestation = makeAttestationLayer();
+			const pub = makePackagePublishLayer();
+			const provenanceTarget = new PublishTarget({
+				name: PACK_NAME,
+				registry: "https://registry.npmjs.org/",
+				directory: `/tmp/test/${PACK_NAME}`,
+				access: "public",
+				provenance: true,
+			});
+			const { wsPkg, detected } = setup(provenanceTarget);
+			yield* runPublishTargets(detected, new Map(), [], SNAPSHOT).pipe(
+				Effect.provide(makeBaseLayers(pub.layer, knownPackageRegistry(), wsPkg, [provenanceTarget], attestation.layer)),
+			);
+
+			expect(pub.publishTarballCalls[0]?.options.provenance).toBe(true);
+			expect(attestation.uploads).toHaveLength(0);
+			expect(attestation.listed).toHaveLength(0);
+		}),
+	);
+
+	it.effect("in dry-run, packs and probes but never uploads", () =>
+		Effect.gen(function* () {
+			const pub = makePackagePublishLayer();
+			const { wsPkg, detected, target } = setup();
+			const result = yield* runPublishTargets(detected, new Map(), [], { tag: "next", dryRun: true }).pipe(
+				Effect.provide(makeBaseLayers(pub.layer, knownPackageRegistry(), wsPkg, [target])),
+			);
+
+			const t = result.packages[0]?.targets[0];
+			expect(pub.packCalls).toHaveLength(1);
+			expect(pub.publishTarballCalls).toHaveLength(0);
+			expect(t?.status).toBe("skipped");
+			expect(t?.skipReason).toBe("dry-run");
+			expect(result.success).toBe(true);
+		}),
+	);
+
+	it.effect("carries the snapshot tag through the token-auth retry, so a fallback can never claim latest", () =>
+		Effect.gen(function* () {
+			const calls: PublishOptions[] = [];
+			const pub = PackagePublish.layerTest({
+				setupAuth: () => Effect.void,
+				pack: () => Effect.succeed(makePackResult()),
+				publishTarball: (_path, options) =>
+					Effect.suspend(() => {
+						calls.push(options);
+						return calls.length === 1
+							? Effect.fail(new PublishError({ kind: "publish", registry: options.registry, output: "E404" }))
+							: Effect.succeed({});
+					}),
+			});
+			const { wsPkg, detected, target } = setup();
+			yield* runPublishTargets(detected, new Map(), [], SNAPSHOT).pipe(
+				Effect.provide(
+					Layer.merge(
+						makeBaseLayers(pub, knownPackageRegistry(), wsPkg, [target]),
+						ActionInput.layer({ "npm-token": "npm-secret" }),
+					),
+				),
+			);
+
+			expect(calls.map((c) => c.tag)).toEqual(["next", "next"]);
+			expect(calls[1]?.tokenAuth).toBe(true);
+		}),
+	);
 });
