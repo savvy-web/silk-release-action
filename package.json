@@ -62,7 +62,7 @@
 		"@okfit/plugin": "^0.5.4",
 		"@savvy-web/github-action-builder": "^2.4.8",
 		"@savvy-web/silk": "^4.2.13",
-		"@vitest-agent/plugin": "^5.0.2",
+		"@vitest-agent/plugin": "^5.0.3",
 		"tsx": "catalog:silk"
 	},
 	"engines": {
@@ -71,7 +71,7 @@
 	"devEngines": {
 		"packageManager": {
 			"name": "pnpm",
-			"version": "12.6.0",
+			"version": "12.8.1",
 			"onFail": "download"
 		},
 		"runtime": [
