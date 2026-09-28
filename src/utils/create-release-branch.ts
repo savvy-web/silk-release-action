@@ -32,7 +32,7 @@ import type { Changesets } from "@savvy-web/silk-effects";
 import { PrBody } from "@savvy-web/silk-effects";
 import type { Config } from "effect";
 import { Effect, FileSystem } from "effect";
-import type { ChildProcessSpawner } from "effect/unstable/process";
+import type { ChildProcessSpawner } from "effect/process";
 import type { ChangesetConfig } from "../release/changeset-config.js";
 import type { BranchRefs } from "../schema/inputs.js";
 import { applyAutoMerge } from "./auto-merge.js";

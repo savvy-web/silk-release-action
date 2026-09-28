@@ -19,7 +19,7 @@ import type { CheckRun, Repo } from "@effected/github";
 import type { ActionEnvironment, ActionLogger, ActionOutputs, DryRun } from "@effected/github-actions";
 import type { FileSystem, Option } from "effect";
 import { Effect } from "effect";
-import type { ChildProcessSpawner } from "effect/unstable/process";
+import type { ChildProcessSpawner } from "effect/process";
 import { grouped } from "../utils/grouped.js";
 import type { BuildValidationResult } from "../utils/validate-builds.js";
 import { validateBuilds } from "../utils/validate-builds.js";

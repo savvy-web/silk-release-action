@@ -4,7 +4,7 @@ import { ActionOutputs, ActionState, ActionStateError } from "@effected/github-a
 import { MemoryFileSystem } from "@effected/memfs";
 import { Changesets } from "@savvy-web/silk-effects";
 import { Effect, Exit, Layer, Logger } from "effect";
-import type { ChildProcessSpawner } from "effect/unstable/process";
+import type { ChildProcessSpawner } from "effect/process";
 import { describe, expect, it } from "vitest";
 import { CHANGELOG_MODULES, runNativeVersion } from "../src/utils/native-version.js";
 import { actionStateWithAppToken } from "./utils/github-mocks.js";

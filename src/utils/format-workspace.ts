@@ -17,8 +17,8 @@
 import type { CommandFailedError, CommandOutputError } from "@effected/commands";
 import { Run, Tool, ToolDiscovery } from "@effected/commands";
 import { Effect, FileSystem } from "effect";
-import type { ChildProcessSpawner } from "effect/unstable/process";
-import { ChildProcess } from "effect/unstable/process";
+import type { ChildProcessSpawner } from "effect/process";
+import { ChildProcess } from "effect/process";
 
 /** Conditionally format the working tree with the standalone Biome binary. @public */
 export const formatWorkspaceWithBiome = (): Effect.Effect<

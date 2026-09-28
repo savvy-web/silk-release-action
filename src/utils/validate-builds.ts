@@ -17,8 +17,8 @@ import type { ActionEnvironmentError, ActionOutputError } from "@effected/github
 import { ActionEnvironment, ActionOutputs, DryRun } from "@effected/github-actions";
 import type { Config, FileSystem } from "effect";
 import { Cause, Effect, Option } from "effect";
-import type { ChildProcessSpawner } from "effect/unstable/process";
-import { ChildProcess } from "effect/unstable/process";
+import type { ChildProcessSpawner } from "effect/process";
+import { ChildProcess } from "effect/process";
 import { summaryWriter } from "./summary-writer.js";
 import { emitConciseMarker, readTurboDiagnostics, renderTurboCacheSection } from "./turbo-summary.js";
 

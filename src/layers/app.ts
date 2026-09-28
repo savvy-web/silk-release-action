@@ -35,8 +35,8 @@ import { ActionsIdentityToken, DryRun, GitHubToken, OidcTokenIssuer } from "@eff
 import { NpmRegistry, PackagePublish } from "@effected/npm";
 import { SigstoreSigner } from "@effected/sbom";
 import { Effect, Layer } from "effect";
-import type { HttpClient } from "effect/unstable/http";
-import { FetchHttpClient } from "effect/unstable/http";
+import type { HttpClient } from "effect/http";
+import { FetchHttpClient } from "effect/http";
 import { ReleaseLive } from "../release/layers.js";
 import { readInputs } from "../schema/inputs.js";
 
