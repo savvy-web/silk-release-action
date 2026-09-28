@@ -3,8 +3,8 @@ import { basename, dirname } from "node:path";
 import type { CommandFailedError, CommandOutputError } from "@effected/commands";
 import { Run } from "@effected/commands";
 import { Effect } from "effect";
-import type { ChildProcessSpawner } from "effect/unstable/process";
-import { ChildProcess } from "effect/unstable/process";
+import type { ChildProcessSpawner } from "effect/process";
+import { ChildProcess } from "effect/process";
 
 /**
  * Create `<outPath>` as a gzip tarball whose single top-level entry is the

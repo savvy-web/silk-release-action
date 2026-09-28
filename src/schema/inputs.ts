@@ -95,7 +95,7 @@ const WorkflowPhaseSchema = Schema.Literals([
  * @public
  */
 export const SnapshotTagSchema = Schema.String.check(
-	Schema.isPattern(/^[a-z][a-z0-9-]*$/, {
+	Schema.isPattern(/^[a-z][a-z0-9-]*$/u, {
 		expected: "a lowercase dist-tag: a letter, then letters, digits or hyphens",
 	}),
 	Schema.makeFilter(

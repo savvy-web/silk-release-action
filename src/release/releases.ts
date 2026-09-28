@@ -22,7 +22,7 @@ import type { SigstoreSigner } from "@effected/sbom";
 import { SlsaProvenance } from "@effected/sbom";
 import { WorkspaceDiscovery } from "@effected/workspaces";
 import { Effect, Option } from "effect";
-import type { ChildProcessSpawner } from "effect/unstable/process";
+import type { ChildProcessSpawner } from "effect/process";
 
 import { extractVersionReleaseNotes } from "../utils/extract-release-notes.js";
 import { packageArtifactUrl, releaseTagUrl, resolveServerUrl } from "../utils/github-urls.js";

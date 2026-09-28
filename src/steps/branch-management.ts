@@ -46,7 +46,7 @@ import type { PackageManagerDetector, PublishabilityDetector, WorkspaceDiscovery
 import { Changesets } from "@savvy-web/silk-effects";
 import type { Config, FileSystem } from "effect";
 import { Effect, Option } from "effect";
-import type { ChildProcessSpawner } from "effect/unstable/process";
+import type { ChildProcessSpawner } from "effect/process";
 import type { ChangesetConfig } from "../release/changeset-config.js";
 import type { Inputs } from "../schema/inputs.js";
 import { emitReleaseOutput } from "../schema/outputs.js";
