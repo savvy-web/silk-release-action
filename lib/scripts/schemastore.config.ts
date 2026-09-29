@@ -57,6 +57,10 @@ import {
 } from "../../src/schema/silk-release-config.js";
 
 export default defineConfig({
+	// This config's catalog-slice identity: its entries are written to
+	// `schemas/catalogs/<name>.json`, and the CLI keeps the merged
+	// `schemas/catalog.json` (every slice, url-sorted) beside the documents.
+	name: "silk-release-action",
 	// Relative paths resolve against this file's directory, not the repo root.
 	outputDir: "../../schemas",
 	schemas: {
@@ -73,6 +77,13 @@ export default defineConfig({
 			schema: SilkReleaseConfig,
 			hosted: InputSchemaIdentity,
 			published: false,
+			// The one document with a file convention: the loader reads either
+			// spelling from `.github/` (`src/utils/load-release-config.ts`). The
+			// output payloads and the SBOM template have no file to match.
+			catalog: {
+				description: "Silk Release Action repository config (.github/silk-release.json)",
+				fileMatch: ["**/.github/silk-release.json", "**/.github/silk-release.jsonc"],
+			},
 		},
 		[SbomTemplateSchemaIdentity.name]: {
 			schema: SbomTemplate,
