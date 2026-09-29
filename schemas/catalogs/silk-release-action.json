@@ -1,0 +1,11 @@
+[
+	{
+		"name": "input",
+		"description": "Silk Release Action repository config (.github/silk-release.json)",
+		"fileMatch": ["**/.github/silk-release.json", "**/.github/silk-release.jsonc"],
+		"url": "https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/6.0/input.json",
+		"versions": {
+			"6.0": "https://raw.githubusercontent.com/savvy-web/silk-release-action/main/schemas/6.0/input.json"
+		}
+	}
+]

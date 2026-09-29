@@ -13,8 +13,8 @@ sources:
     resource: ../../src/schema/release-output.ts
 generated:
   by: okfit/claude-code
-  at: 2026-09-15T16:08:54Z
-  body_sha256: f9fb79423fc031eff6856a35f662528595ad9cc0746f2eb26f97b16969dff87e
+  at: 2026-09-29T01:25:34Z
+  body_sha256: 4a9da63a35ebb6ef3c3bda73a46e952c785c63b24eb041b806b9895c49a5e012
 ---
 
 # Version the output JSON Schema under its own path per release
@@ -63,6 +63,15 @@ response to a genuine contract break is bumping `OUTPUT_SCHEMA_VERSION`
 label together) while keeping the old label in `versions`, which writes new
 files at the new version's path and leaves the published ones untouched. `published: false` — the state today, since the schema has never
 been published — lets the current label iterate in place.
+
+The input entry also declares a SchemaStore `catalog` entry, whose `url` and
+`versions` map are derived from the same identity: the CLI writes it to this
+config's slice, `schemas/catalogs/silk-release-action.json` (named by the
+config's required `name`), and maintains the merged `schemas/catalog.json`
+beside the version directories. A label bump therefore moves the catalog
+entry's `url` to the new label and adds it to `versions`, and the catalog
+files regenerate with the documents. The output and SBOM-template documents
+have no file convention for a `fileMatch` to name, so they declare no entry.
 
 `--force` (sugar for `--drift=allow`) rewrites a published document in place
 after a loud warning — correct only when repairing a document whose text no

@@ -17,8 +17,8 @@ sources:
     resource: npm:@effected/schemastore-cli
 generated:
   by: okfit/claude-code
-  at: 2026-09-15T16:08:54Z
-  body_sha256: 14e5ac4ea4d55adca56cff22d7a4d1485a89c13ad288c1a991a2e4e58534be48
+  at: 2026-09-29T01:25:34Z
+  body_sha256: d02bf023c2ea39f49a60de98c1e784ae1ffcc568b222764eefbc3741e534327d
 status: draft
 ---
 
@@ -78,7 +78,13 @@ label. This runbook is for the moment a label has shipped.
    `schemas/<version>/output.json` and
    `schemas/<version>/input.json`; the previous
    version's files under `schemas/<old-version>/` are untouched — the CLI
-   writes only the current label and only when content changed.
+   writes only the current label and only when content changed. It also
+   rewrites the catalog slice `schemas/catalogs/silk-release-action.json` and
+   the merged `schemas/catalog.json`: the input entry's `url` moves to the new
+   label and its `versions` map gains it. Run `pnpm lint:fix` afterwards —
+   the CLI writes one array item per line and Biome collapses short arrays;
+   the check compares parsed content, so the formatted files stay
+   `unchanged`.
 4. Run `pnpm schema:check` again: it is the whole guard now. It fails on a
    stale or missing document, on a frozen file whose `$id` is absent or
    differs from the derived one, and on any gate failure; the identities
@@ -102,6 +108,7 @@ consumer pinned to that version's `$schema` URL.
 `pnpm schema:check` reports every schema `unchanged` and exits `0`, the test
 suite is green, and the repository has a new
 `schemas/<version>/` pair committed alongside the previous version's files,
+plus the regenerated catalog slice and merged `schemas/catalog.json`,
 which are unchanged and now listed as a frozen label in
 `lib/scripts/schemastore.config.ts`. The changeset for the bump is in place.
 
