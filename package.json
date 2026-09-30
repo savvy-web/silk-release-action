@@ -62,7 +62,7 @@
 		"@okfit/plugin": "^0.5.7",
 		"@savvy-web/github-action-builder": "^2.4.9",
 		"@savvy-web/silk": "^4.3.1",
-		"@vitest-agent/plugin": "^5.1.1",
+		"@vitest-agent/plugin": "^5.1.2",
 		"tsx": "catalog:silk"
 	},
 	"engines": {
