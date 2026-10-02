@@ -1,5 +1,21 @@
 # @savvy-web/silk-release-action
 
+## 5.7.5
+
+### Dependencies
+
+| Dependency | Type | Action | From | To |
+| --- | --- | --- | --- | --- |
+| @effected/schemastore | dependency | updated | ^0.18.0 | ^0.20.0 |
+
+[#491][#491]
+
+### Thanks
+
+Thanks to [@savvy-web-bot](https://github.com/apps/savvy-web-bot) for their contributions!
+
+[#491]: https://github.com/savvy-web/silk-release-action/pull/491
+
 ## 5.7.4
 
 ### Dependencies
