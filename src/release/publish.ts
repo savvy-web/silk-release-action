@@ -1701,12 +1701,12 @@ export const runPublishTargets = (
 		);
 
 		// `Effect.partition` is the accumulator: it runs every element and returns
-		// `[failures, successes]` — note the order, which is the reverse of the
-		// predecessor's `{ successes, failures }` field order. It never fails, so
-		// one package's failure cannot abort the batch. It also loses item
-		// attribution, which `Effect.mapError` restores by naming the package
-		// inside the failing branch.
-		const [failures, successes] = yield* Effect.partition(sortedNames, (name) =>
+		// `[successes, failures]` (Effect 4.0.0 order; the release candidates
+		// returned the reverse). It never fails, so one package's failure cannot
+		// abort the batch. It also loses item attribution, which
+		// `Effect.mapError` restores by naming the package inside the failing
+		// branch.
+		const [successes, failures] = yield* Effect.partition(sortedNames, (name) =>
 			Effect.gen(function* () {
 				const pkgEntry = targetsByPackage.get(name);
 				if (pkgEntry === undefined) {
