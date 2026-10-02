@@ -52,7 +52,7 @@
 		"@effected/semver": "catalog:effected",
 		"@effected/workspaces": "catalog:effected",
 		"@effected/yaml": "catalog:effected",
-		"@savvy-web/silk-effects": "^9.3.1",
+		"@savvy-web/silk-effects": "^9.4.0",
 		"effect": "catalog:effect"
 	},
 	"devDependencies": {
