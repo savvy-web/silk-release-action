@@ -59,10 +59,10 @@
 		"@effect/vitest": "catalog:effect",
 		"@effected/memfs": "catalog:effected",
 		"@effected/schemastore-cli": "catalog:effected",
-		"@okfit/plugin": "^0.5.10",
-		"@savvy-web/github-action-builder": "^2.4.10",
-		"@savvy-web/silk": "^4.3.2",
-		"@vitest-agent/plugin": "^5.2.0",
+		"@okfit/plugin": "^0.5.11",
+		"@savvy-web/github-action-builder": "^2.4.11",
+		"@savvy-web/silk": "^4.3.3",
+		"@vitest-agent/plugin": "^5.2.1",
 		"tsx": "catalog:silk"
 	},
 	"engines": {
@@ -71,7 +71,7 @@
 	"devEngines": {
 		"packageManager": {
 			"name": "pnpm",
-			"version": "12.8.2",
+			"version": "12.9.0",
 			"onFail": "download"
 		},
 		"runtime": [
