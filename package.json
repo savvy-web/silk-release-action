@@ -61,7 +61,7 @@
 		"@effected/schemastore-cli": "catalog:effected",
 		"@okfit/plugin": "^0.5.15",
 		"@savvy-web/github-action-builder": "^2.4.13",
-		"@savvy-web/silk": "^4.3.6",
+		"@savvy-web/silk": "^4.3.7",
 		"@vitest-agent/plugin": "^5.4.1",
 		"tsx": "catalog:silk"
 	},
@@ -77,7 +77,7 @@
 		"runtime": [
 			{
 				"name": "node",
-				"version": "26.10.0",
+				"version": "26.11.1",
 				"onFail": "ignore"
 			}
 		]
