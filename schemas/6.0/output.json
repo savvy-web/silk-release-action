@@ -36,11 +36,15 @@
 			"properties": {
 				"changesetFiles": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Changeset files",
 					"description": "Changeset files observed in `.changeset/`. NOT the workspace count — one file may name several workspaces, and two files may name the same one, so the two diverge in both directions."
 				},
 				"workspaces": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Workspaces",
 					"description": "Workspaces the release plan versions. Includes those pulled in only because a dependency moved, which name no changeset of their own."
 				}
@@ -90,6 +94,8 @@
 			"properties": {
 				"number": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Release PR number",
 					"description": "The GitHub PR number for the release PR."
 				},
@@ -130,6 +136,8 @@
 				},
 				"changesetCount": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Changesets naming this package",
 					"description": "How many changeset files name this package. **Zero means the package releases only because a dependency did** — it still gets a version bump and a CHANGELOG entry, but no changeset asked for it, so it is invisible to a count of changeset files. Renders as the `—` in a release table's changeset column."
 				},
@@ -154,6 +162,8 @@
 			"properties": {
 				"count": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Changeset count",
 					"description": "The number of changeset **files** observed in the `.changeset/` directory. Not the length of `packages`: one file may name several packages, and two files may name the same one, so the two numbers diverge in both directions."
 				},
@@ -344,41 +354,57 @@
 			"properties": {
 				"workspaces": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Workspaces",
 					"description": "Workspaces with a version difference against the target branch."
 				},
 				"githubOnly": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "GitHub-only workspaces",
 					"description": "Workspaces that resolved no publish target — versioned, tagged and released, publishing to no registry. Zero builds is their steady state, not a failure."
 				},
 				"githubWithPackages": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Registry-publishing workspaces",
 					"description": "Workspaces that resolved at least one publish target."
 				},
 				"checksPassed": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Checks passed",
 					"description": "Validation checks whose status is `pass`."
 				},
 				"checksWarning": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Checks with warnings",
 					"description": "Validation checks whose status is `warning` — neither passed nor failed. Carried so the three counts sum to the number of checks; folding warnings into either bucket loses them."
 				},
 				"checksFailed": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Checks failed",
 					"description": "Validation checks whose status is `error`."
 				},
 				"errorFindings": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Error findings",
 					"description": "Findings of `error` severity. Any of these makes `success` false."
 				},
 				"warningFindings": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Warning findings",
 					"description": "Findings of `warning` severity. These do NOT make `success` false unless the run set `strict-warnings`."
 				}
@@ -407,6 +433,8 @@
 				},
 				"packageCount": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Package count",
 					"description": "Number of packages built and validated."
 				}
@@ -579,6 +607,8 @@
 			"properties": {
 				"componentCount": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Component count",
 					"description": "Number of components (direct + transitive dependencies) in the BOM. 0 is legitimate for a dependency-free package."
 				},
@@ -659,6 +689,8 @@
 					"anyOf": [
 						{
 							"type": "integer",
+							"minimum": -9007199254740991,
+							"maximum": 9007199254740991,
 							"title": "Packed size (bytes)",
 							"description": "Size of the packed tarball. Null when the dry-run did not report it."
 						},
@@ -671,6 +703,8 @@
 					"anyOf": [
 						{
 							"type": "integer",
+							"minimum": -9007199254740991,
+							"maximum": 9007199254740991,
 							"title": "Unpacked size (bytes)",
 							"description": "Size of the unpacked contents. Null when the dry-run did not report it."
 						},
@@ -683,6 +717,8 @@
 					"anyOf": [
 						{
 							"type": "integer",
+							"minimum": -9007199254740991,
+							"maximum": 9007199254740991,
 							"title": "File count",
 							"description": "Files in the packed tarball. Null when the dry-run did not report it."
 						},
@@ -844,6 +880,8 @@
 					"anyOf": [
 						{
 							"type": "integer",
+							"minimum": -9007199254740991,
+							"maximum": 9007199254740991,
 							"title": "Changeset count",
 							"description": "Number of changesets contributing to this package's bump. Null when unknown."
 						},
@@ -1215,61 +1253,85 @@
 			"properties": {
 				"workspaces": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Workspaces",
 					"description": "Total workspaces released this run. Zero only when the run had nothing to release."
 				},
 				"githubOnly": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "GitHub-only workspaces",
 					"description": "Workspaces of kind `github-only` — tagged and released, publishing to no registry."
 				},
 				"githubWithPackages": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Registry-publishing workspaces",
 					"description": "Workspaces of kind `github-with-packages` — those that resolved at least one publish target."
 				},
 				"blocked": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Blocked workspaces",
 					"description": "Workspaces never attempted because the phase aborted. Zero on a clean run."
 				},
 				"packagesResolved": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Packages resolved",
 					"description": "Package publications that were *intended* — one per (package, registry) pair resolved before publishing began. Compare with `packagesPublished` to see how much of the intent was realised."
 				},
 				"packagesPublished": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Packages published",
 					"description": "Publications whose bytes were newly uploaded this run."
 				},
 				"packagesRecovered": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Packages recovered",
 					"description": "Publications already present at an identical digest, so nothing was re-uploaded."
 				},
 				"packagesFailed": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Packages failed",
 					"description": "Publications that were attempted and did not land."
 				},
 				"packagesConfirmed": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Packages confirmed",
 					"description": "Publications confirmed resolvable on their registry before the run finished."
 				},
 				"packagesHeld": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Packages held",
 					"description": "Publications that succeeded but were not yet resolvable at the ceiling. Non-zero means a downstream install may hit `No matching version` for a few minutes; gate follow-on dispatches on this, not on `success`."
 				},
 				"tagsCreated": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Tags created",
 					"description": "Git tags cut this run."
 				},
 				"releasesCreated": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Releases created",
 					"description": "GitHub releases created this run."
 				}
@@ -1324,6 +1386,8 @@
 				},
 				"waitedMs": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Wait (ms)",
 					"description": "Milliseconds spent probing this version. 0 when skipped."
 				}
@@ -1573,6 +1637,8 @@
 				},
 				"size": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Size",
 					"description": "Asset size in bytes."
 				}
@@ -1587,6 +1653,8 @@
 			"properties": {
 				"id": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Release ID",
 					"description": "GitHub's numeric release id."
 				},
@@ -1797,21 +1865,29 @@
 			"properties": {
 				"workspaces": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Workspaces versioned",
 					"description": "Workspaces the snapshot bump versioned."
 				},
 				"published": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Published",
 					"description": "Entries in `published`."
 				},
 				"skipped": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Skipped",
 					"description": "Entries in `skipped`."
 				},
 				"failed": {
 					"type": "integer",
+					"minimum": -9007199254740991,
+					"maximum": 9007199254740991,
 					"title": "Failed",
 					"description": "Entries in `failed`."
 				}
