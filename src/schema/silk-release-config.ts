@@ -95,17 +95,31 @@ export const SBOM_TEMPLATE_SCHEMA_URL: string = SbomTemplateSchemaIdentity.$id;
 
 // ─── Sub-structs ──────────────────────────────────────────────────────────
 
+/*
+ * Field shapes shared by the SBOM sub-structs. Every pattern carries the `u`
+ * flag: `Schema.isPattern` exports a `pattern` to JSON Schema only for a
+ * unicode-flagged RegExp, so an unflagged one still checks at decode while the
+ * published schema silently says nothing.
+ */
+const SbomName = Schema.NonEmptyString;
+const SbomUrl = Schema.String.check(
+	Schema.isPattern(/^https?:\/\/\S+$/u, { expected: "an http(s) URL with no whitespace" }),
+);
+const SbomEmail = Schema.String.check(
+	Schema.isPattern(/^[^\s@]+@[^\s@]+$/u, { expected: "an email address: text, one @, text" }),
+);
+
 /** Contact information for a supplier, author, or security contact. */
 export const SbomContact = Schema.Struct({
 	name: Schema.optional(
-		Schema.String.annotate({
+		SbomName.annotate({
 			title: "Contact name",
 			description: "Display name of the contact person or team.",
 			examples: ["Security Team", "Jane Doe"],
 		}),
 	),
 	email: Schema.optional(
-		Schema.String.annotate({
+		SbomEmail.annotate({
 			title: "Contact email",
 			description: "Email address used to reach the contact.",
 			examples: ["security@example.com"],
@@ -135,14 +149,14 @@ export type SbomContact = Schema.Schema.Type<typeof SbomContact>;
  * scalar-or-array form that `resolveSBOMMetadata` already normalises.
  */
 export const SbomSupplier = Schema.Struct({
-	name: Schema.String.annotate({
+	name: SbomName.annotate({
 		title: "Supplier name",
 		description:
 			"Supplier display name. Required when a supplier block is provided — this is the NTIA minimum-elements 'Supplier Name' field that compliance checks key on.",
 		examples: ["Savvy Web"],
 	}),
 	url: Schema.optional(
-		Schema.Union([Schema.String, Schema.Array(Schema.String)]).annotate({
+		Schema.Union([SbomUrl, Schema.Array(SbomUrl)]).annotate({
 			title: "Supplier URL(s)",
 			description:
 				"One supplier URL or an array of URLs. The scalar-or-array form is normalised by `resolveSBOMMetadata`; both shapes are accepted by Phase 2.",
@@ -176,7 +190,7 @@ export type SbomSupplier = Schema.Schema.Type<typeof SbomSupplier>;
  */
 export const SbomCopyright = Schema.Struct({
 	holder: Schema.optional(
-		Schema.String.annotate({
+		SbomName.annotate({
 			title: "Copyright holder",
 			description:
 				"Copyright holder name. Appears in the BOM's `metadata.component.copyright` formatted as 'Copyright (c) <range> <holder>'.",
@@ -217,7 +231,7 @@ export const SbomConfig = Schema.Struct({
 		}),
 	),
 	publisher: Schema.optional(
-		Schema.String.annotate({
+		SbomName.annotate({
 			title: "Publisher",
 			description:
 				"Publisher name written to the BOM's `metadata.component.publisher`. Defaults to the supplier name when unset.",
@@ -226,7 +240,7 @@ export const SbomConfig = Schema.Struct({
 	),
 	copyright: Schema.optional(SbomCopyright),
 	documentationUrl: Schema.optional(
-		Schema.String.annotate({
+		SbomUrl.annotate({
 			title: "Documentation URL",
 			description:
 				"Documentation URL written to the BOM as an external reference of type 'documentation'. Typically the project's docs site or repository docs path.",

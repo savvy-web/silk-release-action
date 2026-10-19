@@ -1,6 +1,7 @@
 # Gotcha
 
 * [A FULL TURBO green typecheck can mean no typecheck ran](turbo-typecheck-cache-inputs.md) - pnpm typecheck reporting FULL TURBO and green looks like tsc --noEmit passed; if types:check's inputs list had drifted from the tsconfig's include list, a test-only change would hit the cache and no check would have run at all.
+* [A Schema.isPattern check without the u flag publishes no pattern](is-pattern-needs-unicode-flag.md) - A string field checked with Schema.isPattern(/…/) rejects bad values at decode, so it looks constrained; the generated JSON Schema carries no pattern at all unless the RegExp has the u flag, so editors and validators accept anything.
 * [A green publish can still 404 for minutes on npm](npm-publish-hold.md) - \`npm view name@version\` returning E404 minutes after a green Phase-3 run, or a downstream workflow failing with ERR\_PNPM\_NO\_MATCHING\_VERSION, looks like the publish failed or the action lied — it did not; npm is holding the version for publish-time malware scanning.
 * [A green suite says nothing about \`runValidation\`'s own wiring](uncovered-validation-body.md) - High Phase-2 test coverage looks like proof the validation orchestration is tested, but no test executes steps/validation.ts's body — only the six modules it calls.
 * [A vitest CLI file argument does not filter the run](vitest-file-argument.md) - \`vitest run some.test.ts\` looks like it scoped the run to one file; it runs the whole suite instead, because projects come from a plugin, not the config's file list.
