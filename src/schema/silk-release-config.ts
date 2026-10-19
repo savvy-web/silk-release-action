@@ -171,7 +171,7 @@ export type SbomSupplier = Schema.Schema.Type<typeof SbomSupplier>;
  * Most users should NOT set `startYear`; it is auto-detected from the npm
  * registry's first-publication date. Override only when registry lookup is
  * unreliable or the copyright predates first npm publication. `startYear` is
- * a `Schema.Int` because fractional years (e.g. `2024.5`) would otherwise
+ * a bounded `Schema.Int` (1970–2100) because fractional years (e.g. `2024.5`) would otherwise
  * decode through `Schema.Number` and corrupt the formatted copyright string.
  */
 export const SbomCopyright = Schema.Struct({
@@ -184,7 +184,7 @@ export const SbomCopyright = Schema.Struct({
 		}),
 	),
 	startYear: Schema.optional(
-		Schema.Int.annotate({
+		Schema.Int.check(Schema.isBetween({ minimum: 1970, maximum: 2100 })).annotate({
 			title: "Copyright start year",
 			description:
 				"Year the copyright begins, used to format a year range against the current year. Most users should NOT set this — it is auto-detected from the npm registry's first-publication date. Override only when registry lookup is unreliable or the copyright predates first npm publication.",

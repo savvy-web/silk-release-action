@@ -1,6 +1,6 @@
 # Convention
 
-* [A numeric output-schema field is Schema.Int, never bare Schema.Number](schema-numeric-fields.md) - Every numeric field in the output schema must be Schema.Int, or Schema.Finite when it genuinely holds a fraction; never bare Schema.Number.
+* [A numeric output-schema field is Schema.Int, never bare Schema.Number](schema-numeric-fields.md) - Every numeric field in the output schema must be an integer bounded by its meaning (Schema.Natural for counts, at least 1 for a PR number), or Schema.Finite when it genuinely holds a fraction; never bare Schema.Number, and never an upper cap on an output field.
 * [Decode every action.yml input in schema/inputs.ts, nowhere else](single-input-decode-point.md) - Read an action.yml input in src/schema/inputs.ts and nowhere else outside a short, stated allowlist; add a new input to action.yml, INPUT\_NAMES, and the read in one change.
 * [Double Effect services with layers, never with mocks](effect-service-doubles.md) - Substitute every Effect service under test with a Layer or a kit makeTest static, stub unexercised members with Effect.die, and use the real seams (ChildProcessSpawner, @effected/memfs) instead of a plausible-default stub.
 * [Keep every test at or below \_\_test\_\_/, mirrored, never under a utils/ directory](test-placement.md) - Every \*.test.ts lives at or below \_\_test\_\_/, unit suites mirror their source path under \_\_test\_\_/unit/, helpers live only under \_\_test\_\_/utils/, and no test file sits under any directory named utils, fixtures, or snapshots.

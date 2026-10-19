@@ -14,8 +14,10 @@ sources:
     resource: ../../schemas/6.0/output.json
 generated:
   by: okfit/claude-code
-  at: 2026-09-27T15:46:10Z
-  body_sha256: 120a4e8ea5216c2db81d523e170472f1f1942fc7e48098584e9efbde037dfc70
+  at: 2026-10-19T21:34:10Z
+integrity:
+  generated:
+    body: 5f2824a0351fc5af
 ---
 
 # The `result` output document
@@ -187,8 +189,11 @@ trigger) should gate on `totals.packagesHeld === 0`, not on
 ## Every numeric field is an integer
 
 All numeric fields across the union — component counts, byte sizes, file
-counts, tag SHAs excluded — are declared `Schema.Int`, never bare
-`Schema.Number`.[^release-output-ts] `Schema.Number` is a lossless JSON codec
+counts, tag SHAs excluded — are declared as integers, never bare
+`Schema.Number`, and none is negative: counts, sizes and durations are
+`Schema.Natural` (`minimum: 0`), the release PR `number` is at least 1, and
+a release `id` is `0` only in dry-run. No output field has an upper
+cap.[^release-output-ts] `Schema.Number` is a lossless JSON codec
 that round-trips `Infinity`/`NaN` as string sentinels, so it lowers to a JSON
 Schema `anyOf` including those literal strings instead of a plain
 `{"type":"integer"}` — a shape a consumer's JSON Schema validator would
