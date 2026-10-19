@@ -182,6 +182,62 @@ describe("loadReleaseConfig - structural failures", () => {
 		expect(result.error).toMatch(/\["sbom"\]\["copyright"\]\["startYear"\]/);
 	});
 
+	it("rejects a startYear outside 1970-2100", () => {
+		writeLocal("silk-release.json", JSON.stringify({ sbom: { copyright: { startYear: 1969 } } }));
+
+		const result = loadReleaseConfig(tmpRoot);
+
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.error).toMatch(/\["sbom"\]\["copyright"\]\["startYear"\]/);
+	});
+
+	it("rejects an empty supplier name, which would satisfy the NTIA supplier check while naming no one", () => {
+		writeLocal("silk-release.json", JSON.stringify({ sbom: { supplier: { name: "" } } }));
+
+		const result = loadReleaseConfig(tmpRoot);
+
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.error).toMatch(/\["sbom"\]\["supplier"\]\["name"\]/);
+	});
+
+	it("rejects a documentationUrl that is not an http(s) URL", () => {
+		writeLocal("silk-release.json", JSON.stringify({ sbom: { documentationUrl: "docs.example" } }));
+
+		const result = loadReleaseConfig(tmpRoot);
+
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.error).toMatch(/\["sbom"\]\["documentationUrl"\]/);
+	});
+
+	it("rejects a non-URL entry inside the supplier.url array form", () => {
+		writeLocal(
+			"silk-release.json",
+			JSON.stringify({ sbom: { supplier: { name: "S", url: ["https://one.example", "two.example"] } } }),
+		);
+
+		const result = loadReleaseConfig(tmpRoot);
+
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.error).toMatch(/\["sbom"\]\["supplier"\]\["url"\]/);
+	});
+
+	it("rejects a contact email with no @", () => {
+		writeLocal(
+			"silk-release.json",
+			JSON.stringify({ sbom: { supplier: { name: "S", contact: { email: "security.example" } } } }),
+		);
+
+		const result = loadReleaseConfig(tmpRoot);
+
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.error).toMatch(/\["sbom"\]\["supplier"\]\["contact"\]/);
+	});
+
 	it("rejects invalid JSON syntax", () => {
 		writeLocal("silk-release.json", "{ not valid json");
 

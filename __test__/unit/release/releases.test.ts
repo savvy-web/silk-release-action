@@ -115,9 +115,15 @@ const makePublishResult = (
 });
 
 /** Minimal TagInfo. */
-const makeTag = (name: string, packageName: string, version: string): TagInfo => ({
+const makeTag = (
+	name: string,
+	packageName: string,
+	version: string,
+	packageNames: ReadonlyArray<string> = [packageName],
+): TagInfo => ({
 	name,
 	packageName,
+	packageNames,
 	version,
 });
 
@@ -337,6 +343,37 @@ const baseLayers = (
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("runReleases", () => {
+	describe("tag association", () => {
+		it.effect("does not associate a package whose name is only a prefix of a name the tag covers", () =>
+			Effect.gen(function* () {
+				const tag = makeGitTagLayer();
+				const release = makeGitHubReleaseLayer();
+
+				const args: ReleasesInputArgs = {
+					tags: [makeTag("1.0.0", "@s/app-web, @s/api", "1.0.0", ["@s/app-web", "@s/api"])],
+					publishResult: makePublishPackagesResult([makePublishResult("@s/app", "1.0.0")]),
+					packageManager: "pnpm",
+					dryRun: false,
+				};
+
+				const layers = Layer.mergeAll(
+					baseLayers(),
+					tag.layer,
+					release.layer,
+					makeAttestationLayer().layer,
+					makeArtifactMetadataLayer().layer,
+				);
+
+				yield* runReleases(args).pipe(Effect.provide(layers));
+
+				// `@s/app` is not covered by this tag, so nothing is associated and
+				// neither a tag nor a release is created.
+				expect(tag.createCalls).toHaveLength(0);
+				expect(release.createCalls).toHaveLength(0);
+			}),
+		);
+	});
+
 	describe("happy-path: two tags → two releases", () => {
 		it.effect("creates two git tags and two GitHub releases and returns success: true", () =>
 			Effect.gen(function* () {

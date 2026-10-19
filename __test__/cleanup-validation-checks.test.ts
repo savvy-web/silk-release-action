@@ -8,7 +8,7 @@
  * did not model.
  */
 
-import type { CheckRunOutput } from "@effected/github";
+import type { CheckRunOutput, CheckRunStatus } from "@effected/github";
 import { CheckRun, CheckRunRef, GitHubError, Repo, RepoRef } from "@effected/github";
 import { ActionOutputs } from "@effected/github-actions";
 import { Effect, Layer, Logger } from "effect";
@@ -25,7 +25,7 @@ interface Recorder {
 interface SeededRun {
 	readonly id: number;
 	readonly name?: string;
-	readonly status: string;
+	readonly status: typeof CheckRunStatus.Type;
 }
 
 const makeLayer = (

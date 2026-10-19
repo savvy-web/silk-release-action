@@ -143,6 +143,7 @@ describe("determine-tag-strategy", () => {
 			expect(result.tags[0]).toEqual({
 				name: "1.2.3",
 				packageName: "@org/pkg-a",
+				packageNames: ["@org/pkg-a"],
 				version: "1.2.3",
 			});
 			expect(result.isFixedVersioning).toBe(true);
@@ -197,6 +198,7 @@ describe("determine-tag-strategy", () => {
 			expect(result.tags[0].name).toBe("2.0.0");
 			expect(result.tags[0].packageName).toContain("@org/pkg-a");
 			expect(result.tags[0].packageName).toContain("@org/pkg-b");
+			expect(result.tags[0].packageNames).toEqual(["@org/pkg-a", "@org/pkg-b"]);
 			expect(result.isFixedVersioning).toBe(true);
 		});
 
@@ -248,7 +250,25 @@ describe("determine-tag-strategy", () => {
 			expect(result.tags).toHaveLength(2);
 			expect(result.tags[0].name).toBe("@org/pkg-a@1.0.0");
 			expect(result.tags[1].name).toBe("@org/pkg-b@2.0.0");
+			expect(result.tags[0].packageNames).toEqual(["@org/pkg-a"]);
+			expect(result.tags[1].packageNames).toEqual(["@org/pkg-b"]);
 			expect(result.isFixedVersioning).toBe(false);
+		});
+
+		it("lists every package on the single tag at the highest version when versions differ outside a monorepo", () => {
+			const ok = [{ target: {} as never, success: true }];
+			const publishResults: PackagePublishResult[] = [
+				{ name: "@org/pkg-a", version: "1.0.0", targets: ok },
+				{ name: "@org/pkg-b", version: "2.0.0", targets: ok },
+			];
+
+			const result = determineTagStrategy(publishResults, false);
+
+			expect(result.strategy).toBe("single");
+			expect(result.isFixedVersioning).toBe(false);
+			expect(result.tags).toHaveLength(1);
+			expect(result.tags[0].name).toBe("2.0.0");
+			expect(result.tags[0].packageNames).toEqual(["@org/pkg-a", "@org/pkg-b"]);
 		});
 
 		it("uses v prefix for non-scoped packages in independent versioning", () => {
@@ -398,6 +418,7 @@ describe("determine-tag-strategy", () => {
 			expect(result.tags[0]).toEqual({
 				name: "1.0.0",
 				packageName: "@org/version-only",
+				packageNames: ["@org/version-only"],
 				version: "1.0.0",
 			});
 			expect(result.isFixedVersioning).toBe(true);

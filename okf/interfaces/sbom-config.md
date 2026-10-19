@@ -14,8 +14,10 @@ sources:
     resource: ../../src/release/validation.ts
 generated:
   by: okfit/claude-code
-  at: 2026-09-15T16:08:54Z
-  body_sha256: a3cd15369a47c88985bcca36e0064d50a195e31451aacdf970d8b243df6428a5
+  at: 2026-10-19T21:40:37Z
+integrity:
+  generated:
+    body: d63e8323c102b4c4
 ---
 
 # SBOM configuration
@@ -72,6 +74,26 @@ absent field falls through to the inferred one.[^silk-release-config-ts]
 Most consumers should not set `sbom.copyright.startYear` at all — override it
 only when the registry lookup is unreliable or the copyright predates the
 package's first npm publication.
+
+## Field shapes the decoder enforces
+
+A config that decodes is not just well-typed: each field is checked against
+what it means, and a value that fails stops the load with a path-named
+error rather than landing in the BOM.[^silk-release-config-ts]
+
+- `supplier.name`, `publisher`, `copyright.holder` and every contact `name`
+  are non-empty. An empty supplier name would otherwise satisfy the NTIA
+  supplier check while naming no one.
+- `documentationUrl` and every `supplier.url` entry, scalar or array form,
+  must be an `http(s)://` URL with no whitespace.
+- A contact `email` must be one `@` with text on both sides. The check is
+  deliberately loose: dotless and intranet domains are accepted.
+- `copyright.startYear` is an integer from 1970 to 2100.
+- A contact `phone` is free-form, since it is "E.164 when possible".
+
+These rules bind only the config. The metadata `resolveSBOMMetadata` infers
+from `package.json` (including `git+https` repository URLs) never passes
+through them.
 
 ## NTIA minimum elements and `strict-warnings`
 

@@ -54,8 +54,18 @@ export interface TagStrategyResult {
 export interface TagInfo {
 	/** Git tag name (e.g., 'v1.0.0' or '@scope/pkg@1.0.0') */
 	name: string;
-	/** Package name associated with this tag */
+	/**
+	 * Human display label for the packages this tag covers: the workspace name
+	 * when one, the names joined with `", "` when several. For logs and group
+	 * titles only — never parse it to decide membership; use `packageNames`.
+	 */
 	packageName: string;
+	/**
+	 * The exact workspace names this tag covers. This is the field to match
+	 * against — membership is an exact `includes`, never a substring test on
+	 * {@link TagInfo.packageName}.
+	 */
+	packageNames: ReadonlyArray<string>;
 	/** Version for this tag */
 	version: string;
 }
@@ -131,15 +141,15 @@ export function determineTagStrategy(
 		if (isFixedVersioning) {
 			const version = successfulPackages[0].version;
 			const tag = ReleaseTag.single(version, SINGLE_TAG_FORMAT).value;
-			const packageNames =
-				successfulPackages.length === 1 ? successfulPackages[0].name : successfulPackages.map((p) => p.name).join(", ");
+			const packageNames = successfulPackages.map((p) => p.name);
 
 			return {
 				strategy: "single",
 				tags: [
 					{
 						name: tag,
-						packageName: packageNames,
+						packageName: packageNames.join(", "),
+						packageNames,
 						version,
 					},
 				],
@@ -157,6 +167,7 @@ export function determineTagStrategy(
 				{
 					name: ReleaseTag.single(highestVersion, SINGLE_TAG_FORMAT).value,
 					packageName: successfulPackages.map((p) => p.name).join(", "),
+					packageNames: successfulPackages.map((p) => p.name),
 					version: highestVersion,
 				},
 			],
@@ -168,6 +179,7 @@ export function determineTagStrategy(
 	const tags = successfulPackages.map((pkg) => ({
 		name: ReleaseTag.scoped(pkg.name, pkg.version, perPackageTagFormat(pkg.name)).value,
 		packageName: pkg.name,
+		packageNames: [pkg.name],
 		version: pkg.version,
 	}));
 

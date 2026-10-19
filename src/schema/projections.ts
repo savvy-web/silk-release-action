@@ -461,12 +461,10 @@ const toPublishedPackage = (
 export const toPublishOutput = (input: PublishInput): PublishOutput => {
 	const resultByName = new Map(input.publishResult.packages.map((p) => [p.name, p] as const));
 
-	// Tag lookup: per-package tags carry the workspace name. A single shared
-	// tag names no package, so it is the tag for every workspace in the wave.
-	const sharedTag = input.tags.length === 1 && input.tags[0]?.packageName === "" ? input.tags[0] : undefined;
-	const tagByWorkspace = new Map(
-		input.tags.filter((t) => t.packageName !== "").map((t) => [t.packageName, t] as const),
-	);
+	// Tag lookup: a tag covers the exact workspace names in `packageNames` —
+	// one name for a per-package tag, several for a shared single tag. A
+	// workspace in no tag's `packageNames` (its publish failed, say) has none.
+	const tagByWorkspace = new Map(input.tags.flatMap((t) => t.packageNames.map((n) => [n, t] as const)));
 	const releaseByTag = new Map(input.releases.map((r) => [r.tag, r] as const));
 
 	const workspaces: Record<string, PublishOutput["publish"]["workspaces"][string]> = {};
@@ -475,7 +473,7 @@ export const toPublishOutput = (input: PublishInput): PublishOutput => {
 		const result = resultByName.get(ws.name);
 		const packages = result === undefined ? [] : result.targets.map((t) => toPublishedPackage(ws.version, t, input));
 
-		const tag = tagByWorkspace.get(ws.name) ?? sharedTag;
+		const tag = tagByWorkspace.get(ws.name);
 		const releaseInfo = tag === undefined ? undefined : releaseByTag.get(tag.name);
 		// Tag and release are recorded independently. `runReleases` creates the
 		// tag first and the GitHub release second, so a failure between them

@@ -1,7 +1,7 @@
 ---
 type: Convention
 title: A numeric output-schema field is Schema.Int, never bare Schema.Number
-description: Every numeric field in the output schema must be Schema.Int, or Schema.Finite when it genuinely holds a fraction; never bare Schema.Number.
+description: Every numeric field in the output schema must be an integer bounded by its meaning (Schema.Natural for counts, at least 1 for a PR number), or Schema.Finite when it genuinely holds a fraction; never bare Schema.Number, and never an upper cap on an output field.
 tags:
   - compat
   - dx
@@ -11,18 +11,36 @@ sources:
     resource: ../../src/schema/release-output.ts
 generated:
   by: okfit/claude-code
-  at: 2026-09-13T19:54:03Z
-  body_sha256: 76a2c722a5a15a8068e1ff6de128bb103da1df93bdcd87494e400ed394cb1908
+  at: 2026-10-19T21:34:10Z
 status: draft
+integrity:
+  generated:
+    body: b06ef0d93d3cced3
 ---
 
 # A numeric output-schema field is Schema.Int, never bare Schema.Number
 
 Declare a numeric field in `src/schema/release-output.ts` as `Schema.Int`
 unless it genuinely holds a fraction, in which case use `Schema.Finite` as
-the floor. Never declare a numeric field as bare `Schema.Number`. All 31
-numeric fields in `release-output.ts` are `Schema.Int` today, verified
-against the file.[^release-output-ts]
+the floor. Never declare a numeric field as bare `Schema.Number`.
+
+Bound the integer by what it means. A count, a byte size or a duration is
+`Schema.Natural` (an `Int` at least 0). The release PR `number` is
+`Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))`, since GitHub never
+issues 0. The release `id` stays `Schema.Natural`, because a dry-run emits
+`0` for a release it did not create. Every other integer in
+`release-output.ts` is `Schema.Natural`.[^release-output-ts]
+
+Never put an upper cap on an output field. `result` is Schema-encoded at
+emission and tolerates its own encode failure, so a value past the cap does
+not fail the run: it drops the whole `result` document, and every consumer
+reading it gets nothing. Caps belong on inputs, where a rejected decode is
+the point. The input's `sbom.copyright.startYear` is bounded 1970–2100 for
+that reason.
+
+Since `effect` 4.0.5, a bare `Schema.Int` also emits `minimum` and `maximum`
+at the safe-integer limits, so an unbounded field advertises negative values
+as valid in the published JSON Schema.
 
 `Schema.Number` is a lossless JSON codec: it round-trips `Infinity`,
 `-Infinity` and `NaN` by encoding them as string sentinels rather than
