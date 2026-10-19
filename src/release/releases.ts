@@ -867,12 +867,7 @@ export const runReleases = (args: ReleasesInputArgs): Effect.Effect<ReleasesRepo
 
 				for (const tag of args.tags) {
 					// Find packages associated with this tag (mirrors the original logic)
-					const associatedPackages = args.publishResult.packages.filter((pkg) => {
-						if (tag.packageName.includes(", ")) {
-							return tag.packageName.includes(pkg.name);
-						}
-						return pkg.name === tag.packageName;
-					});
+					const associatedPackages = args.publishResult.packages.filter((pkg) => tag.packageNames.includes(pkg.name));
 
 					const [releaseInfo, error, tagSha] = yield* logger.group(
 						`Release · ${tag.packageName}@${tag.version}`,

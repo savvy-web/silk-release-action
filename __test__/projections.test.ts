@@ -575,6 +575,58 @@ describe("toPublishOutput", () => {
 		availability: new Map<string, TargetAvailability>(),
 	};
 
+	it("gives every github-only workspace on one shared tag the same tag and release", () => {
+		const pkgs: PackagePublishResult[] = [
+			{ name: "@s/a", version: "1.0.0", targets: [] },
+			{ name: "@s/b", version: "1.0.0", targets: [] },
+		];
+		const output = toPublishOutput({
+			...baseInput,
+			plan: [
+				{ name: "@s/a", version: "1.0.0", kind: "github-only", resolvedPackages: 0, path: "packages/a" },
+				{ name: "@s/b", version: "1.0.0", kind: "github-only", resolvedPackages: 0, path: "packages/b" },
+			],
+			publishResult: { ...emptyResult, packages: pkgs, totalPackages: 2, successfulPackages: 2 },
+			tags: [{ name: "1.0.0", packageName: "@s/a, @s/b", packageNames: ["@s/a", "@s/b"], version: "1.0.0" }],
+			releases: [{ tag: "1.0.0", url: "https://example.com/r", id: 9, assets: [] }],
+			tagShas: { "1.0.0": "abc123" },
+			dryRun: false,
+			failure: null,
+		});
+
+		for (const name of ["@s/a", "@s/b"]) {
+			const ws = output.publish.workspaces[name];
+			expect(ws?.outcome).toBe("released");
+			expect(ws?.success).toBe(true);
+			expect(ws?.tag?.name).toBe("1.0.0");
+			expect(ws?.release?.id).toBe(9);
+		}
+	});
+
+	it("gives a workspace absent from every tag's packageNames no tag and no release", () => {
+		const pkgs: PackagePublishResult[] = [
+			{ name: "@s/a", version: "1.0.0", targets: [] },
+			{ name: "@s/b", version: "1.0.0", targets: [] },
+		];
+		const output = toPublishOutput({
+			...baseInput,
+			plan: [
+				{ name: "@s/a", version: "1.0.0", kind: "github-only", resolvedPackages: 0, path: "packages/a" },
+				{ name: "@s/b", version: "1.0.0", kind: "github-only", resolvedPackages: 0, path: "packages/b" },
+			],
+			publishResult: { ...emptyResult, packages: pkgs, totalPackages: 2, successfulPackages: 2 },
+			tags: [{ name: "1.0.0", packageName: "@s/a", packageNames: ["@s/a"], version: "1.0.0" }],
+			releases: [{ tag: "1.0.0", url: "https://example.com/r", id: 9, assets: [] }],
+			tagShas: { "1.0.0": "abc123" },
+			dryRun: false,
+			failure: null,
+		});
+
+		expect(output.publish.workspaces["@s/a"]?.tag?.name).toBe("1.0.0");
+		expect(output.publish.workspaces["@s/b"]?.tag).toBeNull();
+		expect(output.publish.workspaces["@s/b"]?.release).toBeNull();
+	});
+
 	it("projects a clean publish, keyed by workspace name", () => {
 		const pkg: PackagePublishResult = {
 			name: "@savvy-web/foo",
@@ -597,7 +649,14 @@ describe("toPublishOutput", () => {
 				totalTargets: 1,
 				successfulTargets: 1,
 			},
-			tags: [{ name: "@savvy-web/foo@1.2.0", packageName: "@savvy-web/foo", version: "1.2.0" }],
+			tags: [
+				{
+					name: "@savvy-web/foo@1.2.0",
+					packageName: "@savvy-web/foo",
+					packageNames: ["@savvy-web/foo"],
+					version: "1.2.0",
+				},
+			],
 			releases: [{ tag: "@savvy-web/foo@1.2.0", url: "https://example.com/r", id: 7, assets: [] }],
 			tagShas: { "@savvy-web/foo@1.2.0": "abc123" },
 			dryRun: false,
@@ -693,7 +752,14 @@ describe("toPublishOutput", () => {
 				totalTargets: 1,
 				successfulTargets: 1,
 			},
-			tags: [{ name: "@savvy-web/foo@1.2.0", packageName: "@savvy-web/foo", version: "1.2.0" }],
+			tags: [
+				{
+					name: "@savvy-web/foo@1.2.0",
+					packageName: "@savvy-web/foo",
+					packageNames: ["@savvy-web/foo"],
+					version: "1.2.0",
+				},
+			],
 			releases: [{ tag: "@savvy-web/foo@1.2.0", url: "https://example.com/r", id: 7, assets: [] }],
 			tagShas: { "@savvy-web/foo@1.2.0": "abc" },
 			dryRun: false,
@@ -774,7 +840,14 @@ describe("toPublishOutput", () => {
 				totalTargets: 1,
 				successfulTargets: 1,
 			},
-			tags: [{ name: "@savvy-web/foo@1.2.0", packageName: "@savvy-web/foo", version: "1.2.0" }],
+			tags: [
+				{
+					name: "@savvy-web/foo@1.2.0",
+					packageName: "@savvy-web/foo",
+					packageNames: ["@savvy-web/foo"],
+					version: "1.2.0",
+				},
+			],
 			releases: [{ tag: "@savvy-web/foo@1.2.0", url: "https://example.com/r", id: 7, assets: [] }],
 			tagShas: {},
 			dryRun: false,
@@ -833,7 +906,14 @@ describe("toPublishOutput", () => {
 				packages: [{ name: "@savvy-web/foo", version: "1.2.0", targets: [] }],
 				totalPackages: 1,
 			},
-			tags: [{ name: "@savvy-web/foo@1.2.0", packageName: "@savvy-web/foo", version: "1.2.0" }],
+			tags: [
+				{
+					name: "@savvy-web/foo@1.2.0",
+					packageName: "@savvy-web/foo",
+					packageNames: ["@savvy-web/foo"],
+					version: "1.2.0",
+				},
+			],
 			releases: [],
 			// The whole point: the sha is resolved at tag-creation time and
 			// reported through `tagShas` independently of whether a GitHub
@@ -857,7 +937,14 @@ describe("toPublishOutput", () => {
 				packages: [{ name: "@savvy-web/foo", version: "1.2.0", targets: [] }],
 				totalPackages: 1,
 			},
-			tags: [{ name: "@savvy-web/foo@1.2.0", packageName: "@savvy-web/foo", version: "1.2.0" }],
+			tags: [
+				{
+					name: "@savvy-web/foo@1.2.0",
+					packageName: "@savvy-web/foo",
+					packageNames: ["@savvy-web/foo"],
+					version: "1.2.0",
+				},
+			],
 			releases: [],
 			tagShas: {},
 			dryRun: false,
@@ -879,7 +966,12 @@ describe("toPublishOutput", () => {
 				successfulPackages: 1,
 			},
 			tags: [
-				{ name: "@effected/claude-code-plugin@0.14.0", packageName: "@effected/claude-code-plugin", version: "0.14.0" },
+				{
+					name: "@effected/claude-code-plugin@0.14.0",
+					packageName: "@effected/claude-code-plugin",
+					packageNames: ["@effected/claude-code-plugin"],
+					version: "0.14.0",
+				},
 			],
 			releases: [{ tag: "@effected/claude-code-plugin@0.14.0", url: "https://example.com/r", id: 42, assets: [] }],
 			tagShas: { "@effected/claude-code-plugin@0.14.0": "abc123" },
