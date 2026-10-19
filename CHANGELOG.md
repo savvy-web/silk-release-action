@@ -1,5 +1,61 @@
 # @savvy-web/silk-release-action
 
+## 5.8.0
+
+### Bug Fixes
+
+#### Shared release tags in the publish `result`
+
+- When several github-only workspaces share one release tag (the single tag strategy), each workspace now maps to the shared tag and reports `released`. Previously every one of them was reported `failed` with `tag: null` and `release: null` (#520)
+- A package whose name is a prefix of another (`@s/app` and `@s/app-web`) is no longer associated with the other package's shared release
+
+#### Tighter JSON Schemas (label `6.0`)
+
+- Counts, sizes and durations in the output schema are non-negative integers; the release PR number must be at least 1 and the release id is a non-negative integer (`0` in dry-run)
+- `copyright.startYear` in the input schema is bounded to 1970 through 2100
+
+#### Stricter SBOM config validation
+
+- The SBOM config (`.github/silk-release.json`, the `sbom-config` input and `SILK_RELEASE_SBOM_TEMPLATE`) now rejects values it used to accept:
+
+- empty supplier, publisher, holder or contact names
+
+- `documentationUrl` and `supplier.url` values that are not `http` or `https` URLs
+
+- contact emails without text on both sides of the `@`
+
+- A config that decoded before can now fail to load. Fix the offending value, or remove the field, before upgrading. [#521][#521]
+
+### Dependencies
+
+| Dependency | Type | Action | From | To |
+| --- | --- | --- | --- | --- |
+| @effect/platform-node | dependency | updated | ^4.0.2 | ^4.0.5 |
+| @effected/commands | dependency | updated | ^0.11.0 | ^0.14.0 |
+| @effected/git | dependency | updated | ^0.20.0 | ^0.23.0 |
+| @effected/github | dependency | updated | ^0.17.0 | ^0.21.0 |
+| @effected/github-actions | dependency | updated | ^0.20.3 | ^0.23.0 |
+| @effected/github-references | dependency | updated | ^0.7.0 | ^0.10.0 |
+| @effected/jsonc | dependency | updated | ^0.15.1 | ^0.18.0 |
+| @effected/markdown | dependency | updated | ^0.15.1 | ^0.18.0 |
+| @effected/npm | dependency | updated | ^0.20.0 | ^0.23.0 |
+| @effected/package-json | dependency | updated | ^0.20.1 | ^0.23.0 |
+| @effected/sbom | dependency | updated | ^0.10.1 | ^0.13.0 |
+| @effected/schemastore | dependency | updated | ^0.21.4 | ^0.24.0 |
+| @effected/semver | dependency | updated | ^0.11.0 | ^0.14.0 |
+| @effected/workspaces | dependency | updated | ^0.32.0 | ^0.35.0 |
+| @effected/yaml | dependency | updated | ^0.19.1 | ^0.22.0 |
+| @savvy-web/silk-effects | dependency | updated | ^9.5.0 | ^9.5.4 |
+| effect | dependency | updated | ^4.0.2 | ^4.0.5 |
+
+[#521][#521]
+
+### Thanks
+
+Thanks to [@spencerbeggs](https://github.com/spencerbeggs) for their contributions!
+
+[#521]: https://github.com/savvy-web/silk-release-action/pull/521
+
 ## 5.7.10
 
 ### Dependencies
