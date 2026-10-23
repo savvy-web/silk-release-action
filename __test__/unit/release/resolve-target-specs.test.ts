@@ -108,6 +108,42 @@ describe("resolvePublishTargetSpecs", () => {
 		}),
 	);
 
+	// A bundler older than the `releases` field (silk-integration builds with
+	// @savvy-web/bundler 2.5.4) writes a binding with no `releases` key. The
+	// declared channel must survive the build rather than widen to "all".
+	it.effect("keeps the manifest's releases channel when the built binding omits it", () =>
+		Effect.gen(function* () {
+			const binding = {
+				groups: [
+					{ id: "npm", name: "@scope/pkg", dir: "dist/prod/npm/pkg" },
+					{ id: "pnpr", name: "@scope/pkg", dir: "dist/prod/pnpr/pkg" },
+				],
+				targets: [
+					{ id: "npm", group: "npm", name: "@scope/pkg", registry: "https://registry.npmjs.org" },
+					{ id: "pnpr", group: "pnpr", name: "@scope/pkg", registry: PNPR },
+				],
+			};
+			const resolved = yield* resolveWith(
+				{
+					[`${PKG_PATH}/package.json`]: {
+						...manifest,
+						publishConfig: {
+							...manifest.publishConfig,
+							targets: { npm: {}, pnpr: { registry: PNPR, releases: "prerelease" } },
+						},
+					},
+					[`${PKG_PATH}/dist/prod/targets.json`]: binding,
+				},
+				"1.2.0",
+			);
+
+			expect(resolved.targetError).toBeUndefined();
+			expect(resolved.targets.map((t) => t.registry)).toEqual(["https://registry.npmjs.org"]);
+			expect(resolved.releaseFiltered.map((t) => t.registry)).toEqual([PNPR]);
+			expect(resolved.releaseFiltered[0]?.releases).toBe("prerelease");
+		}),
+	);
+
 	it.effect("reports an unknown releases channel as targetError instead of guessing one", () =>
 		Effect.gen(function* () {
 			const resolved = yield* resolveWith(
