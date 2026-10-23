@@ -27,12 +27,13 @@
  * @module steps/confirm-availability
  */
 
-import { ActionLogger } from "@effected/github-actions";
+import type { ActionLogger } from "@effected/github-actions";
 import type { RegistryCredential } from "@effected/npm";
 import { NpmRegistry, classifyRegistry } from "@effected/npm";
 import { Clock, Duration, Effect, Option, Redacted, Schedule } from "effect";
 import type { AvailabilitySkipReason, TargetAvailability } from "../release/types.js";
 import { availabilityKey } from "../release/types.js";
+import { grouped } from "../utils/grouped.js";
 
 /**
  * One published (registry, name, version) target to confirm.
@@ -130,6 +131,60 @@ const probeOne = (
 		return { status: "held", waitedMs, tarball: null, reason: null };
 	});
 
+/** Why a target was not probed, as the run summary says it. */
+const SKIP_REASON_TEXT: Record<AvailabilitySkipReason, string> = {
+	disabled: "registry-confirm-timeout is 0",
+	"dry-run": "dry run",
+	"non-npm-registry": "not on registry.npmjs.org, the only registry probed",
+	"not-published": "not published this run",
+	"not-reached": "publishing stopped before it",
+};
+
+/**
+ * The one line every run prints, on every path.
+ *
+ * @remarks
+ * Before this line existed, a run that probed nothing — no npm target, a
+ * ceiling of `0`, a dry run — logged nothing at all, so a workflow that set
+ * `registry-confirm-timeout: 180` could not tell from the log whether
+ * confirmation had run. A run-wide skip (every entry sharing one reason that
+ * is `dry-run` or `disabled`) says so in one clause; otherwise the line counts
+ * confirmed, held and skipped, and names each skip reason with its count.
+ *
+ * @param result - Every target's availability entry.
+ * @param ceilingSeconds - The `registry-confirm-timeout` value.
+ * @returns The summary line.
+ *
+ * @internal
+ */
+export const summarizeConfirmation = (
+	result: ReadonlyMap<string, TargetAvailability>,
+	ceilingSeconds: number,
+): string => {
+	const prefix = "🔎 Registry confirmation:";
+	const entries = [...result.values()];
+	if (entries.length === 0) return `${prefix} nothing to confirm — no registry target was published`;
+	const reasons = new Map<AvailabilitySkipReason, number>();
+	let confirmed = 0;
+	let held = 0;
+	for (const e of entries) {
+		if (e.status === "confirmed") confirmed += 1;
+		else if (e.status === "held") held += 1;
+		else if (e.reason !== null) reasons.set(e.reason, (reasons.get(e.reason) ?? 0) + 1);
+	}
+	const skippedCount = [...reasons.values()].reduce((a, b) => a + b, 0);
+	const runWide = [...reasons.keys()].find((r) => r === "dry-run" || r === "disabled");
+	if (runWide !== undefined && skippedCount === entries.length) {
+		return `${prefix} skipped — ${SKIP_REASON_TEXT[runWide]} (${entries.length} registry target(s))`;
+	}
+	const why = [...reasons].map(([reason, n]) => `${n} ${SKIP_REASON_TEXT[reason]}`).join("; ");
+	return (
+		`${prefix} ${confirmed} confirmed · ${held} held · ${skippedCount} skipped` +
+		(why !== "" ? ` (${why})` : "") +
+		(confirmed + held > 0 ? ` · ceiling ${ceilingSeconds}s` : "")
+	);
+};
+
 /** The subset of targets that live on an npm-classified registry. */
 const npmTargetsOf = (targets: ReadonlyArray<AvailabilityTarget>): ReadonlyArray<AvailabilityTarget> =>
 	targets.filter((t) => t.registry !== null && classifyRegistry(t.registry) === "npm");
@@ -169,7 +224,10 @@ export const confirmAvailability = (
 			const reason = runWide ?? (npmTargets.includes(t) ? null : "non-npm-registry");
 			if (reason !== null) result.set(availabilityKey(t.registry, t.name, t.version), skipped(reason));
 		}
-		if (runWide !== null || npmTargets.length === 0) return result;
+		if (runWide !== null || npmTargets.length === 0) {
+			yield* Effect.logInfo(summarizeConfirmation(result, options.ceilingSeconds));
+			return result;
+		}
 
 		// `Inputs.npmToken` defaults to "" for an unsupplied input; treat it as
 		// absent, as `publish.ts` does.
@@ -180,10 +238,9 @@ export const confirmAvailability = (
 
 		const ceiling = Duration.millis(Math.round(options.ceilingSeconds * 1000));
 		const schedule = options.schedule ?? defaultSchedule;
-		const logger = yield* ActionLogger;
 		// The group opens here, past the early return, so a dry-run, a ceiling
 		// of 0 or a wave with no npm targets never leaves an empty heading.
-		const outcomes = yield* logger.group(
+		const outcomes = yield* grouped(
 			"Confirm registry availability",
 			Effect.logInfo(
 				`Confirming ${npmTargets.length} npm version(s) on the registry (ceiling ${options.ceilingSeconds}s)`,
@@ -199,5 +256,6 @@ export const confirmAvailability = (
 			const outcome = outcomes[i];
 			if (outcome !== undefined) result.set(availabilityKey(t.registry, t.name, t.version), outcome);
 		});
+		yield* Effect.logInfo(summarizeConfirmation(result, options.ceilingSeconds));
 		return result;
 	});

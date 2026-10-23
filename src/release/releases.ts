@@ -15,18 +15,18 @@ import { copyFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import type { Attestation, ReleaseInfo as GitHubReleaseInfo } from "@effected/github";
 import { ArtifactMetadata, GitHubError, GitHubRelease, GitTag, Repo, StorageRecordInput } from "@effected/github";
-import type { OidcTokenIssuer } from "@effected/github-actions";
-import { ActionEnvironment, ActionLogger } from "@effected/github-actions";
+import type { ActionLogger, OidcTokenIssuer } from "@effected/github-actions";
+import { ActionEnvironment } from "@effected/github-actions";
 import { classifyRegistry, registryDisplayName } from "@effected/npm";
 import type { SigstoreSigner } from "@effected/sbom";
 import { SlsaProvenance } from "@effected/sbom";
 import { WorkspaceDiscovery } from "@effected/workspaces";
 import { Effect, Option } from "effect";
 import type { ChildProcessSpawner } from "effect/process";
-
 import { extractVersionReleaseNotes } from "../utils/extract-release-notes.js";
 import { packageArtifactUrl, releaseTagUrl, resolveServerUrl } from "../utils/github-urls.js";
 import { getGroupId, insertGroupToken } from "../utils/group-id.js";
+import { grouped, headed } from "../utils/grouped.js";
 import { attestSubject, buildProvenancePredicate } from "./attest-helpers.js";
 import { ReleasesError } from "./errors.js";
 import { tarMetaFolder } from "./meta-archive.js";
@@ -810,7 +810,7 @@ const processOneTag = (
 
 			const releaseAssetCount = releaseInfo.assets.length;
 			yield* Effect.logInfo(
-				`  ✅ release ${recovered ? "recovered" : "created"} — ${releaseData.id} (${associatedPackages.length} package(s), ${releaseAssetCount} asset(s))`,
+				`  ✅ release ${recovered ? "recovered" : "created"} — ${releaseData.id} (${associatedPackages.length} workspace(s), ${releaseAssetCount} asset(s))`,
 			);
 			return [releaseInfo, null] as const;
 		}).pipe(
@@ -839,9 +839,7 @@ const processOneTag = (
  */
 export const runReleases = (args: ReleasesInputArgs): Effect.Effect<ReleasesReport, ReleasesError, ReleasesServices> =>
 	Effect.gen(function* () {
-		const logger = yield* ActionLogger;
-
-		return yield* logger.group(
+		return yield* headed(
 			"Create releases",
 			Effect.gen(function* () {
 				if (args.tags.length === 0) {
@@ -874,7 +872,7 @@ export const runReleases = (args: ReleasesInputArgs): Effect.Effect<ReleasesRepo
 					// Find packages associated with this tag (mirrors the original logic)
 					const associatedPackages = args.publishResult.packages.filter((pkg) => tag.packageNames.includes(pkg.name));
 
-					const [releaseInfo, error, tagSha] = yield* logger.group(
+					const [releaseInfo, error, tagSha] = yield* grouped(
 						`Release · ${tag.packageName}@${tag.version}`,
 						processOneTag(tag, associatedPackages, owner, repo, headSha, args.dryRun),
 					);

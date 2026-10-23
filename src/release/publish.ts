@@ -11,24 +11,10 @@ import { basename, dirname, join, relative } from "node:path";
 import { Run } from "@effected/commands";
 import type { GitHubError, Repo } from "@effected/github";
 import { Attestation, GitHubCommit, GitHubContent, PullRequest } from "@effected/github";
-import type { OidcTokenIssuer } from "@effected/github-actions";
-import {
-	ActionEnvironment,
-	ActionInput,
-	ActionLogger,
-	ActionOutputs,
-	ActionState,
-	Secret,
-} from "@effected/github-actions";
+import type { ActionLogger, OidcTokenIssuer } from "@effected/github-actions";
+import { ActionEnvironment, ActionInput, ActionOutputs, ActionState, Secret } from "@effected/github-actions";
 import type { RegistryCredential } from "@effected/npm";
-import {
-	NpmExecutor,
-	NpmRegistry,
-	PackagePublish,
-	classifyRegistry,
-	registryHost,
-	registryShortLabel,
-} from "@effected/npm";
+import { NpmExecutor, NpmRegistry, PackagePublish, classifyRegistry, registryHost } from "@effected/npm";
 import type { SigstoreSigner } from "@effected/sbom";
 import { CYCLONEDX_BOM_PREDICATE, Sbom, SbomMetadataSource, SlsaProvenance } from "@effected/sbom";
 import type { PublishabilityDetector } from "@effected/workspaces";
@@ -38,10 +24,10 @@ import type { FileSystem } from "effect";
 import { Config, Effect, Option, Redacted } from "effect";
 import type { ChildProcessSpawner } from "effect/process";
 import { ChildProcess } from "effect/process";
-
 import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
 import type { CustomRegistryAuth } from "../utils/custom-registries.js";
 import { getGroupId } from "../utils/group-id.js";
+import { grouped } from "../utils/grouped.js";
 import { npmPrefixDir } from "../utils/npm-cache.js";
 import { releaseKindLabel, releaseKindOf, tallyReleaseKinds } from "../utils/release-kind.js";
 import { sortReleasesTopologically } from "../utils/sort-releases-topologically.js";
@@ -50,6 +36,8 @@ import { ChangesetConfig } from "./changeset-config.js";
 import { humanizeSize } from "./report.js";
 import type { TargetSpec } from "./resolve-targets.js";
 import { resolvePublishTargetSpecs, resolveRegistryToken } from "./resolve-targets.js";
+import type { TargetLineInput } from "./target-line.js";
+import { credentialInputHint, fallbackCause, formatTargetLine, readFailureHint } from "./target-line.js";
 import type {
 	PackagePublishResult,
 	PublishAuth,
@@ -756,7 +744,7 @@ const publishDirectoryGroup = (
 					error: packOutcome.error,
 				});
 			}
-			yield* Effect.logWarning(`  ❌ pack failed — ${npmTargets.length} target(s) marked failed`);
+			yield* Effect.logWarning(`  ❌ pack failed — ${npmTargets.length} registry target(s) marked failed`);
 			return results;
 		}
 
@@ -798,7 +786,9 @@ const publishDirectoryGroup = (
 		};
 
 		for (const t of npmTargets) {
-			const label = registryShortLabel(t.registry);
+			// One line shape for every outcome — see `release/target-line.ts`.
+			const line = (outcome: string, extra: Pick<TargetLineInput, "tag" | "auth"> = {}): string =>
+				formatTargetLine({ id: t.id, registry: t.registry, outcome, ...extra });
 			yield* Effect.logDebug(`[publish] ${packageName} ${directory} → ${t.registry}`);
 
 			// Auth is set up before the probe, unchanged from the predecessor.
@@ -833,7 +823,7 @@ const publishDirectoryGroup = (
 					"GitHub App tokens cannot access GitHub Packages at all, so the App installation token " +
 					"this action provisions is not a fallback";
 				yield* Effect.logError(`[publish] ${t.registry}: cannot publish ${packResult.name} — ${reason}`);
-				yield* Effect.logWarning(`  ⬆ ${label} · no-token`);
+				yield* Effect.logWarning(line("no-token"));
 				results.push({
 					...base(t),
 					success: false,
@@ -857,10 +847,21 @@ const publishDirectoryGroup = (
 			const redactedToken = token === null ? null : Redacted.make(token);
 			const credential: RegistryCredential | null =
 				redactedToken === null ? null : { kind: "token", token: redactedToken };
-			if (credential !== null) {
+			if (credential !== null && resolvedToken !== null) {
+				// Name the input that supplies this credential: without it the
+				// publish below fails with npm's raw auth error and nothing points
+				// back at the workflow configuration.
 				yield* publishSvc
 					.setupAuth({ registry: t.registry, credential, npmrcPath })
-					.pipe(Effect.catch((e) => Effect.logWarning(`setupAuth failed for ${t.registry}: ${e.message}`)));
+					.pipe(
+						Effect.catch((e) =>
+							Effect.logWarning(
+								`setupAuth failed for ${t.registry}: ${e.message} — the credential comes from ` +
+									`${credentialInputHint(resolvedToken.source, t.registry)}; check it, since the publish below ` +
+									"runs without it written to the npmrc",
+							),
+						),
+					);
 			}
 
 			// ── Snapshot: never-published probe, with THIS target's credential ──
@@ -877,9 +878,12 @@ const publishDirectoryGroup = (
 					}),
 				);
 				if (known._tag === "Failure") {
-					const reason = `registry lookup failed — ${known.failure.message}; a snapshot never reads an unreadable registry as "never published"`;
+					const hint = readFailureHint(t.registry, known.failure);
+					const reason =
+						`registry lookup failed — ${known.failure.message}${hint !== null ? ` — ${hint}` : ""}; ` +
+						'a snapshot never reads an unreadable registry as "never published"';
 					yield* Effect.logError(`[publish] ${t.registry}: ${packResult.name} — ${reason}`);
-					yield* Effect.logWarning(`  ⬆ ${label} · lookup-failed`);
+					yield* Effect.logWarning(line("lookup-failed"));
 					results.push({ ...base(t), success: false, status: "failed", error: reason, ...digestFields });
 					failedCount += 1;
 					continue;
@@ -890,7 +894,7 @@ const publishDirectoryGroup = (
 							"the registry answered 404 to an anonymous read of a restricted package, which is indistinguishable " +
 							"from a private package the probe cannot see; pass npm-token so the never-published check can authenticate";
 						yield* Effect.logError(`[publish] ${t.registry}: ${packResult.name} — ${reason}`);
-						yield* Effect.logWarning(`  ⬆ ${label} · unverifiable`);
+						yield* Effect.logWarning(line("unverifiable"));
 						results.push({ ...base(t), success: false, status: "failed", error: reason, ...digestFields });
 						failedCount += 1;
 						continue;
@@ -899,7 +903,7 @@ const publishDirectoryGroup = (
 						`[publish] ${packResult.name} has never been published to ${t.registry}; skipped — a first publish ` +
 							`under a non-latest tag would also claim latest, so it belongs to the real release`,
 					);
-					yield* Effect.logInfo(`  ⬆ ${label} · skipped (never published)`);
+					yield* Effect.logInfo(line("skipped (never published)"));
 					results.push({
 						...base(t),
 						success: true,
@@ -919,14 +923,20 @@ const publishDirectoryGroup = (
 				})
 				.pipe(
 					Effect.map((value) => ({ ok: true as const, value })),
-					Effect.catch((e) => Effect.succeed({ ok: false as const, error: e.message })),
+					// Explain the one read failure an operator can fix from the
+					// workflow — a custom registry refusing an unauthenticated or
+					// under-scoped read — from the typed status, not the message.
+					Effect.catch((e) => {
+						const hint = readFailureHint(t.registry, e);
+						return Effect.succeed({ ok: false as const, error: hint !== null ? `${e.message} — ${hint}` : e.message });
+					}),
 				);
 
 			if (!probe.ok) {
 				yield* Effect.logError(
 					`[publish] ${t.registry}: integrity probe for ${packResult.name}@${packResult.version} failed — ${probe.error}`,
 				);
-				yield* Effect.logWarning(`  ⬆ ${label} · probe-failed`);
+				yield* Effect.logWarning(line("probe-failed"));
 				results.push({
 					...base(t),
 					success: false,
@@ -941,7 +951,7 @@ const publishDirectoryGroup = (
 			if (Option.isNone(probe.value)) {
 				if (snapshot?.dryRun === true) {
 					yield* Effect.logInfo(
-						`  ⬆ ${label} · dry-run — would publish ${packResult.name}@${packResult.version} under ${tagFor(t)}`,
+						line(`dry-run — would publish ${packResult.name}@${packResult.version}`, { tag: tagFor(t) }),
 					);
 					results.push({ ...base(t), success: true, status: "skipped", skipReason: "dry-run", ...digestFields });
 					dryRunCount += 1;
@@ -989,8 +999,10 @@ const publishDirectoryGroup = (
 				// configured, the first attempt succeeds and this retry never fires.
 				if (!publishOutcome.ok && !isGhPkgs && redactedToken !== null) {
 					auth = { ...auth, method: "token", fallback: { from: firstMethod, reason: publishOutcome.error } };
+					const firstLabel = firstMethod === "trusted-publishing" ? "trusted-publishing" : "token";
 					yield* Effect.logWarning(
-						`[publish] ${t.registry}: trusted-publishing publish failed for ${packResult.name}@${packResult.version} (${publishOutcome.error}); retrying with token auth — provenance disabled for this attempt`,
+						`[publish] ${t.registry}: ${firstLabel} publish failed for ${packResult.name}@${packResult.version} ` +
+							`(${publishOutcome.error}); ${fallbackCause(firstMethod, packResult.name, t.registry)}`,
 					);
 					publishOutcome = yield* publishSvc
 						.publishTarball(packResult.tarballPath, {
@@ -1011,7 +1023,7 @@ const publishDirectoryGroup = (
 					yield* Effect.logError(
 						`[publish] ${t.registry}: publishTarball failed for ${packResult.name}@${packResult.version} — ${publishOutcome.error}`,
 					);
-					yield* Effect.logWarning(`  ⬆ ${label} · publish-failed`);
+					yield* Effect.logWarning(line("publish-failed", { tag: tagFor(t), auth }));
 					results.push({
 						...base(t),
 						success: false,
@@ -1024,7 +1036,7 @@ const publishDirectoryGroup = (
 					continue;
 				}
 
-				yield* Effect.logInfo(`  ⬆ ${label} · published · ${registryHost(t.registry)}`);
+				yield* Effect.logInfo(line("published", { tag: tagFor(t), auth }));
 				results.push({
 					...base(t),
 					success: true,
@@ -1047,7 +1059,7 @@ const publishDirectoryGroup = (
 				yield* Effect.logDebug(
 					`[publish] ${t.registry}: ${packResult.name}@${packResult.version} already published with identical integrity (digest=${remoteIntegrity}); recovery skip`,
 				);
-				yield* Effect.logInfo(`  ⬆ ${label} · skipped-identical (recovery)`);
+				yield* Effect.logInfo(line("skipped-identical (recovery)"));
 				results.push({
 					...base(t),
 					success: true,
@@ -1072,7 +1084,7 @@ const publishDirectoryGroup = (
 			yield* Effect.logError(
 				`[publish] ${t.registry}: integrity MISMATCH for ${packResult.name}@${packResult.version} (local=${localLabel}, remote=${remoteLabel}); fatal`,
 			);
-			yield* Effect.logWarning(`  ⬆ ${label} · failed-mismatch`);
+			yield* Effect.logWarning(line("failed-mismatch"));
 			results.push({
 				...base(t),
 				success: false,
@@ -1199,45 +1211,40 @@ export const detectReleases = (
 ): Effect.Effect<
 	ReadonlyArray<DetectedRelease>,
 	never,
-	ActionEnvironment | ActionLogger | ChangesetConfig | GitHubCommit | GitHubContent | PullRequest | Repo
+	ActionEnvironment | ChangesetConfig | GitHubCommit | GitHubContent | PullRequest | Repo
 > =>
+	// No log group: this step emits one line, and a group holding a single line
+	// only adds a fold to click through.
 	Effect.gen(function* () {
-		const logger = yield* ActionLogger;
+		let detected: ReadonlyArray<DetectedRelease>;
 
-		return yield* logger.group(
-			"Detect released packages",
-			Effect.gen(function* () {
-				let detected: ReadonlyArray<DetectedRelease>;
+		if (args.mergedReleasePRNumber !== undefined) {
+			yield* Effect.logDebug(`detectReleases: detecting from PR #${args.mergedReleasePRNumber}`);
+			detected = yield* detectFromPR(args.mergedReleasePRNumber);
+			if (detected.length === 0) {
+				yield* Effect.logDebug("detectReleases: PR detection returned nothing, falling back to commit diff");
+				detected = yield* detectFromCommit();
+			}
+		} else {
+			yield* Effect.logDebug("detectReleases: detecting from commit diff");
+			detected = yield* detectFromCommit();
+		}
 
-				if (args.mergedReleasePRNumber !== undefined) {
-					yield* Effect.logDebug(`detectReleases: detecting from PR #${args.mergedReleasePRNumber}`);
-					detected = yield* detectFromPR(args.mergedReleasePRNumber);
-					if (detected.length === 0) {
-						yield* Effect.logDebug("detectReleases: PR detection returned nothing, falling back to commit diff");
-						detected = yield* detectFromCommit();
-					}
-				} else {
-					yield* Effect.logDebug("detectReleases: detecting from commit diff");
-					detected = yield* detectFromCommit();
-				}
+		yield* Effect.logDebug(`detectReleases: ${detected.length} package(s) detected`);
 
-				yield* Effect.logDebug(`detectReleases: ${detected.length} package(s) detected`);
-
-				// Drop packages whose names match the changeset ignore list so they
-				// are fully excluded from Phase-3 publishing, not just from the Phase-1
-				// changeset analysis.
-				const config = yield* ChangesetConfig;
-				const root = process.cwd();
-				const kept: DetectedRelease[] = [];
-				for (const d of detected) {
-					if (yield* config.isIgnored(d.name, root)) continue;
-					kept.push(d);
-				}
-				yield* Effect.logDebug(`detectReleases: ${kept.length} package(s) in scope after ignore filter`);
-				yield* Effect.logInfo(`  ✅ ${kept.length} package(s) in scope`);
-				return kept;
-			}),
-		);
+		// Drop packages whose names match the changeset ignore list so they
+		// are fully excluded from Phase-3 publishing, not just from the Phase-1
+		// changeset analysis.
+		const config = yield* ChangesetConfig;
+		const root = process.cwd();
+		const kept: DetectedRelease[] = [];
+		for (const d of detected) {
+			if (yield* config.isIgnored(d.name, root)) continue;
+			kept.push(d);
+		}
+		yield* Effect.logDebug(`detectReleases: ${kept.length} package(s) in scope after ignore filter`);
+		yield* Effect.logInfo(`✅ ${kept.length} workspace(s) to release`);
+		return kept;
 	});
 
 /**
@@ -1510,10 +1517,9 @@ export const runBuildAndSbom = (
 	| WorkspaceDiscovery
 > =>
 	Effect.gen(function* () {
-		const logger = yield* ActionLogger;
 		const discovery = yield* WorkspaceDiscovery;
 
-		return yield* logger.group(
+		return yield* grouped(
 			"Build & SBOM",
 			Effect.gen(function* () {
 				// ── Build (ci:build, once) ─────────────────────────────────────────
@@ -1608,7 +1614,7 @@ export const runBuildAndSbom = (
 						.map((rel) => (sbomSkipped.includes(rel.name) ? 0 : 1)),
 				);
 				yield* Effect.logInfo(
-					`  ✅ ${detected.length} package(s) ready — ${kinds.registry} registry, ` +
+					`  ✅ ${detected.length} workspace(s) ready — ${kinds.registry} registry, ` +
 						`${kinds.githubRelease} ${releaseKindLabel("github-only")}` +
 						(sbomFiltered.length > 0 ? `, ${sbomFiltered.length} excluded by releases` : ""),
 				);
@@ -1677,7 +1683,6 @@ export const runPublishTargets = (
 	Effect.gen(function* () {
 		const discovery = yield* WorkspaceDiscovery;
 		const state = yield* ActionState;
-		const logger = yield* ActionLogger;
 		const outputs = yield* ActionOutputs;
 
 		// ── Resolve registry tokens once ───────────────────────────────────────
@@ -1770,7 +1775,7 @@ export const runPublishTargets = (
 
 			for (const t of resolved.releaseFiltered) {
 				yield* Effect.logInfo(
-					`⏭ ${rel.name} · ${registryShortLabel(t.registry)} — releases: ${t.releases} excludes ${rel.version}`,
+					`⏭ ${rel.name} · ${t.id !== null ? `${t.id} · ` : ""}${registryHost(t.registry)} — releases: ${t.releases} excludes ${rel.version}`,
 				);
 			}
 
@@ -1882,7 +1887,7 @@ export const runPublishTargets = (
 					// `Publish · @scope/pkg@1.2.3`; only a package split across distinct
 					// byte-groups disambiguates with the group id (e.g. `· github`).
 					const groupSuffix = groups.size > 1 ? ` · ${getGroupId(directory)}` : "";
-					const groupResults = yield* logger.group(
+					const groupResults = yield* grouped(
 						`Publish · ${name}@${version}${groupSuffix}`,
 						publishDirectoryGroup(
 							name,

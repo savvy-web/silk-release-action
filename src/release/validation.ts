@@ -13,7 +13,6 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
-import { ActionLogger } from "@effected/github-actions";
 import { PackagePublish, classifyRegistry, registryShortLabel } from "@effected/npm";
 import { Package } from "@effected/package-json";
 import type { Component, SbomMetadataOptions } from "@effected/sbom";
@@ -26,6 +25,7 @@ import type { SBOMMetadataConfig } from "../types/sbom-config.js";
 import { countChangesetsPerPackage } from "../utils/count-changesets.js";
 import { extractReleaseNotes } from "../utils/extract-release-notes.js";
 import { getGroupId } from "../utils/group-id.js";
+import { grouped } from "../utils/grouped.js";
 import type { ConfigSource } from "../utils/load-release-config.js";
 import { loadSBOMConfig } from "../utils/load-release-config.js";
 import { sortReleasesTopologically } from "../utils/sort-releases-topologically.js";
@@ -420,7 +420,6 @@ export const runValidation = (args: ValidationInputArgs) =>
 	Effect.gen(function* () {
 		const discovery = yield* WorkspaceDiscovery;
 		const publish = yield* PackagePublish;
-		const logger = yield* ActionLogger;
 		// Read once at the edge: `SbomMetadataSource.formatCopyright` takes the
 		// year as an argument precisely so the ambient clock read lives here and
 		// the emitted copyright is testable.
@@ -686,7 +685,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 				// One collapsible group per package-build, mirroring the Phase-3 publish
 				// tree: a `📦 pack` line (dry-run sizing), per-registry readiness rows,
 				// and a `📄 sbom` line, capped by a group summary line.
-				const buildResult = yield* logger.group(
+				const buildResult = yield* grouped(
 					`Validate · ${pkg.name}@${pkg.version}${groupSuffix}`,
 					Effect.gen(function* () {
 						// ── 📦 pack / dry-run (sizing, one per directory) ──────────────

@@ -205,3 +205,70 @@ describe("confirmAvailability", () => {
 		}),
 	);
 });
+
+// One line per run, on every path — including the three that probe nothing.
+// Before, a run that skipped everything logged nothing, so a workflow that set
+// `registry-confirm-timeout: 180` could not tell whether confirmation ran.
+describe("confirmAvailability — the run summary line", () => {
+	const CUSTOM = "https://registry.example.com/";
+	const custom = { name: "@savvy-web/foo", version: "1.2.0", registry: CUSTOM };
+	const run = (
+		targets: ReadonlyArray<{ name: string; version: string; registry: string }>,
+		options: { ceilingSeconds: number; dryRun: boolean },
+	) =>
+		Effect.gen(function* () {
+			const lines: string[] = [];
+			const capture = Logger.make<unknown, void>(({ message }) => {
+				lines.push(Array.isArray(message) ? message.join(" ") : String(message));
+			});
+			yield* confirmAvailability(targets, { ...options, npmToken: null, schedule: fast }).pipe(
+				Effect.provide(Layer.mergeAll(Logger.layer([capture]), ActionLogger.layerTest(), registryAfter(0).layer)),
+			);
+			return lines.filter((l) => l.includes("Registry confirmation"));
+		});
+
+	it.effect("says confirmation was skipped because the timeout is 0", () =>
+		Effect.gen(function* () {
+			const lines = yield* run([target], { ceilingSeconds: 0, dryRun: false });
+			expect(lines).toHaveLength(1);
+			expect(lines[0]).toMatch(/skipped/);
+			expect(lines[0]).toContain("registry-confirm-timeout");
+		}),
+	);
+
+	it.effect("says confirmation was skipped for a dry run", () =>
+		Effect.gen(function* () {
+			const lines = yield* run([target], { ceilingSeconds: 180, dryRun: true });
+			expect(lines).toHaveLength(1);
+			expect(lines[0]).toMatch(/dry run/);
+		}),
+	);
+
+	it.effect("says why a wave with no npm target probed nothing, naming the count", () =>
+		Effect.gen(function* () {
+			const lines = yield* run([custom], { ceilingSeconds: 180, dryRun: false });
+			expect(lines).toHaveLength(1);
+			expect(lines[0]).toContain("0 confirmed");
+			expect(lines[0]).toMatch(/1 skipped/);
+			expect(lines[0]).toContain("registry.npmjs.org");
+		}),
+	);
+
+	it.live("counts confirmed and skipped together when a wave mixes registries", () =>
+		Effect.gen(function* () {
+			const lines = yield* run([target, custom], { ceilingSeconds: 5, dryRun: false });
+			expect(lines).toHaveLength(1);
+			expect(lines[0]).toContain("1 confirmed");
+			expect(lines[0]).toContain("0 held");
+			expect(lines[0]).toMatch(/1 skipped/);
+		}),
+	);
+
+	it.effect("says there was nothing to confirm when nothing was published", () =>
+		Effect.gen(function* () {
+			const lines = yield* run([], { ceilingSeconds: 180, dryRun: false });
+			expect(lines).toHaveLength(1);
+			expect(lines[0]).toMatch(/nothing to confirm/);
+		}),
+	);
+});

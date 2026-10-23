@@ -47,7 +47,7 @@ import type { SnapshotFailureInput, SnapshotRelease } from "../schema/projection
 import { toSnapshotOutput } from "../schema/projections.js";
 import { detectPackageManager } from "../utils/detect-package-manager.js";
 import { ensureFullHistory } from "../utils/ensure-full-history.js";
-import { grouped } from "../utils/grouped.js";
+import { grouped, headed } from "../utils/grouped.js";
 import { runNativeVersion } from "../utils/native-version.js";
 import type { DanglingDependency } from "../utils/snapshot.js";
 import { SNAPSHOT_PRERELEASE_TEMPLATE, checkSnapshotRef, findDanglingDependencies } from "../utils/snapshot.js";
@@ -69,7 +69,7 @@ interface Stop {
  * @public
  */
 export const runSnapshot = (inputs: Inputs) =>
-	grouped(
+	headed(
 		"Snapshot",
 		Effect.gen(function* () {
 			const outputs = yield* ActionOutputs;

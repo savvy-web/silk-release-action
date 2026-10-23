@@ -22,7 +22,7 @@
  * @module steps/validation
  */
 
-import { ActionEnvironment, ActionLogger, ActionOutputs, DryRun } from "@effected/github-actions";
+import { ActionEnvironment, ActionOutputs, DryRun } from "@effected/github-actions";
 import { Effect } from "effect";
 import {
 	buildPublishValidationSummary,
@@ -38,7 +38,7 @@ import { cleanupValidationChecks } from "../utils/cleanup-validation-checks.js";
 import { createValidationCheck } from "../utils/create-validation-check.js";
 import { detectPackageManager } from "../utils/detect-package-manager.js";
 import { ensureFullHistory } from "../utils/ensure-full-history.js";
-import { grouped } from "../utils/grouped.js";
+import { grouped, headed } from "../utils/grouped.js";
 import { buildValidation } from "./build-validation.js";
 import { linkIssues } from "./link-issues.js";
 import { createPerStepChecks } from "./per-step-checks.js";
@@ -72,7 +72,6 @@ const stripReleaseNotes = (output: ValidationOutput): ValidationOutput => ({
  */
 export const runValidation = (inputs: Inputs) =>
 	Effect.gen(function* () {
-		const logger = yield* ActionLogger;
 		const outputs = yield* ActionOutputs;
 		const env = yield* ActionEnvironment;
 
@@ -86,7 +85,7 @@ export const runValidation = (inputs: Inputs) =>
 		const packageManager = yield* detectPackageManager;
 		const { repositoryOwner: owner, sha } = yield* env.github;
 
-		yield* grouped(
+		yield* headed(
 			"Phase 2: Validation",
 			Effect.gen(function* () {
 				yield* Effect.logDebug(`Detected package manager: ${packageManager}`);
@@ -213,7 +212,7 @@ export const runValidation = (inputs: Inputs) =>
 					"</details>",
 				].join("\n");
 
-				const unified = yield* logger.group("Validation check", createValidationCheck(checkResults, dryRun, jsonBlock));
+				const unified = yield* grouped("Validation check", createValidationCheck(checkResults, dryRun, jsonBlock));
 				yield* Effect.logInfo(`✅ Validation check — conclusion: ${unified.success ? "success" : "failure"}`);
 				const unifiedUrl = unified.htmlUrl !== "" ? unified.htmlUrl : undefined;
 
