@@ -49,6 +49,7 @@ For each workspace it now reports:
 
 ## Bug Fixes
 
+* Phase 1 no longer fails in changesets pre mode with `FileSystem.readFile (.changeset/pre/)`. `changeset version` moves each consumed changeset into a new, untracked `.changeset/pre/` directory, which `git status` reports as a single directory entry; the release commit now carries the files inside it.
 * Custom registries now publish with token auth from the first attempt. Trusted publishing exists only on registry.npmjs.org; offering the OIDC environment elsewhere cost a failed exchange, and npm then quietly fell back to the token.
 * A release-filtered target is no longer counted as published, and the closing summary counts only uploads, not packages already on the registry.
 * A release-filtered npm target is no longer polled for availability, which used to wait out the full ceiling and log a false "held" warning.

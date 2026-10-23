@@ -47,7 +47,7 @@ import { pullRequestUrl, resolveServerUrl } from "./github-urls.js";
 import { getLinkedIssuesFromCommits } from "./link-issues-from-commits.js";
 import { runNativeVersion } from "./native-version.js";
 import type { FileReadError } from "./porcelain-changes.js";
-import { collectPorcelainChanges } from "./porcelain-changes.js";
+import { collectPorcelainChanges, expandUntrackedDirectories } from "./porcelain-changes.js";
 
 import {
 	NOTHING_TO_RELEASE_TITLE,
@@ -694,7 +694,14 @@ export const updateReleaseBranch = (
 				// the NUL splitting, the positional column arithmetic and the trim
 				// hazard that forced `Run.collect` here are all gone — together with
 				// the rename defect they hid (see `porcelain-changes.ts`).
-				const changes = yield* collectPorcelainChanges(yield* git.status(process.cwd()));
+				// A directory of only untracked files (pre mode's `.changeset/pre/`)
+				// arrives collapsed to one `?? dir/` entry; expand it before reading.
+				const changes = yield* collectPorcelainChanges(
+					yield* expandUntrackedDirectories(
+						yield* git.status(process.cwd()),
+						git.untrackedFiles(process.cwd(), { relative: false }),
+					),
+				);
 
 				if (changes.length === 0) {
 					yield* Effect.logWarning("No changes to commit via API");
