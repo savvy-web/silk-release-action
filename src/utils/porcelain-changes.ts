@@ -101,6 +101,10 @@ export const collectPorcelainChanges = (
  * up ignored files. The lister runs only when a directory was actually
  * collapsed, so the common path costs no extra subprocess.
  *
+ * Temporary: spencerbeggs/effected#1061 asks for
+ * `Git.status(cwd, { untrackedFiles: "all" })`, which makes this unnecessary.
+ * Adopting it and deleting this function is tracked in #531.
+ *
  * @param entries - The listing `Git.status` returned.
  * @param listUntracked - Repo-root-relative untracked file paths, run lazily.
  * @returns The listing with every `?? dir/` entry expanded in place.
