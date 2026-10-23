@@ -272,11 +272,19 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 			// tells a reader nothing about whether that was the design or a
 			// resolution failure.
 			const publishKinds = tallyReleaseKinds(publishResult.packages.map((pkg) => pkg.targets.length));
+			// A recovery (already on the registry at an identical digest) counts as
+			// a successful target here but not as an upload in the closing line, so
+			// name it, or "13/13" beside "10 published" reads as a contradiction.
+			const recovered = publishResult.packages.reduce(
+				(n, p) => n + p.targets.filter((t) => t.skipReason === "already-published-identical").length,
+				0,
+			);
 			yield* Effect.logInfo(
 				publishKinds.registry === 0
 					? `✅ No registry publishing — all ${publishKinds.githubRelease} workspace(s) are ` +
 							`${releaseKindLabel("github-only")}`
 					: `✅ Published ${publishResult.successfulTargets}/${publishResult.totalTargets} registry target(s) ` +
+							(recovered > 0 ? `(${recovered} already on the registry) ` : "") +
 							`across ${publishKinds.registry} workspace(s)` +
 							(publishKinds.githubRelease > 0
 								? `; ${publishKinds.githubRelease} ${releaseKindLabel("github-only")}`
