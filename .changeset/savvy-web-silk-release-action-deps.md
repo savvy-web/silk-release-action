@@ -21,4 +21,5 @@
 | @effected/semver | dependency | updated | ^0.14.0 | ^0.15.0 |
 | @effected/workspaces | dependency | updated | ^0.35.0 | ^0.36.1 |
 | @effected/yaml | dependency | updated | ^0.22.0 | ^0.23.0 |
+| @savvy-web/silk-effects | dependency | updated | ^9.5.5 | ^9.6.0 |
 | effect | dependency | updated | ^4.0.5 | ^4.0.6 |
