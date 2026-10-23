@@ -14,25 +14,33 @@
 // gate — a workflow without `permissions: id-token: write` publishes and skips.
 // That decision is what these two tests hold.
 
-import { ActionEnvironment, OidcClaims, OidcTokenError, OidcTokenIssuer } from "@effected/github-actions";
+import { ActionsOidcClaims } from "@effected/github";
+import { ActionEnvironment, OidcTokenError, OidcTokenIssuer } from "@effected/github-actions";
 import { Effect, Layer, Logger } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildProvenancePredicate } from "../src/release/attest-helpers.js";
 import { cleanupTestEnvironment, setupTestEnvironment } from "./utils/github-mocks.js";
 
-const CLAIMS = OidcClaims.make({
+const CLAIMS = ActionsOidcClaims.make({
 	iss: "https://token.actions.githubusercontent.com",
+	sub: "repo:acme/widgets:ref:refs/heads/main",
+	aud: "sigstore",
+	exp: 2000000000,
+	iat: 1999999700,
 	ref: "refs/heads/main",
 	sha: "cafebabe",
 	repository: "acme/widgets",
-	event_name: "push",
-	job_workflow_ref: "acme/widgets/.github/workflows/release.yml@refs/heads/main",
-	workflow_ref: "acme/widgets/.github/workflows/release.yml@refs/heads/main",
-	repository_id: "111",
-	repository_owner_id: "222",
-	runner_environment: "github-hosted",
-	run_id: "10",
-	run_attempt: "1",
+	repositoryId: 111,
+	repositoryOwner: "acme",
+	repositoryOwnerId: 222,
+	eventName: "push",
+	jobWorkflowRef: "acme/widgets/.github/workflows/release.yml@refs/heads/main",
+	workflowRef: "acme/widgets/.github/workflows/release.yml@refs/heads/main",
+	actor: "octocat",
+	actorId: 3,
+	runnerEnvironment: "github-hosted",
+	runId: 10,
+	runAttempt: 1,
 });
 
 const run = (issuer: Layer.Layer<OidcTokenIssuer>) =>

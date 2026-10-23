@@ -19,6 +19,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
 import { ScriptedSpawner } from "@effected/commands";
 import {
+	ActionsOidcClaims,
 	ArtifactMetadata,
 	Attestation,
 	AttestationRecord,
@@ -30,7 +31,7 @@ import {
 	Repo,
 	RepoRef,
 } from "@effected/github";
-import { ActionEnvironment, ActionLogger, OidcClaims, OidcTokenIssuer } from "@effected/github-actions";
+import { ActionEnvironment, ActionLogger, OidcTokenIssuer } from "@effected/github-actions";
 import { SIGSTORE_BUNDLE_V0_3_MEDIA_TYPE, SigningError, SigstoreBundle, SigstoreSigner } from "@effected/sbom";
 import { PackageNotFoundError, WorkspaceDiscovery } from "@effected/workspaces";
 import { Effect, Layer, Option } from "effect";
@@ -144,19 +145,26 @@ const repoLayer = Layer.succeed(Repo, RepoRef.make({ owner: "test-owner", repo: 
 
 /** Real, decodable OIDC claims, so the provenance path actually executes. */
 const oidcLayer = OidcTokenIssuer.layerFor(
-	OidcClaims.make({
+	ActionsOidcClaims.make({
 		iss: "https://token.actions.githubusercontent.com",
+		sub: "repo:test-owner/test-repo:ref:refs/heads/main",
+		aud: "sigstore",
+		exp: 2000000000,
+		iat: 1999999700,
 		ref: "refs/heads/main",
 		sha: "cafebabe",
 		repository: "test-owner/test-repo",
-		event_name: "push",
-		job_workflow_ref: "test-owner/test-repo/.github/workflows/release.yml@refs/heads/main",
-		workflow_ref: "test-owner/test-repo/.github/workflows/release.yml@refs/heads/main",
-		repository_id: "1",
-		repository_owner_id: "2",
-		runner_environment: "github-hosted",
-		run_id: "10",
-		run_attempt: "1",
+		repositoryId: 1,
+		repositoryOwner: "test-owner",
+		repositoryOwnerId: 2,
+		eventName: "push",
+		jobWorkflowRef: "test-owner/test-repo/.github/workflows/release.yml@refs/heads/main",
+		workflowRef: "test-owner/test-repo/.github/workflows/release.yml@refs/heads/main",
+		actor: "octocat",
+		actorId: 3,
+		runnerEnvironment: "github-hosted",
+		runId: 10,
+		runAttempt: 1,
 	}),
 );
 
