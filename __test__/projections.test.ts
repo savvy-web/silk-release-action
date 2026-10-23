@@ -685,6 +685,53 @@ describe("toPublishOutput", () => {
 		expect(pkg0?.tarballUrl).toBeNull();
 	});
 
+	// A workspace that declares a registry but whose every target excludes this
+	// version (`releases: "stable"` at a prerelease) uploads nothing — and that
+	// is a SUCCESS, not a failure and not a "recovery" (nothing was already on a
+	// registry; nothing was meant to be put there).
+	it("reports a workspace whose every target is filtered-by-releases as a released success with nothing uploaded", () => {
+		const pkg: PackagePublishResult = {
+			name: "@savvy-web/foo",
+			version: "1.2.0-beta.0",
+			targets: [target({ success: true, status: "skipped", skipReason: "filtered-by-releases" })],
+		};
+		const output = toPublishOutput({
+			...baseInput,
+			plan: planOf("@savvy-web/foo", "1.2.0-beta.0", "github-with-packages", 1),
+			publishResult: {
+				...emptyResult,
+				packages: [pkg],
+				totalPackages: 1,
+				successfulPackages: 1,
+				totalTargets: 1,
+				successfulTargets: 1,
+			},
+			tags: [
+				{
+					name: "@savvy-web/foo@1.2.0-beta.0",
+					packageName: "@savvy-web/foo",
+					packageNames: ["@savvy-web/foo"],
+					version: "1.2.0-beta.0",
+				},
+			],
+			releases: [{ tag: "@savvy-web/foo@1.2.0-beta.0", url: "https://example.com/r", id: 7, assets: [] }],
+			tagShas: { "@savvy-web/foo@1.2.0-beta.0": "abc123" },
+			dryRun: false,
+			failure: null,
+		});
+
+		const ws = output.publish.workspaces["@savvy-web/foo"];
+		expect(ws?.kind).toBe("github-with-packages");
+		expect(ws?.outcome).toBe("released");
+		expect(ws?.success).toBe(true);
+		expect(ws?.packages).toEqual([]);
+		expect(ws?.summary).toMatch(/excludes this version/);
+		expect(ws?.summary).toMatch(/nothing was uploaded/);
+		expect(output.success).toBe(true);
+		expect(output.totals.packagesRecovered).toBe(0);
+		expect(output.totals.githubWithPackages).toBe(1);
+	});
+
 	it("takes tarballUrl from a confirmed availability probe", () => {
 		const pkg: PackagePublishResult = {
 			name: "@savvy-web/foo",

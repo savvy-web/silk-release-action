@@ -167,10 +167,18 @@ export const summarizeWorkspace = (args: {
 	readonly outcome: "released" | "published" | "recovered" | "partial" | "failed" | "blocked";
 	readonly packages: number;
 	readonly released: boolean;
+	/**
+	 * Targets the per-target `releases` filter dropped for this version. A
+	 * `released` workspace with `filtered > 0` declares a registry but publishes
+	 * nothing at this version, which is not the same as having no registry target.
+	 */
+	readonly filtered?: number;
 }): string => {
 	switch (args.outcome) {
 		case "released":
-			return "Tagged and released on GitHub; no registry target.";
+			return (args.filtered ?? 0) > 0
+				? "Tagged and released on GitHub; every registry target excludes this version, so nothing was uploaded."
+				: "Tagged and released on GitHub; no registry target.";
 		case "published":
 			return `Tagged and released on GitHub; published ${args.packages} package(s) to a registry.`;
 		case "recovered":

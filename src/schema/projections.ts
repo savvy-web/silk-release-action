@@ -471,7 +471,15 @@ export const toPublishOutput = (input: PublishInput): PublishOutput => {
 
 	for (const ws of input.plan) {
 		const result = resultByName.get(ws.name);
-		const packages = result === undefined ? [] : result.targets.map((t) => toPublishedPackage(ws.version, t, input));
+		// A target the release filter dropped for this version put nothing on a
+		// registry, so it is not a "package" — listing it would also classify it
+		// `recovered`, which claims the version was already there.
+		const isFiltered = (t: PackagePublishResult["targets"][number]): boolean => t.skipReason === "filtered-by-releases";
+		const packages =
+			result === undefined
+				? []
+				: result.targets.filter((t) => !isFiltered(t)).map((t) => toPublishedPackage(ws.version, t, input));
+		const filtered = result === undefined ? 0 : result.targets.filter(isFiltered).length;
 
 		const tag = tagByWorkspace.get(ws.name);
 		const releaseInfo = tag === undefined ? undefined : releaseByTag.get(tag.name);
@@ -498,8 +506,9 @@ export const toPublishOutput = (input: PublishInput): PublishOutput => {
 
 		const outcome: PublishOutput["publish"]["workspaces"][string]["outcome"] = !attempted
 			? "blocked"
-			: ws.kind === "github-only"
-				? // Nothing was meant to be uploaded, so the release IS the outcome.
+			: ws.kind === "github-only" || (packages.length === 0 && filtered > 0)
+				? // Nothing was meant to be uploaded (no registry target, or every one
+					// excludes this version), so the release IS the outcome.
 					release !== null
 					? "released"
 					: "failed"
@@ -519,7 +528,13 @@ export const toPublishOutput = (input: PublishInput): PublishOutput => {
 			kind: ws.kind,
 			success,
 			outcome,
-			summary: summarizeWorkspace({ kind: ws.kind, outcome, packages: packages.length, released: release !== null }),
+			summary: summarizeWorkspace({
+				kind: ws.kind,
+				outcome,
+				packages: packages.length,
+				released: release !== null,
+				filtered,
+			}),
 			packages,
 			tag: tagEntry,
 			release,
