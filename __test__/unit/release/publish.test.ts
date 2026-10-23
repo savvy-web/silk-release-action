@@ -2221,6 +2221,39 @@ describe("runPublishTargets — per-target release filter", () => {
 		}),
 	);
 
+	it.effect(
+		"fails only the workspace that declares an unknown releases channel; the next workspace still publishes",
+		() =>
+			Effect.gen(function* () {
+				const pub = makePackagePublishLayer({ packResult: packFor("1.2.0") });
+				const bad = makeFilterPkg("@scope/bad", "1.2.0", "/ws/bad");
+				const good = makeFilterPkg("@scope/good", "1.2.0", "/ws/good");
+				const result = yield* runPublishTargets([
+					makeDetected(bad.name, "1.2.0", bad.path),
+					makeDetected(good.name, "1.2.0", good.path),
+				]).pipe(
+					Effect.provide(
+						makeFilterLayers(pub.layer, makeRegistryLayer(), [bad, good], {
+							[`${bad.path}/package.json`]: filterManifest(bad.name, {
+								npm: { releases: "final" },
+								pnpr: { registry: PNPR, releases: "all" },
+							}),
+							[`${good.path}/package.json`]: filterManifest(good.name, { pnpr: { registry: PNPR } }),
+						}),
+					),
+				);
+
+				const badPkg = result.packages.find((p) => p.name === bad.name);
+				const goodPkg = result.packages.find((p) => p.name === good.name);
+				expect(badPkg?.targets).toHaveLength(2);
+				expect(badPkg?.targets.every((t) => t.status === "failed" && t.success === false)).toBe(true);
+				expect(badPkg?.targets.every((t) => typeof t.error === "string" && t.error.length > 0)).toBe(true);
+				expect(goodPkg?.targets.map((t) => t.status)).toEqual(["published"]);
+				expect(pub.packCalls).toHaveLength(1);
+				expect(result.success).toBe(false);
+			}),
+	);
+
 	// The kit produces provenance only for registry.npmjs.org. GitHub Packages
 	// defaults provenance to true and has always ignored it silently, so warning
 	// there would be noise on every run; a CUSTOM registry that asked for it is

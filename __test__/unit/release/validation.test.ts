@@ -561,6 +561,20 @@ describe("runValidation", () => {
 				expect(report.publishOk).toBe(true);
 			}),
 		);
+
+		it.effect("raises an error finding for an unknown releases channel and dry-runs nothing for that package", () =>
+			Effect.gen(function* () {
+				const { state, effect } = runFiltered({ npm: { releases: "final" } }, "1.2.0");
+				const report = yield* effect;
+
+				expect(state.dryRunCalls).toHaveLength(0);
+				// A finding, not a flipped boolean: the verdict reads findings.
+				const finding = report.findings.find((f) => f.check === "Publish Validation");
+				expect(finding?.severity).toBe("error");
+				expect(finding?.scope).toEqual({ package: "@test/x", directory: null });
+				expect(report.validationPackages.map((p) => p.name)).toEqual(["@test/x"]);
+			}),
+		);
 	});
 
 	describe("no packages released (all versions unchanged)", () => {

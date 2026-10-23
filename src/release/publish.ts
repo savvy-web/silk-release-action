@@ -33,7 +33,7 @@ import type { SigstoreSigner } from "@effected/sbom";
 import { CYCLONEDX_BOM_PREDICATE, Sbom, SbomMetadataSource, SlsaProvenance } from "@effected/sbom";
 import type { PublishabilityDetector } from "@effected/workspaces";
 import { WorkspaceDiscovery, WorkspacePackage } from "@effected/workspaces";
-import type { PublishTargetBindingError } from "@savvy-web/silk-effects";
+import type { PublishTargetBindingError, ReleaseChannelError } from "@savvy-web/silk-effects";
 import type { FileSystem } from "effect";
 import { Config, Effect, Option, Redacted } from "effect";
 import type { ChildProcessSpawner } from "effect/process";
@@ -1695,8 +1695,8 @@ export const runPublishTargets = (
 			readonly version: string;
 			readonly targets: ReadonlyArray<TargetSpec>;
 			readonly releaseFiltered: ReadonlyArray<TargetSpec>;
-			/** Set when `dist/prod/targets.json` does not bind a detected directory. */
-			readonly bindingError?: PublishTargetBindingError;
+			/** Set when the targets cannot be resolved safely (unbound directory, unknown channel). */
+			readonly targetError?: PublishTargetBindingError | ReleaseChannelError;
 			readonly declared: ReadonlyArray<TargetSpec>;
 		}
 		const targetsByPackage = new Map<string, PkgEntry>();
@@ -1727,8 +1727,8 @@ export const runPublishTargets = (
 				);
 			}
 
-			if (resolved.bindingError !== undefined) {
-				yield* Effect.logError(resolved.bindingError.message);
+			if (resolved.targetError !== undefined) {
+				yield* Effect.logError(resolved.targetError.message);
 			}
 
 			targetsByPackage.set(rel.name, {
@@ -1736,7 +1736,7 @@ export const runPublishTargets = (
 				targets: resolved.targets,
 				releaseFiltered: resolved.releaseFiltered,
 				declared: resolved.declared,
-				...(resolved.bindingError !== undefined ? { bindingError: resolved.bindingError } : {}),
+				...(resolved.targetError !== undefined ? { targetError: resolved.targetError } : {}),
 			});
 
 			// Name the kind, not just the count. `0 target(s)` alone reads as a
@@ -1777,14 +1777,15 @@ export const runPublishTargets = (
 					return null;
 				}
 
-				const { version, targets, releaseFiltered, bindingError, declared } = pkgEntry;
+				const { version, targets, releaseFiltered, targetError, declared } = pkgEntry;
 				yield* Effect.logDebug(`runPublishTargets: publishing ${name}@${version}`);
 
-				// The built bytes are not the release artifact (detection picked a
-				// directory `dist/prod/targets.json` does not bind). Nothing for this
-				// workspace may publish, but only THIS workspace fails: the error is
-				// recorded per declared target and the batch carries on.
-				if (bindingError !== undefined) {
+				// The targets could not be resolved safely: the built bytes are not the
+				// release artifact (detection picked a directory `dist/prod/targets.json`
+				// does not bind), or a target declares an unknown `releases` channel.
+				// Nothing for this workspace may publish, but only THIS workspace fails:
+				// the error is recorded per declared target and the batch carries on.
+				if (targetError !== undefined) {
 					return {
 						name,
 						version,
@@ -1792,7 +1793,7 @@ export const runPublishTargets = (
 							target: toLegacyTarget(t, "npm", t.distTag),
 							success: false,
 							status: "failed",
-							error: bindingError.message,
+							error: targetError.message,
 						})),
 					} satisfies PackagePublishResult;
 				}

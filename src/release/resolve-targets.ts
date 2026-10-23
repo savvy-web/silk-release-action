@@ -9,7 +9,7 @@ import { isAbsolute, join } from "node:path";
 import { classifyRegistry } from "@effected/npm";
 import type { PublishTarget, WorkspacePackage } from "@effected/workspaces";
 import { PublishabilityDetector } from "@effected/workspaces";
-import type { PublishTargetBindingError, ReleaseChannel } from "@savvy-web/silk-effects";
+import type { PublishTargetBindingError, ReleaseChannel, ReleaseChannelError } from "@savvy-web/silk-effects";
 import { SilkPublishability } from "@savvy-web/silk-effects";
 import type { FileSystem } from "effect";
 import { Effect } from "effect";
@@ -206,14 +206,19 @@ export interface ResolvedPublishTargets {
 	 */
 	readonly releaseFiltered: ReadonlyArray<TargetSpec>;
 	/**
-	 * Set when `dist/prod/targets.json` does not describe a detected target
-	 * directory. `targets` and `releaseFiltered` are then empty: the bytes about
-	 * to be packed are not the release artifact, so nothing may publish.
+	 * Set when the package's targets cannot be resolved safely, and `targets` and
+	 * `releaseFiltered` are then empty so nothing may publish:
+	 *  - `PublishTargetBindingError` — `dist/prod/targets.json` does not describe
+	 *    a detected target directory, so the bytes about to be packed are not
+	 *    the release artifact.
+	 *  - `ReleaseChannelError` — a target declares a `releases` value that is not
+	 *    `all`, `stable` or `prerelease`. Guessing a channel is how a prerelease
+	 *    lands on `latest`, so it is a config error, not a default.
 	 */
-	readonly bindingError?: PublishTargetBindingError;
+	readonly targetError?: PublishTargetBindingError | ReleaseChannelError;
 	/**
 	 * Every non-JSR, non-private target the package DECLARES, regardless of the
-	 * release filter or a binding failure. Only needed when `bindingError` is set:
+	 * release filter or a target error. Only needed when `targetError` is set:
 	 * `targets` and `releaseFiltered` are empty then, and the caller still has to
 	 * name which declared targets it is failing. Built from detection, before the
 	 * binding is known, so each entry's `releases` reads `"all"`.
@@ -248,8 +253,9 @@ export interface ResolvedPublishTargets {
  *     target's `distTag`; the rest are returned in `releaseFiltered`.
  *
  * The error channel is `never` because `planWorkspaces` cannot fail the run.
- * `resolveReleaseTargets` can fail with `PublishTargetBindingError`; that is
- * captured into `bindingError` (with `targets` and `releaseFiltered` empty) so
+ * `resolveReleaseTargets` can fail with `PublishTargetBindingError` or
+ * `ReleaseChannelError`; either is captured into `targetError` (with `targets`
+ * and `releaseFiltered` empty) so
  * each caller decides how loudly to fail — Phase 3 fails that workspace's
  * publish, Phase 2 raises an error finding.
  *
@@ -304,7 +310,7 @@ export const resolvePublishTargetSpecs = (
 				jsrSkipped,
 				privateSkipped,
 				releaseFiltered: [],
-				bindingError: released.failure,
+				targetError: released.failure,
 				declared: candidates,
 			};
 		}

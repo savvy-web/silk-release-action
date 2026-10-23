@@ -69,7 +69,7 @@ describe("resolvePublishTargetSpecs", () => {
 			expect(resolved.releaseFiltered[0]?.releases).toBe("stable");
 			expect(resolved.releaseFiltered[0]?.distTag).toBe("beta");
 			expect(resolved.targets[0]?.releases).toBe("all");
-			expect(resolved.bindingError).toBeUndefined();
+			expect(resolved.targetError).toBeUndefined();
 		}),
 	);
 
@@ -83,7 +83,7 @@ describe("resolvePublishTargetSpecs", () => {
 		}),
 	);
 
-	it.effect("reports a binding mismatch as bindingError with nothing resolved, without failing", () =>
+	it.effect("reports a binding mismatch as targetError with nothing resolved, without failing", () =>
 		Effect.gen(function* () {
 			const binding = {
 				groups: [{ id: "npm", name: "@scope/pkg", dir: "dist/prod/npm/pkg" }],
@@ -98,12 +98,37 @@ describe("resolvePublishTargetSpecs", () => {
 			);
 
 			// Pinned on the tag and fields: the message is prose upstream may reword.
-			expect(resolved.bindingError?._tag).toBe("PublishTargetBindingError");
-			expect(resolved.bindingError?.pkg).toBe("@scope/pkg");
-			expect(resolved.bindingError?.boundDirectories.length).toBeGreaterThan(0);
-			expect(resolved.bindingError?.boundDirectories).not.toContain(resolved.bindingError?.directory);
+			expect(resolved.targetError?._tag).toBe("PublishTargetBindingError");
+			const error = resolved.targetError?._tag === "PublishTargetBindingError" ? resolved.targetError : undefined;
+			expect(error?.pkg).toBe("@scope/pkg");
+			expect(error?.boundDirectories.length).toBeGreaterThan(0);
+			expect(error?.boundDirectories).not.toContain(error?.directory);
 			expect(resolved.targets).toEqual([]);
 			expect(resolved.releaseFiltered).toEqual([]);
+		}),
+	);
+
+	it.effect("reports an unknown releases channel as targetError instead of guessing one", () =>
+		Effect.gen(function* () {
+			const resolved = yield* resolveWith(
+				{
+					[`${PKG_PATH}/package.json`]: {
+						...manifest,
+						publishConfig: { ...manifest.publishConfig, targets: { npm: { releases: "final" } } },
+					},
+				},
+				"1.2.0",
+			);
+
+			// Pinned on the tag and fields: the message is prose upstream may reword.
+			expect(resolved.targetError?._tag).toBe("ReleaseChannelError");
+			const error = resolved.targetError?._tag === "ReleaseChannelError" ? resolved.targetError : undefined;
+			expect(error?.pkg).toBe("@scope/pkg");
+			expect(error?.id).toBe("npm");
+			expect(error?.value).toBe('"final"');
+			expect(resolved.targets).toEqual([]);
+			expect(resolved.releaseFiltered).toEqual([]);
+			expect(resolved.declared).toHaveLength(1);
 		}),
 	);
 });

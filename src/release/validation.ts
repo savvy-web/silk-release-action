@@ -589,9 +589,11 @@ export const runValidation = (args: ValidationInputArgs) =>
 			//
 			// A `PublishTargetBindingError` means detection selected a directory the
 			// package's `dist/prod/targets.json` does not bind — the #143 shape, where
-			// a dev build was about to be packed. Record it as an error finding rather
-			// than aborting the whole run: the check fails, auto-merge is blocked, and
-			// the remaining packages still get validated and reported.
+			// a dev build was about to be packed. A `ReleaseChannelError` means a
+			// target declares a `releases` value that is not a channel. Record either
+			// as an error finding rather than aborting the whole run: the check fails,
+			// auto-merge is blocked, and the remaining packages still get validated
+			// and reported.
 			//
 			// Only the targets that RECEIVE `currentVersion` are dry-run: a target
 			// whose `releases` channel excludes it (`stable` at a prerelease) is
@@ -599,13 +601,16 @@ export const runValidation = (args: ValidationInputArgs) =>
 			// over something that cannot ship.
 			const resolved = yield* Effect.result(SilkPublishability.resolveReleaseTargets(pkg, currentVersion));
 			if (resolved._tag === "Failure") {
-				const bindingError = resolved.failure;
-				yield* Effect.logError(bindingError.message);
+				const targetError = resolved.failure;
+				yield* Effect.logError(targetError.message);
 				findings.push({
 					severity: "error",
 					check: "Publish Validation",
-					scope: { package: pkg.name, directory: bindingError.directory },
-					message: bindingError.message,
+					scope: {
+						package: pkg.name,
+						directory: targetError._tag === "PublishTargetBindingError" ? targetError.directory : null,
+					},
+					message: targetError.message,
 				});
 				validationPackages.push({
 					name: pkg.name,
