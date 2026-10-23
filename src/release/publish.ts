@@ -1487,6 +1487,7 @@ export const runBuildAndSbom = (
 				// ── SBOM generation (per package) ──────────────────────────────────
 				const sbomFailures: string[] = [];
 				const sbomSkipped: string[] = [];
+				const sbomFiltered: string[] = [];
 				const sbomPaths = new Map<string, string>();
 
 				for (const rel of detected) {
@@ -1509,10 +1510,11 @@ export const runBuildAndSbom = (
 						// declares a registry whose every target excludes this version is
 						// NOT "GitHub release only" — it is still `github-with-packages`,
 						// it just publishes nothing at this version.
-						const why =
-							resolved.releaseFiltered.length > 0
-								? `every target excluded by releases for ${rel.version}`
-								: releaseKindLabel("github-only");
+						const filtered = resolved.releaseFiltered.length > 0;
+						if (filtered) sbomFiltered.push(rel.name);
+						const why = filtered
+							? `every target excluded by releases for ${rel.version}`
+							: releaseKindLabel("github-only");
 						yield* Effect.logInfo(`  \u{1F3F7}\uFE0F sbom · ${rel.name}: skipped — ${why}, no artifact to describe`);
 						continue;
 					}
@@ -1551,10 +1553,18 @@ export const runBuildAndSbom = (
 				// Name both kinds in the one line a reader actually sees. A wave of
 				// only tracking packages otherwise closed on `2 package(s) ready`
 				// with no hint that nothing was packed.
-				const kinds = tallyReleaseKinds(detected.map((rel) => (sbomSkipped.includes(rel.name) ? 0 : 1)));
+				// A fully release-filtered workspace is still `github-with-packages`,
+				// so it is named on its own rather than folded into the GitHub-only
+				// count it would otherwise inflate.
+				const kinds = tallyReleaseKinds(
+					detected
+						.filter((rel) => !sbomFiltered.includes(rel.name))
+						.map((rel) => (sbomSkipped.includes(rel.name) ? 0 : 1)),
+				);
 				yield* Effect.logInfo(
 					`  ✅ ${detected.length} package(s) ready — ${kinds.registry} registry, ` +
-						`${kinds.githubRelease} ${releaseKindLabel("github-only")}`,
+						`${kinds.githubRelease} ${releaseKindLabel("github-only")}` +
+						(sbomFiltered.length > 0 ? `, ${sbomFiltered.length} excluded by releases` : ""),
 				);
 				// `ok: true` — an SBOM WRITE failure is not a release-blocking event.
 				//

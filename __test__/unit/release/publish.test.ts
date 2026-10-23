@@ -1014,6 +1014,9 @@ describe("runBuildAndSbom", () => {
 				const skipLine = logged.find((l) => l.includes("sbom · @test/stable-only"));
 				expect(skipLine).toMatch(/every target excluded by releases/);
 				expect(skipLine).not.toMatch(/GitHub release only/);
+				// The closing tally names it separately instead of counting it GitHub-only.
+				const tally = logged.find((l) => l.includes("package(s) ready"));
+				expect(tally).toContain("0 registry, 0 GitHub release only, 1 excluded by releases");
 				expect(result.ok).toBe(true);
 				expect(result.sbomSkipped).toEqual(["@test/stable-only"]);
 				expect(result.sbomPaths.has("@test/stable-only")).toBe(false);
