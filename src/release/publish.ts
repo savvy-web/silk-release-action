@@ -1100,13 +1100,24 @@ const publishDirectoryGroup = (
 					credential: workload !== null ? "custom-registries" : (resolvedToken?.source ?? null),
 					fallback: null,
 				};
+				// npm retries a 5xx twice (10s, then 60s), on its own pre-publish
+				// packument GET and again on the PUT: about 140s per target before a
+				// failure surfaces, which reads as a hung run. A workload credential
+				// is minted fresh and pnpr's 5xx on it (e.g. "OIDC provider
+				// unavailable") does not clear within a run, so the workload publish
+				// fails fast. Other registries keep npm's retries. `withExtraArgs`
+				// replaces rather than appends, so the run-wide flags are carried.
+				const executor =
+					workload !== null
+						? publishExecutor.withExtraArgs([...(publishExecutor.extraArgs ?? []), "--fetch-retries=0"])
+						: publishExecutor;
 				let publishOutcome = yield* publishSvc
 					.publishTarball(packResult.tarballPath, {
 						registry: t.registry,
 						access: t.access,
 						provenance: t.provenance,
 						tokenAuth: tokenOnly,
-						executor: publishExecutor,
+						executor,
 						tag: tagFor(t),
 					})
 					.pipe(

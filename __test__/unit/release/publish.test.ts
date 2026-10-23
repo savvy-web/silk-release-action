@@ -2939,6 +2939,26 @@ describe("runPublishTargets — pnpr workload credential (OPS-143)", () => {
 		}),
 	);
 
+	// npm retries a 5xx twice with a 10s-then-60s backoff, on its own packument
+	// GET and again on the PUT: about 140s per target before a failure surfaces
+	// (silk-integration run 40001523546, pnpr "OIDC provider unavailable").
+	// A workload publish fails fast instead; other targets keep npm's retries.
+	it.effect("publishes a workload target with npm's fetch retries off, and leaves other targets alone", () =>
+		Effect.gen(function* () {
+			const h = harness();
+			const npmTarget = makeNpmTarget(PACK_NAME, SHARED_DIR);
+			yield* runWith(h, [npmTarget, savvyTarget()], paired);
+
+			const argsFor = (registry: string) =>
+				h.pub.publishTarballCalls.find((c) => c.options.registry === registry)?.options.executor?.extraArgs ?? [];
+			const savvyArgs = argsFor(SAVVY);
+			expect(savvyArgs).toContain("--fetch-retries=0");
+			// The run-wide npm prefix survives on the workload executor.
+			expect(savvyArgs).toContain("--prefix");
+			expect(argsFor("https://registry.npmjs.org/").some((a) => a.startsWith("--fetch-retries"))).toBe(false);
+		}),
+	);
+
 	it.effect(
 		"fails only the workload target when minting fails, naming id-token: write, with no PUT and no fallback",
 		() =>
