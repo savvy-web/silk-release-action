@@ -671,7 +671,7 @@ export const toSnapshotOutput = (input: SnapshotInput): SnapshotOutput => {
 				failed.push({ name: t.target.name, version: pkg.version, registry, error: t.error ?? "publish failed" });
 				continue;
 			}
-			if (t.skipReason === "never-published" || t.skipReason === "dry-run") {
+			if (t.skipReason === "never-published" || t.skipReason === "dry-run" || t.skipReason === "filtered-by-releases") {
 				skipped.push({ name: t.target.name, version: pkg.version, reason: t.skipReason });
 				continue;
 			}

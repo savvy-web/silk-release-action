@@ -96,6 +96,7 @@ const landed = (t: TargetPublishResult): boolean =>
 	t.success &&
 	t.skipReason !== "never-published" &&
 	t.skipReason !== "dry-run" &&
+	t.skipReason !== "filtered-by-releases" &&
 	!(t.status === "skipped" && t.skipReason === undefined);
 
 /**

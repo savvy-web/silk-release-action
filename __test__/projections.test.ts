@@ -1366,6 +1366,23 @@ describe("toSnapshotOutput", () => {
 		expect(out.skipped).toEqual([{ name: "@scope/alpha", version: VERSION, reason: "dry-run" }]);
 	});
 
+	it("lists a release-filtered target under skipped, never as published, and encodes against the schema", () => {
+		const out = toSnapshotOutput(
+			base([
+				{
+					name: "@scope/alpha",
+					version: VERSION,
+					targets: [target({ status: "skipped", skipReason: "filtered-by-releases" })],
+				},
+			]),
+		);
+
+		expect(out.published).toEqual([]);
+		expect(out.skipped).toEqual([{ name: "@scope/alpha", version: VERSION, reason: "filtered-by-releases" }]);
+		expect(out.success).toBe(true);
+		expect(() => Schema.encodeUnknownSync(ReleaseOutput)(out)).not.toThrow();
+	});
+
 	it("reports no pending changesets as nothing-to-snapshot, a success", () => {
 		const out = toSnapshotOutput({ ...base([]), releases: [], publishResult: null });
 

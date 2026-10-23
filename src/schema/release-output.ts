@@ -1162,7 +1162,7 @@ const PublishWorkspace = Schema.Struct({
 		identifier: "PublishWorkspaceOutcome",
 		title: "Workspace outcome",
 		description:
-			"`released` — a `github-only` workspace was tagged and released; nothing was uploaded because nothing was meant to be. `published` — every package landed on its registry. `recovered` — every package was already present at an identical digest, so nothing was re-uploaded. `partial` — some packages landed and at least one failed. `failed` — the workspace was attempted and nothing landed. `blocked` — the workspace was never attempted because the phase aborted first; see the phase-level `failure`.",
+			"`released` — the workspace was tagged and released and nothing was uploaded because nothing was meant to be: it is `github-only`, or it declares registry targets and every one excludes this version through its `releases` channel (`filtered-by-releases`). `published` — every package landed on its registry. `recovered` — every package was already present at an identical digest, so nothing was re-uploaded. `partial` — some packages landed and at least one failed. `failed` — the workspace was attempted and nothing landed. `blocked` — the workspace was never attempted because the phase aborted first; see the phase-level `failure`.",
 	}),
 	summary: Schema.String.annotate({
 		title: "Summary",
@@ -1370,11 +1370,11 @@ const SnapshotSkippedPackage = Schema.Struct({
 		title: "Snapshot version",
 		description: "The snapshot version the package was bumped to in the job's working tree.",
 	}),
-	reason: Schema.Literals(["never-published", "no-publish-target", "dry-run"]).annotate({
+	reason: Schema.Literals(["never-published", "no-publish-target", "dry-run", "filtered-by-releases"]).annotate({
 		identifier: "SnapshotSkipReason",
 		title: "Skip reason",
 		description:
-			"`never-published` — the registry has never seen this package; a first publish under a non-latest tag would also claim `latest`, so it is left to the real release. `no-publish-target` — the workspace publishes to no registry (a github-only workspace). `dry-run` — the run rehearsed; this version would have been published.",
+			"`never-published` — the registry has never seen this package; a first publish under a non-latest tag would also claim `latest`, so it is left to the real release. `no-publish-target` — the workspace publishes to no registry (a github-only workspace). `dry-run` — the run rehearsed; this version would have been published. `filtered-by-releases` — the target's `releases` channel excludes this snapshot version, so nothing was packed or uploaded for it.",
 	}),
 }).annotate({
 	identifier: "SnapshotSkippedPackage",
