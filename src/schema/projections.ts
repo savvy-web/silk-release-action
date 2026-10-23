@@ -196,6 +196,10 @@ const toValidationWorkspace = (pkg: ValidationPackageResult): ValidationOutput["
 	// No `name` field: the workspace map is keyed by name, so carrying it as a
 	// field too would be a second spelling of the key that can disagree with it.
 	const githubOnly = pkg.builds.length === 0;
+	// Declares a registry but publishes nowhere at this version: no builds, yet
+	// not `github-only`. The outcome stays `nothing-to-validate` (there is
+	// nothing to probe); only the KIND and the sentence change.
+	const filtered = pkg.releaseFilteredTargets ?? 0;
 	const allTargets = pkg.builds.flatMap((b) => b.targets);
 	const ready = allTargets.filter((t) => t.status === "ready").length;
 	const failed = allTargets.filter((t) => t.status === "failed").length;
@@ -225,8 +229,9 @@ const toValidationWorkspace = (pkg: ValidationPackageResult): ValidationOutput["
 			outcome: workspaceOutcome,
 			packages: allTargets.length,
 			ready: allTargets.filter((t) => t.status === "ready").length,
+			filtered,
 		}),
-		kind: githubOnly ? "github-only" : "github-with-packages",
+		kind: githubOnly && filtered === 0 ? "github-only" : "github-with-packages",
 		// Flattened builds × targets into one entry per (package, registry)
 		// publication — the same unit the publish phase reports. The build
 		// metadata rides on each entry because several publications share one
@@ -307,7 +312,9 @@ export const toValidationOutput = (input: ValidationInput): ValidationOutput => 
 	// nothing to validate as NOT succeeded — the same conflation of "empty" with
 	// "failed" that `noop` carried on the publish phase.
 	const success = outcome === "validated" || outcome === "nothing-to-release";
-	const kinds = tallyReleaseKinds(input.validationPackages.map((pkg) => pkg.builds.length));
+	const kinds = tallyReleaseKinds(
+		input.validationPackages.map((pkg) => pkg.builds.length + (pkg.releaseFilteredTargets ?? 0)),
+	);
 	const totals = {
 		workspaces: input.packageCount,
 		githubOnly: kinds.githubRelease,

@@ -121,6 +121,43 @@ describe("toValidationOutput", () => {
 		],
 	};
 
+	// A package whose every target excludes this version has no builds, exactly
+	// like a tracking package — but it DECLARES a registry, so it must not be
+	// reported as `github-only` ("the workspace resolved no publish target").
+	it("projects a fully release-filtered package as github-with-packages, not github-only", () => {
+		const output = toValidationOutput({
+			buildsPassed: true,
+			packageCount: 1,
+			npmReady: true,
+			githubPackagesReady: true,
+			totalTargets: 0,
+			readyTargets: 0,
+			checks: [],
+			findings: [],
+			validationPackages: [
+				{
+					name: "@savvy-web/foo",
+					version: "1.2.0-beta.0",
+					baseVersion: "1.1.0",
+					changesetCount: 1,
+					builds: [],
+					releaseFilteredTargets: 1,
+					releaseNotes: { status: "no-changelog" },
+				},
+			],
+			checkRun: null,
+			dryRun: false,
+		});
+
+		const ws = output.validation.workspaces["@savvy-web/foo"];
+		expect(ws?.kind).toBe("github-with-packages");
+		expect(ws?.success).toBe(true);
+		expect(ws?.outcome).toBe("nothing-to-validate");
+		expect(ws?.summary).toMatch(/excludes this version/);
+		expect(output.totals.githubWithPackages).toBe(1);
+		expect(output.totals.githubOnly).toBe(0);
+	});
+
 	it("projects a clean build-centric validation run as success", () => {
 		const output = toValidationOutput({
 			buildsPassed: true,

@@ -276,10 +276,14 @@ export const summarizeValidationWorkspace = (args: {
 	readonly outcome: "validated" | "nothing-to-validate" | "skipped" | "partial" | "failed";
 	readonly packages: number;
 	readonly ready: number;
+	/** Declared targets the `releases` filter dropped for this version. */
+	readonly filtered?: number;
 }): string => {
 	switch (args.outcome) {
 		case "nothing-to-validate":
-			return "No registry target — nothing to validate; releases on GitHub only.";
+			return (args.filtered ?? 0) > 0
+				? "Every registry target excludes this version — nothing to validate; releases on GitHub only."
+				: "No registry target — nothing to validate; releases on GitHub only.";
 		case "validated":
 			return `${args.packages} package(s) ready to publish.`;
 		case "skipped":

@@ -561,13 +561,13 @@
 			"type": "string",
 			"enum": ["validated", "nothing-to-validate", "skipped", "partial", "failed"],
 			"title": "Workspace outcome",
-			"description": "`validated` — every publication passed its dry-run probe. `nothing-to-validate` — a `github-only` workspace: it publishes to no registry, so there is nothing to probe, and this is the complete, correct outcome rather than an absence of one. `skipped` — every publication was intentionally not probed. `partial` — some passed and at least one failed. `failed` — probes ran and none passed. Mirrors the publish phase's workspace `outcome` field; the VALUES differ because a dry-run probe and an upload have different results."
+			"description": "`validated` — every publication passed its dry-run probe. `nothing-to-validate` — a `github-only` workspace, or one whose every registry target excludes this version through its `releases` channel: it publishes nowhere, so there is nothing to probe, and this is the complete, correct outcome rather than an absence of one. `skipped` — every publication was intentionally not probed. `partial` — some passed and at least one failed. `failed` — probes ran and none passed. Mirrors the publish phase's workspace `outcome` field; the VALUES differ because a dry-run probe and an upload have different results."
 		},
 		"ValidationWorkspaceKind": {
 			"type": "string",
 			"enum": ["github-only", "github-with-packages"],
 			"title": "Workspace kind",
-			"description": "The same vocabulary the publish phase reports, so one word means one thing across the whole run. `github-only` — the workspace resolved no publish target; its release is a version bump, a git tag and a GitHub release. This is the steady state for a private tracking package, not a degraded `github-with-packages`. `github-with-packages` — it resolved at least one publish target. Replaces the old `versionOnly` boolean, which named the same fact in a vocabulary the publish phase did not share."
+			"description": "The same vocabulary the publish phase reports, so one word means one thing across the whole run. `github-only` — the workspace resolved no publish target; its release is a version bump, a git tag and a GitHub release. This is the steady state for a private tracking package, not a degraded `github-with-packages`. `github-with-packages` — it resolved at least one publish target (including one the `releases` filter drops for this version). Replaces the old `versionOnly` boolean, which named the same fact in a vocabulary the publish phase did not share."
 		},
 		"PublishRegistry": {
 			"type": "object",
