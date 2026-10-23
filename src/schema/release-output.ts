@@ -1004,7 +1004,7 @@ const PublishAuthMethod = Schema.Literals(["token", "trusted-publishing"]).annot
 	identifier: "PublishAuthMethod",
 	title: "Auth method",
 	description:
-		"How the action set npm up to authenticate — what the action DID, not what npm reports. `token` — the Actions OIDC environment was stripped (always, for GitHub Packages) or the runner never exposed it (no `id-token: write`), so npm could authenticate only with the npmrc token, if any. `trusted-publishing` — the OIDC environment was passed through, so npm was free to attempt its trusted-publishing exchange. npm does not say which path it took, so a `trusted-publishing` upload with a non-null `credential` may have authenticated with that token instead. More methods may be added; treat an unknown value as opaque.",
+		"How the action set npm up to authenticate — what the action DID, not what npm reports. `token` — the Actions OIDC environment was stripped (always, for GitHub Packages and custom registries — trusted publishing exists only on registry.npmjs.org) or the runner never exposed it (no `id-token: write`), so npm could authenticate only with the npmrc token, if any. `trusted-publishing` — the OIDC environment was passed through, so npm was free to attempt its trusted-publishing exchange. npm does not say which path it took, so a `trusted-publishing` upload with a non-null `credential` may have authenticated with that token instead. More methods may be added; treat an unknown value as opaque.",
 });
 
 const PublishAuth = Schema.Struct({

@@ -413,7 +413,12 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 			yield* Effect.logInfo(
 				`Release publishing: ✅ ${summarizeReleaseWave({
 					workspaces: plan.length,
-					packagesPublished: publishResult.successfulTargets,
+					// Uploaded this run, as the output's `totals.packagesPublished` counts
+					// it: a recovery (already on the registry) is a success, not an upload.
+					packagesPublished: publishResult.packages.reduce(
+						(n, p) => n + p.targets.filter((t) => t.status === "published").length,
+						0,
+					),
 					releases: releasesResult.releases.length,
 					packagesHeld: heldCount,
 				})}`,

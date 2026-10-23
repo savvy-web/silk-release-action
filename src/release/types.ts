@@ -22,7 +22,9 @@ import type { ReleaseKind } from "../utils/release-kind.js";
  * OIDC environment was absent or stripped (`tokenAuth: true`), so npm could
  * only authenticate with the npmrc token, if any. `"trusted-publishing"` — the
  * OIDC environment was present and passed through, so npm was free to attempt
- * its trusted-publishing exchange. npm does not report which path it took, and
+ * its trusted-publishing exchange. Only registry.npmjs.org targets are ever
+ * offered the environment; every other registry is token-only from the first
+ * attempt. npm does not report which path it took, and
  * `@effected/npm`'s `PublishOutcome` carries nothing about it, so a successful
  * `"trusted-publishing"` attempt with a credential in the npmrc does not prove
  * which of the two npm used. Open for growth: a per-target workload-OIDC method

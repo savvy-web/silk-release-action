@@ -13,8 +13,10 @@ sources:
     resource: ../../src/release/resolve-targets.ts
 generated:
   by: okfit/claude-code
-  at: 2026-09-13T19:54:03Z
-  body_sha256: 1b062bbb6f8b63da247a85f32f40f80efb10284bb79564a93a38c29b7be4a614
+  at: 2026-10-23T15:07:32Z
+integrity:
+  generated:
+    body: 0206b1ce7a29d713
 ---
 
 # OIDC-first publishing, with token auth as bootstrap and fallback
@@ -46,6 +48,14 @@ the exchange attempt.
   GitHub Packages does not support that exchange — it 404s and ignores the
   configured `_authToken`. Authenticating with the token from the start
   avoids the failed exchange rather than working around its aftermath.
+- **Custom registries** — also `tokenAuth: true` from the first attempt.
+  Trusted publishing exists only on registry.npmjs.org, but npm attempts
+  the exchange against any registry when the OIDC environment is present.
+  A custom registry (pnpr) 404s it and npm silently falls back to the
+  `custom-registries` token, so offering the environment cost a wasted
+  round trip and made the run's `auth` record claim trusted publishing for
+  an upload the token authenticated (silk-integration run 39974152493).
+  No action-level retry applies: a token-first failure is final.
 - **JSR** — publishes over OIDC and needs no token of its own. It shares
   the custom-registry token-resolution fall-through in
   `pickToken`[^resolve-targets] only because a predecessor's two

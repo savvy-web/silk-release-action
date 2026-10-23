@@ -962,16 +962,20 @@ const publishDirectoryGroup = (
 					`[publish] ${t.registry}: ${packResult.name}@${packResult.version} not on registry; publishing tarball`,
 				);
 
-				// GitHub Packages never supports npm's tokenless OIDC trusted publishing —
-				// npm 11.5+ still attempts the `/-/npm/v1/oidc/token/exchange` POST
-				// whenever the Actions OIDC env is present (even without --provenance) and
-				// 404s, ignoring the configured _authToken. Publish GitHub Packages with
-				// token auth (OIDC env stripped) from the first attempt.
-				const isGhPkgs = classifyRegistry(t.registry) === "github-packages";
+				// Trusted publishing exists only on registry.npmjs.org, but npm 11.5+
+				// attempts the `/-/npm/v1/oidc/token/exchange` POST against ANY registry
+				// whenever the Actions OIDC env is present (even without --provenance).
+				// GitHub Packages 404s it and ignores the configured _authToken; a custom
+				// registry (pnpr) 404s it and npm quietly falls back to the token — so
+				// offering the env there buys a wasted round trip and a record claiming
+				// trusted publishing for an upload the token authenticated. Every
+				// non-npm registry publishes with token auth (OIDC env stripped) from the
+				// first attempt.
+				const tokenOnly = classifyRegistry(t.registry) !== "npm";
 				// What the action set up — npm reports nothing about which path it
 				// took (see `PublishAuth`). Stripping the OIDC env, or a runner that
 				// never exposed it, leaves only the token.
-				const firstMethod: PublishAuth["method"] = isGhPkgs || !oidcOffered ? "token" : "trusted-publishing";
+				const firstMethod: PublishAuth["method"] = tokenOnly || !oidcOffered ? "token" : "trusted-publishing";
 				let auth: PublishAuth = {
 					method: firstMethod,
 					credential: resolvedToken?.source ?? null,
@@ -982,7 +986,7 @@ const publishDirectoryGroup = (
 						registry: t.registry,
 						access: t.access,
 						provenance: t.provenance,
-						tokenAuth: isGhPkgs,
+						tokenAuth: tokenOnly,
 						executor: publishExecutor,
 						tag: tagFor(t),
 					})
@@ -997,7 +1001,7 @@ const publishDirectoryGroup = (
 				// it fails and a token is available, retry once with classic token auth
 				// (OIDC env stripped). Once the package exists and trusted publishing is
 				// configured, the first attempt succeeds and this retry never fires.
-				if (!publishOutcome.ok && !isGhPkgs && redactedToken !== null) {
+				if (!publishOutcome.ok && !tokenOnly && redactedToken !== null) {
 					auth = { ...auth, method: "token", fallback: { from: firstMethod, reason: publishOutcome.error } };
 					const firstLabel = firstMethod === "trusted-publishing" ? "trusted-publishing" : "token";
 					yield* Effect.logWarning(
@@ -1927,7 +1931,9 @@ export const runPublishTargets = (
 			if (allTargetsOk) {
 				successfulPackages++;
 			}
-			successfulTargets += result.targets.filter((t) => t.success).length;
+			// A release-filtered target is `success: true` but was never attempted;
+			// `totalTargets` leaves it out, so the tally must too, or it reads "2/1".
+			successfulTargets += result.targets.filter((t) => t.success && t.skipReason !== "filtered-by-releases").length;
 		}
 
 		// UNREACHABLE TODAY, and kept on purpose. `publishDirectoryGroup` catches

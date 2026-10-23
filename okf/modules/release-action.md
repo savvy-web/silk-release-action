@@ -7,7 +7,7 @@ resource: ../../src
 status: draft
 generated:
   by: okfit/claude-code
-  at: 2026-10-23T14:45:19Z
+  at: 2026-10-23T15:07:32Z
 sources:
   - id: src-main
     resource: ../../src/main.ts
@@ -32,7 +32,7 @@ tags:
   - observability
 integrity:
   generated:
-    body: 4d18bad6d16e1ed2
+    body: 6ad453171e784b7d
 ---
 
 # release-action
@@ -162,7 +162,7 @@ Ordering is established **once, at the source**: immediately after `detectReleas
 
 **Token resolution** — `pickToken(registry, npmToken, ghPkgsToken, customTokens)` in `src/release/resolve-targets.ts` resolves each target registry's credential from one `classifyRegistry` call, switched exhaustively: `npm` uses the `npm-token` input when present, OIDC otherwise; `github-packages` uses the `github-token` input read back from `GithubPackagesTokenState`; `jsr` publishes over OIDC with no token of its own; `custom` uses the `custom-registries` input (parsed by `src/utils/custom-registries.ts` into trailing-slash-normalized URL → `Redacted` token pairs) first, then an env var derived from the URL.
 
-**Token-auth fallback** — GitHub Packages publishes with `tokenAuth: true` from the first attempt, because npm 11.5+ still attempts the OIDC exchange whenever Actions OIDC env is present, which GitHub Packages 404s and ignores; stripping that path avoids the failed exchange. The npm public registry prefers OIDC trusted publishing and retries once with `tokenAuth: true` on failure, since an unconfigured package (no trusted publisher yet) cannot bootstrap the OIDC exchange for its first-time publish.
+**Token-auth fallback** — GitHub Packages and custom registries publish with `tokenAuth: true` from the first attempt (trusted publishing exists only on registry.npmjs.org; a custom registry 404s the exchange and npm quietly falls back to the token), because npm 11.5+ still attempts the OIDC exchange whenever Actions OIDC env is present, which GitHub Packages 404s and ignores; stripping that path avoids the failed exchange. The npm public registry prefers OIDC trusted publishing and retries once with `tokenAuth: true` on failure, since an unconfigured package (no trusted publisher yet) cannot bootstrap the OIDC exchange for its first-time publish.
 
 **Attestation assembly** — `src/release/attest-helpers.ts` is the one place the kit's split (`@effected/sbom` builds and signs; `@effected/github` stores) is assembled into a pipeline, so `publish.ts` and `releases.ts` never grow their own copy.
 

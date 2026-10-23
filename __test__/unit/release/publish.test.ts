@@ -2184,6 +2184,10 @@ describe("runPublishTargets — per-target release filter", () => {
 			expect(pub.publishTarballCalls[0]?.options.tag).toBe("beta");
 			expect(targets.find((t) => t.target.registry === PNPR)?.target.tag).toBe("beta");
 			expect(result.success).toBe(true);
+			// A filtered target is neither attempted nor published: the tally must
+			// not read "2/1".
+			expect(result.totalTargets).toBe(1);
+			expect(result.successfulTargets).toBe(1);
 		}),
 	);
 
@@ -2406,6 +2410,34 @@ describe("runPublishTargets — auth record", () => {
 			expect(result.packages[0]?.targets[0]?.auth).toEqual({
 				method: "token",
 				credential: "github-token",
+				fallback: null,
+			});
+		}),
+	);
+
+	// Trusted publishing exists only on registry.npmjs.org. Offering the OIDC env
+	// to a custom registry makes npm attempt an exchange that 404s and then fall
+	// back to the npmrc token on its own, so the record would claim an auth
+	// method that never authenticated.
+	it.effect("publishes a custom registry with token auth from the first attempt, even with the OIDC env present", () =>
+		Effect.gen(function* () {
+			const pub = makePackagePublishLayer();
+			const { wsPkg, detected } = setup();
+			const custom = new PublishTarget({
+				name: PACK_NAME,
+				registry: "https://pnpr.example.com/",
+				directory: DIR,
+				access: "public",
+				provenance: false,
+			});
+			const result = yield* runPublishTargets(detected, new Map(), [
+				{ registry: "https://pnpr.example.com/", token: Redacted.make("pnpr-secret") },
+			]).pipe(Effect.provide(Layer.merge(makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [custom]), OIDC_ENV)));
+
+			expect(pub.publishTarballCalls[0]?.options.tokenAuth).toBe(true);
+			expect(result.packages[0]?.targets[0]?.auth).toEqual({
+				method: "token",
+				credential: "custom-registries",
 				fallback: null,
 			});
 		}),

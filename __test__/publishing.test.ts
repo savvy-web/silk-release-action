@@ -233,6 +233,45 @@ describe("runPublishing — happy path", () => {
 		);
 	});
 
+	it("counts only uploads in the closing line, not a recovery that was already on the registry", async () => {
+		const base = PUBLISH_RESULT.packages[0]?.targets[0];
+		if (base === undefined) throw new Error("fixture has no target");
+		runPublishTargetsMock.mockReturnValue(
+			Effect.succeed({
+				...PUBLISH_RESULT,
+				packages: [
+					{
+						name: "@scope/alpha",
+						version: "1.2.3",
+						targets: [
+							base,
+							{
+								...base,
+								target: { ...base.target, registry: "https://npm.pkg.github.com" },
+								status: "skipped",
+								skipReason: "already-published-identical",
+							},
+						],
+					},
+				],
+				totalTargets: 2,
+				successfulTargets: 2,
+			} satisfies PublishPackagesResult),
+		);
+		runReleasesMock.mockReturnValue(
+			Effect.succeed({
+				success: true,
+				releases: [{ tag: "1.2.3", url: "https://example.test/r", id: 7, assets: [], prerelease: false }],
+				errors: [],
+				tagShas: { "1.2.3": "" },
+			}),
+		);
+
+		const { text } = await run();
+
+		expect(text).toContain("· 1 registry target(s) published ·");
+	});
+
 	it("does not open the availability group when the ceiling is 0", async () => {
 		// The default INPUTS ceiling is 0, so nothing is probed; the group would be
 		// an empty heading over no work, and its absence is what proves the
