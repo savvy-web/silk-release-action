@@ -612,11 +612,11 @@ const ValidationWorkspace = Schema.Struct({
 			description: "The previously published version this release is bumped from. Null when this is the first publish.",
 		}),
 	),
-	bumpType: Schema.Literals(["major", "minor", "patch", "new", "unknown"]).annotate({
+	bumpType: Schema.Literals(["major", "minor", "patch", "graduation", "prerelease", "new", "unknown"]).annotate({
 		identifier: "ValidationBumpType",
 		title: "Bump type",
 		description:
-			"The validation phase's package bump type, derived by diffing the release-branch version against the target-branch version. A superset of `ChangesetsBumpType` (Phase 1 declared bumps): `major`/`minor`/`patch` are the standard semver bumps, and this enum adds `new` (no prior published version exists on the target branch) and `unknown` (could not be determined, typically when the prior version was a pre-release tag).",
+			"The validation phase's package bump type, derived by diffing the release-branch version against the target-branch version. A superset of `ChangesetsBumpType` (Phase 1 declared bumps): `major`/`minor`/`patch` when the `major.minor.patch` core advanced (entering pre mode, `3.0.4` → `3.0.5-beta.0`, is a `patch`); `graduation` for a prerelease leaving pre mode for its own stable version (`3.0.5-beta.0` → `3.0.5`); `prerelease` for a step inside pre mode on the same core (`-beta.0` → `-beta.1`); `new` when no prior published version exists on the target branch; `unknown` when a version does not parse or the version did not advance.",
 	}),
 	changesetCount: Schema.NullOr(
 		Schema.Natural.annotate({
@@ -1280,11 +1280,11 @@ const PublishWorkspace = Schema.Struct({
 		description:
 			"The version the release's base commit recorded — the merged release PR's base, or HEAD's first parent. Null when it could not be read.",
 	}),
-	bumpType: Schema.Literals(["major", "minor", "patch", "unknown"]).annotate({
+	bumpType: Schema.Literals(["major", "minor", "patch", "graduation", "prerelease", "unknown"]).annotate({
 		identifier: "PublishWorkspaceBumpType",
 		title: "Bump type",
 		description:
-			"The semver bump from `baseVersion` to `version`. `unknown` when the base version is null, or either version is not a plain `major.minor.patch` — every prerelease version reads `unknown`. Unlike validation's `bumpType` there is no `new`: the publish phase only detects workspaces whose existing manifest changed.",
+			"The semver bump from `baseVersion` to `version`: `major`/`minor`/`patch` when the `major.minor.patch` core advanced (entering pre mode, `3.0.4` → `3.0.5-beta.0`, is a `patch`); `graduation` for a prerelease leaving pre mode for its own stable version (`3.0.5-beta.0` → `3.0.5`); `prerelease` for a step inside pre mode on the same core (`-beta.0` → `-beta.1`); `unknown` when the base version is null, a version does not parse, or the version did not advance. Unlike validation's `bumpType` there is no `new`: the publish phase only detects workspaces whose existing manifest changed.",
 	}),
 	releaseType: Schema.Literals(["stable", "prerelease"]).annotate({
 		identifier: "PublishWorkspaceReleaseType",

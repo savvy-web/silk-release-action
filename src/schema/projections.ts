@@ -12,7 +12,9 @@
 
 import { relative } from "node:path";
 import { classifyRegistry, registryDisplayName } from "@effected/npm";
+import { SemVer } from "@effected/semver";
 import { SilkPublishability } from "@savvy-web/silk-effects";
+import { Option, Schema } from "effect";
 import type {
 	PackagePublishResult,
 	PublishFailureInput,
@@ -167,27 +169,50 @@ export interface ValidationInput {
 }
 
 /**
- * Derive the semver bump type for a released package.
+ * The bump a release represents, from the version it replaces.
  *
  * @remarks
- * A `null` base version means the package is brand-new on the target branch
- * (`"new"`). Otherwise the major/minor/patch deltas are compared; a version
- * that is not a three-part semver string yields `"unknown"`.
+ * - `new`: there is no base version (validation only; Phase 3 maps a missing
+ *   base to `unknown` before calling this).
+ * - `graduation`: a prerelease leaving pre mode for its own stable version
+ *   (`3.0.5-beta.0` → `3.0.5`).
+ * - `prerelease`: a step inside pre mode on the same core
+ *   (`3.0.5-beta.0` → `3.0.5-beta.1`).
+ * - `major` / `minor` / `patch`: the `major.minor.patch` cores differ.
+ *   Entering pre mode (`3.0.4` → `3.0.5-beta.0`) is a `patch`.
+ * - `unknown`: either version will not parse, or the core did not advance (a
+ *   downgrade, or the same version). An ordering this function cannot explain
+ *   is reported, never guessed.
+ *
+ * Parsed with `@effected/semver` rather than split on `.`: a split reads the
+ * `5-beta` of `3.0.5-beta.0` as `NaN`, which made every prerelease report
+ * `unknown` (#532).
+ *
+ * @internal
  */
-const deriveBumpType = (
+export const deriveBumpType = (
 	baseVersion: string | null,
 	version: string,
-): "major" | "minor" | "patch" | "new" | "unknown" => {
+): "major" | "minor" | "patch" | "graduation" | "prerelease" | "new" | "unknown" => {
 	if (baseVersion === null) return "new";
-	const oldParts = baseVersion.split(".").map(Number);
-	const newParts = version.split(".").map(Number);
-	if (oldParts.length < 3 || newParts.length < 3 || [...oldParts, ...newParts].some(Number.isNaN)) {
+	const base = Option.getOrUndefined(decodeSemVer(baseVersion));
+	const next = Option.getOrUndefined(decodeSemVer(version));
+	if (base === undefined || next === undefined) return "unknown";
+
+	const sameCore = base.major === next.major && base.minor === next.minor && base.patch === next.patch;
+	const basePre = base.prerelease.length > 0;
+	const nextPre = next.prerelease.length > 0;
+	if (sameCore) {
+		if (basePre && !nextPre) return "graduation";
+		if (basePre && nextPre && SemVer.gt(next, base)) return "prerelease";
 		return "unknown";
 	}
-	if ((newParts[0] ?? 0) > (oldParts[0] ?? 0)) return "major";
-	if (newParts[0] === oldParts[0] && (newParts[1] ?? 0) > (oldParts[1] ?? 0)) return "minor";
-	return "patch";
+	if (next.major !== base.major) return next.major > base.major ? "major" : "unknown";
+	if (next.minor !== base.minor) return next.minor > base.minor ? "minor" : "unknown";
+	return next.patch > base.patch ? "patch" : "unknown";
 };
+
+const decodeSemVer = Schema.decodeUnknownOption(SemVer.FromString);
 
 /**
  * Project one build-centric {@link ValidationPackageResult} into the schema's

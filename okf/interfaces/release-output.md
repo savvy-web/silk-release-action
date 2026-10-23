@@ -14,10 +14,10 @@ sources:
     resource: ../../schemas/6.0/output.json
 generated:
   by: okfit/claude-code
-  at: 2026-10-23T14:45:19Z
+  at: 2026-10-23T17:07:20Z
 integrity:
   generated:
-    body: 2d9ba95178805562
+    body: 853cacf20ed2ea42
 ---
 
 # The `result` output document
@@ -250,9 +250,14 @@ Each `PublishWorkspace` adds:
   the version resolves to.
 - `baseVersion` — the version the base commit recorded, already read during
   detection, so it costs no extra I/O; null when unreadable — and
-  `bumpType` (`major` | `minor` | `patch` | `unknown`). Every prerelease
-  version reads `unknown`, as validation's `bumpType` does; there is no `new`,
-  because publish detection only sees manifests that already existed.
+  `bumpType` (`major` | `minor` | `patch` | `graduation` | `prerelease` |
+  `unknown`). `graduation` is a prerelease leaving pre mode for its own stable
+  version (`3.0.5-beta.0` → `3.0.5`); `prerelease` is a step inside pre mode
+  on the same core; entering pre mode reads as the core bump (`3.0.4` →
+  `3.0.5-beta.0` is `patch`). `unknown` means a version would not parse or did
+  not advance. Validation's `bumpType` uses the same derivation plus `new`;
+  publish has no `new`, because publish detection only sees manifests that
+  already existed.
 - `release.prerelease` — the flag GitHub has on record for the release.
 
 ## Every numeric field is an integer

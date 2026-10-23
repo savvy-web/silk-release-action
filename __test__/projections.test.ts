@@ -15,6 +15,7 @@ import type {
 import { availabilityKey } from "../src/release/types.js";
 import type { SnapshotInput } from "../src/schema/projections.js";
 import {
+	deriveBumpType,
 	toBranchManagementOutput,
 	toPublishOutput,
 	toSnapshotOutput,
@@ -1692,5 +1693,36 @@ describe("toSnapshotOutput", () => {
 		expect(out.success).toBe(false);
 		expect(out.failure).toEqual({ stage: "refused", reason: "refs/tags/v1.0.0 is not a branch" });
 		expect(out.summary).toContain("refs/tags/v1.0.0 is not a branch");
+	});
+});
+
+// Version pairs from silk-integration's prerelease waves (runs 39989686602 and
+// 39991076070). Splitting on "." read `5-beta` as NaN, so every one of these
+// reported `unknown` (#532).
+describe("deriveBumpType", () => {
+	it.each([
+		["1.2.3", "2.0.0", "major"],
+		["1.2.3", "1.3.0", "minor"],
+		["1.2.3", "1.2.4", "patch"],
+		["3.0.4", "3.0.5-beta.0", "patch"],
+		["3.0.5-beta.0", "3.0.5-beta.1", "prerelease"],
+		["3.0.5-beta.0", "3.0.5", "graduation"],
+		["3.0.5-beta.0", "3.1.0-beta.0", "minor"],
+		["3.0.5-beta.0", "4.0.0", "major"],
+	] as const)("reads %s → %s as %s", (base, version, expected) => {
+		expect(deriveBumpType(base, version)).toBe(expected);
+	});
+
+	it("reports a package with no base version as new", () => {
+		expect(deriveBumpType(null, "1.0.0")).toBe("new");
+	});
+
+	it.each([
+		["not-a-version", "1.0.0"],
+		["1.0.0", "1.0"],
+		["2.0.0", "1.9.9"],
+		["1.0.0", "1.0.0"],
+	] as const)("reports %s → %s as unknown rather than guessing", (base, version) => {
+		expect(deriveBumpType(base, version)).toBe("unknown");
 	});
 });

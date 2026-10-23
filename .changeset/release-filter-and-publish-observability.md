@@ -36,7 +36,7 @@ The `result` output now reports, for each registry publication:
 For each workspace it now reports:
 
 * its release-filtered targets under `skipped`
-* `releaseType`, `baseVersion` and `bumpType`
+* `releaseType`, `baseVersion` and `bumpType`, which now also reports `graduation` (leaving pre mode) and `prerelease` (a step inside it); validation's `bumpType` uses the same derivation
 * whether the GitHub release is a prerelease
 
 ### Clearer run log

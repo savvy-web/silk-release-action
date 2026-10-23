@@ -177,6 +177,10 @@ function getBumpTypeIcon(type: string): string {
 			return "\u{1F7E2}"; // 🟢
 		case "new":
 			return "\u{1F195}"; // 🆕
+		case "graduation":
+			return "\u{1F393}"; // 🎓
+		case "prerelease":
+			return "\u{1F9EA}"; // 🧪
 		default:
 			return "⚪"; // ⚪
 	}

@@ -10,6 +10,7 @@ import {
 	buildReleaseTotals,
 	buildSbomPreviewSummary,
 	buildValidationComment,
+	getBumpTypeIcon,
 	getPackagePageUrl,
 } from "../../../src/release/report.js";
 import type { ValidationOutput } from "../../../src/schema/release-output.js";
@@ -1092,5 +1093,19 @@ describe("buildSbomPreviewSummary", () => {
 		expect(md).not.toContain(
 			"_No `sbom-config` resolved — supply via the `sbom-config` action input or `vars.SILK_RELEASE_SBOM_TEMPLATE`._",
 		);
+	});
+});
+
+describe("getBumpTypeIcon", () => {
+	it.each([
+		["major", "🔴"],
+		["minor", "🟡"],
+		["patch", "🟢"],
+		["new", "🆕"],
+		["graduation", "🎓"],
+		["prerelease", "🧪"],
+		["unknown", "⚪"],
+	])("renders %s as %s", (type, icon) => {
+		expect(getBumpTypeIcon(type)).toBe(icon);
 	});
 });
