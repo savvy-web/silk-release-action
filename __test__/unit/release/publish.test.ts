@@ -2098,4 +2098,39 @@ describe("runPublishTargets — per-target release filter", () => {
 			expect(result.packages[0]?.targets.find((t) => t.target.registry === PNPR)?.target.tag).toBe("next");
 		}),
 	);
+
+	it.effect("fails only the workspace whose targets.json binding is violated; the next workspace still publishes", () =>
+		Effect.gen(function* () {
+			const pub = makePackagePublishLayer({ packResult: packFor("1.2.0") });
+			const bad = makeFilterPkg("@scope/bad", "1.2.0", "/ws/bad");
+			const good = makeFilterPkg("@scope/good", "1.2.0", "/ws/good");
+			const result = yield* runPublishTargets([
+				makeDetected(bad.name, "1.2.0", bad.path),
+				makeDetected(good.name, "1.2.0", good.path),
+			]).pipe(
+				Effect.provide(
+					makeFilterLayers(pub.layer, makeRegistryLayer(), [bad, good], {
+						[`${bad.path}/package.json`]: filterManifest(bad.name, npmStablePnprAll),
+						[`${bad.path}/dist/prod/targets.json`]: {
+							groups: [{ id: "npm", name: bad.name, dir: "dist/prod/npm/pkg" }],
+							targets: [
+								{ id: "npm", group: "npm", name: bad.name, registry: "https://registry.npmjs.org" },
+								{ id: "pnpr", group: "ghost", name: bad.name, registry: PNPR },
+							],
+						},
+						[`${good.path}/package.json`]: filterManifest(good.name, { pnpr: { registry: PNPR } }),
+					}),
+				),
+			);
+
+			const badPkg = result.packages.find((p) => p.name === bad.name);
+			const goodPkg = result.packages.find((p) => p.name === good.name);
+			expect(badPkg?.targets).toHaveLength(2);
+			expect(badPkg?.targets.every((t) => t.status === "failed" && t.success === false)).toBe(true);
+			expect(badPkg?.targets[0]?.error).toMatch(/dist\/prod\/targets\.json|binding/i);
+			expect(goodPkg?.targets.map((t) => t.status)).toEqual(["published"]);
+			expect(pub.packCalls).toHaveLength(1);
+			expect(result.success).toBe(false);
+		}),
+	);
 });

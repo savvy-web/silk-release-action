@@ -209,6 +209,13 @@ export interface ResolvedPublishTargets {
 	 * to be packed are not the release artifact, so nothing may publish.
 	 */
 	readonly bindingError?: PublishTargetBindingError;
+	/**
+	 * Every non-JSR, non-private target the package DECLARES, regardless of the
+	 * release filter or a binding failure. Only needed when `bindingError` is set:
+	 * `targets` and `releaseFiltered` are empty then, and the caller still has to
+	 * name which declared targets it is failing.
+	 */
+	readonly declared: ReadonlyArray<TargetSpec>;
 }
 
 /** Comparable identity of a target: registry plus normalized absolute directory. */
@@ -291,7 +298,14 @@ export const resolvePublishTargetSpecs = (
 
 		const released = yield* Effect.result(SilkPublishability.resolveReleaseTargets(wsPkg, version));
 		if (released._tag === "Failure") {
-			return { targets: [], jsrSkipped, privateSkipped, releaseFiltered: [], bindingError: released.failure };
+			return {
+				targets: [],
+				jsrSkipped,
+				privateSkipped,
+				releaseFiltered: [],
+				bindingError: released.failure,
+				declared: candidates,
+			};
 		}
 
 		const distTagByKey = new Map<string, string>();
@@ -309,5 +323,5 @@ export const resolvePublishTargetSpecs = (
 			else targets.push({ ...spec, distTag });
 		}
 
-		return { targets, jsrSkipped, privateSkipped, releaseFiltered };
+		return { targets, jsrSkipped, privateSkipped, releaseFiltered, declared: candidates };
 	});

@@ -33,6 +33,7 @@ import type { SigstoreSigner } from "@effected/sbom";
 import { CYCLONEDX_BOM_PREDICATE, Sbom, SbomMetadataSource, SlsaProvenance } from "@effected/sbom";
 import type { PublishabilityDetector } from "@effected/workspaces";
 import { WorkspaceDiscovery, WorkspacePackage } from "@effected/workspaces";
+import type { PublishTargetBindingError } from "@savvy-web/silk-effects";
 import { SilkPublishability } from "@savvy-web/silk-effects";
 import type { FileSystem } from "effect";
 import { Config, Effect, Option, Redacted } from "effect";
@@ -1665,6 +1666,9 @@ export const runPublishTargets = (
 			readonly version: string;
 			readonly targets: ReadonlyArray<TargetSpec>;
 			readonly releaseFiltered: ReadonlyArray<TargetSpec>;
+			/** Set when `dist/prod/targets.json` does not bind a detected directory. */
+			readonly bindingError?: PublishTargetBindingError;
+			readonly declared: ReadonlyArray<TargetSpec>;
 		}
 		const targetsByPackage = new Map<string, PkgEntry>();
 
@@ -1697,10 +1701,16 @@ export const runPublishTargets = (
 				);
 			}
 
+			if (resolved.bindingError !== undefined) {
+				yield* Effect.logError(resolved.bindingError.message);
+			}
+
 			targetsByPackage.set(rel.name, {
 				version: rel.version,
 				targets: resolved.targets,
 				releaseFiltered: resolved.releaseFiltered,
+				declared: resolved.declared,
+				...(resolved.bindingError !== undefined ? { bindingError: resolved.bindingError } : {}),
 			});
 
 			// Name the kind, not just the count. `0 target(s)` alone reads as a
@@ -1741,8 +1751,25 @@ export const runPublishTargets = (
 					return null;
 				}
 
-				const { version, targets, releaseFiltered } = pkgEntry;
+				const { version, targets, releaseFiltered, bindingError, declared } = pkgEntry;
 				yield* Effect.logDebug(`runPublishTargets: publishing ${name}@${version}`);
+
+				// The built bytes are not the release artifact (detection picked a
+				// directory `dist/prod/targets.json` does not bind). Nothing for this
+				// workspace may publish, but only THIS workspace fails: the error is
+				// recorded per declared target and the batch carries on.
+				if (bindingError !== undefined) {
+					return {
+						name,
+						version,
+						targets: declared.map((t) => ({
+							target: toLegacyTarget(t, "npm", t.distTag),
+							success: false,
+							status: "failed",
+							error: bindingError.message,
+						})),
+					} satisfies PackagePublishResult;
+				}
 
 				// A target whose `releases` channel excludes this version is a
 				// SUCCESSFUL skip: no pack, no registry call, no failure.
