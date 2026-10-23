@@ -43,7 +43,7 @@ import {
 	OidcTokenIssuer,
 } from "@effected/github-actions";
 import { MemoryFileSystem } from "@effected/memfs";
-import type { PackagePublishShape, PublishOptions } from "@effected/npm";
+import type { PackagePublishShape, PublishOptions, RegistryTarget } from "@effected/npm";
 import { NpmRegistry, PackagePublish, PackedTarball, PublishError, RegistryReadError } from "@effected/npm";
 import { SIGSTORE_BUNDLE_V0_3_MEDIA_TYPE, SigstoreBundle, SigstoreSigner } from "@effected/sbom";
 import { PublishTarget, PublishabilityDetector, WorkspaceDiscovery, WorkspacePackage } from "@effected/workspaces";
@@ -60,6 +60,7 @@ import {
 	userNpmrcPath,
 } from "../../../src/release/publish.js";
 import type { PublishPackagesResult } from "../../../src/release/types.js";
+import type { CustomRegistryAuth } from "../../../src/utils/custom-registries.js";
 import { matchesIgnorePattern } from "../../../src/utils/detect-repo-type.js";
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
@@ -383,7 +384,13 @@ const makePackResult = (integrity: string | undefined = PACK_INTEGRITY): PackedT
 
 /** A recording `PackagePublish` double. */
 const makePackagePublishLayer = (
-	options: { readonly packResult?: PackedTarball; readonly packFails?: string; readonly provenanceUrl?: string } = {},
+	options: {
+		readonly packResult?: PackedTarball;
+		readonly packFails?: string;
+		readonly provenanceUrl?: string;
+		/** A shared ordered log; `setupAuth:<registry>` and `publish:<registry>` are appended. */
+		readonly events?: string[];
+	} = {},
 ) => {
 	const packCalls: string[] = [];
 	const publishTarballCalls: Array<{ tarballPath: string; options: PublishOptions }> = [];
@@ -396,6 +403,7 @@ const makePackagePublishLayer = (
 
 	const shape: PackagePublishShape = {
 		setupAuth: (input) => {
+			options.events?.push(`setupAuth:${input.registry}`);
 			setupAuthCalls.push({
 				registry: input.registry,
 				npmrcPath: input.npmrcPath,
@@ -411,6 +419,7 @@ const makePackagePublishLayer = (
 				: Effect.succeed(options.packResult ?? makePackResult());
 		},
 		publishTarball: (tarballPath, publishOptions) => {
+			options.events?.push(`publish:${publishOptions.registry}`);
 			publishTarballCalls.push({ tarballPath, options: publishOptions });
 			return Effect.succeed(options.provenanceUrl === undefined ? {} : { provenanceUrl: options.provenanceUrl });
 		},
@@ -443,6 +452,10 @@ const makeBaseLayers = (
 	targets: PublishTarget[],
 	attestationLayer: Layer.Layer<Attestation> = makeAttestationLayer().layer,
 	logger: Layer.Layer<ActionLogger> = loggerLayer,
+	overrides: {
+		readonly oidc?: Layer.Layer<OidcTokenIssuer>;
+		readonly outputs?: Layer.Layer<ActionOutputs>;
+	} = {},
 ) =>
 	Layer.mergeAll(
 		// `resolvePublishTargetSpecs` reads `package.json` / `targets.json` through
@@ -453,12 +466,12 @@ const makeBaseLayers = (
 		actionStateLayer,
 		configProviderLayer,
 		environmentLayer,
-		outputsLayer,
+		overrides.outputs ?? outputsLayer,
 		repoLayer,
 		pubLayer,
 		npmLayer,
 		attestationLayer,
-		oidcUnavailableLayer,
+		overrides.oidc ?? oidcUnavailableLayer,
 		sigstoreLayer,
 		makeWorkspaceDiscoveryLayer([wsPkg]),
 		makePublishabilityLayer(new Map([[wsPkg.name, targets]])),
@@ -2744,6 +2757,260 @@ describe("runPublishTargets — log lines", () => {
 			expect(error).toContain("_authToken");
 			expect(result.packages[0]?.targets[0]?.error).toMatch(/requires a read credential/);
 			expect(logs.text()).toContain("⬆ registry.example.com · probe-failed");
+		}),
+	);
+});
+
+// ─── OPS-143: keyless publishing to pnpr with a minted workload credential ─────
+
+describe("runPublishTargets — pnpr workload credential (OPS-143)", () => {
+	// A `_pnprWorkload` registry publishes with `pnpr_workload_<jwt>`, minted
+	// from the job's OIDC token right before the PUT. pnpr accepts it ONLY for
+	// the PUT; every read must carry the paired `_authToken` reader.
+	const SAVVY = "https://registry.savvyweb.systems/npm/~savvy/";
+	const AUDIENCE = "https://registry.savvyweb.systems";
+	const READER = "fake-release-reader-token";
+	const JWT = "fake-oidc-jwt";
+	const WORKLOAD = `pnpr_workload_${JWT}`;
+	const SHARED_DIR = `/tmp/test/${PACK_NAME}`;
+
+	/** One ordered log shared by every double, so the sequence is assertable. */
+	const harness = (options: { readonly mintFails?: boolean } = {}) => {
+		const events: string[] = [];
+		const audiences: string[] = [];
+		const masked: string[] = [];
+		const reads: Array<{ op: string; registry: string | undefined; token: string | null }> = [];
+
+		const oidc = OidcTokenIssuer.layerTest({
+			token: (audience) =>
+				Effect.suspend(() => {
+					audiences.push(audience ?? "<none>");
+					events.push("mint");
+					return options.mintFails === true
+						? Effect.fail(new OidcTokenError({ reason: "unavailable" }))
+						: Effect.succeed(Redacted.make(JWT));
+				}),
+			// The best-effort provenance attestation reads `claims`; keep it on
+			// the no-OIDC branch so it adds nothing to the event log.
+			claims: () => Effect.fail(new OidcTokenError({ reason: "unavailable" })),
+		});
+		const outputs = ActionOutputs.layerTest({
+			setSecret: (value) =>
+				Effect.sync(() => {
+					masked.push(value);
+					events.push(`mask:${value}`);
+				}),
+		});
+
+		// Credential-aware, like pnpr: a read with anything but the reader
+		// token is refused (401 anonymous, 403 otherwise). The npm registry
+		// reads anonymously.
+		const gate = (op: string, name: string, target: RegistryTarget | undefined): RegistryReadError | null => {
+			const registry = target?.registry;
+			const credential = target?.credential;
+			const token = credential?.kind === "token" ? Redacted.value(credential.token) : null;
+			reads.push({ op, registry, token });
+			events.push(`read:${op}`);
+			if (registry !== SAVVY || token === READER) return null;
+			return new RegistryReadError({
+				kind: "status",
+				status: token === null ? 401 : 403,
+				package: name,
+				registry: registry ?? "",
+			});
+		};
+		const registry = NpmRegistry.layerTest({
+			version: (name, _version, target) =>
+				Effect.suspend(() => {
+					const denied = gate("version", name, target);
+					return denied === null ? Effect.succeed(Option.none()) : Effect.fail(denied);
+				}),
+			versions: (name, target) =>
+				Effect.suspend(() => {
+					const denied = gate("versions", name, target);
+					return denied === null ? Effect.succeed(["0.9.0"]) : Effect.fail(denied);
+				}),
+		});
+
+		const pub = makePackagePublishLayer({ events });
+
+		return { events, audiences, masked, reads, pub, oidc, outputs, registry };
+	};
+
+	const savvyTarget = () =>
+		new PublishTarget({
+			name: PACK_NAME,
+			registry: SAVVY,
+			directory: SHARED_DIR,
+			access: "restricted",
+			provenance: false,
+		});
+
+	const paired: ReadonlyArray<CustomRegistryAuth> = [
+		{ registry: SAVVY, token: Redacted.make(READER), workload: { audience: AUDIENCE } },
+	];
+
+	const runWith = (
+		h: ReturnType<typeof harness>,
+		targets: PublishTarget[],
+		custom: ReadonlyArray<CustomRegistryAuth>,
+		snapshot?: { tag: string; dryRun: boolean },
+	) =>
+		Effect.gen(function* () {
+			const lines: string[] = [];
+			const capture = Logger.make<unknown, void>(({ message }) => {
+				lines.push(Array.isArray(message) ? message.join(" ") : String(message));
+			});
+			const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, SHARED_DIR);
+			const result = yield* runPublishTargets(
+				[makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)],
+				new Map(),
+				custom,
+				snapshot,
+			).pipe(
+				Effect.provide(
+					makeBaseLayers(
+						h.pub.layer,
+						h.registry,
+						wsPkg,
+						targets,
+						makeAttestationLayer().layer,
+						ActionLogger.layerTest(),
+						{ oidc: h.oidc, outputs: h.outputs },
+					),
+				),
+				Effect.provide(Logger.layer([capture])),
+			);
+			const results = result.packages.flatMap((p) => p.targets);
+			return { result, results, lines };
+		});
+
+	it.effect("mints once for the exact audience, after the reads, then writes the npmrc and PUTs", () =>
+		Effect.gen(function* () {
+			const h = harness();
+			const { results } = yield* runWith(h, [savvyTarget()], paired);
+
+			expect(h.audiences).toEqual([AUDIENCE]);
+			// The workload credential is the ONLY npmrc write for this registry.
+			expect(h.pub.setupAuthCalls).toEqual([
+				{ registry: SAVVY, npmrcPath: userNpmrcPath(), kind: "token", token: WORKLOAD },
+			]);
+			expect(h.pub.publishTarballCalls).toHaveLength(1);
+			expect(h.pub.publishTarballCalls[0]?.options.registry).toBe(SAVVY);
+			expect(h.pub.publishTarballCalls[0]?.options.tokenAuth).toBe(true);
+			const sequence = h.events.filter((e) => !e.startsWith("mask:"));
+			expect(sequence).toEqual(["read:version", "mint", `setupAuth:${SAVVY}`, `publish:${SAVVY}`]);
+			expect(results[0]?.status).toBe("published");
+		}),
+	);
+
+	it.effect("reads with the paired reader token and never the workload credential", () =>
+		Effect.gen(function* () {
+			const h = harness();
+			yield* runWith(h, [savvyTarget()], paired);
+			expect(h.reads).toEqual([{ op: "version", registry: SAVVY, token: READER }]);
+			for (const r of h.reads) {
+				expect(r.token).not.toContain(JWT);
+			}
+		}),
+	);
+
+	it.effect("masks the full minted credential before it reaches the npmrc", () =>
+		Effect.gen(function* () {
+			const h = harness();
+			yield* runWith(h, [savvyTarget()], paired);
+			expect(h.masked).toContain(WORKLOAD);
+			expect(h.masked).toContain(READER);
+			const maskAt = h.events.indexOf(`mask:${WORKLOAD}`);
+			const writeAt = h.events.indexOf(`setupAuth:${SAVVY}`);
+			expect(maskAt).toBeGreaterThanOrEqual(0);
+			expect(maskAt).toBeLessThan(writeAt);
+		}),
+	);
+
+	it.effect("records the auth as workload-oidc from custom-registries, and logs it", () =>
+		Effect.gen(function* () {
+			const h = harness();
+			const { results, lines } = yield* runWith(h, [savvyTarget()], paired);
+			expect(results[0]?.auth).toEqual({ method: "workload-oidc", credential: "custom-registries", fallback: null });
+			expect(lines.some((l) => l.includes("published → latest · auth: workload-oidc (custom-registries)"))).toBe(true);
+			expect(lines.join("\n")).not.toContain(JWT);
+			expect(lines.join("\n")).not.toContain(READER);
+		}),
+	);
+
+	it.effect(
+		"fails only the workload target when minting fails, naming id-token: write, with no PUT and no fallback",
+		() =>
+			Effect.gen(function* () {
+				const h = harness({ mintFails: true });
+				const npmTarget = makeNpmTarget(PACK_NAME, SHARED_DIR);
+				const { results } = yield* runWith(h, [npmTarget, savvyTarget()], paired);
+
+				const savvy = results.find((r) => r.target.registry === SAVVY);
+				expect(savvy?.status).toBe("failed");
+				expect(savvy?.error).toContain("permissions: id-token: write");
+				// The npm target in the same group still published.
+				expect(results.find((r) => r.target.registry === "https://registry.npmjs.org/")?.status).toBe("published");
+				// Nothing was written or uploaded for the workload registry — the
+				// reader token was NOT substituted.
+				expect(h.pub.setupAuthCalls.filter((c) => c.registry === SAVVY)).toEqual([]);
+				expect(h.pub.publishTarballCalls.map((c) => c.options.registry)).toEqual(["https://registry.npmjs.org/"]);
+			}),
+	);
+
+	it.effect("fails a workload-only registry with no-read-credential before any read, mint or PUT", () =>
+		Effect.gen(function* () {
+			const h = harness();
+			const { results } = yield* runWith(h, [savvyTarget()], [{ registry: SAVVY, workload: { audience: AUDIENCE } }]);
+			expect(results[0]?.status).toBe("failed");
+			expect(results[0]?.error).toBe(
+				"no-read-credential: pnpr workload credentials cannot read; add " +
+					`\`${SAVVY}_authToken=<release-reader>\` to custom-registries`,
+			);
+			expect(h.reads).toEqual([]);
+			expect(h.audiences).toEqual([]);
+			expect(h.pub.setupAuthCalls).toEqual([]);
+			expect(h.pub.publishTarballCalls).toEqual([]);
+		}),
+	);
+
+	it.effect("explains a refused reader as the paired _authToken line, before any mint", () =>
+		Effect.gen(function* () {
+			const h = harness();
+			const { results } = yield* runWith(
+				h,
+				[savvyTarget()],
+				[{ registry: SAVVY, token: Redacted.make("fake-wrong-reader"), workload: { audience: AUDIENCE } }],
+			);
+			expect(results[0]?.status).toBe("failed");
+			expect(results[0]?.error).toContain(`\`${SAVVY}_authToken=<release-reader>\``);
+			expect(h.audiences).toEqual([]);
+			expect(h.pub.publishTarballCalls).toEqual([]);
+		}),
+	);
+
+	it.effect("probes a snapshot's version history with the reader token too", () =>
+		Effect.gen(function* () {
+			const h = harness();
+			const { results } = yield* runWith(h, [savvyTarget()], paired, { tag: "dev", dryRun: false });
+			expect(h.reads).toEqual([
+				{ op: "versions", registry: SAVVY, token: READER },
+				{ op: "version", registry: SAVVY, token: READER },
+			]);
+			expect(h.audiences).toEqual([AUDIENCE]);
+			expect(h.pub.publishTarballCalls[0]?.options.tag).toBe("dev");
+			expect(results[0]?.status).toBe("published");
+		}),
+	);
+
+	it.effect("never mints in a snapshot dry run", () =>
+		Effect.gen(function* () {
+			const h = harness();
+			const { results } = yield* runWith(h, [savvyTarget()], paired, { tag: "dev", dryRun: true });
+			expect(h.audiences).toEqual([]);
+			expect(h.pub.setupAuthCalls).toEqual([]);
+			expect(results[0]?.skipReason).toBe("dry-run");
 		}),
 	);
 });

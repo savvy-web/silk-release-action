@@ -13,7 +13,7 @@
 
 import { Redacted } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
-import { resolveReadCredential } from "../../../src/release/resolve-targets.js";
+import { resolveReadCredential, workloadReadGap } from "../../../src/release/resolve-targets.js";
 import type { CustomRegistryAuth } from "../../../src/utils/custom-registries.js";
 
 const NPM = "https://registry.npmjs.org/";
@@ -81,5 +81,56 @@ describe("resolveReadCredential", () => {
 		const resolved = resolveReadCredential(PNPR, null, null, CUSTOM);
 		expect(tokenOf(resolved)).toBe("pnpr-read-token");
 		expect(resolved?.source).toBe("custom-registries");
+	});
+});
+
+// OPS-143: a pnpr workload registry. The workload credential is minted at
+// publish time and authenticates the PUT only — it is not in the parsed input
+// at all, so the read side can only ever see the paired `_authToken`.
+describe("resolveReadCredential — pnpr workload registries (OPS-143)", () => {
+	const SAVVY = "https://registry.savvyweb.systems/npm/~savvy/";
+	const reader = Redacted.make("fake-release-reader");
+	const workload = { audience: "https://registry.savvyweb.systems" };
+
+	it("reads a workload registry with its paired _authToken reader", () => {
+		const resolved = resolveReadCredential(SAVVY, "npm-secret", "gh-secret", [
+			{ registry: SAVVY, token: reader, workload },
+		]);
+		expect(resolved?.credential).toEqual({ kind: "token", token: reader });
+		expect(resolved?.source).toBe("custom-registries");
+	});
+
+	it("has NO read credential for a workload-only registry, even with a registry-env token set", () => {
+		// Falling through to `<HOST>_TOKEN` would send some other credential to
+		// a registry whose configuration says it has no reader; the answer is
+		// `null`, which the confirmation probe reports as `no-read-credential`.
+		touchedEnv.push("REGISTRY_SAVVYWEB_SYSTEMS_NPM_SAVVY_TOKEN");
+		process.env.REGISTRY_SAVVYWEB_SYSTEMS_NPM_SAVVY_TOKEN = "env-secret";
+		expect(resolveReadCredential(SAVVY, "npm-secret", "gh-secret", [{ registry: SAVVY, workload }])).toBeNull();
+	});
+});
+
+describe("workloadReadGap", () => {
+	const SAVVY = "https://registry.savvyweb.systems/npm/~savvy/";
+	const workload = { audience: "https://registry.savvyweb.systems" };
+
+	it("names the missing reader line for a workload-only registry", () => {
+		expect(workloadReadGap(SAVVY, [{ registry: SAVVY, workload }])).toBe(
+			"no-read-credential: pnpr workload credentials cannot read; add " +
+				"`https://registry.savvyweb.systems/npm/~savvy/_authToken=<release-reader>` to custom-registries",
+		);
+	});
+
+	it("matches the registry across slash variance", () => {
+		expect(
+			workloadReadGap("https://registry.savvyweb.systems/npm/~savvy", [{ registry: SAVVY, workload }]),
+		).not.toBeNull();
+	});
+
+	it("is null for a paired workload registry, a plain token registry, and an unconfigured one", () => {
+		const token = Redacted.make("fake");
+		expect(workloadReadGap(SAVVY, [{ registry: SAVVY, workload, token }])).toBeNull();
+		expect(workloadReadGap(SAVVY, [{ registry: SAVVY, token }])).toBeNull();
+		expect(workloadReadGap(SAVVY, [])).toBeNull();
 	});
 });

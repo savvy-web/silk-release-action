@@ -23,6 +23,7 @@ import { SilkPublishability } from "@savvy-web/silk-effects";
 import { Clock, Effect } from "effect";
 import type { SBOMMetadataConfig } from "../types/sbom-config.js";
 import { countChangesetsPerPackage } from "../utils/count-changesets.js";
+import type { CustomRegistryAuth } from "../utils/custom-registries.js";
 import { extractReleaseNotes } from "../utils/extract-release-notes.js";
 import { getGroupId } from "../utils/group-id.js";
 import { grouped } from "../utils/grouped.js";
@@ -32,6 +33,7 @@ import { sortReleasesTopologically } from "../utils/sort-releases-topologically.
 import { ChangesetConfig } from "./changeset-config.js";
 import { ValidationError } from "./errors.js";
 import { humanizeSize } from "./report.js";
+import { workloadReadGap } from "./resolve-targets.js";
 import type {
 	BuildSbom,
 	BuildTargetResult,
@@ -51,6 +53,14 @@ export interface ValidationInputArgs {
 	readonly packageManager: string;
 	readonly targetBranch: string;
 	readonly dryRun: boolean;
+	/**
+	 * The parsed `custom-registries` input. Phase 2 reads no token from it —
+	 * only its shape: a `_pnprWorkload` registry with no paired `_authToken`
+	 * is reported as `no-read-credential` (OPS-143). Required, not defaulted:
+	 * a defaulted `[]` is how this input regressed to "decoded but consumed by
+	 * nothing" once already (issue #215).
+	 */
+	readonly customRegistries: ReadonlyArray<CustomRegistryAuth>;
 }
 
 /**
@@ -433,6 +443,12 @@ export const runValidation = (args: ValidationInputArgs) =>
 		// process that could not use it. With the call gone, the whole block
 		// goes — Phase 2 now touches no publish credential at all. Phase 3's
 		// real publish still resolves both, where they are load-bearing.
+		//
+		// `custom-registries` is consulted for its SHAPE only: a pnpr workload
+		// registry with no paired reader (`workloadReadGap`) cannot get past
+		// Phase 3's first read, so it is reported per target below. Nothing is
+		// minted — the configuration alone decides it, and a minted credential
+		// could not be exercised without a PUT, which a dry run never makes.
 
 		// ── Resolve the SBOM metadata template once ──────────────────────────
 		// `loadSBOMConfig` looks up `.github/silk-release.json`, then the
@@ -741,6 +757,29 @@ export const runValidation = (args: ValidationInputArgs) =>
 							totalTargets++;
 							const kind = classifyRegistry(target.registry);
 							const label = registryShortLabel(target.registry);
+
+							// A pnpr workload registry with no reader: Phase 3 would fail it
+							// before its first read, whatever the dry-run says.
+							const readGap = workloadReadGap(target.registry, args.customRegistries);
+							if (readGap !== null) {
+								allPublishOk = false;
+								targetResults.push({
+									name: target.name,
+									registry: target.registry,
+									status: "failed",
+									access: target.access,
+									provenance: target.provenance,
+									error: readGap,
+								});
+								findings.push({
+									severity: "error",
+									check: "Publish Validation",
+									scope: { package: pkg.name, directory: build.directory },
+									message: readGap,
+								});
+								yield* Effect.logWarning(`  \u{2B06} ${label} · not-ready — ${readGap}`);
+								continue;
+							}
 
 							if (dryRunOutcome.success) {
 								readyTargets++;

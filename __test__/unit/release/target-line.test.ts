@@ -75,6 +75,25 @@ describe("describeAuth", () => {
 		expect(text).not.toContain("trusted publishing");
 		expect(text).toContain("retry");
 	});
+
+	it("names a minted pnpr workload credential and the input that asked for it (OPS-143)", () => {
+		expect(describeAuth({ method: "workload-oidc", credential: "custom-registries", fallback: null })).toBe(
+			"workload-oidc (custom-registries)",
+		);
+	});
+
+	it("renders the workload-oidc auth on a published pnpr line", () => {
+		const line = formatTargetLine({
+			id: "savvy",
+			registry: "https://registry.savvyweb.systems/npm/~savvy/",
+			outcome: "published",
+			tag: "latest",
+			auth: { method: "workload-oidc", credential: "custom-registries", fallback: null },
+		});
+		expect(line).toContain(
+			"⬆ savvy · registry.savvyweb.systems · published → latest · auth: workload-oidc (custom-registries)",
+		);
+	});
 });
 
 describe("credentialInputHint", () => {
@@ -126,5 +145,20 @@ describe("readFailureHint", () => {
 		).toBeNull();
 		const npm = "https://registry.npmjs.org/";
 		expect(readFailureHint(npm, status(403, npm))).toBeNull();
+	});
+
+	it("names the registry's full declared URL, path included, in the line to add", () => {
+		const savvy = "https://registry.savvyweb.systems/npm/~savvy/";
+		expect(readFailureHint(savvy, status(401, savvy))).toContain(
+			"`https://registry.savvyweb.systems/npm/~savvy/_authToken=<TOKEN>`",
+		);
+	});
+
+	it("blames the paired reader token, not a publish token, on a pnpr workload registry (OPS-143)", () => {
+		const savvy = "https://registry.savvyweb.systems/npm/~savvy/";
+		const hint = readFailureHint(savvy, status(403, savvy), { workload: true });
+		expect(hint).toContain("`https://registry.savvyweb.systems/npm/~savvy/_authToken=<release-reader>`");
+		expect(hint).toContain("workload");
+		expect(hint).not.toContain("as well as publish");
 	});
 });

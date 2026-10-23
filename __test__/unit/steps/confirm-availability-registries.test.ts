@@ -172,6 +172,37 @@ describe("confirmAvailability — GitHub Packages and custom registries", () => 
 		}),
 	);
 
+	// OPS-143: a pnpr workload registry is read with its paired `_authToken`
+	// reader — the minted workload credential cannot read and never reaches
+	// this step — and a workload line with no reader has nothing to read with.
+	it.live("confirms a pnpr workload registry with the paired reader token", () =>
+		Effect.gen(function* () {
+			const reg = authRegistry(seededEverywhere, { [PNPR]: PNPR_TOKEN });
+			const workload = { audience: "https://registry.savvyweb.systems" };
+			const { result } = yield* run(
+				[pnprTarget],
+				options({ customRegistries: [{ registry: PNPR, token: Redacted.make(PNPR_TOKEN), workload }] }),
+				reg.layer,
+			);
+			expect(result.get(keyOf(pnprTarget))?.status).toBe("confirmed");
+			expect(reg.reads).toEqual([{ registry: PNPR, token: PNPR_TOKEN }]);
+		}),
+	);
+
+	it.live("skips a workload-only pnpr registry with no-read-credential, without a registry call", () =>
+		Effect.gen(function* () {
+			const reg = authRegistry(seededEverywhere, {});
+			const workload = { audience: "https://registry.savvyweb.systems" };
+			const { result } = yield* run(
+				[pnprTarget],
+				options({ customRegistries: [{ registry: PNPR, workload }] }),
+				reg.layer,
+			);
+			expect(result.get(keyOf(pnprTarget))?.reason).toBe("no-read-credential");
+			expect(reg.reads).toEqual([]);
+		}),
+	);
+
 	it.live("reports a 401 as read-denied, not held, and does not retry it", () =>
 		Effect.gen(function* () {
 			const reg = authRegistry(seededEverywhere, {}, { [PNPR]: 401 });

@@ -143,7 +143,10 @@ describe("readInputs", () => {
 				"https://a.example.com/",
 				"https://b.example.com/",
 			]);
-			expect(inputs.customRegistries.map((e) => Redacted.value(e.token))).toEqual(["x", "y"]);
+			expect(inputs.customRegistries.map((e) => (e.token === undefined ? null : Redacted.value(e.token)))).toEqual([
+				"x",
+				"y",
+			]);
 		}),
 	);
 

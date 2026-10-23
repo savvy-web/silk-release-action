@@ -124,3 +124,122 @@ describe("parseCustomRegistries", () => {
 		}),
 	);
 });
+
+// ─── OPS-143: the pnpr workload pair ───────────────────────────────────────────
+// `_pnprWorkload=<audience>` asks for a minted, publish-only workload
+// credential; the `_authToken` line on the SAME URL is then the read
+// credential. Two lines, one registry, either order.
+describe("parseCustomRegistries — pnpr workload lines (OPS-143)", () => {
+	const URL = "https://registry.savvyweb.systems/npm/~savvy/";
+	const AUDIENCE = "https://registry.savvyweb.systems";
+	const WORKLOAD_LINE = `${URL}_pnprWorkload=${AUDIENCE}`;
+	const READER_LINE = `${URL}_authToken=fake-reader-token`;
+
+	it.effect("pairs a workload line with the same URL's _authToken as its read credential", () =>
+		Effect.gen(function* () {
+			const entries = yield* parseCustomRegistries([WORKLOAD_LINE, READER_LINE]);
+			expect(entries).toHaveLength(1);
+			expect(entries[0]?.registry).toBe(URL);
+			expect(entries[0]?.workload).toEqual({ audience: AUDIENCE });
+			expect(entries[0]?.token && Redacted.value(entries[0].token)).toBe("fake-reader-token");
+		}),
+	);
+
+	it.effect("pairs them identically when the _authToken line comes first", () =>
+		Effect.gen(function* () {
+			const entries = yield* parseCustomRegistries([READER_LINE, WORKLOAD_LINE]);
+			expect(entries).toHaveLength(1);
+			expect(entries[0]?.workload).toEqual({ audience: AUDIENCE });
+			expect(entries[0]?.token && Redacted.value(entries[0].token)).toBe("fake-reader-token");
+		}),
+	);
+
+	it.effect("pairs across slash variance and keeps other registries separate", () =>
+		Effect.gen(function* () {
+			const entries = yield* parseCustomRegistries([
+				`https://registry.savvyweb.systems/npm/~savvy_pnprWorkload=${AUDIENCE}`,
+				"https://registry.example.com/_authToken=other-token",
+				READER_LINE,
+			]);
+			expect(entries.map((e) => e.registry)).toEqual([URL, "https://registry.example.com/"]);
+			expect(entries[1]?.workload).toBeUndefined();
+		}),
+	);
+
+	it.effect("leaves a plain _authToken entry with no workload", () =>
+		Effect.gen(function* () {
+			const entries = yield* parseCustomRegistries([READER_LINE]);
+			expect(entries[0]?.workload).toBeUndefined();
+		}),
+	);
+
+	it.effect("accepts a workload-only URL at parse time, with no token", () =>
+		Effect.gen(function* () {
+			// The missing read credential is a publish-time failure, named there.
+			const entries = yield* parseCustomRegistries([WORKLOAD_LINE]);
+			expect(entries).toHaveLength(1);
+			expect(entries[0]?.workload).toEqual({ audience: AUDIENCE });
+			expect(entries[0]?.token).toBeUndefined();
+		}),
+	);
+
+	it.effect("keeps the audience verbatim — pnpr matches it exactly", () =>
+		Effect.gen(function* () {
+			const entries = yield* parseCustomRegistries([`${URL}_pnprWorkload=https://aud.example.com/x`]);
+			expect(entries[0]?.workload?.audience).toBe("https://aud.example.com/x");
+		}),
+	);
+
+	it.effect("rejects two _pnprWorkload lines for one URL, naming both lines", () =>
+		Effect.gen(function* () {
+			const error = yield* Effect.flip(parseCustomRegistries([WORKLOAD_LINE, READER_LINE, WORKLOAD_LINE]));
+			expect(error.message).toContain("line 3");
+			expect(error.message).toContain("line 1");
+			expect(error.message).toContain("duplicate `_pnprWorkload`");
+		}),
+	);
+
+	it.effect("still rejects two _authToken lines for a workload URL, without the tokens", () =>
+		Effect.gen(function* () {
+			const error = yield* Effect.flip(
+				parseCustomRegistries([READER_LINE, WORKLOAD_LINE, `${URL}_authToken=second-fake-token`]),
+			);
+			expect(error.message).toContain("line 3");
+			expect(error.message).toContain("duplicate `_authToken`");
+			expect(error.message).not.toContain("fake-reader-token");
+			expect(error.message).not.toContain("second-fake-token");
+		}),
+	);
+
+	it.effect("rejects an audience that is not an http(s) URL", () =>
+		Effect.gen(function* () {
+			const error = yield* Effect.flip(parseCustomRegistries([`${URL}_pnprWorkload=registry.savvyweb.systems`]));
+			expect(error).toBeInstanceOf(Config.ConfigError);
+			expect(error.message).toContain("line 1");
+			expect(error.message).toContain("audience");
+			expect(error.message).toContain("http(s)");
+		}),
+	);
+
+	it.effect("rejects an ftp audience", () =>
+		Effect.gen(function* () {
+			const error = yield* Effect.flip(parseCustomRegistries([`${URL}_pnprWorkload=ftp://registry.savvyweb.systems`]));
+			expect(error.message).toContain("audience");
+		}),
+	);
+
+	it.effect("rejects a workload line on a non-http(s) registry", () =>
+		Effect.gen(function* () {
+			const error = yield* Effect.flip(parseCustomRegistries([`ftp://x.example.com/_pnprWorkload=${AUDIENCE}`]));
+			expect(error.message).toContain("http(s)");
+		}),
+	);
+
+	it.effect("splits on the FIRST key, so a token containing `_pnprWorkload=` stays a token", () =>
+		Effect.gen(function* () {
+			const entries = yield* parseCustomRegistries([`${URL}_authToken=abc_pnprWorkload=https://evil.example.com`]);
+			expect(entries[0]?.workload).toBeUndefined();
+			expect(entries[0]?.token && Redacted.value(entries[0].token)).toBe("abc_pnprWorkload=https://evil.example.com");
+		}),
+	);
+});

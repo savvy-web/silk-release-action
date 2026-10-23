@@ -9,23 +9,55 @@
 import { Config, Effect, Redacted, Schema, SchemaIssue } from "effect";
 
 /**
- * One parsed `custom-registries` line: a registry URL bound to its token.
+ * A pnpr workload binding: publish this registry with a credential minted
+ * from the job's GitHub Actions OIDC token, bound to `audience`.
  *
  * @remarks
- * The token is `Redacted` from the moment it leaves the raw line. It is
- * declassified exactly once, in `release/publish.ts`, through the kit's
- * `Secret` seam — mask-first — and reaches npm only via
- * `PackagePublish.setupAuth`'s npmrc write. No process-environment bridge
- * exists on this path; the plaintext-env bridge the predecessor used was
- * deleted deliberately (see `program.ts`).
+ * Carries no secret — the credential is minted per target at publish time
+ * (`release/publish.ts`), never parsed from the input. OPS-143.
+ *
+ * @public
+ */
+export interface CustomRegistryWorkload {
+	/** The OIDC audience the minted token is requested for, verbatim. */
+	readonly audience: string;
+}
+
+/**
+ * One registry configured by the `custom-registries` input: its URL, its
+ * `_authToken`, and an optional pnpr workload binding.
+ *
+ * @remarks
+ * Every entry carries at least one of `token` and `workload` — a line names
+ * one or the other, and an entry exists only because a line named its URL.
+ *
+ * - **`token` only** — the `_authToken` is both the publish and the read
+ *   credential, as it always was.
+ * - **`workload` + `token`** — the workload credential authenticates the
+ *   publish and NOTHING ELSE (pnpr accepts it only for the PUT); the
+ *   `_authToken` is the read credential for the integrity probe, the
+ *   snapshot probe and post-publish confirmation.
+ * - **`workload` only** — accepted here; it fails at publish time with
+ *   `no-read-credential`, because pnpr workload credentials cannot read and
+ *   the integrity probe reads before any PUT.
+ *
+ * The token is `Redacted` from the moment it leaves the raw line. A plain
+ * entry's token is declassified exactly once, in `release/publish.ts`,
+ * through the kit's `Secret` seam — mask-first — and reaches npm only via
+ * `PackagePublish.setupAuth`'s npmrc write. A workload entry's reader token is
+ * never declassified at all: reads take the `Redacted` value. No
+ * process-environment bridge exists on this path; the plaintext-env bridge
+ * the predecessor used was deleted deliberately (see `program.ts`).
  *
  * @public
  */
 export interface CustomRegistryAuth {
 	/** The registry URL, normalized to carry a trailing slash. */
 	readonly registry: string;
-	/** The `_authToken` value for that registry. */
-	readonly token: Redacted.Redacted<string>;
+	/** The `_authToken` value for that registry — the read credential when `workload` is set. */
+	readonly token?: Redacted.Redacted<string>;
+	/** Set by a `_pnprWorkload=<audience>` line on the same URL. */
+	readonly workload?: CustomRegistryWorkload;
 }
 
 /**
@@ -40,23 +72,37 @@ const configFailure = (message: string): Effect.Effect<never, Config.ConfigError
 
 /**
  * The accepted line shape: a registry URL immediately followed by an npmrc
- * `_authToken=` auth string, e.g.
+ * key and its value — `_authToken=<token>` or `_pnprWorkload=<audience>`, e.g.
  * `https://registry.example.com/_authToken=npm_abc123`.
  *
- * Lazy prefix, so the FIRST `_authToken=` splits the line — a token that
- * itself contains the text still parses whole.
+ * Lazy prefix, so the FIRST key occurrence splits the line — a token that
+ * itself contains `_authToken=` or `_pnprWorkload=` still parses whole, as a
+ * token.
  */
-const AUTH_TOKEN_LINE = /^(.+?)\/?_authToken=(.+)$/;
+const REGISTRY_LINE = /^(.+?)\/?(_authToken|_pnprWorkload)=(.+)$/;
 
 /** A `_auth=<base64>` line — the predecessor supported it; the kit does not. */
 const BASIC_AUTH_LINE = /^.+?\/?_auth=.+$/;
 
+/** Whether `value` parses as an http(s) URL. */
+const isHttpUrl = (value: string): boolean => {
+	if (!URL.canParse(value)) return false;
+	const { protocol } = new URL(value);
+	return protocol === "https:" || protocol === "http:";
+};
+
 /**
- * Parse the `custom-registries` input lines into typed registry/token pairs.
+ * Parse the `custom-registries` input lines into one entry per registry.
  *
  * @remarks
- * The format is one registry per line, URL immediately followed by the npmrc
- * auth string: `https://registry.example.com/_authToken=<token>`.
+ * The format is one key per line, the registry URL immediately followed by
+ * the key: `https://registry.example.com/_authToken=<token>`, or — for a pnpr
+ * registry published with a minted workload credential (OPS-143) —
+ * `<url>_pnprWorkload=<audience>` paired with `<url>_authToken=<release-reader>`.
+ * Lines are grouped by normalized URL, so the pair may come in either order;
+ * with a workload line present, the `_authToken` is the READ credential only.
+ * A workload line with no `_authToken` is accepted here and fails at publish
+ * time, where the missing read credential can be named per target.
  *
  * Everything else **fails the decode** — loudly, which is the point of issue
  * #215 (the input spent four minor releases as a silent no-op):
@@ -67,8 +113,10 @@ const BASIC_AUTH_LINE = /^.+?\/?_auth=.+$/;
  * - a bare URL: the predecessor fell back to the GitHub App token, a
  *   credential no third-party registry accepts (the same reasoning that
  *   removed the App-token fallback for GitHub Packages);
- * - two lines for the same registry: two tokens for one registry is a
- *   misconfiguration, not a preference order.
+ * - two `_authToken` lines (or two `_pnprWorkload` lines) for the same
+ *   registry: two tokens for one registry is a misconfiguration, not a
+ *   preference order;
+ * - a `_pnprWorkload` audience that is not an http(s) URL.
  *
  * Failure messages name the line number and (where safe) the registry —
  * never the token.
@@ -84,33 +132,70 @@ const BASIC_AUTH_LINE = /^.+?\/?_auth=.+$/;
 export const parseCustomRegistries = (
 	lines: ReadonlyArray<string>,
 ): Effect.Effect<ReadonlyArray<CustomRegistryAuth>, Config.ConfigError> => {
-	const entries: CustomRegistryAuth[] = [];
-	const seen = new Set<string>();
+	// Insertion order = the order each URL first appears, so the output stays
+	// line-ordered for single-line registries.
+	const byRegistry = new Map<
+		string,
+		{ token?: Redacted.Redacted<string>; tokenLine?: number; workload?: CustomRegistryWorkload; workloadLine?: number }
+	>();
 	for (const [index, line] of lines.entries()) {
-		const match = AUTH_TOKEN_LINE.exec(line);
-		if (match?.[1] === undefined || match[2] === undefined) {
+		const lineNo = index + 1;
+		const match = REGISTRY_LINE.exec(line);
+		if (match?.[1] === undefined || match[2] === undefined || match[3] === undefined) {
 			return configFailure(
 				BASIC_AUTH_LINE.test(line)
-					? `custom-registries line ${index + 1}: \`_auth=<base64>\` (basic auth) is no longer supported — ` +
+					? `custom-registries line ${lineNo}: \`_auth=<base64>\` (basic auth) is no longer supported — ` +
 							"the publish chain writes `_authToken` npmrc entries only. Supply a bearer token as " +
 							"`https://registry.example.com/_authToken=<token>`."
-					: `custom-registries line ${index + 1}: expected \`<registry-url>_authToken=<token>\` ` +
-							"(e.g. `https://registry.example.com/_authToken=<token>`). A bare registry URL is not " +
-							"accepted — the GitHub App token fallback was removed, so every custom registry needs " +
-							"an explicit token.",
+					: `custom-registries line ${lineNo}: expected \`<registry-url>_authToken=<token>\` ` +
+							"(e.g. `https://registry.example.com/_authToken=<token>`) or " +
+							"`<registry-url>_pnprWorkload=<audience>`. A bare registry URL is not accepted — the GitHub " +
+							"App token fallback was removed, so every custom registry needs an explicit token.",
 			);
 		}
 		const registry = `${match[1].replace(/\/+$/, "")}/`;
 		if (!/^https?:\/\/.+/.test(registry)) {
-			return configFailure(`custom-registries line ${index + 1}: registry must be an http(s) URL, got \`${registry}\``);
+			return configFailure(`custom-registries line ${lineNo}: registry must be an http(s) URL, got \`${registry}\``);
 		}
-		if (seen.has(registry)) {
-			return configFailure(
-				`custom-registries line ${index + 1}: duplicate entry for \`${registry}\` — one token per registry`,
-			);
+		const entry = byRegistry.get(registry) ?? {};
+		if (match[2] === "_authToken") {
+			if (entry.tokenLine !== undefined) {
+				return configFailure(
+					`custom-registries line ${lineNo}: duplicate \`_authToken\` entry for \`${registry}\` (already on line ` +
+						`${entry.tokenLine}) — one token per registry`,
+				);
+			}
+			entry.token = Redacted.make(match[3]);
+			entry.tokenLine = lineNo;
+		} else {
+			if (entry.workloadLine !== undefined) {
+				return configFailure(
+					`custom-registries line ${lineNo}: duplicate \`_pnprWorkload\` entry for \`${registry}\` (already on line ` +
+						`${entry.workloadLine}) — one workload audience per registry`,
+				);
+			}
+			// The audience is not a secret, so it may be quoted back.
+			if (!isHttpUrl(match[3])) {
+				return configFailure(
+					`custom-registries line ${lineNo}: \`_pnprWorkload\` audience must be an http(s) URL ` +
+						`(e.g. \`https://registry.savvyweb.systems\`), got \`${match[3]}\``,
+				);
+			}
+			// Verbatim: pnpr compares the token's \`aud\` claim exactly, so a
+			// "normalizing" trailing slash would mint a token it rejects.
+			entry.workload = { audience: match[3] };
+			entry.workloadLine = lineNo;
 		}
-		seen.add(registry);
-		entries.push({ registry, token: Redacted.make(match[2]) });
+		byRegistry.set(registry, entry);
 	}
-	return Effect.succeed(entries);
+	return Effect.succeed(
+		Array.from(
+			byRegistry,
+			([registry, entry]): CustomRegistryAuth => ({
+				registry,
+				...(entry.token !== undefined ? { token: entry.token } : {}),
+				...(entry.workload !== undefined ? { workload: entry.workload } : {}),
+			}),
+		),
+	);
 };

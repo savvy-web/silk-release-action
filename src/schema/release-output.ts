@@ -1000,11 +1000,11 @@ const PublishTargetRef = Schema.Struct({
 	description: "The `publishConfig.targets` entry a publication was resolved from: its key and its release channel.",
 });
 
-const PublishAuthMethod = Schema.Literals(["token", "trusted-publishing"]).annotate({
+const PublishAuthMethod = Schema.Literals(["token", "trusted-publishing", "workload-oidc"]).annotate({
 	identifier: "PublishAuthMethod",
 	title: "Auth method",
 	description:
-		"How the action set npm up to authenticate — what the action DID, not what npm reports. `token` — the Actions OIDC environment was stripped (always, for GitHub Packages and custom registries — trusted publishing exists only on registry.npmjs.org) or the runner never exposed it (no `id-token: write`), so npm could authenticate only with the npmrc token, if any. `trusted-publishing` — the OIDC environment was passed through, so npm was free to attempt its trusted-publishing exchange. npm does not say which path it took, so a `trusted-publishing` upload with a non-null `credential` may have authenticated with that token instead. More methods may be added; treat an unknown value as opaque.",
+		"How the action set npm up to authenticate — what the action DID, not what npm reports. `token` — the Actions OIDC environment was stripped (always, for GitHub Packages and custom registries — trusted publishing exists only on registry.npmjs.org) or the runner never exposed it (no `id-token: write`), so npm could authenticate only with the npmrc token, if any. `trusted-publishing` — the OIDC environment was passed through, so npm was free to attempt its trusted-publishing exchange. npm does not say which path it took, so a `trusted-publishing` upload with a non-null `credential` may have authenticated with that token instead. `workload-oidc` — a pnpr workload registry (a `_pnprWorkload` line in `custom-registries`): the action minted a `pnpr_workload_<jwt>` credential from the job's GitHub Actions OIDC token (`id-token: write`), wrote it as the npmrc's only token for that registry and stripped the OIDC environment, so that minted credential authenticated the upload; `credential` is `custom-registries`, and there is never a fallback. More methods may be added; treat an unknown value as opaque.",
 });
 
 const PublishAuth = Schema.Struct({
@@ -1014,7 +1014,7 @@ const PublishAuth = Schema.Struct({
 			identifier: "PublishAuthCredential",
 			title: "Credential source",
 			description:
-				"Which input supplied the registry token the action wrote to the npmrc: `github-token` (GitHub Packages), `npm-token` (the public npm registry), `custom-registries`, or `registry-env` (the `<HOST>_TOKEN` environment fallback for a custom registry). Null when no token was written.",
+				"Which input supplied the registry token the action wrote to the npmrc: `github-token` (GitHub Packages), `npm-token` (the public npm registry), `custom-registries` (an `_authToken` line, or the credential minted for a `_pnprWorkload` line when `method` is `workload-oidc`), or `registry-env` (the `<HOST>_TOKEN` environment fallback for a custom registry). Null when no token was written.",
 		}),
 	).annotate({
 		title: "Credential source",

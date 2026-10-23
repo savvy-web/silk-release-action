@@ -16,10 +16,10 @@ sources:
     resource: ../../src/utils/custom-registries.ts
 generated:
   by: okfit/claude-code
-  at: 2026-10-23T14:45:19Z
+  at: 2026-10-23T17:46:00Z
 integrity:
   generated:
-    body: d8183e551674401f
+    body: bd1c460896740843
 ---
 
 # Action inputs and outputs
@@ -49,9 +49,9 @@ them.
 | `npm-token` | no | `""` | npm token for a first publish or an OIDC fallback. |
 | `strict-warnings` | no | `"false"` | Escalates warning-severity validation findings to check-run failures, blocking branch-protection-gated auto-merge. |
 | `sbom-config` | no | `""` | SBOM metadata JSON — see `../interfaces/sbom-config.md`. |
-| `custom-registries` | no | `""` | Custom registry auth, one registry per line — see format below. |
+| `custom-registries` | no | `""` | Custom registry auth, one key per line — `_authToken`, or a pnpr `_pnprWorkload` paired with a reader `_authToken`; see format below. |
 | `on-build` | no | `""` | Command run after the validation build; a non-zero exit fails Phase 2. Gate only: stderr is not inspected, and it must not mutate the repository. Skipped in dry-run along with the build it gates; unset is a total no-op. |
-| `registry-confirm-timeout` | no | `"180"` | Seconds to wait, after publishing, for every npm package version to become resolvable on its registry before the action finishes; `0` skips the probe. Never fails the run — a version still unresolved at the ceiling is reported as held. GitHub Packages and custom registries are probed too, with their publish credential (`github-token`, `custom-registries`), under a 20s ceiling capped by this value; no read credential (`no-read-credential`) or a 401/403 (`read-denied`) is skipped, never held. On npm the probe reads anonymously and npm answers 404 for a private package read without credentials, so a private npm package is reported held at the ceiling on every run unless `npm-token` is set — pass it, or set `0`. |
+| `registry-confirm-timeout` | no | `"180"` | Seconds to wait, after publishing, for every npm package version to become resolvable on its registry before the action finishes; `0` skips the probe. Never fails the run — a version still unresolved at the ceiling is reported as held. GitHub Packages and custom registries are probed too, with their read credential (`github-token`, `custom-registries` — for a pnpr workload registry, its paired `_authToken` reader), under a 20s ceiling capped by this value; no read credential (`no-read-credential`) or a 401/403 (`read-denied`) is skipped, never held. On npm the probe reads anonymously and npm answers 404 for a private package read without credentials, so a private npm package is reported held at the ceiling on every run unless `npm-token` is set — pass it, or set `0`. |
 
 Every input is decoded exactly once, in `src/schema/inputs.ts`, against typed
 literal unions rather than cast — the convention this contract depends on is
@@ -80,6 +80,7 @@ a snapshot run only by setting the input directly. See
 | JSR | OIDC | Trusted publishing, no token needed. |
 | GitHub Packages | `github-token` input | **Required.** Pass `secrets.GITHUB_TOKEN` with workflow permissions `packages: write`. |
 | Custom registries | `custom-registries` input | One `<url>/_authToken=<token>` line per registry. |
+| pnpr (workload OIDC) | `custom-registries` `_pnprWorkload` line | A `pnpr_workload_<jwt>` credential minted per target from the job's OIDC token (needs `id-token: write`); the paired `_authToken` reader does every read. |
 
 **Never drop `github-token`.** A GitHub App installation token — including the
 one this action provisions for itself — cannot access GitHub Packages at all;
@@ -104,11 +105,32 @@ string:
 https://registry.example.com/_authToken=<token>
 ```
 
-Each token is masked in the workflow log and written to the npmrc npm
-publishes through.[^action-yml] **A malformed line fails the run** rather
+For keyless publishing to pnpr, one URL takes two lines, in either order:
+
+```text
+https://registry.savvyweb.systems/npm/~savvy/_pnprWorkload=https://registry.savvyweb.systems
+https://registry.savvyweb.systems/npm/~savvy/_authToken=<release-reader>
+```
+
+`_pnprWorkload=<audience>` carries no secret. It tells the action to mint
+`pnpr_workload_<jwt>` from the job's GitHub Actions OIDC token for that
+audience, once per target, immediately before the upload, and to write it
+as the npmrc's only token for the URL. The minted credential authenticates
+the upload and nothing else, so with a workload line present the
+`_authToken` on the same URL is the **read** credential only: the integrity
+probe, the snapshot probe and post-publish confirmation use it.[^custom-registries-ts]
+The job needs `permissions: id-token: write`. A workload line with no
+`_authToken` parses, then fails that target as `no-read-credential` before
+any read or upload, and Phase 2 reports it as a `Publish Validation` error.
+The run's auth record for such an upload is `workload-oidc`
+(`custom-registries`). The declared URL is used as-is everywhere — npmrc
+key, upload, probes, confirmation and output.
+
+Each token is masked in the workflow log. A plain `_authToken` is written to
+the npmrc npm publishes through; a workload registry's reader never is.[^action-yml] **A malformed line fails the run** rather
 than being silently ignored or configuring nothing — this restores a
 capability that spent four minor releases as a silent no-op after the
-publish-chain migration (`#90`, issue `#215`).[^custom-registries-ts] Three
+publish-chain migration (`#90`, issue `#215`).[^custom-registries-ts] Four
 shapes are rejected, each naming the offending line number (never the
 token):
 
@@ -116,8 +138,10 @@ token):
   token as `_authToken=<token>` instead.
 - a bare registry URL with no token — the GitHub App token fallback was
   removed, so every custom registry needs an explicit token.
-- two lines naming the same registry — two tokens for one registry is a
-  misconfiguration, not a preference order.
+- two `_authToken` lines, or two `_pnprWorkload` lines, naming the same
+  registry — two tokens for one registry is a misconfiguration, not a
+  preference order.
+- a `_pnprWorkload` audience that is not an http(s) URL.
 
 For reusable workflows, the whole config can be stored in one repository
 secret and passed through as `custom-registries: ${{ secrets.CUSTOM_REGISTRIES }}`.

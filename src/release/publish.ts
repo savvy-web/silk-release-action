@@ -11,8 +11,15 @@ import { basename, dirname, join, relative } from "node:path";
 import { Run } from "@effected/commands";
 import type { GitHubError, Repo } from "@effected/github";
 import { Attestation, GitHubCommit, GitHubContent, PullRequest } from "@effected/github";
-import type { ActionLogger, OidcTokenIssuer } from "@effected/github-actions";
-import { ActionEnvironment, ActionInput, ActionOutputs, ActionState, Secret } from "@effected/github-actions";
+import type { ActionLogger, OidcTokenError } from "@effected/github-actions";
+import {
+	ActionEnvironment,
+	ActionInput,
+	ActionOutputs,
+	ActionState,
+	OidcTokenIssuer,
+	Secret,
+} from "@effected/github-actions";
 import type { RegistryCredential } from "@effected/npm";
 import { NpmExecutor, NpmRegistry, PackagePublish, classifyRegistry, registryHost } from "@effected/npm";
 import type { SigstoreSigner } from "@effected/sbom";
@@ -35,7 +42,12 @@ import { attestSubject, buildProvenancePredicate } from "./attest-helpers.js";
 import { ChangesetConfig } from "./changeset-config.js";
 import { humanizeSize } from "./report.js";
 import type { TargetSpec } from "./resolve-targets.js";
-import { resolvePublishTargetSpecs, resolveRegistryToken } from "./resolve-targets.js";
+import {
+	findCustomRegistry,
+	resolvePublishTargetSpecs,
+	resolveRegistryToken,
+	workloadReadGap,
+} from "./resolve-targets.js";
 import type { TargetLineInput } from "./target-line.js";
 import { credentialInputHint, fallbackCause, formatTargetLine, readFailureHint } from "./target-line.js";
 import type {
@@ -628,6 +640,34 @@ const runAttestationsForBuild = (
 		} satisfies AttestationsOutcome;
 	});
 
+/** The bearer prefix pnpr expects on a workload credential. */
+const PNPR_WORKLOAD_PREFIX = "pnpr_workload_";
+
+/**
+ * Mint the pnpr workload credential for one publish: `pnpr_workload_<jwt>`,
+ * where `<jwt>` is the job's GitHub Actions OIDC ID token for `audience`.
+ *
+ * @remarks
+ * Masked twice before it is returned — the bare JWT by `Secret.forSigning`'s
+ * mask-first declassification (the prefix has to be prepended to the raw
+ * value), then the full prefixed credential by `Secret.mask` — so neither
+ * spelling can reach the log through anything that runs after this. The
+ * result stays `Redacted` and reaches npm only through `setupAuth`'s npmrc
+ * write. Fails with the issuer's `OidcTokenError` when the job lacks
+ * `permissions: id-token: write` or the runner exposes no OIDC service.
+ * OPS-143.
+ */
+const mintWorkloadCredential = (
+	audience: string,
+): Effect.Effect<Redacted.Redacted<string>, OidcTokenError, OidcTokenIssuer | ActionOutputs> =>
+	Effect.gen(function* () {
+		const issuer = yield* OidcTokenIssuer;
+		const jwt = yield* Secret.forSigning(yield* issuer.token(audience));
+		const credential = Redacted.make(`${PNPR_WORKLOAD_PREFIX}${jwt}`);
+		yield* Secret.mask(credential);
+		return credential;
+	});
+
 /**
  * Publish a single package to every target in one build-directory group —
  * the self-recovering, pack-once flow.
@@ -647,6 +687,15 @@ const runAttestationsForBuild = (
  *  3. **Attest once per build.** Provenance + SBOM attestation runs ONCE for
  *     the build directory's tarball after every target has been probed.
  *
+ * A pnpr workload registry (`_pnprWorkload` in `custom-registries`, OPS-143)
+ * takes a different credential path: every read uses the paired `_authToken`
+ * reader, nothing is written to the npmrc before the reads, and the publish
+ * credential is minted — `pnpr_workload_<jwt>` from
+ * `OidcTokenIssuer.token(audience)`, masked, written by `setupAuth` — only
+ * after the probe says the version is absent, immediately before the PUT.
+ * A workload entry with no reader fails before any read; a mint or npmrc
+ * failure fails that target only, with no fallback to the reader token.
+ *
  * JSR targets are skipped with a warning — they require a separate publish
  * path that is outside this orchestrator's scope.
  */
@@ -658,6 +707,7 @@ const publishDirectoryGroup = (
 	npmToken: string | null,
 	ghPkgsToken: string | null,
 	customTokens: ReadonlyMap<string, string>,
+	customRegistries: ReadonlyArray<CustomRegistryAuth>,
 	npmrcPath: string,
 	publishExecutor: NpmExecutor,
 	sbomPath: string | null,
@@ -791,14 +841,32 @@ const publishDirectoryGroup = (
 				formatTargetLine({ id: t.id, registry: t.registry, outcome, ...extra });
 			yield* Effect.logDebug(`[publish] ${packageName} ${directory} → ${t.registry}`);
 
+			// A pnpr workload registry (OPS-143): the publish credential is minted
+			// later, right before the PUT, and the paired `_authToken` is the READ
+			// credential only. pnpr refuses a workload credential on any read, so
+			// a workload entry with no reader cannot get past the integrity probe —
+			// fail it here, naming the missing line, instead of as an opaque 401.
+			const workloadEntry = findCustomRegistry(t.registry, customRegistries);
+			const workload = workloadEntry?.workload ?? null;
+			const readGap = workload !== null ? workloadReadGap(t.registry, customRegistries) : null;
+			if (readGap !== null) {
+				yield* Effect.logError(`[publish] ${t.registry}: cannot publish ${packResult.name} — ${readGap}`);
+				yield* Effect.logWarning(line("no-read-credential"));
+				results.push({ ...base(t), success: false, status: "failed", error: readGap, ...digestFields });
+				failedCount++;
+				continue;
+			}
+
 			// Auth is set up before the probe, unchanged from the predecessor.
 			// The reason has changed: the probe is now an HTTP read that takes its
 			// own token, so it no longer needs an npmrc. The ordering is kept
 			// anyway because reordering the authentication sequence of a publish
 			// pipeline buys tidiness and risks a failure mode discovered in
 			// production. Whether the setup can move after the probe is on the
-			// post-migration list.
-			const resolvedToken = resolveRegistryToken(t.registry, npmToken, ghPkgsToken, customTokens);
+			// post-migration list. A workload registry resolves no token here: its
+			// `registry-env` fallback must not stand in for the minted credential.
+			const resolvedToken =
+				workload === null ? resolveRegistryToken(t.registry, npmToken, ghPkgsToken, customTokens) : null;
 			const token = resolvedToken?.token ?? null;
 
 			// Name the missing credential instead of letting it surface as a 403.
@@ -817,7 +885,7 @@ const publishDirectoryGroup = (
 			// Without this, the symptom is four identical "integrity probe failed —
 			// status 403" lines that read like a permissions problem on the packages
 			// rather than a missing input.
-			if (token === null && classifyRegistry(t.registry) === "github-packages") {
+			if (workload === null && token === null && classifyRegistry(t.registry) === "github-packages") {
 				const reason =
 					"no github-token input — GitHub Packages requires the workflow's secrets.GITHUB_TOKEN. " +
 					"GitHub App tokens cannot access GitHub Packages at all, so the App installation token " +
@@ -844,10 +912,20 @@ const publishDirectoryGroup = (
 			// key and the probe picks its HTTP scheme from the same value, so the
 			// read and the publish cannot authenticate differently against one
 			// registry.
+			//
+			// The exception is a workload registry: its reads carry the reader
+			// (still `Redacted`, never declassified) and nothing is written to the
+			// npmrc until the minted credential is, right before the PUT — so no
+			// read can pick the workload credential up, and the npmrc never holds
+			// the reader for that registry.
 			const redactedToken = token === null ? null : Redacted.make(token);
 			const credential: RegistryCredential | null =
-				redactedToken === null ? null : { kind: "token", token: redactedToken };
-			if (credential !== null && resolvedToken !== null) {
+				workload !== null && workloadEntry?.token !== undefined
+					? { kind: "token", token: workloadEntry.token }
+					: redactedToken === null
+						? null
+						: { kind: "token", token: redactedToken };
+			if (workload === null && credential !== null && resolvedToken !== null) {
 				// Name the input that supplies this credential: without it the
 				// publish below fails with npm's raw auth error and nothing points
 				// back at the workflow configuration.
@@ -878,7 +956,7 @@ const publishDirectoryGroup = (
 					}),
 				);
 				if (known._tag === "Failure") {
-					const hint = readFailureHint(t.registry, known.failure);
+					const hint = readFailureHint(t.registry, known.failure, { workload: workload !== null });
 					const reason =
 						`registry lookup failed — ${known.failure.message}${hint !== null ? ` — ${hint}` : ""}; ` +
 						'a snapshot never reads an unreadable registry as "never published"';
@@ -927,7 +1005,7 @@ const publishDirectoryGroup = (
 					// workflow — a custom registry refusing an unauthenticated or
 					// under-scoped read — from the typed status, not the message.
 					Effect.catch((e) => {
-						const hint = readFailureHint(t.registry, e);
+						const hint = readFailureHint(t.registry, e, { workload: workload !== null });
 						return Effect.succeed({ ok: false as const, error: hint !== null ? `${e.message} — ${hint}` : e.message });
 					}),
 				);
@@ -971,14 +1049,51 @@ const publishDirectoryGroup = (
 				// trusted publishing for an upload the token authenticated. Every
 				// non-npm registry publishes with token auth (OIDC env stripped) from the
 				// first attempt.
-				const tokenOnly = classifyRegistry(t.registry) !== "npm";
+				const tokenOnly = workload !== null || classifyRegistry(t.registry) !== "npm";
+
+				// ── pnpr workload: mint, mask, write — immediately before the PUT ──
+				// Once per target, after every read, so the minted credential exists
+				// for exactly the one request pnpr accepts it for. No fallback: pnpr
+				// answers the reader token's PUT with 403, so substituting it would
+				// only trade a clear failure for an opaque one.
+				if (workload !== null) {
+					const minted = yield* Effect.result(mintWorkloadCredential(workload.audience));
+					if (minted._tag === "Failure") {
+						const reason =
+							`could not mint the pnpr workload credential for audience ${workload.audience} — ` +
+							`${minted.failure.message}; the publishing job needs \`permissions: id-token: write\``;
+						yield* Effect.logError(`[publish] ${t.registry}: cannot publish ${packResult.name} — ${reason}`);
+						yield* Effect.logWarning(line("mint-failed"));
+						results.push({ ...base(t), success: false, status: "failed", error: reason, ...digestFields });
+						failedCount += 1;
+						continue;
+					}
+					const written = yield* Effect.result(
+						publishSvc.setupAuth({
+							registry: t.registry,
+							credential: { kind: "token", token: minted.success },
+							npmrcPath,
+						}),
+					);
+					if (written._tag === "Failure") {
+						const reason = `could not write the pnpr workload credential to the npmrc — ${written.failure.message}`;
+						yield* Effect.logError(`[publish] ${t.registry}: cannot publish ${packResult.name} — ${reason}`);
+						yield* Effect.logWarning(line("publish-failed", { tag: tagFor(t) }));
+						results.push({ ...base(t), success: false, status: "failed", error: reason, ...digestFields });
+						failedCount += 1;
+						continue;
+					}
+				}
+
 				// What the action set up — npm reports nothing about which path it
 				// took (see `PublishAuth`). Stripping the OIDC env, or a runner that
-				// never exposed it, leaves only the token.
-				const firstMethod: PublishAuth["method"] = tokenOnly || !oidcOffered ? "token" : "trusted-publishing";
+				// never exposed it, leaves only the token; a workload registry's
+				// npmrc holds only the minted credential.
+				const firstMethod: PublishAuth["method"] =
+					workload !== null ? "workload-oidc" : tokenOnly || !oidcOffered ? "token" : "trusted-publishing";
 				let auth: PublishAuth = {
 					method: firstMethod,
-					credential: resolvedToken?.source ?? null,
+					credential: workload !== null ? "custom-registries" : (resolvedToken?.source ?? null),
 					fallback: null,
 				};
 				let publishOutcome = yield* publishSvc
@@ -1001,7 +1116,7 @@ const publishDirectoryGroup = (
 				// it fails and a token is available, retry once with classic token auth
 				// (OIDC env stripped). Once the package exists and trusted publishing is
 				// configured, the first attempt succeeds and this retry never fires.
-				if (!publishOutcome.ok && !tokenOnly && redactedToken !== null) {
+				if (!publishOutcome.ok && !tokenOnly && workload === null && redactedToken !== null) {
 					auth = { ...auth, method: "token", fallback: { from: firstMethod, reason: publishOutcome.error } };
 					const firstLabel = firstMethod === "trusted-publishing" ? "trusted-publishing" : "token";
 					yield* Effect.logWarning(
@@ -1717,8 +1832,19 @@ export const runPublishTargets = (
 		// above follow via `setSecret`). No process-environment bridge: the
 		// value reaches npm only through `PackagePublish.setupAuth`'s npmrc
 		// write, keyed for `resolveRegistryToken` by the parse-normalized registry URL.
+		//
+		// A pnpr workload entry (OPS-143) is not declassified at all: its
+		// `_authToken` is the read credential, and reads take the `Redacted`
+		// value, so it is only masked. Leaving it out of `customTokens` is what
+		// keeps it out of every npmrc — the workload credential minted per
+		// target is the only token written for that registry.
 		const customTokens = new Map<string, string>();
 		for (const entry of customRegistries) {
+			if (entry.token === undefined) continue;
+			if (entry.workload !== undefined) {
+				yield* Secret.mask(entry.token);
+				continue;
+			}
 			customTokens.set(entry.registry, yield* Secret.forSigning(entry.token));
 		}
 
@@ -1901,6 +2027,7 @@ export const runPublishTargets = (
 							npmToken,
 							ghPkgsToken,
 							customTokens,
+							customRegistries,
 							npmrcPath,
 							publishExecutor,
 							sbomPathForPackage,

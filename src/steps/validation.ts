@@ -119,6 +119,7 @@ export const runValidation = (inputs: Inputs) =>
 					packageManager,
 					targetBranch,
 					dryRun,
+					customRegistries: inputs.customRegistries,
 				});
 
 				// Step 6 — the check derivation. Pure, and extracted to

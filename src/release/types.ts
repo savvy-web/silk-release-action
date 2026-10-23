@@ -27,12 +27,16 @@ import type { ReleaseKind } from "../utils/release-kind.js";
  * attempt. npm does not report which path it took, and
  * `@effected/npm`'s `PublishOutcome` carries nothing about it, so a successful
  * `"trusted-publishing"` attempt with a credential in the npmrc does not prove
- * which of the two npm used. Open for growth: a per-target workload-OIDC method
- * is planned.
+ * which of the two npm used. `"workload-oidc"` — a pnpr workload registry
+ * (`_pnprWorkload` in `custom-registries`, OPS-143): the action minted a
+ * `pnpr_workload_<jwt>` credential from the job's GitHub Actions OIDC token,
+ * wrote it as the npmrc's only token for that registry and stripped the OIDC
+ * environment, so the minted credential is the one that authenticated the
+ * PUT. Its `credential` is `"custom-registries"`, the input that asked for it.
  *
  * @public
  */
-export type PublishAuthMethod = "token" | "trusted-publishing";
+export type PublishAuthMethod = "token" | "trusted-publishing" | "workload-oidc";
 
 /**
  * Where the registry token the action wrote to the npmrc came from.

@@ -48,6 +48,7 @@ import { Effect } from "effect";
 import type { ChangesetConfig } from "../release/changeset-config.js";
 import type { ValidationFinding, ValidationPackageResult } from "../release/types.js";
 import { runValidation as runValidationEffect } from "../release/validation.js";
+import type { CustomRegistryAuth } from "../utils/custom-registries.js";
 import type { ConfigSource } from "../utils/load-release-config.js";
 import { PER_STEP_CHECK_NAMES } from "./per-step-checks.js";
 
@@ -184,6 +185,8 @@ export interface PublishValidationArgs {
 	readonly packageManager: string;
 	readonly targetBranch: string;
 	readonly dryRun: boolean;
+	/** The parsed `custom-registries` input — only its configuration is checked; no token is read. */
+	readonly customRegistries: ReadonlyArray<CustomRegistryAuth>;
 }
 
 /**
@@ -229,6 +232,7 @@ export const publishValidation = (
 			packageManager: args.packageManager,
 			targetBranch: args.targetBranch,
 			dryRun: args.dryRun,
+			customRegistries: args.customRegistries,
 		}).pipe(
 			Effect.map((report) => ({ crashed: false as const, report })),
 			Effect.catch((e) =>

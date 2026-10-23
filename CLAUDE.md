@@ -61,9 +61,9 @@ For full architecture, module dependency graph, and per-module documentation: `o
 | `npm-token` | No | `""` | NPM token (OIDC fallback or first-time publish) |
 | `strict-warnings` | No | `false` | Escalate warnings to failures (blocks auto-merge) |
 | `sbom-config` | No | `""` | SBOM metadata JSON (schema-validated) |
-| `custom-registries` | No | `""` | Custom registry auth (one per line) |
+| `custom-registries` | No | `""` | Custom registry auth (one per line): `<url>_authToken=<token>`, or for keyless pnpr publishing the pair `<url>_pnprWorkload=<audience>` + `<url>_authToken=<release-reader>` (the token becomes read-only; needs `id-token: write`) |
 | `on-build` | No | `""` | Command run after the validation build; a non-zero exit fails Phase 2. Gate only — exit code is read, stderr is not; must not mutate the repo. Skipped in dry-run along with the build it gates; unset is a total no-op |
-| `registry-confirm-timeout` | No | `180` | Seconds to wait after publishing for each npm version to resolve on its registry; `0` skips. Never fails the run — an unresolved version is reported as `held`. GitHub Packages and custom registries are probed too, with their publish credential, under a 20s ceiling capped by this value (no publish hold there); no credential or a 401/403 is `skipped`, never `held`. On npm the probe is anonymous and npm answers 404 for a private package read without credentials, so a private npm package reports `held` at the ceiling on every run unless `npm-token` is passed — pass it, or set `0` |
+| `registry-confirm-timeout` | No | `180` | Seconds to wait after publishing for each npm version to resolve on its registry; `0` skips. Never fails the run — an unresolved version is reported as `held`. GitHub Packages and custom registries are probed too, with their read credential (a pnpr workload registry's paired reader), under a 20s ceiling capped by this value (no publish hold there); no credential or a 401/403 is `skipped`, never `held`. On npm the probe is anonymous and npm answers 404 for a private package read without credentials, so a private npm package reports `held` at the ceiling on every run unless `npm-token` is passed — pass it, or set `0` |
 
 ### Authentication Model
 
@@ -73,6 +73,7 @@ For full architecture, module dependency graph, and per-module documentation: `o
 | **JSR** | OIDC | Trusted publishing, no token needed |
 | **GitHub Packages** | `github-token` input | **Required.** Pass `secrets.GITHUB_TOKEN` with `permissions: packages: write` |
 | **Custom registries** | `custom-registries` input | Format: `https://registry.example.com/_authToken=<TOKEN>` |
+| **pnpr (workload OIDC)** | `custom-registries` `_pnprWorkload` line | `pnpr_workload_<OIDC token>` minted per target right before the PUT (audience `https://registry.savvyweb.systems`, needs `id-token: write`); the paired `_authToken=<release-reader>` on the same `/npm/~savvy/` URL does every read. Auth record `workload-oidc (custom-registries)` |
 
 **Never drop `github-token`.** A GitHub App installation token — including the one this action provisions — cannot access GitHub Packages at all; the sole exception is the default Actions token, which is what `github-token` carries. Omit the input and every Packages publish fails. `custom-registries` is not a substitute. `pre.ts` persists it to `GithubPackagesTokenState` and masks it.
 

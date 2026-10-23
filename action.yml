@@ -140,12 +140,27 @@ inputs:
       auth string):
         https://registry.example.com/_authToken=<token>
 
+      Keyless publishing to pnpr (a workload credential): two lines for one
+      URL, in either order:
+        https://registry.savvyweb.systems/npm/~savvy/_pnprWorkload=https://registry.savvyweb.systems
+        https://registry.savvyweb.systems/npm/~savvy/_authToken=<release-reader>
+      `_pnprWorkload=<audience>` carries no secret: right before each upload
+      the action mints `pnpr_workload_<OIDC token>` for that audience, masks it
+      and writes it as the npmrc's only token for the URL. It authenticates
+      the upload and nothing else, so the `_authToken` on the same URL becomes
+      the READ credential (integrity probe, snapshot probe, post-publish
+      confirmation). Requires `permissions: id-token: write` on the job. A
+      `_pnprWorkload` line with no `_authToken` fails that target with
+      `no-read-credential` before any read or upload, and Phase 2 reports it.
+
       Not accepted (each fails the run with a message naming the line):
         - `_auth=<base64-credentials>` -- basic auth is no longer supported;
           supply a bearer token as `_authToken=<token>`
         - a bare registry URL -- the GitHub App token fallback was removed;
           every custom registry needs an explicit token
-        - two lines for the same registry
+        - two `_authToken` lines, or two `_pnprWorkload` lines, for the same
+          registry
+        - a `_pnprWorkload` audience that is not an http(s) URL
 
       For reusable workflows, store the entire config in a secret:
         1. Create a repository secret (e.g., CUSTOM_REGISTRIES) containing:
