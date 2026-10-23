@@ -48,7 +48,7 @@ import { NpmRegistry, PackagePublish, PackedTarball, PublishError, RegistryReadE
 import { SIGSTORE_BUNDLE_V0_3_MEDIA_TYPE, SigstoreBundle, SigstoreSigner } from "@effected/sbom";
 import { PublishTarget, PublishabilityDetector, WorkspaceDiscovery, WorkspacePackage } from "@effected/workspaces";
 import { SilkPublishability } from "@savvy-web/silk-effects";
-import { ConfigProvider, Effect, Layer, Option, Redacted } from "effect";
+import { ConfigProvider, Effect, Layer, Logger, Option, Redacted } from "effect";
 import { ChangesetConfig } from "../../../src/release/changeset-config.js";
 import type { BuildSbomResult, DetectedRelease, PublishInputArgs } from "../../../src/release/publish.js";
 import {
@@ -694,6 +694,38 @@ describe("planWorkspaces", () => {
 			expect(plan[0]?.path).toBe(".");
 		}),
 	);
+
+	// `kind` is INTENT: a workspace that declares a registry target keeps
+	// `github-with-packages` even when the release filter drops that target for
+	// this version.
+	it.effect("keeps github-with-packages when every declared target is release-filtered", () =>
+		Effect.gen(function* () {
+			const pkg = makeWsPkg("@test/stable-only", "1.0.0-beta.1", "/ws/stable-only");
+			const plan = yield* planWorkspaces([makeDetected(pkg.name, "1.0.0-beta.1", pkg.path)]).pipe(
+				Effect.provide(
+					Layer.mergeAll(
+						makeWorkspaceDiscoveryLayer([pkg]),
+						SilkPublishability.layer.pipe(
+							Layer.provideMerge(
+								MemoryFileSystem.layerWith({
+									"/ws/stable-only/package.json": MemoryFileSystem.file(
+										JSON.stringify({
+											name: pkg.name,
+											private: true,
+											publishConfig: { access: "public", targets: { npm: { releases: "stable" } } },
+										}),
+									),
+								}),
+							),
+						),
+					),
+				),
+			);
+
+			expect(plan[0]?.kind).toBe("github-with-packages");
+			expect(plan[0]?.resolvedPackages).toBe(1);
+		}),
+	);
 });
 
 describe("runBuildAndSbom", () => {
@@ -937,6 +969,55 @@ describe("runBuildAndSbom", () => {
 				expect(result.sbomPaths.has("@test/tracking-pkg")).toBe(false);
 				// Nothing was written to disk for it either.
 				expect(existsSync(join(trackingPath, "tracking-pkg.sbom.json"))).toBe(false);
+			}),
+		);
+
+		// Every declared target excludes this version (`releases: "stable"` at a
+		// prerelease). The workspace still DECLARES a registry, but nothing will be
+		// packed or uploaded, so there is no artifact for an SBOM to describe.
+		it.effect("skips the SBOM for a workspace whose every target is release-filtered", () =>
+			Effect.gen(function* () {
+				const tmpRoot = join(tmpdir(), `silk-sbom-filtered-test-${Date.now()}`);
+				const pkgPath = join(tmpRoot, "stable-only");
+				mkdirSync(pkgPath, { recursive: true });
+				writeFileSync(
+					join(pkgPath, "package.json"),
+					JSON.stringify({
+						name: "@test/stable-only",
+						version: "1.0.0-beta.1",
+						private: true,
+						publishConfig: { access: "public", targets: { npm: { releases: "stable" } } },
+					}),
+				);
+				const pkg = makeWsPkg("@test/stable-only", "1.0.0-beta.1", pkgPath);
+				const detected: DetectedRelease[] = [makeDetected(pkg.name, "1.0.0-beta.1", pkg.path)];
+
+				const layers = Layer.mergeAll(
+					// `layerTest`, not `loggerLayer`: `layerSilent` also installs an empty
+					// `Logger.layer`, which would swallow the capture below.
+					ActionLogger.layerTest(),
+					makeWorkspaceDiscoveryLayer([pkg]),
+					SilkPublishability.layer.pipe(Layer.provideMerge(NodeServices.layer)),
+					buildSpawner(0),
+				);
+
+				const logged: string[] = [];
+				const capture = Logger.make<unknown, void>(({ message }) => {
+					logged.push(Array.isArray(message) ? message.join(" ") : String(message));
+				});
+				const result: BuildSbomResult = yield* runBuildAndSbom(detected, buildArgs).pipe(
+					Effect.provide(layers),
+					Effect.provide(Logger.layer([capture])),
+				);
+
+				// The log names WHY: a filtered workspace is not "GitHub release only".
+				const skipLine = logged.find((l) => l.includes("sbom · @test/stable-only"));
+				expect(skipLine).toMatch(/every target excluded by releases/);
+				expect(skipLine).not.toMatch(/GitHub release only/);
+				expect(result.ok).toBe(true);
+				expect(result.sbomSkipped).toEqual(["@test/stable-only"]);
+				expect(result.sbomPaths.has("@test/stable-only")).toBe(false);
+				expect(existsSync(join(pkgPath, "stable-only.sbom.json"))).toBe(false);
 			}),
 		);
 

@@ -1489,11 +1489,17 @@ export const runBuildAndSbom = (
 					// set of packages skipped here is exactly the set that publishes
 					// nothing.
 					const resolved = yield* resolvePublishTargetSpecs(wsPkg, rel.version);
-					if (releaseKindOf(resolved.targets.length) === "github-only") {
+					if (resolved.targets.length === 0) {
 						sbomSkipped.push(rel.name);
-						yield* Effect.logInfo(
-							`  \u{1F3F7}\uFE0F sbom · ${rel.name}: skipped — ${releaseKindLabel("github-only")}, no artifact to describe`,
-						);
+						// Two different reasons for the same empty list. A workspace that
+						// declares a registry whose every target excludes this version is
+						// NOT "GitHub release only" — it is still `github-with-packages`,
+						// it just publishes nothing at this version.
+						const why =
+							resolved.releaseFiltered.length > 0
+								? `every target excluded by releases for ${rel.version}`
+								: releaseKindLabel("github-only");
+						yield* Effect.logInfo(`  \u{1F3F7}\uFE0F sbom · ${rel.name}: skipped — ${why}, no artifact to describe`);
 						continue;
 					}
 
