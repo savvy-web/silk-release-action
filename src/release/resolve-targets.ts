@@ -5,7 +5,7 @@
 // Phase-3 publish use to decide what is actually publishable.
 
 import { existsSync, readFileSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, normalize } from "node:path";
 import { classifyRegistry } from "@effected/npm";
 import type { PublishTarget, WorkspacePackage } from "@effected/workspaces";
 import { PublishabilityDetector } from "@effected/workspaces";
@@ -167,29 +167,55 @@ export interface TargetSpec {
 	readonly directory: string;
 	readonly access: "public" | "restricted";
 	readonly provenance: boolean;
+	/**
+	 * The npm dist-tag this version publishes under for this target, from
+	 * `ReleaseTarget.distTag` (`latest` for a final version, the first
+	 * prerelease identifier otherwise). A snapshot tag overrides it at the call
+	 * site. On a spec in `ResolvedPublishTargets.releaseFiltered` the tag is
+	 * what the target WOULD have used, kept so the field is never absent.
+	 */
+	readonly distTag: string;
 }
 
 /**
- * What {@link resolvePublishTargetSpecs} found for one package.
+ * What {@link resolvePublishTargetSpecs} found for one package at one version.
  *
  * @remarks
- * The two skip lists are returned rather than logged because this module has
+ * The skip lists are returned rather than logged because this module has
  * no logger and should not acquire one — the caller owns how loudly a skip is
  * reported, and Phase 2 and Phase 3 report them differently.
+ *
+ * `targets + releaseFiltered` is the workspace's declared-and-publishable
+ * intent; `targets` alone is what receives this version.
  *
  * @public
  */
 export interface ResolvedPublishTargets {
-	/** Targets that will actually be published to, with absolute directories. */
+	/** Targets that receive this version, with absolute directories and a dist-tag. */
 	readonly targets: ReadonlyArray<TargetSpec>;
 	/** Registry URLs of JSR targets, which this action cannot publish yet. */
 	readonly jsrSkipped: ReadonlyArray<string>;
 	/** Basenames of target directories dropped for a `private` built `package.json`. */
 	readonly privateSkipped: ReadonlyArray<string>;
+	/**
+	 * Targets dropped because their `releases` channel excludes this version
+	 * (e.g. `releases: "stable"` at a prerelease). Not an error: the target is
+	 * publishable, it just does not take this version.
+	 */
+	readonly releaseFiltered: ReadonlyArray<TargetSpec>;
+	/**
+	 * Set when `dist/prod/targets.json` does not describe a detected target
+	 * directory. `targets` and `releaseFiltered` are then empty: the bytes about
+	 * to be packed are not the release artifact, so nothing may publish.
+	 */
+	readonly bindingError?: PublishTargetBindingError;
 }
 
+/** Comparable identity of a target: registry plus normalized absolute directory. */
+const targetKey = (registry: string, directory: string): string => `${registry}\u0000${normalize(directory)}`;
+
 /**
- * Resolve the publish targets a package will actually be published to.
+ * Resolve the publish targets a package will publish to at a given version.
  *
  * @remarks
  * **The single definition of "will this package publish anywhere".** It exists
@@ -201,7 +227,7 @@ export interface ResolvedPublishTargets {
  * SBOM gate and the publish step cannot disagree about which packages are
  * registry packages.
  *
- * Three filters, in order:
+ * Four filters, in order:
  *  1. `PublishabilityDetector.detect` — the package's own declaration of where
  *     it publishes. Its error channel is `never`; an undetectable package
  *     yields an empty array.
@@ -209,25 +235,39 @@ export interface ResolvedPublishTargets {
  *     yet. They are reported in `jsrSkipped` so the caller can say so.
  *  3. **Targets whose built `package.json` is `private` are removed** — the
  *     build pipeline's "never publish" signal for dev-only outputs.
+ *  4. **Targets whose `releases` channel excludes `version` are removed**, via
+ *     `SilkPublishability.resolveReleaseTargets`. Survivors are matched back to
+ *     the specs above by registry and absolute directory and carry that
+ *     target's `distTag`; the rest are returned in `releaseFiltered`.
  *
- * A package that survives with zero targets is `github-release` kind — see
- * `utils/release-kind.ts`. That is a legitimate outcome, not a failure.
+ * The error channel is `never` because `planWorkspaces` cannot fail the run.
+ * `resolveReleaseTargets` can fail with `PublishTargetBindingError`; that is
+ * captured into `bindingError` (with `targets` and `releaseFiltered` empty) so
+ * each caller decides how loudly to fail — Phase 3 fails that workspace's
+ * publish, Phase 2 raises an error finding.
+ *
+ * A package that survives with zero targets and zero `releaseFiltered` is
+ * `github-only` kind — see `utils/release-kind.ts`. One whose targets were all
+ * release-filtered still declares a registry, so its kind is derived from
+ * `targets + releaseFiltered`, not from `targets`.
  *
  * @param wsPkg - The workspace package to resolve targets for.
- * @returns The surviving targets plus what was dropped and why.
+ * @param version - The version being released.
+ * @returns The receiving targets plus what was dropped and why.
  *
  * @public
  */
 export const resolvePublishTargetSpecs = (
 	wsPkg: WorkspacePackage,
-): Effect.Effect<ResolvedPublishTargets, never, PublishabilityDetector> =>
+	version: string,
+): Effect.Effect<ResolvedPublishTargets, never, PublishabilityDetector | FileSystem.FileSystem> =>
 	Effect.gen(function* () {
 		const detector = yield* PublishabilityDetector;
 		const detected = yield* detector.detect(wsPkg);
 
 		const jsrSkipped: string[] = [];
 		const privateSkipped: string[] = [];
-		const targets: TargetSpec[] = [];
+		const candidates: TargetSpec[] = [];
 
 		for (const t of detected) {
 			if (classifyRegistry(t.registry) === "jsr") {
@@ -239,14 +279,35 @@ export const resolvePublishTargetSpecs = (
 				privateSkipped.push(directory);
 				continue;
 			}
-			targets.push({
+			candidates.push({
 				name: t.name,
 				registry: t.registry,
 				directory,
 				access: t.access,
 				provenance: t.provenance ?? false,
+				distTag: "latest",
 			});
 		}
 
-		return { targets, jsrSkipped, privateSkipped };
+		const released = yield* Effect.result(SilkPublishability.resolveReleaseTargets(wsPkg, version));
+		if (released._tag === "Failure") {
+			return { targets: [], jsrSkipped, privateSkipped, releaseFiltered: [], bindingError: released.failure };
+		}
+
+		const distTagByKey = new Map<string, string>();
+		for (const r of released.success) {
+			const directory = isAbsolute(r.target.directory) ? r.target.directory : join(wsPkg.path, r.target.directory);
+			distTagByKey.set(targetKey(r.target.registry, directory), r.distTag);
+		}
+
+		const targets: TargetSpec[] = [];
+		const releaseFiltered: TargetSpec[] = [];
+		const fallbackTag = SilkPublishability.distTagFor(version);
+		for (const spec of candidates) {
+			const distTag = distTagByKey.get(targetKey(spec.registry, spec.directory));
+			if (distTag === undefined) releaseFiltered.push({ ...spec, distTag: fallbackTag });
+			else targets.push({ ...spec, distTag });
+		}
+
+		return { targets, jsrSkipped, privateSkipped, releaseFiltered };
 	});

@@ -1229,18 +1229,26 @@ const resolveWorkspacePackage = (
  */
 export const planWorkspaces = (
 	detected: ReadonlyArray<DetectedRelease>,
-): Effect.Effect<ReadonlyArray<PublishWorkspacePlan>, never, PublishabilityDetector | WorkspaceDiscovery> =>
+): Effect.Effect<
+	ReadonlyArray<PublishWorkspacePlan>,
+	never,
+	PublishabilityDetector | WorkspaceDiscovery | FileSystem.FileSystem
+> =>
 	Effect.gen(function* () {
 		const discovery = yield* WorkspaceDiscovery;
 		const plan: PublishWorkspacePlan[] = [];
 		for (const rel of detected) {
 			const wsPkg = yield* resolveWorkspacePackage(discovery, rel);
-			const resolved = yield* resolvePublishTargetSpecs(wsPkg);
+			const resolved = yield* resolvePublishTargetSpecs(wsPkg, rel.version);
+			// INTENT, not result: a target the release filter dropped for this
+			// version is still a declared registry target, so a workspace whose
+			// targets were ALL filtered stays `github-with-packages`.
+			const declared = resolved.targets.length + resolved.releaseFiltered.length;
 			plan.push({
 				name: rel.name,
 				version: rel.version,
-				kind: releaseKindOf(resolved.targets.length),
-				resolvedPackages: resolved.targets.length,
+				kind: releaseKindOf(declared),
+				resolvedPackages: declared,
 				// `DetectedRelease.path` stays absolute (SBOM and pack read from it);
 				// the wire contract is repo-relative, with the root itself as ".".
 				path: relative(process.cwd(), rel.path) || ".",
@@ -1474,7 +1482,7 @@ export const runBuildAndSbom = (
 					// Resolved through the SAME function the publish step uses, so the
 					// set of packages skipped here is exactly the set that publishes
 					// nothing.
-					const resolved = yield* resolvePublishTargetSpecs(wsPkg);
+					const resolved = yield* resolvePublishTargetSpecs(wsPkg, rel.version);
 					if (releaseKindOf(resolved.targets.length) === "github-only") {
 						sbomSkipped.push(rel.name);
 						yield* Effect.logInfo(
@@ -1582,7 +1590,7 @@ export const runPublishTargets = (
 ): Effect.Effect<
 	PublishPackagesResult,
 	Config.ConfigError,
-	PublishServices | ActionState | PublishabilityDetector | WorkspaceDiscovery
+	PublishServices | ActionState | PublishabilityDetector | WorkspaceDiscovery | FileSystem.FileSystem
 > =>
 	Effect.gen(function* () {
 		const discovery = yield* WorkspaceDiscovery;
@@ -1663,7 +1671,7 @@ export const runPublishTargets = (
 			// about which packages are registry packages — the disagreement that
 			// had Step 3 writing an SBOM for a package Step 4 then published
 			// nowhere.
-			const resolved = yield* resolvePublishTargetSpecs(wsPkg);
+			const resolved = yield* resolvePublishTargetSpecs(wsPkg, rel.version);
 
 			for (const registry of resolved.jsrSkipped) {
 				yield* Effect.logWarning(

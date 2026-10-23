@@ -42,6 +42,7 @@ import {
 	OidcTokenError,
 	OidcTokenIssuer,
 } from "@effected/github-actions";
+import { MemoryFileSystem } from "@effected/memfs";
 import type { PackagePublishShape, PublishOptions } from "@effected/npm";
 import { NpmRegistry, PackagePublish, PackedTarball, PublishError, RegistryReadError } from "@effected/npm";
 import { SIGSTORE_BUNDLE_V0_3_MEDIA_TYPE, SigstoreBundle, SigstoreSigner } from "@effected/sbom";
@@ -442,6 +443,10 @@ const makeBaseLayers = (
 	attestationLayer: Layer.Layer<Attestation> = makeAttestationLayer().layer,
 ) =>
 	Layer.mergeAll(
+		// `resolvePublishTargetSpecs` reads `package.json` / `targets.json` through
+		// `FileSystem`; an empty volume means no binding and no keyed declarations,
+		// so the stub detector's targets all receive every version.
+		MemoryFileSystem.layer,
 		loggerLayer,
 		actionStateLayer,
 		configProviderLayer,
@@ -661,6 +666,7 @@ describe("planWorkspaces", () => {
 			const plan = yield* planWorkspaces([makeDetected("@test/foo", "1.0.0", absolute)]).pipe(
 				Effect.provide(
 					Layer.mergeAll(
+						MemoryFileSystem.layer,
 						makeWorkspaceDiscoveryLayer([pkg]),
 						makePublishabilityLayer(new Map([[pkg.name, [makeNpmTarget(pkg.name, absolute)]]])),
 					),
@@ -678,6 +684,7 @@ describe("planWorkspaces", () => {
 			const plan = yield* planWorkspaces([makeDetected("@test/root", "1.0.0", cwd)]).pipe(
 				Effect.provide(
 					Layer.mergeAll(
+						MemoryFileSystem.layer,
 						makeWorkspaceDiscoveryLayer([pkg]),
 						makePublishabilityLayer(new Map([[pkg.name, [makeNpmTarget(pkg.name, cwd)]]])),
 					),
@@ -1132,6 +1139,7 @@ describe("runPublishTargets", () => {
 					runPublishTargets(detected).pipe(
 						Effect.provide(
 							Layer.mergeAll(
+								MemoryFileSystem.layer,
 								actionStateLayer,
 								configProviderLayer,
 								environmentLayer,
@@ -1704,6 +1712,7 @@ describe("runPublishTargets", () => {
 				];
 
 				const layers = Layer.mergeAll(
+					MemoryFileSystem.layer,
 					loggerLayer,
 					actionStateLayer,
 					configProviderLayer,
