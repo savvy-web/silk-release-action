@@ -17,10 +17,10 @@ sources:
     resource: ../../src/release/validation.ts
 generated:
   by: okfit/claude-code
-  at: 2026-10-23T17:46:00Z
+  at: 2026-10-23T18:28:37Z
 integrity:
   generated:
-    body: 22d231a06b235fe8
+    body: 0339ad97b304792c
 ---
 
 # OIDC-first publishing, with token auth as bootstrap and fallback
@@ -80,6 +80,21 @@ the exchange attempt.
   fails only that target and names the permission; there is no fallback to
   the reader token, which pnpr refuses on a PUT anyway. The target declares
   the `/npm/~savvy/` URL itself; the action maps nothing.
+
+  **The one read the action does not control.** Before its PUT, `npm
+  publish` fetches the packument itself, using the npmrc token, so the
+  workload credential does go out on one `GET` to pnpr. pnpr refuses it, and
+  npm 12 catches every error from that fetch and carries on. All that's lost
+  is npm's own "cannot publish over" and "cannot implicitly tag latest"
+  checks; the action's integrity probe and its explicit `--tag` already
+  cover both. Only `--force` would skip the fetch, and it drops more than
+  that check, so the refused `GET` is accepted.
+
+  **No npm retries.** A workload publish runs npm with `--fetch-retries=0`.
+  npm's defaults retry a 5xx twice, with a 10s and then a 60s backoff, on
+  both that `GET` and the PUT: about 140s per target, which read as a hung
+  run when pnpr answered "OIDC provider unavailable" (silk-integration run
+  40001523546). Other registries keep npm's retries.
 - **JSR** — publishes over OIDC and needs no token of its own. It shares
   the custom-registry token-resolution fall-through in
   `pickToken`[^resolve-targets] only because a predecessor's two
