@@ -14,10 +14,10 @@ sources:
     resource: ../../schemas/6.0/output.json
 generated:
   by: okfit/claude-code
-  at: 2026-10-23T14:17:57Z
+  at: 2026-10-23T14:31:27Z
 integrity:
   generated:
-    body: ea2cb300fa9e8871
+    body: 46c29a300ad64a73
 ---
 
 # The `result` output document
@@ -185,7 +185,7 @@ also `0`.
 
 At the top level, `PublishTotals` gains `packagesConfirmed` and
 `packagesHeld`; when `packagesHeld > 0`, the phase's `summary` appends
-`· N package(s) held by the registry`. A consumer wiring a follow-on
+`· N registry target(s) held by the registry` (the prose says "workspace" for the released unit and "registry target" for one upload; the `packages*` JSON keys are unchanged). A consumer wiring a follow-on
 dispatch (for example the shared release workflow's `packages-released`
 trigger) should gate on `totals.packagesHeld === 0`, not on
 `success`.[^release-output-ts]

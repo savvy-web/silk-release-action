@@ -800,8 +800,8 @@ const summarizeSnapshot = (
 	const parts = [`${input.releases.length} workspace(s) versioned`];
 	parts.push(
 		input.dryRun
-			? `${counts.rehearsed} package(s) would publish under ${tag} (dry run)`
-			: `${counts.published} package(s) published under ${tag}`,
+			? `${counts.rehearsed} registry target(s) would publish under ${tag} (dry run)`
+			: `${counts.published} registry target(s) published under ${tag}`,
 	);
 	const otherSkips = counts.skipped - counts.rehearsed;
 	if (otherSkips > 0) parts.push(`${otherSkips} skipped`);

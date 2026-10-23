@@ -128,13 +128,19 @@ export const tallyReleaseKinds = (targetCounts: Iterable<number>): ReleaseKindTa
  *
  * @param args - The counts to render.
  * @returns One line, e.g.
- *   `2 workspace(s) versioned · 0 package(s) published to a registry · 2 GitHub release(s) created`,
- *   with ` · N package(s) held by the registry` appended when `packagesHeld > 0`.
+ *   `2 workspace(s) released · 0 registry target(s) published · 2 GitHub release(s) created`,
+ *   with ` · N registry target(s) held by the registry` appended when `packagesHeld > 0`.
+ *
+ * Vocabulary: a **workspace** is the unit that is versioned, tagged and
+ * released; a **registry target** is one upload of one workspace to one
+ * registry. The JSON keys (`packagesPublished`, `packagesHeld`) keep their
+ * names — they count registry publications — and only the prose uses the
+ * single term.
  *
  * @public
  */
 export const summarizeReleaseWave = (args: {
-	/** Workspaces versioned this wave. */
+	/** Workspaces released this wave. */
 	readonly workspaces: number;
 	/** Package publications successfully uploaded to a registry. */
 	readonly packagesPublished: number;
@@ -143,10 +149,10 @@ export const summarizeReleaseWave = (args: {
 	/** Publications that succeeded but were not yet resolvable on their registry at the ceiling. */
 	readonly packagesHeld: number;
 }): string =>
-	`${args.workspaces} workspace(s) versioned · ` +
-	`${args.packagesPublished} package(s) published to a registry · ` +
+	`${args.workspaces} workspace(s) released · ` +
+	`${args.packagesPublished} registry target(s) published · ` +
 	`${args.releases} GitHub release(s) created` +
-	(args.packagesHeld > 0 ? ` · ${args.packagesHeld} package(s) held by the registry` : "");
+	(args.packagesHeld > 0 ? ` · ${args.packagesHeld} registry target(s) held by the registry` : "");
 
 /**
  * The one-line account of what happened to a single workspace.
@@ -180,15 +186,15 @@ export const summarizeWorkspace = (args: {
 				? "Tagged and released on GitHub; every registry target excludes this version, so nothing was uploaded."
 				: "Tagged and released on GitHub; no registry target.";
 		case "published":
-			return `Tagged and released on GitHub; published ${args.packages} package(s) to a registry.`;
+			return `Tagged and released on GitHub; published to ${args.packages} registry target(s).`;
 		case "recovered":
-			return `Already on every registry at an identical digest; ${args.packages} package(s) recovered, nothing re-uploaded.`;
+			return `Already on every registry at an identical digest; ${args.packages} registry target(s) recovered, nothing re-uploaded.`;
 		case "partial":
-			return `Published some packages and failed others across ${args.packages} target(s).`;
+			return `Published to some registry targets and failed others across ${args.packages} registry target(s).`;
 		case "failed":
 			return args.kind === "github-only"
 				? "Tag or GitHub release could not be created."
-				: `Failed to publish ${args.packages} package(s).`;
+				: `Failed to publish to ${args.packages} registry target(s).`;
 		case "blocked":
 			return "Never attempted — the publish phase aborted before this workspace was reached.";
 	}
@@ -285,12 +291,12 @@ export const summarizeValidationWorkspace = (args: {
 				? "Every registry target excludes this version — nothing to validate; releases on GitHub only."
 				: "No registry target — nothing to validate; releases on GitHub only.";
 		case "validated":
-			return `${args.packages} package(s) ready to publish.`;
+			return `${args.packages} registry target(s) ready to publish.`;
 		case "skipped":
-			return `${args.packages} package(s) were not probed.`;
+			return `${args.packages} registry target(s) were not probed.`;
 		case "partial":
-			return `${args.ready} of ${args.packages} package(s) ready; the rest failed their dry-run.`;
+			return `${args.ready} of ${args.packages} registry target(s) ready; the rest failed their dry-run.`;
 		case "failed":
-			return `${args.packages} package(s) failed their dry-run.`;
+			return `${args.packages} registry target(s) failed their dry-run.`;
 	}
 };

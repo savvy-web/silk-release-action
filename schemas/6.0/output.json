@@ -1147,7 +1147,7 @@
 								"changesetCount": 1,
 								"success": true,
 								"outcome": "validated",
-								"summary": "2 package(s) ready to publish.",
+								"summary": "2 registry target(s) ready to publish.",
 								"kind": "github-with-packages",
 								"packages": [
 									{
@@ -2067,10 +2067,10 @@
 				"summary": {
 					"type": "string",
 					"title": "Summary",
-					"description": "One human-readable sentence describing the whole run. Derived from `totals` and never authored independently, so it always agrees with the structured counts. When `totals.packagesHeld` is non-zero the line ends with ` · N package(s) held by the registry`.",
+					"description": "One human-readable sentence describing the whole run. Derived from `totals` and never authored independently, so it always agrees with the structured counts. A workspace is the unit that is released; a registry target is one upload to one registry. When `totals.packagesHeld` is non-zero the line ends with ` · N registry target(s) held by the registry`.",
 					"examples": [
-						"2 workspace(s) versioned · 0 package(s) published to a registry · 2 GitHub release(s) created",
-						"1 workspace(s) versioned · 2 package(s) published to a registry · 1 GitHub release(s) created · 1 package(s) held by the registry"
+						"2 workspace(s) released · 0 registry target(s) published · 2 GitHub release(s) created",
+						"1 workspace(s) released · 2 registry target(s) published · 1 GitHub release(s) created · 1 registry target(s) held by the registry"
 					]
 				},
 				"dryRun": {

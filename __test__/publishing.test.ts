@@ -223,7 +223,7 @@ describe("runPublishing — happy path", () => {
 		// releases as three separate counts, so a wave that publishes nothing to a
 		// registry is legible instead of reading as an empty run.
 		expect(text).toContain(
-			"Release publishing: ✅ 1 workspace(s) versioned · 1 package(s) published to a registry · 1 GitHub release(s) created",
+			"Release publishing: ✅ 1 workspace(s) released · 1 registry target(s) published · 1 GitHub release(s) created",
 		);
 	});
 

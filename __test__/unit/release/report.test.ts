@@ -686,7 +686,7 @@ describe("buildPublishValidationSummary", () => {
 		// The default fixture has one npm target and no GitHub Packages target.
 		expect(md).toContain("**GitHub Packages:** — none");
 		// The wave's shape leads the section.
-		expect(md).toContain("**1 package(s)** publishing to a registry.");
+		expect(md).toContain("**1 workspace(s)** publishing to a registry.");
 	});
 
 	it("renders one section per package with a header and a registry table per build", () => {
@@ -824,7 +824,7 @@ describe("buildReleaseNotesPreviewSummary", () => {
 		// The check-run page already shows "📋 Release Notes Preview"; the
 		// body must not duplicate it as a `## ...` heading.
 		expect(md).not.toContain("## 📋 Release Notes Preview");
-		expect(md).toContain("**1 package(s) ready for release on merge.**");
+		expect(md).toContain("**1 workspace(s) ready for release on merge.**");
 		expect(md).toContain("@savvy-web/linked-1");
 		expect(md).toContain("5.0.12 → 5.0.13");
 		expect(md).toContain("\u{1F7E2} patch");
@@ -867,7 +867,7 @@ describe("buildReleaseNotesPreviewSummary", () => {
 
 		const md = buildReleaseNotesPreviewSummary(validationOf({ publish: publishOf([pkgA, pkgB, pkgC]) }));
 
-		expect(md).toContain("**3 package(s) ready for release on merge.**");
+		expect(md).toContain("**3 workspace(s) ready for release on merge.**");
 		// Each package's name, version transition, and bump label appear.
 		expect(md).toContain("@org/pkg-a");
 		expect(md).toContain("@org/pkg-b");

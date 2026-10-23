@@ -239,7 +239,7 @@ describe("toValidationOutput", () => {
 			changesetCount: 1,
 			success: true,
 			outcome: "validated",
-			summary: "1 package(s) ready to publish.",
+			summary: "1 registry target(s) ready to publish.",
 			kind: "github-with-packages",
 			packages: [
 				{
@@ -868,7 +868,7 @@ describe("toPublishOutput", () => {
 		expect(output.outcome).toBe("released");
 		expect(output.totals.packagesHeld).toBe(1);
 		expect(output.totals.packagesConfirmed).toBe(0);
-		expect(output.summary).toContain("1 package(s) held by the registry");
+		expect(output.summary).toContain("1 registry target(s) held by the registry");
 	});
 
 	it("marks a package with no probe entry as skipped and not available", () => {
@@ -1096,7 +1096,7 @@ describe("toPublishOutput", () => {
 		expect(output.totals.packagesPublished).toBe(0);
 		expect(output.totals.releasesCreated).toBe(1);
 		expect(output.summary).toBe(
-			"1 workspace(s) versioned · 0 package(s) published to a registry · 1 GitHub release(s) created",
+			"1 workspace(s) released · 0 registry target(s) published · 1 GitHub release(s) created",
 		);
 	});
 

@@ -41,7 +41,7 @@ describe("ReleaseOutput schema", () => {
 		phase: "publish",
 		success: true,
 		outcome: "released",
-		summary: "1 workspace(s) versioned · 1 package(s) published to a registry · 1 GitHub release(s) created",
+		summary: "1 workspace(s) released · 1 registry target(s) published · 1 GitHub release(s) created",
 		dryRun: false,
 		failure: null,
 		totals: {
@@ -71,7 +71,7 @@ describe("ReleaseOutput schema", () => {
 					kind: "github-with-packages",
 					success: true,
 					outcome: "published",
-					summary: "Tagged and released on GitHub; published 1 package(s) to a registry.",
+					summary: "Tagged and released on GitHub; published to 1 registry target(s).",
 					packages: [
 						{
 							name: "@savvy-web/foo",
@@ -148,7 +148,7 @@ describe("ReleaseOutput schema", () => {
 					changesetCount: 1,
 					success: true,
 					outcome: "validated",
-					summary: "1 package(s) ready to publish.",
+					summary: "1 registry target(s) ready to publish.",
 					kind: "github-with-packages",
 					packages: [
 						{
