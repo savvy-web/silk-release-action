@@ -656,6 +656,10 @@ const PNPR_WORKLOAD_PREFIX = "pnpr_workload_";
  * write. Fails with the issuer's `OidcTokenError` when the job lacks
  * `permissions: id-token: write` or the runner exposes no OIDC service.
  * OPS-143.
+ *
+ * Temporary: declassifying the JWT just to prepend a prefix is a workaround.
+ * spencerbeggs/effected#1064 asks the kit to mint workload credentials without
+ * it; adopting that and deleting this helper is tracked in #534.
  */
 const mintWorkloadCredential = (
 	audience: string,
