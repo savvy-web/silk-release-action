@@ -65,6 +65,10 @@ describe("resolvePublishTargetSpecs", () => {
 			expect(resolved.targets.map((t) => t.registry)).toEqual([PNPR]);
 			expect(resolved.targets[0]?.distTag).toBe("beta");
 			expect(resolved.releaseFiltered.map((t) => t.registry)).toEqual(["https://registry.npmjs.org"]);
+			// The filtered spec carries its own declared channel and the version-derived tag.
+			expect(resolved.releaseFiltered[0]?.releases).toBe("stable");
+			expect(resolved.releaseFiltered[0]?.distTag).toBe("beta");
+			expect(resolved.targets[0]?.releases).toBe("all");
 			expect(resolved.bindingError).toBeUndefined();
 		}),
 	);
@@ -93,7 +97,11 @@ describe("resolvePublishTargetSpecs", () => {
 				"1.2.0",
 			);
 
+			// Pinned on the tag and fields: the message is prose upstream may reword.
 			expect(resolved.bindingError?._tag).toBe("PublishTargetBindingError");
+			expect(resolved.bindingError?.pkg).toBe("@scope/pkg");
+			expect(resolved.bindingError?.boundDirectories.length).toBeGreaterThan(0);
+			expect(resolved.bindingError?.boundDirectories).not.toContain(resolved.bindingError?.directory);
 			expect(resolved.targets).toEqual([]);
 			expect(resolved.releaseFiltered).toEqual([]);
 		}),

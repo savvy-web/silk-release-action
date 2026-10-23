@@ -2212,7 +2212,9 @@ describe("runPublishTargets — per-target release filter", () => {
 			const goodPkg = result.packages.find((p) => p.name === good.name);
 			expect(badPkg?.targets).toHaveLength(2);
 			expect(badPkg?.targets.every((t) => t.status === "failed" && t.success === false)).toBe(true);
-			expect(badPkg?.targets[0]?.error).toMatch(/dist\/prod\/targets\.json|binding/i);
+			// The message is upstream prose, not a contract; its tag and fields are
+			// pinned in resolve-target-specs.test.ts. Here: every target carries one.
+			expect(badPkg?.targets.every((t) => typeof t.error === "string" && t.error.length > 0)).toBe(true);
 			expect(goodPkg?.targets.map((t) => t.status)).toEqual(["published"]);
 			expect(pub.packCalls).toHaveLength(1);
 			expect(result.success).toBe(false);

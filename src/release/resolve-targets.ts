@@ -5,11 +5,11 @@
 // Phase-3 publish use to decide what is actually publishable.
 
 import { existsSync, readFileSync } from "node:fs";
-import { isAbsolute, join, normalize } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { classifyRegistry } from "@effected/npm";
 import type { PublishTarget, WorkspacePackage } from "@effected/workspaces";
 import { PublishabilityDetector } from "@effected/workspaces";
-import type { PublishTargetBindingError } from "@savvy-web/silk-effects";
+import type { PublishTargetBindingError, ReleaseChannel } from "@savvy-web/silk-effects";
 import { SilkPublishability } from "@savvy-web/silk-effects";
 import type { FileSystem } from "effect";
 import { Effect } from "effect";
@@ -171,10 +171,12 @@ export interface TargetSpec {
 	 * The npm dist-tag this version publishes under for this target, from
 	 * `ReleaseTarget.distTag` (`latest` for a final version, the first
 	 * prerelease identifier otherwise). A snapshot tag overrides it at the call
-	 * site. On a spec in `ResolvedPublishTargets.releaseFiltered` the tag is
-	 * what the target WOULD have used, kept so the field is never absent.
+	 * site. Version-derived, so a spec in `ResolvedPublishTargets.releaseFiltered`
+	 * carries the same tag as one that receives the version.
 	 */
 	readonly distTag: string;
+	/** The target's declared `releases` channel, `"all"` when undeclared. */
+	readonly releases: ReleaseChannel;
 }
 
 /**
@@ -213,13 +215,11 @@ export interface ResolvedPublishTargets {
 	 * Every non-JSR, non-private target the package DECLARES, regardless of the
 	 * release filter or a binding failure. Only needed when `bindingError` is set:
 	 * `targets` and `releaseFiltered` are empty then, and the caller still has to
-	 * name which declared targets it is failing.
+	 * name which declared targets it is failing. Built from detection, before the
+	 * binding is known, so each entry's `releases` reads `"all"`.
 	 */
 	readonly declared: ReadonlyArray<TargetSpec>;
 }
-
-/** Comparable identity of a target: registry plus normalized absolute directory. */
-const targetKey = (registry: string, directory: string): string => `${registry}\u0000${normalize(directory)}`;
 
 /**
  * Resolve the publish targets a package will publish to at a given version.
@@ -292,7 +292,8 @@ export const resolvePublishTargetSpecs = (
 				directory,
 				access: t.access,
 				provenance: t.provenance ?? false,
-				distTag: "latest",
+				distTag: SilkPublishability.distTagFor(version),
+				releases: "all",
 			});
 		}
 
@@ -308,19 +309,20 @@ export const resolvePublishTargetSpecs = (
 			};
 		}
 
-		const distTagByKey = new Map<string, string>();
-		for (const r of released.success) {
-			const directory = isAbsolute(r.target.directory) ? r.target.directory : join(wsPkg.path, r.target.directory);
-			distTagByKey.set(targetKey(r.target.registry, directory), r.distTag);
-		}
-
 		const targets: TargetSpec[] = [];
 		const releaseFiltered: TargetSpec[] = [];
-		const fallbackTag = SilkPublishability.distTagFor(version);
-		for (const spec of candidates) {
-			const distTag = distTagByKey.get(targetKey(spec.registry, spec.directory));
-			if (distTag === undefined) releaseFiltered.push({ ...spec, distTag: fallbackTag });
-			else targets.push({ ...spec, distTag });
+		for (const r of released.success) {
+			if (classifyRegistry(r.target.registry) === "jsr") continue;
+			const spec: TargetSpec = {
+				name: r.target.name,
+				registry: r.target.registry,
+				directory: isAbsolute(r.target.directory) ? r.target.directory : join(wsPkg.path, r.target.directory),
+				access: r.target.access,
+				provenance: r.target.provenance ?? false,
+				distTag: r.distTag,
+				releases: r.releases,
+			};
+			(r.receives ? targets : releaseFiltered).push(spec);
 		}
 
 		return { targets, jsrSkipped, privateSkipped, releaseFiltered, declared: candidates };

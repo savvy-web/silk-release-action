@@ -12,7 +12,7 @@
 // sticky comment — this module does not render markdown.
 
 import { existsSync, readFileSync } from "node:fs";
-import { isAbsolute, join, normalize, relative } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { ActionLogger } from "@effected/github-actions";
 import { PackagePublish, classifyRegistry, registryShortLabel } from "@effected/npm";
 import { Package } from "@effected/package-json";
@@ -32,7 +32,6 @@ import { sortReleasesTopologically } from "../utils/sort-releases-topologically.
 import { ChangesetConfig } from "./changeset-config.js";
 import { ValidationError } from "./errors.js";
 import { humanizeSize } from "./report.js";
-import { resolvePublishableTargets } from "./resolve-targets.js";
 import type {
 	BuildSbom,
 	BuildTargetResult,
@@ -571,7 +570,6 @@ export const runValidation = (args: ValidationInputArgs) =>
 		// release branch). Best-effort: an empty map on any failure.
 		const changesetCounts = yield* countChangesetsPerPackage(args.targetBranch);
 
-		const workspaceRoot = process.cwd();
 		const validationPackages: ValidationPackageResult[] = [];
 		// Per-build resolved SBOM metadata, keyed by `${pkg.name}:${build.directory}`.
 		// Debug-only — fed into the SBOM Preview check-run summary by `main.ts`.
@@ -619,22 +617,11 @@ export const runValidation = (args: ValidationInputArgs) =>
 				});
 				continue;
 			}
-			const targets = resolved.success.map((r) => r.target);
-
-			// What the filter dropped: the unfiltered set minus the survivors, joined
-			// by registry and absolute directory. `resolveTargets` cannot fail here —
-			// `resolveReleaseTargets` runs it first and succeeded.
-			const targetKey = (t: PublishTarget): string =>
-				`${t.registry}\u0000${normalize(isAbsolute(t.directory) ? t.directory : join(pkg.path, t.directory))}`;
-			const received = new Set(targets.map(targetKey));
-			const unfiltered = yield* resolvePublishableTargets(pkg, workspaceRoot).pipe(
-				Effect.orElseSucceed((): ReadonlyArray<PublishTarget> => []),
-			);
-			const filteredOut = unfiltered.filter((t) => !received.has(targetKey(t)));
-			const excludedBy = SilkPublishability.isPrerelease(currentVersion) ? "stable" : "prerelease";
-			for (const t of filteredOut) {
+			const targets = resolved.success.filter((r) => r.receives).map((r) => r.target);
+			const filteredOut = resolved.success.filter((r) => !r.receives);
+			for (const r of filteredOut) {
 				yield* Effect.logInfo(
-					`\u23ED ${pkg.name} · ${registryShortLabel(t.registry)} — releases: ${excludedBy} excludes ${currentVersion}`,
+					`\u23ED ${pkg.name} · ${registryShortLabel(r.target.registry)} — releases: ${r.releases} excludes ${currentVersion}`,
 				);
 			}
 

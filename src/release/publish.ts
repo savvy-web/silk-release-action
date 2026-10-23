@@ -34,7 +34,6 @@ import { CYCLONEDX_BOM_PREDICATE, Sbom, SbomMetadataSource, SlsaProvenance } fro
 import type { PublishabilityDetector } from "@effected/workspaces";
 import { WorkspaceDiscovery, WorkspacePackage } from "@effected/workspaces";
 import type { PublishTargetBindingError } from "@savvy-web/silk-effects";
-import { SilkPublishability } from "@savvy-web/silk-effects";
 import type { FileSystem } from "effect";
 import { Config, Effect, Option, Redacted } from "effect";
 import type { ChildProcessSpawner } from "effect/process";
@@ -1722,12 +1721,9 @@ export const runPublishTargets = (
 				yield* Effect.logInfo(`⏭ ${rel.name} · ${basename(directory)} — package.json is private, not a publish target`);
 			}
 
-			// The only way a target is filtered is a channel that cannot take this
-			// version: `stable` excludes a prerelease, `prerelease` excludes a final.
-			const excludedBy = SilkPublishability.isPrerelease(rel.version) ? "stable" : "prerelease";
 			for (const t of resolved.releaseFiltered) {
 				yield* Effect.logInfo(
-					`⏭ ${rel.name} · ${registryShortLabel(t.registry)} — releases: ${excludedBy} excludes ${rel.version}`,
+					`⏭ ${rel.name} · ${registryShortLabel(t.registry)} — releases: ${t.releases} excludes ${rel.version}`,
 				);
 			}
 
