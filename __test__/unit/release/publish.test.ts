@@ -2315,10 +2315,12 @@ describe("runPublishTargets — per-target release filter", () => {
 			// Other warnings mention provenance (the best-effort attestation has no
 			// OIDC here), so select the one this behaviour owns by its wording.
 			const provenanceWarnings = warnings.filter((w) => /only produces provenance/i.test(w));
-			expect(provenanceWarnings).toHaveLength(1);
-			expect(provenanceWarnings[0]).toContain("pnpr.example.com");
+			// Each warning names its target host first (`[publish] <host>: …`).
+			// Comparing that host exactly, rather than searching the line for a
+			// hostname, also proves GitHub Packages produced no warning.
+			const warnedHosts = provenanceWarnings.map((w) => /^\[publish\] ([^:\s]+):/.exec(w)?.[1]);
+			expect(warnedHosts).toEqual(["pnpr.example.com"]);
 			expect(provenanceWarnings[0]).toMatch(/registry\.npmjs\.org/);
-			expect(warnings.some((w) => /only produces provenance/i.test(w) && w.includes("npm.pkg.github.com"))).toBe(false);
 		}),
 	);
 });
