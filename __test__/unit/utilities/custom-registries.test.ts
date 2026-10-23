@@ -228,6 +228,19 @@ describe("parseCustomRegistries — pnpr workload lines (OPS-143)", () => {
 		}),
 	);
 
+	// The workload path strips the OIDC env and publishes with the minted token
+	// only, so a workload line on npm or GitHub Packages would silently replace
+	// trusted publishing or the github-token with a credential neither accepts.
+	it.effect.each([["https://registry.npmjs.org"], ["https://npm.pkg.github.com"]])(
+		"rejects a workload line on %s, which do not take pnpr workload credentials",
+		([registry]) =>
+			Effect.gen(function* () {
+				const error = yield* Effect.flip(parseCustomRegistries([`${registry}/_pnprWorkload=${AUDIENCE}`]));
+				expect(error.message).toContain("line 1");
+				expect(error.message).toContain("custom registr");
+			}),
+	);
+
 	it.effect("rejects a workload line on a non-http(s) registry", () =>
 		Effect.gen(function* () {
 			const error = yield* Effect.flip(parseCustomRegistries([`ftp://x.example.com/_pnprWorkload=${AUDIENCE}`]));

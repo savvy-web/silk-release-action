@@ -6,6 +6,7 @@
 // the input itself is still read exactly once, in `schema/inputs.ts`, which
 // composes this via `Config.mapEffect`.
 
+import { classifyRegistry } from "@effected/npm";
 import { Config, Effect, Redacted, Schema, SchemaIssue } from "effect";
 
 /**
@@ -172,6 +173,15 @@ export const parseCustomRegistries = (
 				return configFailure(
 					`custom-registries line ${lineNo}: duplicate \`_pnprWorkload\` entry for \`${registry}\` (already on line ` +
 						`${entry.workloadLine}) — one workload audience per registry`,
+				);
+			}
+			// The workload path strips the OIDC env and publishes with the minted
+			// token alone. npm and GitHub Packages accept neither that token nor a
+			// replacement for trusted publishing or `github-token`, so the line is
+			// a misconfiguration there, never a credential choice.
+			if (classifyRegistry(registry) !== "custom") {
+				return configFailure(
+					`custom-registries line ${lineNo}: \`_pnprWorkload\` applies to custom registries only, not \`${registry}\``,
 				);
 			}
 			// The audience is not a secret, so it may be quoted back.
