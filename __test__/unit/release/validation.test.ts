@@ -23,7 +23,8 @@ import {
 	WorkspaceSnapshots,
 	WorkspaceStateSnapshot,
 } from "@effected/workspaces";
-import { Effect, Layer, Option } from "effect";
+import { SilkPublishability } from "@savvy-web/silk-effects";
+import { Effect, Layer, Logger, Option } from "effect";
 import { ChangesetConfig } from "../../../src/release/changeset-config.js";
 import { runValidation } from "../../../src/release/validation.js";
 import { matchesIgnorePattern } from "../../../src/utils/detect-repo-type.js";
@@ -477,6 +478,101 @@ describe("runValidation", () => {
 				expect(report.packages[0]?.ready).toBe(true); // version-only is still "ready"
 				// No dry-run calls for a version-only package
 				expect(pubState.dryRunCalls).toHaveLength(0);
+			}),
+		);
+	});
+
+	describe("per-target release filter", () => {
+		/** A real package directory so the silk detector reads its `publishConfig.targets`. */
+		const pkgDirs: Array<string> = [];
+
+		afterEach(() => {
+			for (const dir of pkgDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+		});
+
+		const PNPR = "https://pnpr.example.com/";
+
+		const runFiltered = (targets: Record<string, unknown>, version: string) => {
+			const dir = mkdtempSync(join(tmpdir(), "validation-filter-"));
+			pkgDirs.push(dir);
+			writeFileSync(
+				join(dir, "package.json"),
+				JSON.stringify({ name: "@test/x", version, private: true, publishConfig: { access: "public", targets } }),
+				"utf-8",
+			);
+			const pkg = new WorkspacePackage({
+				name: "@test/x",
+				version,
+				path: dir,
+				packageJsonPath: join(dir, "package.json"),
+				relativePath: "packages/x",
+				private: true,
+				workspaceRoot: dir,
+			});
+			const { state, layer: pubLayer } = makePublishDouble();
+			const logged: string[] = [];
+			const capture = Logger.make<unknown, void>(({ message }) => {
+				logged.push(Array.isArray(message) ? message.join(" ") : String(message));
+			});
+			const layers = Layer.mergeAll(
+				// `layerTest` rather than `loggerLayer`: `layerSilent` installs an empty
+				// `Logger.layer`, which would swallow the capture.
+				ActionLogger.layerTest(),
+				gitLayer,
+				actionStateLayer,
+				makeSnapshotsLayer({ "@test/x": "1.0.0" }),
+				pubLayer,
+				changesetConfigDefaultLayer,
+				makeWorkspaceDiscoveryLayer([pkg]),
+				SilkPublishability.layer.pipe(Layer.provideMerge(NodeServices.layer)),
+			);
+			const effect = runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(
+				Effect.provide(layers),
+				Effect.provide(Logger.layer([capture])),
+			);
+			return { dir, state, logged, effect };
+		};
+
+		it.effect("dry-runs only the targets that receive the version and logs the filtered ones", () =>
+			Effect.gen(function* () {
+				const { state, logged, effect } = runFiltered(
+					{ npm: { releases: "stable" }, pnpr: { registry: PNPR, releases: "all" } },
+					"1.2.0-beta.0",
+				);
+				const report = yield* effect;
+
+				expect(state.dryRunCalls).toHaveLength(1);
+				expect(state.dryRunCalls[0]?.packageDir).toMatch(/dist\/prod\/pnpr\/pkg$/);
+				expect(report.totalTargets).toBe(1);
+				expect(report.validationPackages[0]?.builds[0]?.targets.map((t) => t.registry)).toEqual([PNPR]);
+				expect(logged.some((l) => /registry\.npmjs\.org|npm/.test(l) && /excludes 1\.2\.0-beta\.0/.test(l))).toBe(true);
+			}),
+		);
+
+		it.effect("does not report a fully filtered package as version-only", () =>
+			Effect.gen(function* () {
+				const { state, effect } = runFiltered({ npm: { releases: "stable" } }, "1.2.0-beta.0");
+				const report = yield* effect;
+
+				expect(state.dryRunCalls).toHaveLength(0);
+				expect(report.totalTargets).toBe(0);
+				expect(report.hasVersionOnlyPackages).toBe(false);
+				expect(report.validationPackages[0]?.releaseFilteredTargets).toBe(1);
+				expect(report.publishOk).toBe(true);
+			}),
+		);
+
+		it.effect("raises an error finding for an unknown releases channel and dry-runs nothing for that package", () =>
+			Effect.gen(function* () {
+				const { state, effect } = runFiltered({ npm: { releases: "final" } }, "1.2.0");
+				const report = yield* effect;
+
+				expect(state.dryRunCalls).toHaveLength(0);
+				// A finding, not a flipped boolean: the verdict reads findings.
+				const finding = report.findings.find((f) => f.check === "Publish Validation");
+				expect(finding?.severity).toBe("error");
+				expect(finding?.scope).toEqual({ package: "@test/x", directory: null });
+				expect(report.validationPackages.map((p) => p.name)).toEqual(["@test/x"]);
 			}),
 		);
 	});

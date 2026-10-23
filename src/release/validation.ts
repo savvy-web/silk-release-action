@@ -13,25 +13,25 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join, relative } from "node:path";
-import { ActionLogger } from "@effected/github-actions";
 import { PackagePublish, classifyRegistry, registryShortLabel } from "@effected/npm";
 import { Package } from "@effected/package-json";
 import type { Component, SbomMetadataOptions } from "@effected/sbom";
 import { Contact, NtiaReport, Sbom, SbomMetadata, SbomMetadataSource, Supplier } from "@effected/sbom";
 import type { PublishTarget, WorkspacePackage } from "@effected/workspaces";
 import { WorkspaceDiscovery, WorkspaceSnapshots } from "@effected/workspaces";
+import { SilkPublishability } from "@savvy-web/silk-effects";
 import { Clock, Effect } from "effect";
 import type { SBOMMetadataConfig } from "../types/sbom-config.js";
 import { countChangesetsPerPackage } from "../utils/count-changesets.js";
 import { extractReleaseNotes } from "../utils/extract-release-notes.js";
 import { getGroupId } from "../utils/group-id.js";
+import { grouped } from "../utils/grouped.js";
 import type { ConfigSource } from "../utils/load-release-config.js";
 import { loadSBOMConfig } from "../utils/load-release-config.js";
 import { sortReleasesTopologically } from "../utils/sort-releases-topologically.js";
 import { ChangesetConfig } from "./changeset-config.js";
 import { ValidationError } from "./errors.js";
 import { humanizeSize } from "./report.js";
-import { resolvePublishableTargets } from "./resolve-targets.js";
 import type {
 	BuildSbom,
 	BuildTargetResult,
@@ -420,7 +420,6 @@ export const runValidation = (args: ValidationInputArgs) =>
 	Effect.gen(function* () {
 		const discovery = yield* WorkspaceDiscovery;
 		const publish = yield* PackagePublish;
-		const logger = yield* ActionLogger;
 		// Read once at the edge: `SbomMetadataSource.formatCopyright` takes the
 		// year as an argument precisely so the ambient clock read lives here and
 		// the emitted copyright is testable.
@@ -570,7 +569,6 @@ export const runValidation = (args: ValidationInputArgs) =>
 		// release branch). Best-effort: an empty map on any failure.
 		const changesetCounts = yield* countChangesetsPerPackage(args.targetBranch);
 
-		const workspaceRoot = process.cwd();
 		const validationPackages: ValidationPackageResult[] = [];
 		// Per-build resolved SBOM metadata, keyed by `${pkg.name}:${build.directory}`.
 		// Debug-only — fed into the SBOM Preview check-run summary by `main.ts`.
@@ -590,18 +588,28 @@ export const runValidation = (args: ValidationInputArgs) =>
 			//
 			// A `PublishTargetBindingError` means detection selected a directory the
 			// package's `dist/prod/targets.json` does not bind — the #143 shape, where
-			// a dev build was about to be packed. Record it as an error finding rather
-			// than aborting the whole run: the check fails, auto-merge is blocked, and
-			// the remaining packages still get validated and reported.
-			const resolved = yield* Effect.result(resolvePublishableTargets(pkg, workspaceRoot));
+			// a dev build was about to be packed. A `ReleaseChannelError` means a
+			// target declares a `releases` value that is not a channel. Record either
+			// as an error finding rather than aborting the whole run: the check fails,
+			// auto-merge is blocked, and the remaining packages still get validated
+			// and reported.
+			//
+			// Only the targets that RECEIVE `currentVersion` are dry-run: a target
+			// whose `releases` channel excludes it (`stable` at a prerelease) is
+			// never published at this version, so probing it would fail a release
+			// over something that cannot ship.
+			const resolved = yield* Effect.result(SilkPublishability.resolveReleaseTargets(pkg, currentVersion));
 			if (resolved._tag === "Failure") {
-				const bindingError = resolved.failure;
-				yield* Effect.logError(bindingError.message);
+				const targetError = resolved.failure;
+				yield* Effect.logError(targetError.message);
 				findings.push({
 					severity: "error",
 					check: "Publish Validation",
-					scope: { package: pkg.name, directory: bindingError.directory },
-					message: bindingError.message,
+					scope: {
+						package: pkg.name,
+						directory: targetError._tag === "PublishTargetBindingError" ? targetError.directory : null,
+					},
+					message: targetError.message,
 				});
 				validationPackages.push({
 					name: pkg.name,
@@ -613,7 +621,13 @@ export const runValidation = (args: ValidationInputArgs) =>
 				});
 				continue;
 			}
-			const targets = resolved.success;
+			const targets = resolved.success.filter((r) => r.receives).map((r) => r.target);
+			const filteredOut = resolved.success.filter((r) => !r.receives);
+			for (const r of filteredOut) {
+				yield* Effect.logInfo(
+					`\u23ED ${pkg.name} · ${registryShortLabel(r.target.registry)} — releases: ${r.releases} excludes ${currentVersion}`,
+				);
+			}
 
 			// Read the CHANGELOG.md `changeset version` already wrote — the
 			// release branch carries the per-version section. The extractor
@@ -622,13 +636,21 @@ export const runValidation = (args: ValidationInputArgs) =>
 			const releaseNotes = extractReleaseNotes(pkg.path);
 
 			if (targets.length === 0) {
-				yield* Effect.logDebug(`${pkg.name}: no publish targets (version-only)`);
+				// Two different reasons for the same empty list: a package that
+				// declares no registry is version-only; one whose every target
+				// excludes this version still declares a registry.
+				yield* Effect.logDebug(
+					filteredOut.length > 0
+						? `${pkg.name}: ${filteredOut.length} target(s), none receive ${currentVersion}`
+						: `${pkg.name}: no publish targets (version-only)`,
+				);
 				validationPackages.push({
 					name: pkg.name,
 					version: currentVersion,
 					baseVersion,
 					changesetCount: changesetCounts.get(pkg.name) ?? null,
 					builds: [],
+					releaseFilteredTargets: filteredOut.length,
 					releaseNotes,
 				});
 				continue;
@@ -663,7 +685,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 				// One collapsible group per package-build, mirroring the Phase-3 publish
 				// tree: a `📦 pack` line (dry-run sizing), per-registry readiness rows,
 				// and a `📄 sbom` line, capped by a group summary line.
-				const buildResult = yield* logger.group(
+				const buildResult = yield* grouped(
 					`Validate · ${pkg.name}@${pkg.version}${groupSuffix}`,
 					Effect.gen(function* () {
 						// ── 📦 pack / dry-run (sizing, one per directory) ──────────────
@@ -876,6 +898,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 				baseVersion,
 				changesetCount: changesetCounts.get(pkg.name) ?? null,
 				builds: buildResults,
+				releaseFilteredTargets: filteredOut.length,
 				releaseNotes,
 			});
 		}
@@ -893,7 +916,10 @@ export const runValidation = (args: ValidationInputArgs) =>
 		// canonical `ValidationOutput` and renders the comment from that object;
 		// this module no longer pre-renders markdown.
 
-		const hasVersionOnlyPackages = totalTargets === 0 && validationPackages.length > 0;
+		// A package whose every target was release-filtered declares a registry, so
+		// it is not version-only.
+		const hasVersionOnlyPackages =
+			totalTargets === 0 && validationPackages.some((p) => (p.releaseFilteredTargets ?? 0) === 0);
 
 		const reportPackages = validationPackages.map((p) => ({
 			name: p.name,

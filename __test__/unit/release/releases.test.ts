@@ -19,6 +19,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "@effect/vitest";
 import { ScriptedSpawner } from "@effected/commands";
 import {
+	ActionsOidcClaims,
 	ArtifactMetadata,
 	Attestation,
 	AttestationRecord,
@@ -30,7 +31,7 @@ import {
 	Repo,
 	RepoRef,
 } from "@effected/github";
-import { ActionEnvironment, ActionLogger, OidcClaims, OidcTokenIssuer } from "@effected/github-actions";
+import { ActionEnvironment, ActionLogger, OidcTokenIssuer } from "@effected/github-actions";
 import { SIGSTORE_BUNDLE_V0_3_MEDIA_TYPE, SigningError, SigstoreBundle, SigstoreSigner } from "@effected/sbom";
 import { PackageNotFoundError, WorkspaceDiscovery } from "@effected/workspaces";
 import { Effect, Layer, Option } from "effect";
@@ -144,19 +145,26 @@ const repoLayer = Layer.succeed(Repo, RepoRef.make({ owner: "test-owner", repo: 
 
 /** Real, decodable OIDC claims, so the provenance path actually executes. */
 const oidcLayer = OidcTokenIssuer.layerFor(
-	OidcClaims.make({
+	ActionsOidcClaims.make({
 		iss: "https://token.actions.githubusercontent.com",
+		sub: "repo:test-owner/test-repo:ref:refs/heads/main",
+		aud: "sigstore",
+		exp: 2000000000,
+		iat: 1999999700,
 		ref: "refs/heads/main",
 		sha: "cafebabe",
 		repository: "test-owner/test-repo",
-		event_name: "push",
-		job_workflow_ref: "test-owner/test-repo/.github/workflows/release.yml@refs/heads/main",
-		workflow_ref: "test-owner/test-repo/.github/workflows/release.yml@refs/heads/main",
-		repository_id: "1",
-		repository_owner_id: "2",
-		runner_environment: "github-hosted",
-		run_id: "10",
-		run_attempt: "1",
+		repositoryId: 1,
+		repositoryOwner: "test-owner",
+		repositoryOwnerId: 2,
+		eventName: "push",
+		jobWorkflowRef: "test-owner/test-repo/.github/workflows/release.yml@refs/heads/main",
+		workflowRef: "test-owner/test-repo/.github/workflows/release.yml@refs/heads/main",
+		actor: "octocat",
+		actorId: 3,
+		runnerEnvironment: "github-hosted",
+		runId: 10,
+		runAttempt: 1,
 	}),
 );
 
@@ -246,14 +254,14 @@ const makeGitHubReleaseLayer = (
 	const assets = new Map<number, ReleaseAsset[]>();
 	if (overrides.seedAssets !== undefined) assets.set(1, [...overrides.seedAssets]);
 
-	const infoFor = (tag: string, name: string, body: string): GitHubReleaseInfo =>
+	const infoFor = (tag: string, name: string, body: string, prerelease = false): GitHubReleaseInfo =>
 		GitHubReleaseInfo.make({
 			id: releases.size + 1,
 			tag,
 			name,
 			body,
 			draft: false,
-			prerelease: false,
+			prerelease,
 			url: `https://github.com/test-owner/test-repo/releases/tag/${tag}`,
 			uploadUrl: `https://uploads.github.com/releases/${releases.size + 1}/assets`,
 		});
@@ -263,7 +271,7 @@ const makeGitHubReleaseLayer = (
 			createCalls.push({ tag: input.tag, name: input.name ?? "", body: input.body ?? "" });
 			const overridden = overrides.create?.(input.tag);
 			if (overridden !== undefined) return overridden;
-			const info = infoFor(input.tag, input.name ?? "", input.body ?? "");
+			const info = infoFor(input.tag, input.name ?? "", input.body ?? "", input.prerelease ?? false);
 			releases.set(input.tag, info);
 			return Effect.succeed(info);
 		},
@@ -910,6 +918,64 @@ describe("runReleases", () => {
 			// A diverged tag reports the sha the tag ACTUALLY points at, not the head.
 			expect(result.tagShas["@test/pkg-div@8.0.0"]).toBe(existingSha);
 		});
+	});
+
+	describe("prerelease flag on the reported release", () => {
+		it.effect("reports the prerelease flag GitHub recorded for each release", () =>
+			Effect.gen(function* () {
+				const release = makeGitHubReleaseLayer();
+				const args: ReleasesInputArgs = {
+					tags: [
+						makeTag("@test/pkg-a@1.0.0-beta.1", "@test/pkg-a", "1.0.0-beta.1"),
+						makeTag("@test/pkg-b@2.0.0", "@test/pkg-b", "2.0.0"),
+					],
+					publishResult: makePublishPackagesResult([
+						makePublishResult("@test/pkg-a", "1.0.0-beta.1"),
+						makePublishResult("@test/pkg-b", "2.0.0"),
+					]),
+					packageManager: "pnpm",
+					dryRun: false,
+				};
+				const result = yield* runReleases(args).pipe(
+					Effect.provide(
+						Layer.mergeAll(
+							baseLayers(),
+							makeGitTagLayer().layer,
+							release.layer,
+							makeAttestationLayer().layer,
+							makeArtifactMetadataLayer().layer,
+						),
+					),
+				);
+
+				const byTag = new Map(result.releases.map((r) => [r.tag, r.prerelease]));
+				expect(byTag.get("@test/pkg-a@1.0.0-beta.1")).toBe(true);
+				expect(byTag.get("@test/pkg-b@2.0.0")).toBe(false);
+			}),
+		);
+
+		it.effect("marks a dry-run prerelease as a prerelease without creating anything", () =>
+			Effect.gen(function* () {
+				const args: ReleasesInputArgs = {
+					tags: [makeTag("@test/pkg-c@3.0.0-rc.0", "@test/pkg-c", "3.0.0-rc.0")],
+					publishResult: makePublishPackagesResult([makePublishResult("@test/pkg-c", "3.0.0-rc.0")]),
+					packageManager: "pnpm",
+					dryRun: true,
+				};
+				const result = yield* runReleases(args).pipe(
+					Effect.provide(
+						Layer.mergeAll(
+							baseLayers(),
+							makeGitTagLayer().layer,
+							makeGitHubReleaseLayer().layer,
+							makeAttestationLayer().layer,
+							makeArtifactMetadataLayer().layer,
+						),
+					),
+				);
+				expect(result.releases[0]?.prerelease).toBe(true);
+			}),
+		);
 	});
 
 	describe("dry-run mode", () => {

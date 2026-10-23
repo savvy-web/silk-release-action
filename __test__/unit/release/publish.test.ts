@@ -42,11 +42,13 @@ import {
 	OidcTokenError,
 	OidcTokenIssuer,
 } from "@effected/github-actions";
+import { MemoryFileSystem } from "@effected/memfs";
 import type { PackagePublishShape, PublishOptions } from "@effected/npm";
 import { NpmRegistry, PackagePublish, PackedTarball, PublishError, RegistryReadError } from "@effected/npm";
 import { SIGSTORE_BUNDLE_V0_3_MEDIA_TYPE, SigstoreBundle, SigstoreSigner } from "@effected/sbom";
 import { PublishTarget, PublishabilityDetector, WorkspaceDiscovery, WorkspacePackage } from "@effected/workspaces";
-import { ConfigProvider, Effect, Layer, Option, Redacted } from "effect";
+import { SilkPublishability } from "@savvy-web/silk-effects";
+import { ConfigProvider, Effect, Layer, Logger, Option, Redacted } from "effect";
 import { ChangesetConfig } from "../../../src/release/changeset-config.js";
 import type { BuildSbomResult, DetectedRelease, PublishInputArgs } from "../../../src/release/publish.js";
 import {
@@ -440,9 +442,14 @@ const makeBaseLayers = (
 	wsPkg: WorkspacePackage,
 	targets: PublishTarget[],
 	attestationLayer: Layer.Layer<Attestation> = makeAttestationLayer().layer,
+	logger: Layer.Layer<ActionLogger> = loggerLayer,
 ) =>
 	Layer.mergeAll(
-		loggerLayer,
+		// `resolvePublishTargetSpecs` reads `package.json` / `targets.json` through
+		// `FileSystem`; an empty volume means no binding and no keyed declarations,
+		// so the stub detector's targets all receive every version.
+		MemoryFileSystem.layer,
+		logger,
 		actionStateLayer,
 		configProviderLayer,
 		environmentLayer,
@@ -514,6 +521,8 @@ describe("detectReleases", () => {
 			expect(detected[0]?.name).toBe("@test/commit-pkg");
 			expect(detected[0]?.version).toBe("3.0.0");
 			expect(detected[0]?.path.endsWith(join("packages", "commit-pkg"))).toBe(true);
+			// The version the first parent recorded — the release's base.
+			expect(detected[0]?.baseVersion).toBe("2.0.0");
 		});
 
 		it("does not detect a package when old and new versions are identical", async () => {
@@ -575,6 +584,7 @@ describe("detectReleases", () => {
 			expect(detected).toHaveLength(1);
 			expect(detected[0]?.name).toBe("@test/pr-pkg");
 			expect(detected[0]?.version).toBe("2.0.0");
+			expect(detected[0]?.baseVersion).toBe("1.0.0");
 		});
 
 		it("does not detect a package when old and new versions are identical", async () => {
@@ -661,6 +671,7 @@ describe("planWorkspaces", () => {
 			const plan = yield* planWorkspaces([makeDetected("@test/foo", "1.0.0", absolute)]).pipe(
 				Effect.provide(
 					Layer.mergeAll(
+						MemoryFileSystem.layer,
 						makeWorkspaceDiscoveryLayer([pkg]),
 						makePublishabilityLayer(new Map([[pkg.name, [makeNpmTarget(pkg.name, absolute)]]])),
 					),
@@ -671,6 +682,26 @@ describe("planWorkspaces", () => {
 		}),
 	);
 
+	it.effect("carries the detected base version onto the plan, and null when detection had none", () =>
+		Effect.gen(function* () {
+			const a = makeWsPkg("@test/a", "1.1.0", "/ws/a");
+			const b = makeWsPkg("@test/b", "1.0.0", "/ws/b");
+			const plan = yield* planWorkspaces([
+				{ ...makeDetected(a.name, "1.1.0", a.path), baseVersion: "1.0.0" },
+				makeDetected(b.name, "1.0.0", b.path),
+			]).pipe(
+				Effect.provide(
+					Layer.mergeAll(
+						MemoryFileSystem.layer,
+						makeWorkspaceDiscoveryLayer([a, b]),
+						makePublishabilityLayer(new Map()),
+					),
+				),
+			);
+			expect(plan.map((p) => p.baseVersion)).toEqual(["1.0.0", null]);
+		}),
+	);
+
 	it.effect("reports the repository root itself as '.'", () =>
 		Effect.gen(function* () {
 			const cwd = process.cwd();
@@ -678,12 +709,45 @@ describe("planWorkspaces", () => {
 			const plan = yield* planWorkspaces([makeDetected("@test/root", "1.0.0", cwd)]).pipe(
 				Effect.provide(
 					Layer.mergeAll(
+						MemoryFileSystem.layer,
 						makeWorkspaceDiscoveryLayer([pkg]),
 						makePublishabilityLayer(new Map([[pkg.name, [makeNpmTarget(pkg.name, cwd)]]])),
 					),
 				),
 			);
 			expect(plan[0]?.path).toBe(".");
+		}),
+	);
+
+	// `kind` is INTENT: a workspace that declares a registry target keeps
+	// `github-with-packages` even when the release filter drops that target for
+	// this version.
+	it.effect("keeps github-with-packages when every declared target is release-filtered", () =>
+		Effect.gen(function* () {
+			const pkg = makeWsPkg("@test/stable-only", "1.0.0-beta.1", "/ws/stable-only");
+			const plan = yield* planWorkspaces([makeDetected(pkg.name, "1.0.0-beta.1", pkg.path)]).pipe(
+				Effect.provide(
+					Layer.mergeAll(
+						makeWorkspaceDiscoveryLayer([pkg]),
+						SilkPublishability.layer.pipe(
+							Layer.provideMerge(
+								MemoryFileSystem.layerWith({
+									"/ws/stable-only/package.json": MemoryFileSystem.file(
+										JSON.stringify({
+											name: pkg.name,
+											private: true,
+											publishConfig: { access: "public", targets: { npm: { releases: "stable" } } },
+										}),
+									),
+								}),
+							),
+						),
+					),
+				),
+			);
+
+			expect(plan[0]?.kind).toBe("github-with-packages");
+			expect(plan[0]?.resolvedPackages).toBe(1);
 		}),
 	);
 });
@@ -932,6 +996,58 @@ describe("runBuildAndSbom", () => {
 			}),
 		);
 
+		// Every declared target excludes this version (`releases: "stable"` at a
+		// prerelease). The workspace still DECLARES a registry, but nothing will be
+		// packed or uploaded, so there is no artifact for an SBOM to describe.
+		it.effect("skips the SBOM for a workspace whose every target is release-filtered", () =>
+			Effect.gen(function* () {
+				const tmpRoot = join(tmpdir(), `silk-sbom-filtered-test-${Date.now()}`);
+				const pkgPath = join(tmpRoot, "stable-only");
+				mkdirSync(pkgPath, { recursive: true });
+				writeFileSync(
+					join(pkgPath, "package.json"),
+					JSON.stringify({
+						name: "@test/stable-only",
+						version: "1.0.0-beta.1",
+						private: true,
+						publishConfig: { access: "public", targets: { npm: { releases: "stable" } } },
+					}),
+				);
+				const pkg = makeWsPkg("@test/stable-only", "1.0.0-beta.1", pkgPath);
+				const detected: DetectedRelease[] = [makeDetected(pkg.name, "1.0.0-beta.1", pkg.path)];
+
+				const layers = Layer.mergeAll(
+					// `layerTest`, not `loggerLayer`: `layerSilent` also installs an empty
+					// `Logger.layer`, which would swallow the capture below.
+					ActionLogger.layerTest(),
+					makeWorkspaceDiscoveryLayer([pkg]),
+					SilkPublishability.layer.pipe(Layer.provideMerge(NodeServices.layer)),
+					buildSpawner(0),
+				);
+
+				const logged: string[] = [];
+				const capture = Logger.make<unknown, void>(({ message }) => {
+					logged.push(Array.isArray(message) ? message.join(" ") : String(message));
+				});
+				const result: BuildSbomResult = yield* runBuildAndSbom(detected, buildArgs).pipe(
+					Effect.provide(layers),
+					Effect.provide(Logger.layer([capture])),
+				);
+
+				// The log names WHY: a filtered workspace is not "GitHub release only".
+				const skipLine = logged.find((l) => l.includes("sbom · @test/stable-only"));
+				expect(skipLine).toMatch(/every target excluded by releases/);
+				expect(skipLine).not.toMatch(/GitHub release only/);
+				// The closing tally names it separately instead of counting it GitHub-only.
+				const tally = logged.find((l) => l.includes("workspace(s) ready"));
+				expect(tally).toContain("0 registry, 0 GitHub release only, 1 excluded by releases");
+				expect(result.ok).toBe(true);
+				expect(result.sbomSkipped).toEqual(["@test/stable-only"]);
+				expect(result.sbomPaths.has("@test/stable-only")).toBe(false);
+				expect(existsSync(join(pkgPath, "stable-only.sbom.json"))).toBe(false);
+			}),
+		);
+
 		it.effect("keeps ok: true and only lists the package when the SBOM WRITE fails", () =>
 			Effect.gen(function* () {
 				// The predecessor's test failed `Sbom.generate`. That is no longer
@@ -1132,6 +1248,7 @@ describe("runPublishTargets", () => {
 					runPublishTargets(detected).pipe(
 						Effect.provide(
 							Layer.mergeAll(
+								MemoryFileSystem.layer,
 								actionStateLayer,
 								configProviderLayer,
 								environmentLayer,
@@ -1156,7 +1273,7 @@ describe("runPublishTargets", () => {
 
 			const out = captured.join("\n");
 			expect(out).toContain("📦 pack:");
-			expect(out).toContain("⬆ npm · published · registry.npmjs.org");
+			expect(out).toContain("⬆ registry.npmjs.org · published → latest");
 			expect(out).toContain(`🔏 provenance: ${provUrl} (npm native)`);
 			expect(out).toContain("Publish · @test/pkg@1.0.0");
 
@@ -1704,6 +1821,7 @@ describe("runPublishTargets", () => {
 				];
 
 				const layers = Layer.mergeAll(
+					MemoryFileSystem.layer,
 					loggerLayer,
 					actionStateLayer,
 					configProviderLayer,
@@ -1750,7 +1868,7 @@ describe("runPublishTargets — dist-tag and snapshot mode", () => {
 		return { wsPkg, detected, target };
 	};
 
-	it.effect("passes NO tag on a normal publish, so npm's own latest applies and argv is unchanged", () =>
+	it.effect("passes the target's own dist-tag (latest for a final version) on a normal publish", () =>
 		Effect.gen(function* () {
 			const pub = makePackagePublishLayer();
 			const { wsPkg, detected, target } = setup();
@@ -1758,7 +1876,7 @@ describe("runPublishTargets — dist-tag and snapshot mode", () => {
 				Effect.provide(makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [target])),
 			);
 
-			expect(Object.hasOwn(pub.publishTarballCalls[0]?.options ?? {}, "tag")).toBe(false);
+			expect(pub.publishTarballCalls[0]?.options.tag).toBe("latest");
 			expect(result.packages[0]?.targets[0]?.target.tag).toBe("latest");
 		}),
 	);
@@ -1956,6 +2074,676 @@ describe("runPublishTargets — dist-tag and snapshot mode", () => {
 
 			expect(calls.map((c) => c.tag)).toEqual(["next", "next"]);
 			expect(calls[1]?.tokenAuth).toBe(true);
+		}),
+	);
+});
+
+// ─── Per-target release filter ────────────────────────────────────────────────
+
+/**
+ * The real silk-effects detector over an in-memory volume, so the join from a
+ * detected target to its `publishConfig.targets` declaration is exercised.
+ *
+ * @remarks
+ * `makeBaseLayers` stubs the detector, which can never carry a `releases`
+ * channel. These tests need the real one: the `releases` filter lives in
+ * `SilkPublishability.resolveReleaseTargets`, not in the detector. Seed the
+ * files that function reads (`package.json`, `dist/prod/targets.json`).
+ */
+const FILTER_ROOT = "/ws";
+const PNPR = "https://pnpr.example.com/";
+
+const filterManifest = (name: string, targets: Record<string, unknown>) => ({
+	name,
+	version: "1.0.0",
+	private: true,
+	publishConfig: { access: "public", targets },
+});
+
+const filterVolume = (files: Record<string, unknown>) =>
+	MemoryFileSystem.layerWith(
+		Object.fromEntries(
+			Object.entries(files).map(([path, content]) => [path, MemoryFileSystem.file(JSON.stringify(content))]),
+		),
+	);
+
+const makeFilterLayers = (
+	pubLayer: Layer.Layer<PackagePublish>,
+	npmLayer: Layer.Layer<NpmRegistry>,
+	wsPkgs: WorkspacePackage[],
+	files: Record<string, unknown>,
+	logger: Layer.Layer<ActionLogger> = loggerLayer,
+) =>
+	Layer.mergeAll(
+		logger,
+		actionStateLayer,
+		configProviderLayer,
+		environmentLayer,
+		outputsLayer,
+		repoLayer,
+		pubLayer,
+		npmLayer,
+		makeAttestationLayer().layer,
+		oidcUnavailableLayer,
+		sigstoreLayer,
+		makeWorkspaceDiscoveryLayer(wsPkgs),
+		SilkPublishability.layer,
+	).pipe(Layer.provideMerge(filterVolume(files)));
+
+const makeFilterPkg = (name: string, version: string, path = `${FILTER_ROOT}/pkg`): WorkspacePackage =>
+	WorkspacePackage.make({
+		name,
+		version,
+		path,
+		packageJsonPath: `${path}/package.json`,
+		relativePath: "pkg",
+		workspaceRoot: FILTER_ROOT,
+	});
+
+const packFor = (version: string): PackedTarball =>
+	PackedTarball.make({
+		tarballPath: "/tmp/test/pkg.tgz",
+		name: PACK_NAME,
+		version,
+		sha256Hex: SUBJECT_SHA,
+		packedSize: 1,
+		unpackedSize: 1,
+		fileCount: 1,
+		integrity: PACK_INTEGRITY,
+	} as Parameters<typeof PackedTarball.make>[0]);
+
+const npmStablePnprAll = { npm: { releases: "stable" }, pnpr: { registry: PNPR, releases: "all" } };
+
+describe("runPublishTargets — per-target release filter", () => {
+	const run = (version: string, snapshot?: { tag: string; dryRun: boolean }, registry?: Layer.Layer<NpmRegistry>) => {
+		const pub = makePackagePublishLayer({ packResult: packFor(version) });
+		const wsPkg = makeFilterPkg(PACK_NAME, version);
+		const effect = runPublishTargets([makeDetected(PACK_NAME, version, wsPkg.path)], new Map(), [], snapshot).pipe(
+			Effect.provide(
+				makeFilterLayers(pub.layer, registry ?? makeRegistryLayer(), [wsPkg], {
+					[`${wsPkg.path}/package.json`]: filterManifest(PACK_NAME, npmStablePnprAll),
+				}),
+			),
+		);
+		return { pub, effect };
+	};
+
+	it.effect("skips a stable-only target at a prerelease without packing it, and publishes the rest under beta", () =>
+		Effect.gen(function* () {
+			const { pub, effect } = run("1.2.0-beta.0");
+			const result = yield* effect;
+
+			const targets = result.packages[0]?.targets ?? [];
+			const filtered = targets.find((t) => t.target.registry === "https://registry.npmjs.org");
+			expect(filtered?.status).toBe("skipped");
+			expect(filtered?.skipReason).toBe("filtered-by-releases");
+			expect(filtered?.success).toBe(true);
+			expect(pub.packCalls).toHaveLength(1);
+			expect(pub.publishTarballCalls).toHaveLength(1);
+			expect(pub.publishTarballCalls[0]?.options.registry).toBe(PNPR);
+			expect(pub.publishTarballCalls[0]?.options.tag).toBe("beta");
+			expect(targets.find((t) => t.target.registry === PNPR)?.target.tag).toBe("beta");
+			expect(result.success).toBe(true);
+			// A filtered target is neither attempted nor published: the tally must
+			// not read "2/1".
+			expect(result.totalTargets).toBe(1);
+			expect(result.successfulTargets).toBe(1);
+		}),
+	);
+
+	it.effect("publishes every target under latest at a stable version", () =>
+		Effect.gen(function* () {
+			const { pub, effect } = run("1.2.0");
+			const result = yield* effect;
+
+			expect(pub.publishTarballCalls.map((c) => c.options.tag)).toEqual(["latest", "latest"]);
+			expect(result.packages[0]?.targets.every((t) => t.status === "published")).toBe(true);
+		}),
+	);
+
+	it.effect("lets the snapshot tag win over the target's own dist-tag", () =>
+		Effect.gen(function* () {
+			const known = NpmRegistry.layerSeeded({ registries: { [PNPR]: { [PACK_NAME]: { "0.9.0": {} } } } });
+			const { pub, effect } = run("1.2.0-beta.0", { tag: "next", dryRun: false }, known);
+			const result = yield* effect;
+
+			expect(pub.publishTarballCalls[0]?.options.tag).toBe("next");
+			expect(result.packages[0]?.targets.find((t) => t.target.registry === PNPR)?.target.tag).toBe("next");
+		}),
+	);
+
+	it.effect("fails only the workspace whose targets.json binding is violated; the next workspace still publishes", () =>
+		Effect.gen(function* () {
+			const pub = makePackagePublishLayer({ packResult: packFor("1.2.0") });
+			const bad = makeFilterPkg("@scope/bad", "1.2.0", "/ws/bad");
+			const good = makeFilterPkg("@scope/good", "1.2.0", "/ws/good");
+			const result = yield* runPublishTargets([
+				makeDetected(bad.name, "1.2.0", bad.path),
+				makeDetected(good.name, "1.2.0", good.path),
+			]).pipe(
+				Effect.provide(
+					makeFilterLayers(pub.layer, makeRegistryLayer(), [bad, good], {
+						[`${bad.path}/package.json`]: filterManifest(bad.name, npmStablePnprAll),
+						[`${bad.path}/dist/prod/targets.json`]: {
+							groups: [{ id: "npm", name: bad.name, dir: "dist/prod/npm/pkg" }],
+							targets: [
+								{ id: "npm", group: "npm", name: bad.name, registry: "https://registry.npmjs.org" },
+								{ id: "pnpr", group: "ghost", name: bad.name, registry: PNPR },
+							],
+						},
+						[`${good.path}/package.json`]: filterManifest(good.name, { pnpr: { registry: PNPR } }),
+					}),
+				),
+			);
+
+			const badPkg = result.packages.find((p) => p.name === bad.name);
+			const goodPkg = result.packages.find((p) => p.name === good.name);
+			expect(badPkg?.targets).toHaveLength(2);
+			expect(badPkg?.targets.every((t) => t.status === "failed" && t.success === false)).toBe(true);
+			// The message is upstream prose, not a contract; its tag and fields are
+			// pinned in resolve-target-specs.test.ts. Here: every target carries one.
+			expect(badPkg?.targets.every((t) => typeof t.error === "string" && t.error.length > 0)).toBe(true);
+			expect(goodPkg?.targets.map((t) => t.status)).toEqual(["published"]);
+			expect(pub.packCalls).toHaveLength(1);
+			expect(result.success).toBe(false);
+		}),
+	);
+
+	it.effect(
+		"fails only the workspace that declares an unknown releases channel; the next workspace still publishes",
+		() =>
+			Effect.gen(function* () {
+				const pub = makePackagePublishLayer({ packResult: packFor("1.2.0") });
+				const bad = makeFilterPkg("@scope/bad", "1.2.0", "/ws/bad");
+				const good = makeFilterPkg("@scope/good", "1.2.0", "/ws/good");
+				const result = yield* runPublishTargets([
+					makeDetected(bad.name, "1.2.0", bad.path),
+					makeDetected(good.name, "1.2.0", good.path),
+				]).pipe(
+					Effect.provide(
+						makeFilterLayers(pub.layer, makeRegistryLayer(), [bad, good], {
+							[`${bad.path}/package.json`]: filterManifest(bad.name, {
+								npm: { releases: "final" },
+								pnpr: { registry: PNPR, releases: "all" },
+							}),
+							[`${good.path}/package.json`]: filterManifest(good.name, { pnpr: { registry: PNPR } }),
+						}),
+					),
+				);
+
+				const badPkg = result.packages.find((p) => p.name === bad.name);
+				const goodPkg = result.packages.find((p) => p.name === good.name);
+				expect(badPkg?.targets).toHaveLength(2);
+				expect(badPkg?.targets.every((t) => t.status === "failed" && t.success === false)).toBe(true);
+				expect(badPkg?.targets.every((t) => typeof t.error === "string" && t.error.length > 0)).toBe(true);
+				expect(goodPkg?.targets.map((t) => t.status)).toEqual(["published"]);
+				expect(pub.packCalls).toHaveLength(1);
+				expect(result.success).toBe(false);
+			}),
+	);
+
+	// The kit produces provenance only for registry.npmjs.org. GitHub Packages
+	// defaults provenance to true and has always ignored it silently, so warning
+	// there would be noise on every run; a CUSTOM registry that asked for it is
+	// the case where the declaration is silently false.
+	it.effect("warns once that a custom registry gets no provenance, and stays quiet for GitHub Packages", () =>
+		Effect.gen(function* () {
+			const warnings: string[] = [];
+			const capture = Logger.make<unknown, void>(({ message, logLevel }) => {
+				if (logLevel === "Warn") warnings.push(Array.isArray(message) ? message.join(" ") : String(message));
+			});
+			const pub = makePackagePublishLayer({ packResult: packFor("1.2.0") });
+			const wsPkg = makeFilterPkg(PACK_NAME, "1.2.0");
+			yield* runPublishTargets([makeDetected(PACK_NAME, "1.2.0", wsPkg.path)]).pipe(
+				Effect.provide(
+					makeFilterLayers(
+						pub.layer,
+						makeRegistryLayer(),
+						[wsPkg],
+						{
+							[`${wsPkg.path}/package.json`]: filterManifest(PACK_NAME, {
+								pnpr: { registry: PNPR, provenance: true },
+								github: true,
+							}),
+						},
+						ActionLogger.layerTest(),
+					),
+				),
+				Effect.provide(Logger.layer([capture])),
+			);
+
+			// Other warnings mention provenance (the best-effort attestation has no
+			// OIDC here), so select the one this behaviour owns by its wording.
+			const provenanceWarnings = warnings.filter((w) => /only produces provenance/i.test(w));
+			// Each warning names its target host first (`[publish] <host>: …`).
+			// Comparing that host exactly, rather than searching the line for a
+			// hostname, also proves GitHub Packages produced no warning.
+			const warnedHosts = provenanceWarnings.map((w) => /^\[publish\] ([^:\s]+):/.exec(w)?.[1]);
+			expect(warnedHosts).toEqual(["pnpr.example.com"]);
+			expect(provenanceWarnings[0]).toMatch(/registry\.npmjs\.org/);
+		}),
+	);
+});
+
+// ─── Per-target explanation: target key, channel and auth ───────────────────
+
+describe("runPublishTargets — target key and channel", () => {
+	it.effect("records each target's publishConfig.targets key and releases channel, filtered or not", () =>
+		Effect.gen(function* () {
+			const pub = makePackagePublishLayer({ packResult: packFor("1.2.0-beta.0") });
+			const wsPkg = makeFilterPkg(PACK_NAME, "1.2.0-beta.0");
+			const result = yield* runPublishTargets([makeDetected(PACK_NAME, "1.2.0-beta.0", wsPkg.path)]).pipe(
+				Effect.provide(
+					makeFilterLayers(pub.layer, makeRegistryLayer(), [wsPkg], {
+						[`${wsPkg.path}/package.json`]: filterManifest(PACK_NAME, npmStablePnprAll),
+					}),
+				),
+			);
+
+			const targets = result.packages[0]?.targets ?? [];
+			const byRegistry = new Map(targets.map((t) => [t.target.registry, t.targetRef]));
+			expect(byRegistry.get("https://registry.npmjs.org")).toEqual({ id: "npm", releases: "stable" });
+			expect(byRegistry.get(PNPR)).toEqual({ id: "pnpr", releases: "all" });
+		}),
+	);
+
+	it.effect("records no target key when the workspace's targets could not be resolved", () =>
+		Effect.gen(function* () {
+			const pub = makePackagePublishLayer({ packResult: packFor("1.2.0") });
+			const bad = makeFilterPkg("@scope/bad", "1.2.0", "/ws/bad");
+			const result = yield* runPublishTargets([makeDetected(bad.name, "1.2.0", bad.path)]).pipe(
+				Effect.provide(
+					makeFilterLayers(pub.layer, makeRegistryLayer(), [bad], {
+						[`${bad.path}/package.json`]: filterManifest(bad.name, { npm: { releases: "final" } }),
+					}),
+				),
+			);
+
+			const targets = result.packages[0]?.targets ?? [];
+			expect(targets.length).toBeGreaterThan(0);
+			expect(targets.every((t) => t.status === "failed" && t.targetRef === undefined)).toBe(true);
+		}),
+	);
+});
+
+describe("runPublishTargets — auth record", () => {
+	const OIDC_ENV = ActionEnvironment.layerTest({
+		ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc.example/token",
+		ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-request-token",
+	});
+	const NPM_TOKEN = ActionInput.layer({ "npm-token": "npm-secret" });
+	const DIR = `/tmp/test/${PACK_NAME}`;
+	const setup = () => {
+		const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, DIR);
+		return { wsPkg, detected: [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)] };
+	};
+	/** A publish double whose first `publishTarball` fails and every later one succeeds. */
+	const failingFirst = (failAll = false) => {
+		const calls: PublishOptions[] = [];
+		const layer = PackagePublish.layerTest({
+			setupAuth: () => Effect.void,
+			pack: () => Effect.succeed(makePackResult()),
+			publishTarball: (_path, options) =>
+				Effect.suspend(() => {
+					calls.push(options);
+					return calls.length === 1 || failAll
+						? Effect.fail(new PublishError({ kind: "publish", registry: options.registry, output: "E404 oidc" }))
+						: Effect.succeed({});
+				}),
+		});
+		return { calls, layer };
+	};
+
+	it.effect("records token auth from the github-token input for a GitHub Packages publish", () =>
+		Effect.gen(function* () {
+			const pub = makePackagePublishLayer();
+			const { wsPkg, detected } = setup();
+			const ghp = new PublishTarget({
+				name: PACK_NAME,
+				registry: "https://npm.pkg.github.com/",
+				directory: DIR,
+				access: "restricted",
+				provenance: false,
+			});
+			const result = yield* runPublishTargets(detected).pipe(
+				Effect.provide(Layer.merge(makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [ghp]), OIDC_ENV)),
+			);
+
+			expect(result.packages[0]?.targets[0]?.auth).toEqual({
+				method: "token",
+				credential: "github-token",
+				fallback: null,
+			});
+		}),
+	);
+
+	// Trusted publishing exists only on registry.npmjs.org. Offering the OIDC env
+	// to a custom registry makes npm attempt an exchange that 404s and then fall
+	// back to the npmrc token on its own, so the record would claim an auth
+	// method that never authenticated.
+	it.effect("publishes a custom registry with token auth from the first attempt, even with the OIDC env present", () =>
+		Effect.gen(function* () {
+			const pub = makePackagePublishLayer();
+			const { wsPkg, detected } = setup();
+			const custom = new PublishTarget({
+				name: PACK_NAME,
+				registry: "https://pnpr.example.com/",
+				directory: DIR,
+				access: "public",
+				provenance: false,
+			});
+			const result = yield* runPublishTargets(detected, new Map(), [
+				{ registry: "https://pnpr.example.com/", token: Redacted.make("pnpr-secret") },
+			]).pipe(Effect.provide(Layer.merge(makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [custom]), OIDC_ENV)));
+
+			expect(pub.publishTarballCalls[0]?.options.tokenAuth).toBe(true);
+			expect(result.packages[0]?.targets[0]?.auth).toEqual({
+				method: "token",
+				credential: "custom-registries",
+				fallback: null,
+			});
+		}),
+	);
+
+	it.effect(
+		"records trusted publishing, with no token, when the OIDC env reached npm and the first attempt landed",
+		() =>
+			Effect.gen(function* () {
+				const pub = makePackagePublishLayer();
+				const { wsPkg, detected } = setup();
+				const result = yield* runPublishTargets(detected).pipe(
+					Effect.provide(
+						Layer.merge(
+							makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [makeNpmTarget(PACK_NAME, DIR)]),
+							OIDC_ENV,
+						),
+					),
+				);
+
+				expect(pub.publishTarballCalls[0]?.options.tokenAuth).toBe(false);
+				expect(result.packages[0]?.targets[0]?.auth).toEqual({
+					method: "trusted-publishing",
+					credential: null,
+					fallback: null,
+				});
+			}),
+	);
+
+	it.effect("records token auth when the runner exposes no OIDC env, naming the npm-token input", () =>
+		Effect.gen(function* () {
+			const pub = makePackagePublishLayer();
+			const { wsPkg, detected } = setup();
+			const result = yield* runPublishTargets(detected).pipe(
+				Effect.provide(
+					Layer.merge(
+						makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [makeNpmTarget(PACK_NAME, DIR)]),
+						NPM_TOKEN,
+					),
+				),
+			);
+
+			expect(result.packages[0]?.targets[0]?.auth).toEqual({
+				method: "token",
+				credential: "npm-token",
+				fallback: null,
+			});
+		}),
+	);
+
+	it.effect("records the token fallback and why it fired when trusted publishing failed and the retry landed", () =>
+		Effect.gen(function* () {
+			const pub = failingFirst();
+			const { wsPkg, detected } = setup();
+			const result = yield* runPublishTargets(detected).pipe(
+				Effect.provide(
+					Layer.mergeAll(
+						makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [makeNpmTarget(PACK_NAME, DIR)]),
+						OIDC_ENV,
+						NPM_TOKEN,
+					),
+				),
+			);
+
+			const t = result.packages[0]?.targets[0];
+			expect(t?.status).toBe("published");
+			expect(pub.calls.map((c) => c.tokenAuth)).toEqual([false, true]);
+			expect(t?.auth?.method).toBe("token");
+			expect(t?.auth?.credential).toBe("npm-token");
+			expect(t?.auth?.fallback?.from).toBe("trusted-publishing");
+			expect(t?.auth?.fallback?.reason).toContain("E404 oidc");
+		}),
+	);
+
+	it.effect("names a token first attempt as the fallback's origin when the runner exposed no OIDC env", () =>
+		Effect.gen(function* () {
+			const pub = failingFirst();
+			const { wsPkg, detected } = setup();
+			const result = yield* runPublishTargets(detected).pipe(
+				Effect.provide(
+					Layer.merge(
+						makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [makeNpmTarget(PACK_NAME, DIR)]),
+						NPM_TOKEN,
+					),
+				),
+			);
+
+			expect(result.packages[0]?.targets[0]?.auth?.fallback?.from).toBe("token");
+		}),
+	);
+
+	it.effect("records the auth that was attempted on a target whose upload failed", () =>
+		Effect.gen(function* () {
+			const pub = failingFirst(true);
+			const { wsPkg, detected } = setup();
+			const result = yield* runPublishTargets(detected).pipe(
+				Effect.provide(
+					Layer.merge(makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [makeNpmTarget(PACK_NAME, DIR)]), OIDC_ENV),
+				),
+			);
+
+			const t = result.packages[0]?.targets[0];
+			expect(t?.status).toBe("failed");
+			expect(t?.auth).toEqual({ method: "trusted-publishing", credential: null, fallback: null });
+		}),
+	);
+
+	it.effect("records no auth on a recovered target, which never uploaded", () =>
+		Effect.gen(function* () {
+			const pub = makePackagePublishLayer();
+			const { wsPkg, detected } = setup();
+			const result = yield* runPublishTargets(detected).pipe(
+				Effect.provide(
+					makeBaseLayers(pub.layer, makeRegistryLayer({ integrity: PACK_INTEGRITY }), wsPkg, [
+						makeNpmTarget(PACK_NAME, DIR),
+					]),
+				),
+			);
+
+			const t = result.packages[0]?.targets[0];
+			expect(t?.skipReason).toBe("already-published-identical");
+			expect(t?.auth).toBeUndefined();
+		}),
+	);
+
+	it.effect("names the custom-registries input as the credential for a custom registry", () =>
+		Effect.gen(function* () {
+			const CUSTOM = "https://registry.example.com/";
+			const pub = makePackagePublishLayer();
+			const { wsPkg, detected } = setup();
+			const custom = new PublishTarget({
+				name: PACK_NAME,
+				registry: CUSTOM,
+				directory: DIR,
+				access: "restricted",
+				provenance: false,
+			});
+			const result = yield* runPublishTargets(detected, new Map(), [
+				{ registry: CUSTOM, token: Redacted.make("custom-registry-token") },
+			]).pipe(Effect.provide(makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [custom])));
+
+			expect(result.packages[0]?.targets[0]?.auth?.credential).toBe("custom-registries");
+		}),
+	);
+});
+
+// ─── The per-target log line and the failure explanations ─────────────────────
+
+describe("runPublishTargets — log lines", () => {
+	const DIR = `/tmp/test/${PACK_NAME}`;
+	const CUSTOM = "https://registry.example.com/";
+	const OIDC_ENV = ActionEnvironment.layerTest({
+		ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc.example/token",
+		ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-request-token",
+	});
+	const NPM_TOKEN = ActionInput.layer({ "npm-token": "npm-secret" });
+	/** Every `Effect.log*` line, with its level. `ActionLogger.layerTest()` keeps the capture alive. */
+	const capture = () => {
+		const lines: Array<{ readonly level: string; readonly text: string }> = [];
+		const layer = Logger.layer([
+			Logger.make<unknown, void>(({ message, logLevel }) => {
+				lines.push({ level: logLevel, text: Array.isArray(message) ? message.join(" ") : String(message) });
+			}),
+		]);
+		return { lines, layer, text: () => lines.map((l) => l.text).join("\n") };
+	};
+	const customTarget = new PublishTarget({
+		name: PACK_NAME,
+		registry: CUSTOM,
+		directory: DIR,
+		access: "restricted",
+		provenance: false,
+	});
+	const setup = () => {
+		const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, DIR);
+		return { wsPkg, detected: [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)] };
+	};
+
+	it.effect("names the target key, the host once, the dist-tag and the credential on a published line", () =>
+		Effect.gen(function* () {
+			const logs = capture();
+			const pub = makePackagePublishLayer({ packResult: packFor("1.2.0") });
+			const wsPkg = makeFilterPkg(PACK_NAME, "1.2.0");
+			yield* runPublishTargets([makeDetected(PACK_NAME, "1.2.0", wsPkg.path)], new Map(), [
+				{ registry: PNPR, token: Redacted.make("pnpr-token") },
+			]).pipe(
+				Effect.provide(
+					makeFilterLayers(
+						pub.layer,
+						makeRegistryLayer(),
+						[wsPkg],
+						{ [`${wsPkg.path}/package.json`]: filterManifest(PACK_NAME, { pnpr: { registry: PNPR } }) },
+						ActionLogger.layerTest(),
+					),
+				),
+				Effect.provide(logs.layer),
+			);
+
+			const line = logs.lines.find((l) => l.text.includes("⬆"))?.text ?? "";
+			expect(line).toContain("⬆ pnpr · pnpr.example.com · published → latest");
+			expect(line).toContain("auth: token (custom-registries)");
+			expect(line.match(/pnpr\.example\.com/g)).toHaveLength(1);
+		}),
+	);
+
+	it.effect("explains a trusted-publishing fallback and marks the line with it", () =>
+		Effect.gen(function* () {
+			const logs = capture();
+			let calls = 0;
+			const pub = PackagePublish.layerTest({
+				setupAuth: () => Effect.void,
+				pack: () => Effect.succeed(makePackResult()),
+				publishTarball: (_path, options) =>
+					Effect.suspend(() =>
+						++calls === 1
+							? Effect.fail(new PublishError({ kind: "publish", registry: options.registry, output: "E404 oidc" }))
+							: Effect.succeed({}),
+					),
+			});
+			const { wsPkg, detected } = setup();
+			yield* runPublishTargets(detected).pipe(
+				Effect.provide(
+					Layer.mergeAll(
+						makeBaseLayers(
+							pub,
+							makeRegistryLayer(),
+							wsPkg,
+							[makeNpmTarget(PACK_NAME, DIR)],
+							makeAttestationLayer().layer,
+							ActionLogger.layerTest(),
+						),
+						OIDC_ENV,
+						NPM_TOKEN,
+					),
+				),
+				Effect.provide(logs.layer),
+			);
+
+			const warning = logs.lines.find((l) => l.level === "Warn" && l.text.includes("retrying"))?.text ?? "";
+			expect(warning).toMatch(/no trusted publisher is configured for @test\/pkg/);
+			expect(warning).toMatch(/provenance off/);
+			expect(logs.text()).toContain("auth: token (npm-token) after trusted publishing failed");
+		}),
+	);
+
+	it.effect("names the custom-registries line when the npmrc write for a custom registry fails", () =>
+		Effect.gen(function* () {
+			const logs = capture();
+			const pub = PackagePublish.layerTest({
+				setupAuth: (input) =>
+					Effect.fail(new PublishError({ kind: "auth", registry: input.registry, output: "EACCES" })),
+				pack: () => Effect.succeed(makePackResult()),
+				publishTarball: () => Effect.succeed({}),
+			});
+			const { wsPkg, detected } = setup();
+			yield* runPublishTargets(detected, new Map(), [{ registry: CUSTOM, token: Redacted.make("custom-token") }]).pipe(
+				Effect.provide(
+					makeBaseLayers(
+						pub,
+						makeRegistryLayer(),
+						wsPkg,
+						[customTarget],
+						makeAttestationLayer().layer,
+						ActionLogger.layerTest(),
+					),
+				),
+				Effect.provide(logs.layer),
+			);
+
+			const warning = logs.lines.find((l) => l.text.includes("setupAuth failed"))?.text ?? "";
+			expect(warning).toContain("`custom-registries` line for registry.example.com");
+		}),
+	);
+
+	it.effect("explains a 403 integrity probe on a custom registry as a missing read credential", () =>
+		Effect.gen(function* () {
+			const logs = capture();
+			const pub = makePackagePublishLayer();
+			const registry = NpmRegistry.layerTest({
+				version: (name, _version, target) =>
+					Effect.fail(
+						new RegistryReadError({ kind: "status", status: 403, package: name, registry: target?.registry ?? "" }),
+					),
+			});
+			const { wsPkg, detected } = setup();
+			const result = yield* runPublishTargets(detected).pipe(
+				Effect.provide(
+					makeBaseLayers(
+						pub.layer,
+						registry,
+						wsPkg,
+						[customTarget],
+						makeAttestationLayer().layer,
+						ActionLogger.layerTest(),
+					),
+				),
+				Effect.provide(logs.layer),
+			);
+
+			const error = logs.lines.find((l) => l.level === "Error" && l.text.includes("integrity probe"))?.text ?? "";
+			expect(error).toMatch(/requires a read credential/);
+			expect(error).toContain("_authToken");
+			expect(result.packages[0]?.targets[0]?.error).toMatch(/requires a read credential/);
+			expect(logs.text()).toContain("⬆ registry.example.com · probe-failed");
 		}),
 	);
 });

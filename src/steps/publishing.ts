@@ -58,7 +58,7 @@
  */
 
 import { Repo } from "@effected/github";
-import { ActionLogger, ActionOutputs, DryRun } from "@effected/github-actions";
+import { ActionOutputs, DryRun } from "@effected/github-actions";
 import { Effect } from "effect";
 import { PublishError, ReleasesError } from "../release/errors.js";
 import type { DetectedRelease } from "../release/publish.js";
@@ -74,7 +74,7 @@ import { detectPackageManager } from "../utils/detect-package-manager.js";
 import { determineTagStrategy, isMonorepoForTagging } from "../utils/determine-tag-strategy.js";
 import { ensureFullHistory } from "../utils/ensure-full-history.js";
 import { resolveServerUrl } from "../utils/github-urls.js";
-import { grouped } from "../utils/grouped.js";
+import { headed } from "../utils/grouped.js";
 import { releaseKindLabel, summarizeReleaseWave, tallyReleaseKinds } from "../utils/release-kind.js";
 import { sortReleasesTopologically } from "../utils/sort-releases-topologically.js";
 import { confirmAvailability } from "./confirm-availability.js";
@@ -106,10 +106,9 @@ const RERUN_CONTRACT =
  * @public
  */
 export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | undefined) =>
-	grouped(
+	headed(
 		"Phase 3: Publishing",
 		Effect.gen(function* () {
-			const logger = yield* ActionLogger;
 			const outputs = yield* ActionOutputs;
 
 			const { targetBranch } = inputs;
@@ -187,35 +186,27 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 					successfulTargets: 0,
 				};
 				yield* emitPublishing({ plan: [], publishResult: empty, failure: null });
-				yield* Effect.logInfo("Release publishing: ✅ no packages were versioned — nothing to tag, release or publish");
+				yield* Effect.logInfo("Release publishing: ✅ no workspaces to release — nothing to tag, release or publish");
 				return;
 			}
 
 			// ── Step 2: Determine tag strategy ─────────────────────────────────────
-			// `Step.groupStep` wraps the body in BOTH a GitHub Actions group and
-			// a `Step.withStep` envelope, so the step's `Step.success` line lands
-			// inside the group instead of leaving it empty (which produced the
-			// gap-only `Tag strategy` block in the runner UI before).
-			const tagStrategy = yield* grouped(
-				"Tag strategy",
-				Effect.gen(function* () {
-					// `DetectedRelease` carries no `targets`, and `determineTagStrategy`
-					// only reads `name`/`version` — so the empty `targets` array is safe.
-					// Tag strategy (Step 2) runs on the full detected set before any
-					// publishing, making every detected package a tag candidate; that is
-					// correct because a publish failure (Step 4) aborts releases (Step 5)
-					// before a single tag is ever created.
-					const needsPerPackageTags = yield* isMonorepoForTagging(process.cwd());
-					const strategy = determineTagStrategy(
-						detected.map((d) => ({ name: d.name, version: d.version, targets: [] })),
-						needsPerPackageTags,
-					);
-					yield* Effect.logDebug(`tag strategy: ${strategy.strategy}, ${strategy.tags.length} tag(s)`);
-					const strategyLabel = strategy.strategy === "multiple" ? "per-package tags" : "single shared tag";
-					yield* Effect.logInfo(`  \u2705 ${strategy.tags.length} tag(s), ${strategyLabel}`);
-					return strategy;
-				}),
+			// One line, so no log group: a group around a single line only adds a
+			// fold to click through.
+			// `DetectedRelease` carries no `targets`, and `determineTagStrategy`
+			// only reads `name`/`version` — so the empty `targets` array is safe.
+			// Tag strategy (Step 2) runs on the full detected set before any
+			// publishing, making every detected package a tag candidate; that is
+			// correct because a publish failure (Step 4) aborts releases (Step 5)
+			// before a single tag is ever created.
+			const needsPerPackageTags = yield* isMonorepoForTagging(process.cwd());
+			const tagStrategy = determineTagStrategy(
+				detected.map((d) => ({ name: d.name, version: d.version, targets: [] })),
+				needsPerPackageTags,
 			);
+			yield* Effect.logDebug(`tag strategy: ${tagStrategy.strategy}, ${tagStrategy.tags.length} tag(s)`);
+			const strategyLabel = tagStrategy.strategy === "multiple" ? "per-package tags" : "single shared tag";
+			yield* Effect.logInfo(`✅ ${tagStrategy.tags.length} tag(s), ${strategyLabel}`);
 
 			// ── Step 3: Build & SBOM (fail-fast gate) ──────────────────────────────
 			// `runBuildAndSbom` wraps itself in Step.withStep; its success line emits
@@ -255,14 +246,14 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 			const publishResult = yield* runPublishTargets(detected, buildSbom.sbomPaths, inputs.customRegistries);
 			if (!publishResult.success) {
 				yield* Effect.logError(
-					`❌ Published ${publishResult.successfulTargets}/${publishResult.totalTargets} target(s) — aborting before releases`,
+					`❌ Published ${publishResult.successfulTargets}/${publishResult.totalTargets} registry target(s) — aborting before releases`,
 				);
 				yield* emitPublishing({
 					plan,
 					publishResult,
 					failure: {
 						stage: "publish",
-						reason: `Published ${publishResult.successfulTargets}/${publishResult.totalTargets} target(s)`,
+						reason: `Published ${publishResult.successfulTargets}/${publishResult.totalTargets} registry target(s)`,
 					},
 				});
 				yield* Effect.logInfo("Release publishing: ❌ failed at Publish");
@@ -272,7 +263,7 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 				return yield* Effect.fail(
 					new PublishError({
 						reason: "publish",
-						message: `Published ${publishResult.successfulTargets}/${publishResult.totalTargets} target(s)`,
+						message: `Published ${publishResult.successfulTargets}/${publishResult.totalTargets} registry target(s)`,
 					}),
 				);
 			}
@@ -283,10 +274,10 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 			const publishKinds = tallyReleaseKinds(publishResult.packages.map((pkg) => pkg.targets.length));
 			yield* Effect.logInfo(
 				publishKinds.registry === 0
-					? `✅ No registry publishing — all ${publishKinds.githubRelease} package(s) are ` +
+					? `✅ No registry publishing — all ${publishKinds.githubRelease} workspace(s) are ` +
 							`${releaseKindLabel("github-only")}`
-					: `✅ Published ${publishResult.successfulTargets}/${publishResult.totalTargets} target(s) ` +
-							`across ${publishKinds.registry} package(s)` +
+					: `✅ Published ${publishResult.successfulTargets}/${publishResult.totalTargets} registry target(s) ` +
+							`across ${publishKinds.registry} workspace(s)` +
 							(publishKinds.githubRelease > 0
 								? `; ${publishKinds.githubRelease} ${releaseKindLabel("github-only")}`
 								: ""),
@@ -324,9 +315,7 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 			// was unreachable code that read as coverage. The live failure signal is
 			// `failedCount`, consumed by the deferred failure below.
 			const closeResult =
-				mergedReleasePRNumber !== undefined
-					? yield* logger.group("Close linked issues", closeLinkedIssues(mergedReleasePRNumber, dryRun))
-					: null;
+				mergedReleasePRNumber !== undefined ? yield* closeLinkedIssues(mergedReleasePRNumber, dryRun) : null;
 			if (closeResult !== null) {
 				yield* Effect.logInfo(
 					closeResult.failedCount > 0
@@ -339,15 +328,26 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 			// After tags and releases, so a scan hold never delays them; before the
 			// emission, so the output carries the answer. Never fails the phase —
 			// a version still unresolved at the ceiling is a `held` finding beside
-			// the package, not a flipped boolean. `inputs.npmToken` is "" when the
-			// input was not supplied; the step treats that as absent.
+			// the package, not a flipped boolean. The read credentials are the
+			// publish's own, from the decoded record: `npm-token`, `github-token`
+			// (the value `pre` persisted for the publish) and `custom-registries`.
+			// A token is "" when its input was not supplied; the step treats that
+			// as absent. A `filtered-by-releases` target is `success: true` but
+			// uploaded nothing, so it is not handed to the probe — it would poll
+			// for a version that was never meant to land.
 			const availability = yield* confirmAvailability(
 				publishResult.packages.flatMap((p) =>
 					p.targets
-						.filter((t) => t.success)
+						.filter((t) => t.success && t.skipReason !== "filtered-by-releases")
 						.map((t) => ({ name: t.target.name, version: p.version, registry: t.target.registry })),
 				),
-				{ ceilingSeconds: inputs.registryConfirmTimeout, dryRun, npmToken: inputs.npmToken },
+				{
+					ceilingSeconds: inputs.registryConfirmTimeout,
+					dryRun,
+					npmToken: inputs.npmToken,
+					githubToken: inputs.githubToken,
+					customRegistries: inputs.customRegistries,
+				},
 			);
 			const heldCount = [...availability.values()].filter((a) => a.status === "held").length;
 
@@ -413,7 +413,12 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 			yield* Effect.logInfo(
 				`Release publishing: ✅ ${summarizeReleaseWave({
 					workspaces: plan.length,
-					packagesPublished: publishResult.successfulTargets,
+					// Uploaded this run, as the output's `totals.packagesPublished` counts
+					// it: a recovery (already on the registry) is a success, not an upload.
+					packagesPublished: publishResult.packages.reduce(
+						(n, p) => n + p.targets.filter((t) => t.status === "published").length,
+						0,
+					),
 					releases: releasesResult.releases.length,
 					packagesHeld: heldCount,
 				})}`,

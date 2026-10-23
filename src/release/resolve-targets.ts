@@ -6,13 +6,16 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import type { RegistryCredential } from "@effected/npm";
 import { classifyRegistry } from "@effected/npm";
 import type { PublishTarget, WorkspacePackage } from "@effected/workspaces";
 import { PublishabilityDetector } from "@effected/workspaces";
-import type { PublishTargetBindingError } from "@savvy-web/silk-effects";
+import type { PublishTargetBindingError, ReleaseChannel, ReleaseChannelError } from "@savvy-web/silk-effects";
 import { SilkPublishability } from "@savvy-web/silk-effects";
 import type { FileSystem } from "effect";
-import { Effect } from "effect";
+import { Effect, Redacted } from "effect";
+import type { CustomRegistryAuth } from "../utils/custom-registries.js";
+import type { PublishCredentialSource } from "./types.js";
 
 /**
  * Report whether a built target directory's `package.json` is marked `private`.
@@ -71,20 +74,21 @@ export const resolvePublishableTargets = (
 > => SilkPublishability.resolveTargets(pkg, workspaceRoot);
 
 /**
- * Resolve the auth token for a publish-target registry.
+ * Resolve the auth token for a publish-target registry, naming where it came from.
  *
  * Resolution:
- *  - npm public registry  → the resolved npm token (from `Config` via caller)
- *  - GitHub Packages      → the resolved GitHub Packages token (from `ActionState` via caller)
+ *  - npm public registry  → the resolved npm token (`npm-token`)
+ *  - GitHub Packages      → the resolved GitHub Packages token (`github-token`)
  *  - Custom registries    → the `custom-registries` input (parsed and
  *    declassified by the caller), falling back to an env var derived from the
- *    registry URL
+ *    registry URL (`registry-env`)
  *
  * Returns `null` when no token is found (OIDC / first-time publish).
  *
  * Kept as the single token-selection seam so the rules cannot fork per phase
  * (Phase 2 deliberately resolves no tokens at all — `npm pack --dry-run`
- * never contacts a registry).
+ * never contacts a registry). The source rides along so the release output can
+ * say which input authenticated an upload without re-deriving the rules.
  *
  * @param registry - The target registry URL.
  * @param npmToken - The resolved npm token, or `null`.
@@ -92,9 +96,9 @@ export const resolvePublishableTargets = (
  * @param customTokens - Custom-registry tokens keyed by trailing-slash
  *   normalized registry URL, from the `custom-registries` input. Values are
  *   already masked in the CI log by the caller.
- * @returns The token for the registry, or `null` when none applies.
+ * @returns The token and its source, or `null` when none applies.
  */
-export function pickToken(
+export function resolveRegistryToken(
 	registry: string,
 	npmToken: string | null,
 	ghPkgsToken: string | null,
@@ -103,15 +107,15 @@ export function pickToken(
 	// input regresses to "decoded but consumed by nothing" a second time
 	// without a compile error (issue #215).
 	customTokens: ReadonlyMap<string, string>,
-): string | null {
+): { readonly token: string; readonly source: PublishCredentialSource } | null {
 	// One classification, switched exhaustively — rather than two independent
 	// booleans asked in sequence, which can disagree. `classifyRegistry` is the
 	// construct whose docstring names this call site.
 	switch (classifyRegistry(registry)) {
 		case "npm":
-			return npmToken;
+			return npmToken === null ? null : { token: npmToken, source: "npm-token" };
 		case "github-packages":
-			return ghPkgsToken;
+			return ghPkgsToken === null ? null : { token: ghPkgsToken, source: "github-token" };
 		// JSR is not an npm-protocol registry and publishes over OIDC, so it has
 		// no token of its own. It shares the custom-registry env-var derivation
 		// here only because the predecessor's two booleans both answered false
@@ -124,7 +128,7 @@ export function pickToken(
 			// for issue #215. Keys are normalized with a trailing slash at parse
 			// time (`parseCustomRegistries`), so normalize the lookup the same way.
 			const configured = customTokens.get(`${registry.replace(/\/+$/, "")}/`);
-			if (configured !== undefined) return configured;
+			if (configured !== undefined) return { token: configured, source: "custom-registries" };
 			// Fallback: an env var derived from the URL,
 			// e.g. https://registry.example.com/ → REGISTRY_EXAMPLE_COM_TOKEN.
 			// Undocumented but kept — it is the only path that worked at all while
@@ -136,9 +140,82 @@ export function pickToken(
 				.replace(/_+/g, "_")
 				.replace(/^_|_$/g, "")
 				.concat("_TOKEN");
-			return process.env[envName] ?? null;
+			const fromEnv = process.env[envName];
+			return fromEnv === undefined ? null : { token: fromEnv, source: "registry-env" };
 		}
 	}
+}
+
+/**
+ * Resolve the auth token for a publish-target registry.
+ *
+ * @remarks
+ * {@link resolveRegistryToken} without the source — the same rules, one seam.
+ *
+ * @param registry - The target registry URL.
+ * @param npmToken - The resolved npm token, or `null`.
+ * @param ghPkgsToken - The resolved GitHub Packages token, or `null`.
+ * @param customTokens - Custom-registry tokens keyed by normalized registry URL.
+ * @returns The token for the registry, or `null` when none applies.
+ */
+export function pickToken(
+	registry: string,
+	npmToken: string | null,
+	ghPkgsToken: string | null,
+	customTokens: ReadonlyMap<string, string>,
+): string | null {
+	return resolveRegistryToken(registry, npmToken, ghPkgsToken, customTokens)?.token ?? null;
+}
+
+/**
+ * Resolve the credential the post-publish confirmation probe reads a registry
+ * with: the one the publish used for it.
+ *
+ * @remarks
+ * The same rules as {@link resolveRegistryToken}, which this delegates to for
+ * everything but the `custom-registries` lookup. That lookup happens here so a
+ * custom token stays `Redacted` end to end: the probe's
+ * `RegistryCredential` takes a `Redacted`, so the input's own value is handed
+ * over and no declassification happens on the read path. The precedence is
+ * the publish's — `custom-registries` before the `registry-env` fallback.
+ *
+ * Whether a `null` answer means "probe anonymously" or "do not probe" is the
+ * caller's decision, not this function's: the public npm registry reads
+ * anonymously, GitHub Packages and pnpr do not.
+ *
+ * OPS-143 seam: pnpr will be published with a minted, publish-only workload
+ * token (`pnpr_workload_<jwt>`) that must never be sent on a read. When that
+ * lands, a custom entry will carry its read credential separately (an
+ * optional, paired `_authToken`), and an entry with none must make this
+ * function answer `null` — giving `no-read-credential` — rather than fall
+ * back to the publish token. The `custom-registries` branch below is the one
+ * place that changes.
+ *
+ * @param registry - The target registry URL.
+ * @param npmToken - The `npm-token` input, or `null`.
+ * @param githubToken - The `github-token` input, or `null`.
+ * @param customRegistries - The parsed `custom-registries` input.
+ * @returns The credential and where it came from, or `null` when none applies.
+ */
+export function resolveReadCredential(
+	registry: string,
+	npmToken: string | null,
+	githubToken: string | null,
+	customRegistries: ReadonlyArray<CustomRegistryAuth>,
+): { readonly credential: RegistryCredential; readonly source: PublishCredentialSource } | null {
+	if (classifyRegistry(registry) === "custom") {
+		// Keys are normalized with a trailing slash at parse time.
+		const normalized = `${registry.replace(/\/+$/, "")}/`;
+		const entry = customRegistries.find((e) => e.registry === normalized);
+		if (entry !== undefined) return { credential: { kind: "token", token: entry.token }, source: "custom-registries" };
+	}
+	// An empty map, deliberately: the `custom-registries` lookup was answered
+	// above, with the Redacted value; what remains is npm, GitHub Packages and
+	// the `registry-env` fallback.
+	const resolved = resolveRegistryToken(registry, npmToken, githubToken, new Map());
+	return resolved === null
+		? null
+		: { credential: { kind: "token", token: Redacted.make(resolved.token) }, source: resolved.source };
 }
 
 /**
@@ -163,33 +240,78 @@ export interface TargetSpec {
 	 * renamed publication unreportable.
 	 */
 	readonly name: string;
+	/**
+	 * The `publishConfig.targets` key this target came from, or `null` for an
+	 * unkeyed target (the `access`/`private` fallbacks) — and for every entry of
+	 * {@link ResolvedPublishTargets.declared}, which is built before the binding
+	 * is joined and so cannot know its key.
+	 */
+	readonly id: string | null;
 	readonly registry: string;
 	readonly directory: string;
 	readonly access: "public" | "restricted";
 	readonly provenance: boolean;
+	/**
+	 * The npm dist-tag this version publishes under for this target, from
+	 * `ReleaseTarget.distTag` (`latest` for a final version, the first
+	 * prerelease identifier otherwise). A snapshot tag overrides it at the call
+	 * site. Version-derived, so a spec in `ResolvedPublishTargets.releaseFiltered`
+	 * carries the same tag as one that receives the version.
+	 */
+	readonly distTag: string;
+	/** The target's declared `releases` channel, `"all"` when undeclared. */
+	readonly releases: ReleaseChannel;
 }
 
 /**
- * What {@link resolvePublishTargetSpecs} found for one package.
+ * What {@link resolvePublishTargetSpecs} found for one package at one version.
  *
  * @remarks
- * The two skip lists are returned rather than logged because this module has
+ * The skip lists are returned rather than logged because this module has
  * no logger and should not acquire one — the caller owns how loudly a skip is
  * reported, and Phase 2 and Phase 3 report them differently.
+ *
+ * `targets + releaseFiltered` is the workspace's declared-and-publishable
+ * intent; `targets` alone is what receives this version.
  *
  * @public
  */
 export interface ResolvedPublishTargets {
-	/** Targets that will actually be published to, with absolute directories. */
+	/** Targets that receive this version, with absolute directories and a dist-tag. */
 	readonly targets: ReadonlyArray<TargetSpec>;
 	/** Registry URLs of JSR targets, which this action cannot publish yet. */
 	readonly jsrSkipped: ReadonlyArray<string>;
 	/** Basenames of target directories dropped for a `private` built `package.json`. */
 	readonly privateSkipped: ReadonlyArray<string>;
+	/**
+	 * Targets dropped because their `releases` channel excludes this version
+	 * (e.g. `releases: "stable"` at a prerelease). Not an error: the target is
+	 * publishable, it just does not take this version.
+	 */
+	readonly releaseFiltered: ReadonlyArray<TargetSpec>;
+	/**
+	 * Set when the package's targets cannot be resolved safely, and `targets` and
+	 * `releaseFiltered` are then empty so nothing may publish:
+	 *  - `PublishTargetBindingError` — `dist/prod/targets.json` does not describe
+	 *    a detected target directory, so the bytes about to be packed are not
+	 *    the release artifact.
+	 *  - `ReleaseChannelError` — a target declares a `releases` value that is not
+	 *    `all`, `stable` or `prerelease`. Guessing a channel is how a prerelease
+	 *    lands on `latest`, so it is a config error, not a default.
+	 */
+	readonly targetError?: PublishTargetBindingError | ReleaseChannelError;
+	/**
+	 * Every non-JSR, non-private target the package DECLARES, regardless of the
+	 * release filter or a target error. Only needed when `targetError` is set:
+	 * `targets` and `releaseFiltered` are empty then, and the caller still has to
+	 * name which declared targets it is failing. Built from detection, before the
+	 * binding is known, so each entry's `releases` reads `"all"`.
+	 */
+	readonly declared: ReadonlyArray<TargetSpec>;
 }
 
 /**
- * Resolve the publish targets a package will actually be published to.
+ * Resolve the publish targets a package will publish to at a given version.
  *
  * @remarks
  * **The single definition of "will this package publish anywhere".** It exists
@@ -201,7 +323,7 @@ export interface ResolvedPublishTargets {
  * SBOM gate and the publish step cannot disagree about which packages are
  * registry packages.
  *
- * Three filters, in order:
+ * Four filters, in order:
  *  1. `PublishabilityDetector.detect` — the package's own declaration of where
  *     it publishes. Its error channel is `never`; an undetectable package
  *     yields an empty array.
@@ -209,25 +331,40 @@ export interface ResolvedPublishTargets {
  *     yet. They are reported in `jsrSkipped` so the caller can say so.
  *  3. **Targets whose built `package.json` is `private` are removed** — the
  *     build pipeline's "never publish" signal for dev-only outputs.
+ *  4. **Targets whose `releases` channel excludes `version` are removed**, via
+ *     `SilkPublishability.resolveReleaseTargets`. Survivors are matched back to
+ *     the specs above by registry and absolute directory and carry that
+ *     target's `distTag`; the rest are returned in `releaseFiltered`.
  *
- * A package that survives with zero targets is `github-release` kind — see
- * `utils/release-kind.ts`. That is a legitimate outcome, not a failure.
+ * The error channel is `never` because `planWorkspaces` cannot fail the run.
+ * `resolveReleaseTargets` can fail with `PublishTargetBindingError` or
+ * `ReleaseChannelError`; either is captured into `targetError` (with `targets`
+ * and `releaseFiltered` empty) so
+ * each caller decides how loudly to fail — Phase 3 fails that workspace's
+ * publish, Phase 2 raises an error finding.
+ *
+ * A package that survives with zero targets and zero `releaseFiltered` is
+ * `github-only` kind — see `utils/release-kind.ts`. One whose targets were all
+ * release-filtered still declares a registry, so its kind is derived from
+ * `targets + releaseFiltered`, not from `targets`.
  *
  * @param wsPkg - The workspace package to resolve targets for.
- * @returns The surviving targets plus what was dropped and why.
+ * @param version - The version being released.
+ * @returns The receiving targets plus what was dropped and why.
  *
  * @public
  */
 export const resolvePublishTargetSpecs = (
 	wsPkg: WorkspacePackage,
-): Effect.Effect<ResolvedPublishTargets, never, PublishabilityDetector> =>
+	version: string,
+): Effect.Effect<ResolvedPublishTargets, never, PublishabilityDetector | FileSystem.FileSystem> =>
 	Effect.gen(function* () {
 		const detector = yield* PublishabilityDetector;
 		const detected = yield* detector.detect(wsPkg);
 
 		const jsrSkipped: string[] = [];
 		const privateSkipped: string[] = [];
-		const targets: TargetSpec[] = [];
+		const candidates: TargetSpec[] = [];
 
 		for (const t of detected) {
 			if (classifyRegistry(t.registry) === "jsr") {
@@ -239,14 +376,46 @@ export const resolvePublishTargetSpecs = (
 				privateSkipped.push(directory);
 				continue;
 			}
-			targets.push({
+			candidates.push({
 				name: t.name,
+				id: null,
 				registry: t.registry,
 				directory,
 				access: t.access,
 				provenance: t.provenance ?? false,
+				distTag: SilkPublishability.distTagFor(version),
+				releases: "all",
 			});
 		}
 
-		return { targets, jsrSkipped, privateSkipped };
+		const released = yield* Effect.result(SilkPublishability.resolveReleaseTargets(wsPkg, version));
+		if (released._tag === "Failure") {
+			return {
+				targets: [],
+				jsrSkipped,
+				privateSkipped,
+				releaseFiltered: [],
+				targetError: released.failure,
+				declared: candidates,
+			};
+		}
+
+		const targets: TargetSpec[] = [];
+		const releaseFiltered: TargetSpec[] = [];
+		for (const r of released.success) {
+			if (classifyRegistry(r.target.registry) === "jsr") continue;
+			const spec: TargetSpec = {
+				name: r.target.name,
+				id: r.id ?? null,
+				registry: r.target.registry,
+				directory: isAbsolute(r.target.directory) ? r.target.directory : join(wsPkg.path, r.target.directory),
+				access: r.target.access,
+				provenance: r.target.provenance ?? false,
+				distTag: r.distTag,
+				releases: r.releases,
+			};
+			(r.receives ? targets : releaseFiltered).push(spec);
+		}
+
+		return { targets, jsrSkipped, privateSkipped, releaseFiltered, declared: candidates };
 	});

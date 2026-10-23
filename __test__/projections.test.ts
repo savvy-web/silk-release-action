@@ -15,6 +15,7 @@ import type {
 import { availabilityKey } from "../src/release/types.js";
 import type { SnapshotInput } from "../src/schema/projections.js";
 import {
+	deriveBumpType,
 	toBranchManagementOutput,
 	toPublishOutput,
 	toSnapshotOutput,
@@ -121,6 +122,43 @@ describe("toValidationOutput", () => {
 		],
 	};
 
+	// A package whose every target excludes this version has no builds, exactly
+	// like a tracking package — but it DECLARES a registry, so it must not be
+	// reported as `github-only` ("the workspace resolved no publish target").
+	it("projects a fully release-filtered package as github-with-packages, not github-only", () => {
+		const output = toValidationOutput({
+			buildsPassed: true,
+			packageCount: 1,
+			npmReady: true,
+			githubPackagesReady: true,
+			totalTargets: 0,
+			readyTargets: 0,
+			checks: [],
+			findings: [],
+			validationPackages: [
+				{
+					name: "@savvy-web/foo",
+					version: "1.2.0-beta.0",
+					baseVersion: "1.1.0",
+					changesetCount: 1,
+					builds: [],
+					releaseFilteredTargets: 1,
+					releaseNotes: { status: "no-changelog" },
+				},
+			],
+			checkRun: null,
+			dryRun: false,
+		});
+
+		const ws = output.validation.workspaces["@savvy-web/foo"];
+		expect(ws?.kind).toBe("github-with-packages");
+		expect(ws?.success).toBe(true);
+		expect(ws?.outcome).toBe("nothing-to-validate");
+		expect(ws?.summary).toMatch(/excludes this version/);
+		expect(output.totals.githubWithPackages).toBe(1);
+		expect(output.totals.githubOnly).toBe(0);
+	});
+
 	it("projects a clean build-centric validation run as success", () => {
 		const output = toValidationOutput({
 			buildsPassed: true,
@@ -202,7 +240,7 @@ describe("toValidationOutput", () => {
 			changesetCount: 1,
 			success: true,
 			outcome: "validated",
-			summary: "1 package(s) ready to publish.",
+			summary: "1 registry target(s) ready to publish.",
 			kind: "github-with-packages",
 			packages: [
 				{
@@ -588,7 +626,7 @@ describe("toPublishOutput", () => {
 			],
 			publishResult: { ...emptyResult, packages: pkgs, totalPackages: 2, successfulPackages: 2 },
 			tags: [{ name: "1.0.0", packageName: "@s/a, @s/b", packageNames: ["@s/a", "@s/b"], version: "1.0.0" }],
-			releases: [{ tag: "1.0.0", url: "https://example.com/r", id: 9, assets: [] }],
+			releases: [{ tag: "1.0.0", url: "https://example.com/r", id: 9, assets: [], prerelease: false }],
 			tagShas: { "1.0.0": "abc123" },
 			dryRun: false,
 			failure: null,
@@ -616,7 +654,7 @@ describe("toPublishOutput", () => {
 			],
 			publishResult: { ...emptyResult, packages: pkgs, totalPackages: 2, successfulPackages: 2 },
 			tags: [{ name: "1.0.0", packageName: "@s/a", packageNames: ["@s/a"], version: "1.0.0" }],
-			releases: [{ tag: "1.0.0", url: "https://example.com/r", id: 9, assets: [] }],
+			releases: [{ tag: "1.0.0", url: "https://example.com/r", id: 9, assets: [], prerelease: false }],
 			tagShas: { "1.0.0": "abc123" },
 			dryRun: false,
 			failure: null,
@@ -657,7 +695,7 @@ describe("toPublishOutput", () => {
 					version: "1.2.0",
 				},
 			],
-			releases: [{ tag: "@savvy-web/foo@1.2.0", url: "https://example.com/r", id: 7, assets: [] }],
+			releases: [{ tag: "@savvy-web/foo@1.2.0", url: "https://example.com/r", id: 7, assets: [], prerelease: false }],
 			tagShas: { "@savvy-web/foo@1.2.0": "abc123" },
 			dryRun: false,
 			failure: null,
@@ -685,6 +723,55 @@ describe("toPublishOutput", () => {
 		expect(pkg0?.tarballUrl).toBeNull();
 	});
 
+	// A workspace that declares a registry but whose every target excludes this
+	// version (`releases: "stable"` at a prerelease) uploads nothing — and that
+	// is a SUCCESS, not a failure and not a "recovery" (nothing was already on a
+	// registry; nothing was meant to be put there).
+	it("reports a workspace whose every target is filtered-by-releases as a released success with nothing uploaded", () => {
+		const pkg: PackagePublishResult = {
+			name: "@savvy-web/foo",
+			version: "1.2.0-beta.0",
+			targets: [target({ success: true, status: "skipped", skipReason: "filtered-by-releases" })],
+		};
+		const output = toPublishOutput({
+			...baseInput,
+			plan: planOf("@savvy-web/foo", "1.2.0-beta.0", "github-with-packages", 1),
+			publishResult: {
+				...emptyResult,
+				packages: [pkg],
+				totalPackages: 1,
+				successfulPackages: 1,
+				totalTargets: 1,
+				successfulTargets: 1,
+			},
+			tags: [
+				{
+					name: "@savvy-web/foo@1.2.0-beta.0",
+					packageName: "@savvy-web/foo",
+					packageNames: ["@savvy-web/foo"],
+					version: "1.2.0-beta.0",
+				},
+			],
+			releases: [
+				{ tag: "@savvy-web/foo@1.2.0-beta.0", url: "https://example.com/r", id: 7, assets: [], prerelease: true },
+			],
+			tagShas: { "@savvy-web/foo@1.2.0-beta.0": "abc123" },
+			dryRun: false,
+			failure: null,
+		});
+
+		const ws = output.publish.workspaces["@savvy-web/foo"];
+		expect(ws?.kind).toBe("github-with-packages");
+		expect(ws?.outcome).toBe("released");
+		expect(ws?.success).toBe(true);
+		expect(ws?.packages).toEqual([]);
+		expect(ws?.summary).toMatch(/excludes this version/);
+		expect(ws?.summary).toMatch(/nothing was uploaded/);
+		expect(output.success).toBe(true);
+		expect(output.totals.packagesRecovered).toBe(0);
+		expect(output.totals.githubWithPackages).toBe(1);
+	});
+
 	it("takes tarballUrl from a confirmed availability probe", () => {
 		const pkg: PackagePublishResult = {
 			name: "@savvy-web/foo",
@@ -696,7 +783,12 @@ describe("toPublishOutput", () => {
 		const availability = new Map<string, TargetAvailability>([
 			[
 				availabilityKey("https://registry.npmjs.org/", "@savvy-web/foo", "1.2.0"),
-				{ status: "confirmed", waitedMs: 1200, tarball: "https://registry.npmjs.org/@savvy-web/foo/-/foo-1.2.0.tgz" },
+				{
+					status: "confirmed",
+					waitedMs: 1200,
+					tarball: "https://registry.npmjs.org/@savvy-web/foo/-/foo-1.2.0.tgz",
+					reason: null,
+				},
 			],
 		]);
 		const output = toPublishOutput({
@@ -721,7 +813,7 @@ describe("toPublishOutput", () => {
 		expect(p?.url).toBe("https://www.npmjs.com/package/@savvy-web/foo/v/1.2.0");
 		expect(p?.tarballUrl).toBe("https://registry.npmjs.org/@savvy-web/foo/-/foo-1.2.0.tgz");
 		expect(p?.available).toBe(true);
-		expect(p?.availability).toEqual({ status: "confirmed", waitedMs: 1200 });
+		expect(p?.availability).toEqual({ status: "confirmed", waitedMs: 1200, reason: null });
 		expect(output.totals.packagesConfirmed).toBe(1);
 		expect(output.totals.packagesHeld).toBe(0);
 		expect(output.summary).not.toContain("held");
@@ -737,7 +829,7 @@ describe("toPublishOutput", () => {
 		const availability = new Map<string, TargetAvailability>([
 			[
 				availabilityKey("https://registry.npmjs.org/", "@savvy-web/foo", "1.2.0"),
-				{ status: "held", waitedMs: 180000, tarball: null },
+				{ status: "held", waitedMs: 180000, tarball: null, reason: null },
 			],
 		]);
 		const output = toPublishOutput({
@@ -760,7 +852,7 @@ describe("toPublishOutput", () => {
 					version: "1.2.0",
 				},
 			],
-			releases: [{ tag: "@savvy-web/foo@1.2.0", url: "https://example.com/r", id: 7, assets: [] }],
+			releases: [{ tag: "@savvy-web/foo@1.2.0", url: "https://example.com/r", id: 7, assets: [], prerelease: false }],
 			tagShas: { "@savvy-web/foo@1.2.0": "abc" },
 			dryRun: false,
 			failure: null,
@@ -771,13 +863,13 @@ describe("toPublishOutput", () => {
 		expect(p?.success).toBe(true);
 		expect(p?.outcome).toBe("published");
 		expect(p?.available).toBe(false);
-		expect(p?.availability).toEqual({ status: "held", waitedMs: 180000 });
+		expect(p?.availability).toEqual({ status: "held", waitedMs: 180000, reason: null });
 		expect(p?.tarballUrl).toBeNull();
 		expect(output.success).toBe(true);
 		expect(output.outcome).toBe("released");
 		expect(output.totals.packagesHeld).toBe(1);
 		expect(output.totals.packagesConfirmed).toBe(0);
-		expect(output.summary).toContain("1 package(s) held by the registry");
+		expect(output.summary).toContain("1 registry target(s) held by the registry");
 	});
 
 	it("marks a package with no probe entry as skipped and not available", () => {
@@ -807,7 +899,8 @@ describe("toPublishOutput", () => {
 		});
 		const p = output.publish.workspaces["@savvy-web/foo"]?.packages[0];
 		expect(p?.available).toBe(false);
-		expect(p?.availability).toEqual({ status: "skipped", waitedMs: 0 });
+		// Published, but the phase never reached the confirmation step for it.
+		expect(p?.availability).toEqual({ status: "skipped", waitedMs: 0, reason: "not-reached" });
 		expect(output.totals.packagesConfirmed).toBe(0);
 		expect(output.totals.packagesHeld).toBe(0);
 		expect(output.summary).not.toContain("held");
@@ -848,7 +941,7 @@ describe("toPublishOutput", () => {
 					version: "1.2.0",
 				},
 			],
-			releases: [{ tag: "@savvy-web/foo@1.2.0", url: "https://example.com/r", id: 7, assets: [] }],
+			releases: [{ tag: "@savvy-web/foo@1.2.0", url: "https://example.com/r", id: 7, assets: [], prerelease: false }],
 			tagShas: {},
 			dryRun: false,
 			failure: null,
@@ -973,7 +1066,15 @@ describe("toPublishOutput", () => {
 					version: "0.14.0",
 				},
 			],
-			releases: [{ tag: "@effected/claude-code-plugin@0.14.0", url: "https://example.com/r", id: 42, assets: [] }],
+			releases: [
+				{
+					tag: "@effected/claude-code-plugin@0.14.0",
+					url: "https://example.com/r",
+					id: 42,
+					assets: [],
+					prerelease: false,
+				},
+			],
 			tagShas: { "@effected/claude-code-plugin@0.14.0": "abc123" },
 			dryRun: false,
 			failure: null,
@@ -996,7 +1097,7 @@ describe("toPublishOutput", () => {
 		expect(output.totals.packagesPublished).toBe(0);
 		expect(output.totals.releasesCreated).toBe(1);
 		expect(output.summary).toBe(
-			"1 workspace(s) versioned · 0 package(s) published to a registry · 1 GitHub release(s) created",
+			"1 workspace(s) released · 0 registry target(s) published · 1 GitHub release(s) created",
 		);
 	});
 
@@ -1194,6 +1295,242 @@ describe("toPublishOutput", () => {
 	});
 });
 
+describe("toPublishOutput — per-target and per-workspace explanation", () => {
+	const NPM = "https://registry.npmjs.org/";
+	const repo = { owner: "savvy-web", repo: "foo", serverUrl: "https://github.com" };
+	const emptyResult: PublishPackagesResult = {
+		success: true,
+		packages: [],
+		totalPackages: 0,
+		successfulPackages: 0,
+		totalTargets: 0,
+		successfulTargets: 0,
+	};
+	/** A target result on `registry` under dist-tag `tag`, with the remaining fields overridden. */
+	const onRegistry = (registry: string, tag: string, over: Record<string, unknown>) =>
+		target({
+			target: {
+				name: "@savvy-web/foo",
+				protocol: "npm",
+				registry,
+				directory: "/x",
+				access: "public",
+				provenance: true,
+				tag,
+				tokenEnv: null,
+			},
+			...over,
+		});
+	const run = (
+		version: string,
+		targets: PackagePublishResult["targets"],
+		options: {
+			readonly availability?: ReadonlyMap<string, TargetAvailability>;
+			readonly baseVersion?: string | null;
+			readonly release?: { readonly prerelease: boolean };
+		} = {},
+	) =>
+		toPublishOutput({
+			repo,
+			availability: options.availability ?? new Map(),
+			plan: [
+				{
+					name: "@savvy-web/foo",
+					version,
+					kind: "github-with-packages",
+					resolvedPackages: targets.length,
+					path: "packages/foo",
+					baseVersion: options.baseVersion ?? null,
+				},
+			],
+			publishResult: { ...emptyResult, packages: [{ name: "@savvy-web/foo", version, targets }] },
+			tags:
+				options.release === undefined
+					? []
+					: [
+							{
+								name: `@savvy-web/foo@${version}`,
+								packageName: "@savvy-web/foo",
+								packageNames: ["@savvy-web/foo"],
+								version,
+							},
+						],
+			releases:
+				options.release === undefined
+					? []
+					: [
+							{
+								tag: `@savvy-web/foo@${version}`,
+								url: "https://example.com/r",
+								id: 7,
+								assets: [],
+								prerelease: options.release.prerelease,
+							},
+						],
+			tagShas: {},
+			dryRun: false,
+			failure: null,
+		});
+
+	it("reports the dist-tag, target key and auth of an uploaded package", () => {
+		const output = run("1.2.0-beta.0", [
+			onRegistry(NPM, "beta", {
+				status: "published",
+				targetRef: { id: "npm", releases: "all" },
+				auth: {
+					method: "token",
+					credential: "npm-token",
+					fallback: { from: "trusted-publishing", reason: "E404 no trusted publisher" },
+				},
+			}),
+		]);
+		const p = output.publish.workspaces["@savvy-web/foo"]?.packages[0];
+		expect(p?.distTag).toBe("beta");
+		expect(p?.target).toEqual({ id: "npm", releases: "all" });
+		expect(p?.auth).toEqual({
+			method: "token",
+			credential: "npm-token",
+			fallback: { from: "trusted-publishing", reason: "E404 no trusted publisher" },
+		});
+		expect(Schema.decodeUnknownExit(ReleaseOutput)(output)._tag).toBe("Success");
+	});
+
+	it("reports no dist-tag and no auth for a recovered package, which uploaded nothing", () => {
+		const output = run("1.2.0", [
+			onRegistry(NPM, "latest", {
+				status: "skipped",
+				skipReason: "already-published-identical",
+				alreadyPublished: true,
+				alreadyPublishedReason: "identical",
+				targetRef: { id: null, releases: "all" },
+			}),
+		]);
+		const p = output.publish.workspaces["@savvy-web/foo"]?.packages[0];
+		expect(p?.outcome).toBe("recovered");
+		expect(p?.distTag).toBeNull();
+		expect(p?.auth).toBeNull();
+		// An unkeyed target (the `access`/`private` fallback) still has a channel.
+		expect(p?.target).toEqual({ id: null, releases: "all" });
+	});
+
+	it("reports a null target when the target's declaration could not be resolved", () => {
+		const output = run("1.2.0", [onRegistry(NPM, "latest", { status: "failed", success: false, error: "unbound" })]);
+		expect(output.publish.workspaces["@savvy-web/foo"]?.packages[0]?.target).toBeNull();
+	});
+
+	it("reports the auth attempted on a failed upload", () => {
+		const output = run("1.2.0", [
+			onRegistry(NPM, "latest", {
+				status: "failed",
+				success: false,
+				error: "E403",
+				auth: { method: "trusted-publishing", credential: null, fallback: null },
+			}),
+		]);
+		const p = output.publish.workspaces["@savvy-web/foo"]?.packages[0];
+		expect(p?.distTag).toBeNull();
+		expect(p?.auth).toEqual({ method: "trusted-publishing", credential: null, fallback: null });
+	});
+
+	it("names why availability was skipped: the probe's own reason, or a target that never published", () => {
+		const custom = "https://registry.example.com/";
+		const output = run(
+			"1.2.0",
+			[
+				onRegistry(custom, "latest", { status: "published" }),
+				onRegistry("https://npm.pkg.github.com/", "latest", { status: "failed", success: false, error: "x" }),
+			],
+			{
+				availability: new Map<string, TargetAvailability>([
+					[
+						availabilityKey(custom, "@savvy-web/foo", "1.2.0"),
+						{ status: "skipped", waitedMs: 0, tarball: null, reason: "no-read-credential" },
+					],
+				]),
+			},
+		);
+		const [published, failed] = output.publish.workspaces["@savvy-web/foo"]?.packages ?? [];
+		expect(published?.availability).toEqual({ status: "skipped", waitedMs: 0, reason: "no-read-credential" });
+		expect(failed?.availability).toEqual({ status: "skipped", waitedMs: 0, reason: "not-published" });
+		expect(published?.url).toBeNull();
+	});
+
+	it("separates npm's own provenance from the action's GitHub provenance attestation", () => {
+		const output = run("1.2.0", [
+			onRegistry(NPM, "latest", {
+				status: "published",
+				npmProvenanceUrl: "https://search.sigstore.dev/?logIndex=42",
+				attestationUrl: "https://github.com/savvy-web/foo/attestations/1",
+				sbomAttestationUrl: "https://github.com/savvy-web/foo/attestations/2",
+			}),
+		]);
+		const a = output.publish.workspaces["@savvy-web/foo"]?.packages[0]?.attestations;
+		expect(a?.npmProvenanceUrl).toBe("https://search.sigstore.dev/?logIndex=42");
+		expect(a?.provenanceUrl).toBe("https://github.com/savvy-web/foo/attestations/1");
+		expect(a?.sbomUrl).toBe("https://github.com/savvy-web/foo/attestations/2");
+	});
+
+	it("lists a release-filtered target under skipped with its key, channel and reason, beside the uploads", () => {
+		const output = run("1.2.0-beta.0", [
+			onRegistry("https://pnpr.example.com/", "beta", {
+				status: "published",
+				targetRef: { id: "pnpr", releases: "all" },
+			}),
+			onRegistry("https://registry.npmjs.org", "beta", {
+				status: "skipped",
+				skipReason: "filtered-by-releases",
+				targetRef: { id: "npm", releases: "stable" },
+			}),
+		]);
+		const ws = output.publish.workspaces["@savvy-web/foo"];
+		expect(ws?.packages.map((p) => p.registry.url)).toEqual(["https://pnpr.example.com/"]);
+		expect(ws?.skipped).toEqual([
+			{
+				name: "@savvy-web/foo",
+				registry: { name: "npm", type: "npm", url: "https://registry.npmjs.org" },
+				target: { id: "npm", releases: "stable" },
+				reason: "filtered-by-releases",
+			},
+		]);
+		expect(Schema.decodeUnknownExit(ReleaseOutput)(output)._tag).toBe("Success");
+	});
+
+	it("reports an empty skipped list when nothing was filtered", () => {
+		const output = run("1.2.0", [onRegistry(NPM, "latest", { status: "published" })]);
+		expect(output.publish.workspaces["@savvy-web/foo"]?.skipped).toEqual([]);
+	});
+
+	it("classifies a prerelease, its dist-tag channel, and carries the release's prerelease flag", () => {
+		const output = run("1.2.0-beta.0", [onRegistry(NPM, "beta", { status: "published" })], {
+			release: { prerelease: true },
+		});
+		const ws = output.publish.workspaces["@savvy-web/foo"];
+		expect(ws?.releaseType).toBe("prerelease");
+		expect(ws?.distTag).toBe("beta");
+		expect(ws?.release?.prerelease).toBe(true);
+	});
+
+	it("classifies a stable release with its base version and bump", () => {
+		const output = run("1.2.0", [onRegistry(NPM, "latest", { status: "published" })], {
+			baseVersion: "1.1.3",
+			release: { prerelease: false },
+		});
+		const ws = output.publish.workspaces["@savvy-web/foo"];
+		expect(ws?.releaseType).toBe("stable");
+		expect(ws?.distTag).toBe("latest");
+		expect(ws?.baseVersion).toBe("1.1.3");
+		expect(ws?.bumpType).toBe("minor");
+		expect(ws?.release?.prerelease).toBe(false);
+	});
+
+	it("reports an unknown bump, never a new package, when the base version is unknown", () => {
+		const output = run("2.0.0", [onRegistry(NPM, "latest", { status: "published" })]);
+		const ws = output.publish.workspaces["@savvy-web/foo"];
+		expect(ws?.baseVersion).toBeNull();
+		expect(ws?.bumpType).toBe("unknown");
+	});
+});
+
 describe("toSnapshotOutput", () => {
 	const ROOT = "/repo";
 	const VERSION = "1.3.0-next-20260927051500";
@@ -1319,6 +1656,23 @@ describe("toSnapshotOutput", () => {
 		expect(out.skipped).toEqual([{ name: "@scope/alpha", version: VERSION, reason: "dry-run" }]);
 	});
 
+	it("lists a release-filtered target under skipped, never as published, and encodes against the schema", () => {
+		const out = toSnapshotOutput(
+			base([
+				{
+					name: "@scope/alpha",
+					version: VERSION,
+					targets: [target({ status: "skipped", skipReason: "filtered-by-releases" })],
+				},
+			]),
+		);
+
+		expect(out.published).toEqual([]);
+		expect(out.skipped).toEqual([{ name: "@scope/alpha", version: VERSION, reason: "filtered-by-releases" }]);
+		expect(out.success).toBe(true);
+		expect(() => Schema.encodeUnknownSync(ReleaseOutput)(out)).not.toThrow();
+	});
+
 	it("reports no pending changesets as nothing-to-snapshot, a success", () => {
 		const out = toSnapshotOutput({ ...base([]), releases: [], publishResult: null });
 
@@ -1339,5 +1693,36 @@ describe("toSnapshotOutput", () => {
 		expect(out.success).toBe(false);
 		expect(out.failure).toEqual({ stage: "refused", reason: "refs/tags/v1.0.0 is not a branch" });
 		expect(out.summary).toContain("refs/tags/v1.0.0 is not a branch");
+	});
+});
+
+// Version pairs from silk-integration's prerelease waves (runs 39989686602 and
+// 39991076070). Splitting on "." read `5-beta` as NaN, so every one of these
+// reported `unknown` (#532).
+describe("deriveBumpType", () => {
+	it.each([
+		["1.2.3", "2.0.0", "major"],
+		["1.2.3", "1.3.0", "minor"],
+		["1.2.3", "1.2.4", "patch"],
+		["3.0.4", "3.0.5-beta.0", "patch"],
+		["3.0.5-beta.0", "3.0.5-beta.1", "prerelease"],
+		["3.0.5-beta.0", "3.0.5", "graduation"],
+		["3.0.5-beta.0", "3.1.0-beta.0", "minor"],
+		["3.0.5-beta.0", "4.0.0", "major"],
+	] as const)("reads %s → %s as %s", (base, version, expected) => {
+		expect(deriveBumpType(base, version)).toBe(expected);
+	});
+
+	it("reports a package with no base version as new", () => {
+		expect(deriveBumpType(null, "1.0.0")).toBe("new");
+	});
+
+	it.each([
+		["not-a-version", "1.0.0"],
+		["1.0.0", "1.0"],
+		["2.0.0", "1.9.9"],
+		["1.0.0", "1.0.0"],
+	] as const)("reports %s → %s as unknown rather than guessing", (base, version) => {
+		expect(deriveBumpType(base, version)).toBe("unknown");
 	});
 });

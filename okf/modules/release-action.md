@@ -7,8 +7,7 @@ resource: ../../src
 status: draft
 generated:
   by: okfit/claude-code
-  at: 2026-09-27T15:46:10Z
-  body_sha256: 3c7c4e800ecad036ec62b9e158ae87a0d29dfdd11812a1c242aed97168bfbe89
+  at: 2026-10-23T15:07:32Z
 sources:
   - id: src-main
     resource: ../../src/main.ts
@@ -31,6 +30,9 @@ tags:
   - release
   - security
   - observability
+integrity:
+  generated:
+    body: 6ad453171e784b7d
 ---
 
 # release-action
@@ -146,7 +148,7 @@ Triggers on merge of the release PR to `main`. `steps/publishing.ts` is the phas
 3. **`runBuildAndSbom`** — runs `ci:build` once, then generates one CycloneDX SBOM per package that resolved a publish target; a `github-only` workspace is named in `sbomSkipped` rather than getting a stray unattached SBOM. Aborts the phase on a build failure.
 4. **`runPublishTargets`** — publishes packages: resolves targets, sorts topologically (idempotent re-sort), and calls `publishDirectoryGroup` per unique build directory. Aborts before any releases unless every target published or recovered (`publishResult.success` is all-or-nothing).
 5. **`runReleases`** (`release/releases.ts`) — creates Git tags (sha-aware idempotency) and GitHub releases, uploads group-keyed assets, creates SLSA provenance and SBOM attestations (idempotent: checks for an existing attestation first). One attestation per build directory, not per target.
-6. **`confirmAvailability`** (`steps/confirm-availability.ts`) — after `runReleases` and the close-linked-issues follow-on, before `emitPublishing`, so a hold never delays tags or releases: polls every successful npm target's exact `name@version` on its registry until it resolves or `registry-confirm-timeout` elapses, concurrently, under its own `Confirm registry availability` log group (opened only when there is something to probe — not on dry-run, ceiling `0`, or a wave with no npm target). Requires `NpmRegistry | ActionLogger`; the `npm-token` arrives as an option from the decoded `Inputs`, not a second input read. Never fails the run and never flips `success`/`outcome` — a held package is published, just not yet resolvable. See [npm-publish-hold](../gotchas/npm-publish-hold.md).
+6. **`confirmAvailability`** (`steps/confirm-availability.ts`) — after `runReleases` and the close-linked-issues follow-on, before `emitPublishing`, so a hold never delays tags or releases: polls every successful target's exact `name@version` on its npm-protocol registry (npm, GitHub Packages, custom) until it resolves or its ceiling elapses — `registry-confirm-timeout` on npm, 20s capped by that input elsewhere, since only npm holds new versions — concurrently, under its own `Confirm registry availability` log group (opened only when there is something to read — not on dry-run, ceiling `0`, or a wave whose targets are all JSR or lack a read credential). Each registry is read with its publish credential (`resolveReadCredential` in `release/resolve-targets.ts`); a non-npm target with none is `no-read-credential`, and a 401/403 is `read-denied`, never `held`. A `filtered-by-releases` target is never handed to it. Requires `NpmRegistry | ActionLogger`; `npm-token`, `github-token` and `custom-registries` arrive as options from the decoded `Inputs`, not a second input read. Never fails the run and never flips `success`/`outcome` — a held package is published, just not yet resolvable. See [npm-publish-hold](../gotchas/npm-publish-hold.md).
 
 Ordering is established **once, at the source**: immediately after `detectReleases`, `steps/publishing.ts` sorts the detected set dependency-first via `sortReleasesTopologically`, so tag strategy, build & SBOM, publish, and releases all run in the same order — previously only `runPublishTargets` sorted while the rest consumed alphabetical detection order.
 
@@ -160,7 +162,7 @@ Ordering is established **once, at the source**: immediately after `detectReleas
 
 **Token resolution** — `pickToken(registry, npmToken, ghPkgsToken, customTokens)` in `src/release/resolve-targets.ts` resolves each target registry's credential from one `classifyRegistry` call, switched exhaustively: `npm` uses the `npm-token` input when present, OIDC otherwise; `github-packages` uses the `github-token` input read back from `GithubPackagesTokenState`; `jsr` publishes over OIDC with no token of its own; `custom` uses the `custom-registries` input (parsed by `src/utils/custom-registries.ts` into trailing-slash-normalized URL → `Redacted` token pairs) first, then an env var derived from the URL.
 
-**Token-auth fallback** — GitHub Packages publishes with `tokenAuth: true` from the first attempt, because npm 11.5+ still attempts the OIDC exchange whenever Actions OIDC env is present, which GitHub Packages 404s and ignores; stripping that path avoids the failed exchange. The npm public registry prefers OIDC trusted publishing and retries once with `tokenAuth: true` on failure, since an unconfigured package (no trusted publisher yet) cannot bootstrap the OIDC exchange for its first-time publish.
+**Token-auth fallback** — GitHub Packages and custom registries publish with `tokenAuth: true` from the first attempt (trusted publishing exists only on registry.npmjs.org; a custom registry 404s the exchange and npm quietly falls back to the token), because npm 11.5+ still attempts the OIDC exchange whenever Actions OIDC env is present, which GitHub Packages 404s and ignores; stripping that path avoids the failed exchange. The npm public registry prefers OIDC trusted publishing and retries once with `tokenAuth: true` on failure, since an unconfigured package (no trusted publisher yet) cannot bootstrap the OIDC exchange for its first-time publish.
 
 **Attestation assembly** — `src/release/attest-helpers.ts` is the one place the kit's split (`@effected/sbom` builds and signs; `@effected/github` stores) is assembled into a pipeline, so `publish.ts` and `releases.ts` never grow their own copy.
 

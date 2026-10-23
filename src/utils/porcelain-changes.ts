@@ -5,7 +5,7 @@
 // `update-release-branch.ts` — byte for byte, and both copies carried the same
 // two defects. One copy exists now so a fix lands in both paths.
 
-import type { StatusEntry } from "@effected/git";
+import { StatusEntry } from "@effected/git";
 import type { FileChange } from "@effected/github";
 import { FileContent, FileDeletion } from "@effected/github";
 import { Effect, FileSystem } from "effect";
@@ -81,4 +81,48 @@ export const collectPorcelainChanges = (
 		}
 
 		return changes;
+	});
+
+/**
+ * Replace each collapsed untracked directory with the untracked files under it.
+ *
+ * @remarks
+ * `git status --porcelain` without `--untracked-files=all` reports a directory
+ * holding only untracked files as ONE entry, `?? dir/`. Reading that path as a
+ * file fails, and the release with it. Changesets v3 produces exactly this
+ * shape in pre mode: `changeset version` moves each consumed changeset into a
+ * new, untracked `.changeset/pre/`, so every prerelease versioning run hit it
+ * (silk-integration run 39988107872). Stable runs only delete changesets, which
+ * is why it went unseen.
+ *
+ * `Git.status` takes no untracked-files option, so the expansion asks
+ * `Git.untrackedFiles` (`git ls-files --others --exclude-standard`), which
+ * lists individual files and honours `.gitignore`. A directory walk would pick
+ * up ignored files. The lister runs only when a directory was actually
+ * collapsed, so the common path costs no extra subprocess.
+ *
+ * Temporary: spencerbeggs/effected#1061 asks for
+ * `Git.status(cwd, { untrackedFiles: "all" })`, which makes this unnecessary.
+ * Adopting it and deleting this function is tracked in #531.
+ *
+ * @param entries - The listing `Git.status` returned.
+ * @param listUntracked - Repo-root-relative untracked file paths, run lazily.
+ * @returns The listing with every `?? dir/` entry expanded in place.
+ *
+ * @public
+ */
+export const expandUntrackedDirectories = <E, R>(
+	entries: ReadonlyArray<StatusEntry>,
+	listUntracked: Effect.Effect<ReadonlyArray<string>, E, R>,
+): Effect.Effect<ReadonlyArray<StatusEntry>, E, R> =>
+	Effect.gen(function* () {
+		const isCollapsedDir = (e: StatusEntry): boolean => e.x === "?" && e.y === "?" && e.path.endsWith("/");
+		if (!entries.some(isCollapsedDir)) return entries;
+
+		const untracked = yield* listUntracked;
+		return entries.flatMap((e) =>
+			isCollapsedDir(e)
+				? untracked.filter((p) => p.startsWith(e.path)).map((path) => StatusEntry.make({ x: "?", y: "?", path }))
+				: [e],
+		);
 	});

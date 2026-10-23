@@ -177,6 +177,10 @@ function getBumpTypeIcon(type: string): string {
 			return "\u{1F7E2}"; // 🟢
 		case "new":
 			return "\u{1F195}"; // 🆕
+		case "graduation":
+			return "\u{1F393}"; // 🎓
+		case "prerelease":
+			return "\u{1F9EA}"; // 🧪
 		default:
 			return "⚪"; // ⚪
 	}
@@ -422,7 +426,7 @@ export function buildReleaseTotals(publish: ValidationPublish): string {
 		const kinds = tallyReleaseKinds(orderedWorkspaces(publish).map((pkg) => pkg.packages.length));
 		return (
 			`**Totals:** ${releaseKindCell("github-only")} — ` +
-			`${kinds.githubRelease} package(s) tagged and released on GitHub, nothing published to a registry`
+			`${kinds.githubRelease} workspace(s) tagged and released on GitHub, nothing published to a registry`
 		);
 	}
 
@@ -778,13 +782,13 @@ export function buildPublishValidationSummary(validation: ValidationPayload): st
 	// resolve anything.
 	const shape =
 		orderedWorkspaces(publish).length === 0
-			? "**Nothing to release** — no package has a version difference against the target branch."
+			? "**Nothing to release** — no workspace has a version difference against the target branch."
 			: kinds.registry === 0
-				? `**${kinds.githubRelease} package(s)** — every one is ${releaseKindCell("github-only")}. ` +
+				? `**${kinds.githubRelease} workspace(s)** — every one is ${releaseKindCell("github-only")}. ` +
 					"Nothing publishes to a registry."
 				: kinds.githubRelease === 0
-					? `**${kinds.registry} package(s)** publishing to a registry.`
-					: `**${kinds.registry} package(s)** publishing to a registry · ` +
+					? `**${kinds.registry} workspace(s)** publishing to a registry.`
+					: `**${kinds.registry} workspace(s)** publishing to a registry · ` +
 						`**${kinds.githubRelease}** ${releaseKindCell("github-only")}.`;
 
 	// Derived from the publications themselves, which each carry their registry.
@@ -906,7 +910,7 @@ export function buildReleaseNotesPreviewSummary(validation: ValidationPayload): 
 	});
 	const table = GitHubMarkdown.table(["Package", "Current → Next", "Bump", "Changesets", "Notes"], tableRows);
 
-	const intro = `**${packages.length} package(s) ready for release on merge.**`;
+	const intro = `**${packages.length} workspace(s) ready for release on merge.**`;
 
 	const sections = packages.map(renderReleaseNotesSection);
 

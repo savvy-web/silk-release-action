@@ -12,6 +12,9 @@
 
 import { relative } from "node:path";
 import { classifyRegistry, registryDisplayName } from "@effected/npm";
+import { SemVer } from "@effected/semver";
+import { SilkPublishability } from "@savvy-web/silk-effects";
+import { Option, Schema } from "effect";
 import type {
 	PackagePublishResult,
 	PublishFailureInput,
@@ -166,27 +169,50 @@ export interface ValidationInput {
 }
 
 /**
- * Derive the semver bump type for a released package.
+ * The bump a release represents, from the version it replaces.
  *
  * @remarks
- * A `null` base version means the package is brand-new on the target branch
- * (`"new"`). Otherwise the major/minor/patch deltas are compared; a version
- * that is not a three-part semver string yields `"unknown"`.
+ * - `new`: there is no base version (validation only; Phase 3 maps a missing
+ *   base to `unknown` before calling this).
+ * - `graduation`: a prerelease leaving pre mode for its own stable version
+ *   (`3.0.5-beta.0` → `3.0.5`).
+ * - `prerelease`: a step inside pre mode on the same core
+ *   (`3.0.5-beta.0` → `3.0.5-beta.1`).
+ * - `major` / `minor` / `patch`: the `major.minor.patch` cores differ.
+ *   Entering pre mode (`3.0.4` → `3.0.5-beta.0`) is a `patch`.
+ * - `unknown`: either version will not parse, or the core did not advance (a
+ *   downgrade, or the same version). An ordering this function cannot explain
+ *   is reported, never guessed.
+ *
+ * Parsed with `@effected/semver` rather than split on `.`: a split reads the
+ * `5-beta` of `3.0.5-beta.0` as `NaN`, which made every prerelease report
+ * `unknown` (#532).
+ *
+ * @internal
  */
-const deriveBumpType = (
+export const deriveBumpType = (
 	baseVersion: string | null,
 	version: string,
-): "major" | "minor" | "patch" | "new" | "unknown" => {
+): "major" | "minor" | "patch" | "graduation" | "prerelease" | "new" | "unknown" => {
 	if (baseVersion === null) return "new";
-	const oldParts = baseVersion.split(".").map(Number);
-	const newParts = version.split(".").map(Number);
-	if (oldParts.length < 3 || newParts.length < 3 || [...oldParts, ...newParts].some(Number.isNaN)) {
+	const base = Option.getOrUndefined(decodeSemVer(baseVersion));
+	const next = Option.getOrUndefined(decodeSemVer(version));
+	if (base === undefined || next === undefined) return "unknown";
+
+	const sameCore = base.major === next.major && base.minor === next.minor && base.patch === next.patch;
+	const basePre = base.prerelease.length > 0;
+	const nextPre = next.prerelease.length > 0;
+	if (sameCore) {
+		if (basePre && !nextPre) return "graduation";
+		if (basePre && nextPre && SemVer.gt(next, base)) return "prerelease";
 		return "unknown";
 	}
-	if ((newParts[0] ?? 0) > (oldParts[0] ?? 0)) return "major";
-	if (newParts[0] === oldParts[0] && (newParts[1] ?? 0) > (oldParts[1] ?? 0)) return "minor";
-	return "patch";
+	if (next.major !== base.major) return next.major > base.major ? "major" : "unknown";
+	if (next.minor !== base.minor) return next.minor > base.minor ? "minor" : "unknown";
+	return next.patch > base.patch ? "patch" : "unknown";
 };
+
+const decodeSemVer = Schema.decodeUnknownOption(SemVer.FromString);
 
 /**
  * Project one build-centric {@link ValidationPackageResult} into the schema's
@@ -196,6 +222,10 @@ const toValidationWorkspace = (pkg: ValidationPackageResult): ValidationOutput["
 	// No `name` field: the workspace map is keyed by name, so carrying it as a
 	// field too would be a second spelling of the key that can disagree with it.
 	const githubOnly = pkg.builds.length === 0;
+	// Declares a registry but publishes nowhere at this version: no builds, yet
+	// not `github-only`. The outcome stays `nothing-to-validate` (there is
+	// nothing to probe); only the KIND and the sentence change.
+	const filtered = pkg.releaseFilteredTargets ?? 0;
 	const allTargets = pkg.builds.flatMap((b) => b.targets);
 	const ready = allTargets.filter((t) => t.status === "ready").length;
 	const failed = allTargets.filter((t) => t.status === "failed").length;
@@ -225,8 +255,9 @@ const toValidationWorkspace = (pkg: ValidationPackageResult): ValidationOutput["
 			outcome: workspaceOutcome,
 			packages: allTargets.length,
 			ready: allTargets.filter((t) => t.status === "ready").length,
+			filtered,
 		}),
-		kind: githubOnly ? "github-only" : "github-with-packages",
+		kind: githubOnly && filtered === 0 ? "github-only" : "github-with-packages",
 		// Flattened builds × targets into one entry per (package, registry)
 		// publication — the same unit the publish phase reports. The build
 		// metadata rides on each entry because several publications share one
@@ -307,7 +338,9 @@ export const toValidationOutput = (input: ValidationInput): ValidationOutput => 
 	// nothing to validate as NOT succeeded — the same conflation of "empty" with
 	// "failed" that `noop` carried on the publish phase.
 	const success = outcome === "validated" || outcome === "nothing-to-release";
-	const kinds = tallyReleaseKinds(input.validationPackages.map((pkg) => pkg.builds.length));
+	const kinds = tallyReleaseKinds(
+		input.validationPackages.map((pkg) => pkg.builds.length + (pkg.releaseFilteredTargets ?? 0)),
+	);
 	const totals = {
 		workspaces: input.packageCount,
 		githubOnly: kinds.githubRelease,
@@ -404,10 +437,17 @@ const toPublishedPackage = (
 	// target that did not publish) — reads as `skipped`, the same answer as a
 	// target the probe deliberately did not visit.
 	const probe = input.availability.get(availabilityKey(t.target.registry, t.target.name, workspaceVersion));
+	const landed = outcome === "published" || outcome === "recovered";
 	const availability =
 		probe === undefined
-			? { status: "skipped" as const, waitedMs: 0 }
-			: { status: probe.status, waitedMs: probe.waitedMs };
+			? // Never probed: either nothing landed to confirm, or the phase stopped
+				// before the confirmation step ran.
+				{
+					status: "skipped" as const,
+					waitedMs: 0,
+					reason: landed ? ("not-reached" as const) : ("not-published" as const),
+				}
+			: { status: probe.status, waitedMs: probe.waitedMs, reason: probe.reason };
 	return {
 		// The name on the TARGET, not the workspace — a workspace may publish
 		// under a different name per registry.
@@ -420,6 +460,18 @@ const toPublishedPackage = (
 			type: kind,
 			url: registry,
 		},
+		target: t.targetRef === undefined ? null : { id: t.targetRef.id, releases: t.targetRef.releases },
+		// `target.tag` is the tag the upload used, or would have; only an upload
+		// that landed was actually published under it.
+		distTag: outcome === "published" ? t.target.tag : null,
+		auth:
+			t.auth === undefined
+				? null
+				: {
+						method: t.auth.method,
+						credential: t.auth.credential,
+						fallback: t.auth.fallback === null ? null : { from: t.auth.fallback.from, reason: t.auth.fallback.reason },
+					},
 		url: packagePageUrl(kind, t.target.name, workspaceVersion, input.repo),
 		tarballUrl: probe?.tarball ?? null,
 		// `available` never flips `success`: a hold is a finding beside the
@@ -431,7 +483,10 @@ const toPublishedPackage = (
 			t.recovery !== undefined ? { localDigest: t.recovery.localDigest, remoteDigest: t.recovery.remoteDigest } : null,
 		tarballDigest: t.tarballDigest ?? null,
 		attestations: {
+			// The action's GitHub attestation — NOT npm's provenance, which is
+			// `npmProvenanceUrl`. Name kept so existing readers do not break.
 			provenanceUrl: t.attestationUrl ?? null,
+			npmProvenanceUrl: t.npmProvenanceUrl ?? null,
 			sbomUrl: t.sbomAttestationUrl ?? null,
 			githubAttestationUrl: null,
 			provenanceRecovered: t.recovered !== undefined ? t.recovered.provenance : null,
@@ -471,7 +526,31 @@ export const toPublishOutput = (input: PublishInput): PublishOutput => {
 
 	for (const ws of input.plan) {
 		const result = resultByName.get(ws.name);
-		const packages = result === undefined ? [] : result.targets.map((t) => toPublishedPackage(ws.version, t, input));
+		// A target the release filter dropped for this version put nothing on a
+		// registry, so it is not a "package" — listing it would also classify it
+		// `recovered`, which claims the version was already there.
+		const isFiltered = (t: PackagePublishResult["targets"][number]): boolean => t.skipReason === "filtered-by-releases";
+		const packages =
+			result === undefined
+				? []
+				: result.targets.filter((t) => !isFiltered(t)).map((t) => toPublishedPackage(ws.version, t, input));
+		const filteredTargets = result === undefined ? [] : result.targets.filter(isFiltered);
+		const filtered = filteredTargets.length;
+		// Listed apart from `packages`, so a partly filtered workspace is
+		// distinguishable from one that never declared the target. A filtered
+		// target always carries its declaration — the filter is what matched it.
+		const skipped = filteredTargets.flatMap((t) => {
+			if (t.targetRef === undefined) return [];
+			const url = t.target.registry ?? "jsr";
+			return [
+				{
+					name: t.target.name,
+					registry: { name: registryDisplayName(url), type: classifyRegistry(url), url },
+					target: { id: t.targetRef.id, releases: t.targetRef.releases },
+					reason: "filtered-by-releases" as const,
+				},
+			];
+		});
 
 		const tag = tagByWorkspace.get(ws.name);
 		const releaseInfo = tag === undefined ? undefined : releaseByTag.get(tag.name);
@@ -486,6 +565,7 @@ export const toPublishOutput = (input: PublishInput): PublishOutput => {
 				: {
 						id: releaseInfo.id,
 						url: releaseInfo.url,
+						prerelease: releaseInfo.prerelease,
 						assets: releaseInfo.assets.map((a) => ({ name: a.name, url: a.downloadUrl, size: a.size })),
 					};
 
@@ -498,8 +578,9 @@ export const toPublishOutput = (input: PublishInput): PublishOutput => {
 
 		const outcome: PublishOutput["publish"]["workspaces"][string]["outcome"] = !attempted
 			? "blocked"
-			: ws.kind === "github-only"
-				? // Nothing was meant to be uploaded, so the release IS the outcome.
+			: ws.kind === "github-only" || (packages.length === 0 && filtered > 0)
+				? // Nothing was meant to be uploaded (no registry target, or every one
+					// excludes this version), so the release IS the outcome.
 					release !== null
 					? "released"
 					: "failed"
@@ -513,14 +594,28 @@ export const toPublishOutput = (input: PublishInput): PublishOutput => {
 
 		const success = outcome === "released" || outcome === "published" || outcome === "recovered";
 
+		const baseVersion = ws.baseVersion ?? null;
+		const bump = baseVersion === null ? "unknown" : deriveBumpType(baseVersion, ws.version);
 		workspaces[ws.name] = {
 			version: ws.version,
+			baseVersion,
+			// `new` cannot arise here: a non-null base means the manifest existed.
+			bumpType: bump === "new" ? "unknown" : bump,
+			releaseType: SilkPublishability.isPrerelease(ws.version) ? "prerelease" : "stable",
+			distTag: SilkPublishability.distTagFor(ws.version),
 			path: ws.path,
 			kind: ws.kind,
 			success,
 			outcome,
-			summary: summarizeWorkspace({ kind: ws.kind, outcome, packages: packages.length, released: release !== null }),
+			summary: summarizeWorkspace({
+				kind: ws.kind,
+				outcome,
+				packages: packages.length,
+				released: release !== null,
+				filtered,
+			}),
 			packages,
+			skipped,
 			tag: tagEntry,
 			release,
 		};
@@ -656,7 +751,7 @@ export const toSnapshotOutput = (input: SnapshotInput): SnapshotOutput => {
 				failed.push({ name: t.target.name, version: pkg.version, registry, error: t.error ?? "publish failed" });
 				continue;
 			}
-			if (t.skipReason === "never-published" || t.skipReason === "dry-run") {
+			if (t.skipReason === "never-published" || t.skipReason === "dry-run" || t.skipReason === "filtered-by-releases") {
 				skipped.push({ name: t.target.name, version: pkg.version, reason: t.skipReason });
 				continue;
 			}
@@ -730,8 +825,8 @@ const summarizeSnapshot = (
 	const parts = [`${input.releases.length} workspace(s) versioned`];
 	parts.push(
 		input.dryRun
-			? `${counts.rehearsed} package(s) would publish under ${tag} (dry run)`
-			: `${counts.published} package(s) published under ${tag}`,
+			? `${counts.rehearsed} registry target(s) would publish under ${tag} (dry run)`
+			: `${counts.published} registry target(s) published under ${tag}`,
 	);
 	const otherSkips = counts.skipped - counts.rehearsed;
 	if (otherSkips > 0) parts.push(`${otherSkips} skipped`);

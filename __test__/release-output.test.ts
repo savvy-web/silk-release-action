@@ -41,7 +41,7 @@ describe("ReleaseOutput schema", () => {
 		phase: "publish",
 		success: true,
 		outcome: "released",
-		summary: "1 workspace(s) versioned · 1 package(s) published to a registry · 1 GitHub release(s) created",
+		summary: "1 workspace(s) released · 1 registry target(s) published · 1 GitHub release(s) created",
 		dryRun: false,
 		failure: null,
 		totals: {
@@ -63,11 +63,15 @@ describe("ReleaseOutput schema", () => {
 			workspaces: {
 				"@savvy-web/foo": {
 					version: "1.2.0",
+					baseVersion: "1.1.0",
+					bumpType: "minor",
+					releaseType: "stable",
+					distTag: "latest",
 					path: "packages/foo",
 					kind: "github-with-packages",
 					success: true,
 					outcome: "published",
-					summary: "Tagged and released on GitHub; published 1 package(s) to a registry.",
+					summary: "Tagged and released on GitHub; published to 1 registry target(s).",
 					packages: [
 						{
 							name: "@savvy-web/foo",
@@ -79,15 +83,19 @@ describe("ReleaseOutput schema", () => {
 								type: "github-packages",
 								url: "https://npm.pkg.github.com/",
 							},
+							target: { id: "github", releases: "all" },
+							distTag: "latest",
+							auth: { method: "token", credential: "github-token", fallback: null },
 							url: "https://github.com/orgs/savvy-web/packages/npm/package/foo",
 							tarballUrl: null,
 							available: false,
-							availability: { status: "skipped", waitedMs: 0 },
+							availability: { status: "skipped", waitedMs: 140, reason: "read-denied" },
 							error: null,
 							recovery: null,
 							tarballDigest: "sha512-abc",
 							attestations: {
 								provenanceUrl: null,
+								npmProvenanceUrl: null,
 								sbomUrl: null,
 								githubAttestationUrl: null,
 								provenanceRecovered: null,
@@ -95,10 +103,12 @@ describe("ReleaseOutput schema", () => {
 							},
 						},
 					],
+					skipped: [],
 					tag: { name: "@savvy-web/foo@1.2.0", sha: "abc123" },
 					release: {
 						id: 7,
 						url: "https://github.com/savvy-web/foo/releases/tag/v1.2.0",
+						prerelease: false,
 						assets: [],
 					},
 				},
@@ -138,7 +148,7 @@ describe("ReleaseOutput schema", () => {
 					changesetCount: 1,
 					success: true,
 					outcome: "validated",
-					summary: "1 package(s) ready to publish.",
+					summary: "1 registry target(s) ready to publish.",
 					kind: "github-with-packages",
 					packages: [
 						{
