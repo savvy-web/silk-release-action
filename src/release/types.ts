@@ -523,8 +523,10 @@ export interface PublishWorkspacePlan {
  * @remarks
  * `"confirmed"` means the probe found the tarball and read back its URL.
  * `"held"` means the probe ran but the registry had not yet surfaced the
- * version (propagation lag) by the time the run gave up waiting. `"skipped"`
- * means no probe ran at all for this target.
+ * version by the time the run gave up waiting — npm's publish-time scan, or,
+ * on a registry with no hold, a version that has not become installable.
+ * `"skipped"` means there is no verdict either way: either no probe ran, or
+ * the registry refused the read (`read-denied`). The reason says which.
  *
  * @public
  */
@@ -535,14 +537,26 @@ export type AvailabilityStatus = "confirmed" | "held" | "skipped";
  *
  * @remarks
  * `disabled` — `registry-confirm-timeout` is `0`. `dry-run` — the run made no
- * uploads to confirm. `non-npm-registry` — only the public npm registry is
- * probed. `not-published` — the target did not publish, so there is nothing to
+ * uploads to confirm. `not-probed` — the registry has no npm-protocol read to
+ * probe (JSR). `no-read-credential` — GitHub Packages or a custom registry,
+ * and the action holds no credential to read it with; it is never read
+ * anonymously, because an anonymous miss there is a 401, not a hold.
+ * `read-denied` — the registry answered the read 401 or 403: the credential
+ * cannot read the package, which says nothing about whether it landed.
+ * `not-published` — the target did not publish, so there is nothing to
  * confirm. `not-reached` — the target published but the phase stopped before
  * the confirmation step ran.
  *
  * @public
  */
-export type AvailabilitySkipReason = "disabled" | "dry-run" | "non-npm-registry" | "not-published" | "not-reached";
+export type AvailabilitySkipReason =
+	| "disabled"
+	| "dry-run"
+	| "not-probed"
+	| "no-read-credential"
+	| "read-denied"
+	| "not-published"
+	| "not-reached";
 
 /**
  * The result of probing a registry for one published (registry, name,

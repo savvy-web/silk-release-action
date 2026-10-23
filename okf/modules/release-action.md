@@ -7,8 +7,7 @@ resource: ../../src
 status: draft
 generated:
   by: okfit/claude-code
-  at: 2026-09-27T15:46:10Z
-  body_sha256: 3c7c4e800ecad036ec62b9e158ae87a0d29dfdd11812a1c242aed97168bfbe89
+  at: 2026-10-23T14:45:19Z
 sources:
   - id: src-main
     resource: ../../src/main.ts
@@ -31,6 +30,9 @@ tags:
   - release
   - security
   - observability
+integrity:
+  generated:
+    body: 4d18bad6d16e1ed2
 ---
 
 # release-action
@@ -146,7 +148,7 @@ Triggers on merge of the release PR to `main`. `steps/publishing.ts` is the phas
 3. **`runBuildAndSbom`** — runs `ci:build` once, then generates one CycloneDX SBOM per package that resolved a publish target; a `github-only` workspace is named in `sbomSkipped` rather than getting a stray unattached SBOM. Aborts the phase on a build failure.
 4. **`runPublishTargets`** — publishes packages: resolves targets, sorts topologically (idempotent re-sort), and calls `publishDirectoryGroup` per unique build directory. Aborts before any releases unless every target published or recovered (`publishResult.success` is all-or-nothing).
 5. **`runReleases`** (`release/releases.ts`) — creates Git tags (sha-aware idempotency) and GitHub releases, uploads group-keyed assets, creates SLSA provenance and SBOM attestations (idempotent: checks for an existing attestation first). One attestation per build directory, not per target.
-6. **`confirmAvailability`** (`steps/confirm-availability.ts`) — after `runReleases` and the close-linked-issues follow-on, before `emitPublishing`, so a hold never delays tags or releases: polls every successful npm target's exact `name@version` on its registry until it resolves or `registry-confirm-timeout` elapses, concurrently, under its own `Confirm registry availability` log group (opened only when there is something to probe — not on dry-run, ceiling `0`, or a wave with no npm target). Requires `NpmRegistry | ActionLogger`; the `npm-token` arrives as an option from the decoded `Inputs`, not a second input read. Never fails the run and never flips `success`/`outcome` — a held package is published, just not yet resolvable. See [npm-publish-hold](../gotchas/npm-publish-hold.md).
+6. **`confirmAvailability`** (`steps/confirm-availability.ts`) — after `runReleases` and the close-linked-issues follow-on, before `emitPublishing`, so a hold never delays tags or releases: polls every successful target's exact `name@version` on its npm-protocol registry (npm, GitHub Packages, custom) until it resolves or its ceiling elapses — `registry-confirm-timeout` on npm, 20s capped by that input elsewhere, since only npm holds new versions — concurrently, under its own `Confirm registry availability` log group (opened only when there is something to read — not on dry-run, ceiling `0`, or a wave whose targets are all JSR or lack a read credential). Each registry is read with its publish credential (`resolveReadCredential` in `release/resolve-targets.ts`); a non-npm target with none is `no-read-credential`, and a 401/403 is `read-denied`, never `held`. A `filtered-by-releases` target is never handed to it. Requires `NpmRegistry | ActionLogger`; `npm-token`, `github-token` and `custom-registries` arrive as options from the decoded `Inputs`, not a second input read. Never fails the run and never flips `success`/`outcome` — a held package is published, just not yet resolvable. See [npm-publish-hold](../gotchas/npm-publish-hold.md).
 
 Ordering is established **once, at the source**: immediately after `detectReleases`, `steps/publishing.ts` sorts the detected set dependency-first via `sortReleasesTopologically`, so tag strategy, build & SBOM, publish, and releases all run in the same order — previously only `runPublishTargets` sorted while the rest consumed alphabetical detection order.
 

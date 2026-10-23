@@ -1108,18 +1108,27 @@ const PublishedPackage = Schema.Struct({
 			identifier: "PackageAvailabilityStatus",
 			title: "Availability status",
 			description:
-				"`confirmed` — the exact `name@version` resolved on the registry within the ceiling. `held` — the publish succeeded but the version was not resolvable when the ceiling (`registry-confirm-timeout`) elapsed; npm holds new versions during publish-time malware scanning, usually for under three minutes and occasionally much longer. A held package IS published; downstream installs may need to retry. `skipped` — not probed; `reason` says why.",
+				"`confirmed` — the exact `name@version` resolved on the registry within the ceiling. `held` — the publish succeeded but the version was not resolvable when the ceiling elapsed. On npm the ceiling is `registry-confirm-timeout`, and npm holds new versions during publish-time malware scanning, usually for under three minutes and occasionally much longer. GitHub Packages and custom registries have no such hold, so they get a short ceiling (20s, capped by `registry-confirm-timeout`), and there `held` means the version was not installable when checked. A held package IS published; downstream installs may need to retry. `skipped` — no verdict: either the target was not probed, or the registry refused the read; `reason` says which.",
 		}),
 		waitedMs: Schema.Natural.annotate({
 			title: "Wait (ms)",
-			description: "Milliseconds spent probing this version. 0 when skipped.",
+			description:
+				"Milliseconds spent probing this version. 0 when it was not probed; a `read-denied` skip carries the time the refused read took.",
 		}),
 		reason: Schema.NullOr(
-			Schema.Literals(["disabled", "dry-run", "non-npm-registry", "not-published", "not-reached"]).annotate({
+			Schema.Literals([
+				"disabled",
+				"dry-run",
+				"not-probed",
+				"no-read-credential",
+				"read-denied",
+				"not-published",
+				"not-reached",
+			]).annotate({
 				identifier: "PackageAvailabilitySkipReason",
 				title: "Skip reason",
 				description:
-					"`disabled` — `registry-confirm-timeout` is 0. `dry-run` — the run uploaded nothing to confirm. `non-npm-registry` — only the public npm registry is probed; GitHub Packages, JSR and custom registries are not. `not-published` — this package did not publish, so there is nothing to confirm. `not-reached` — it published, but the phase stopped before the confirmation step ran.",
+					"`disabled` — `registry-confirm-timeout` is 0. `dry-run` — the run uploaded nothing to confirm. `not-probed` — the registry has no npm-protocol read to probe (JSR). `no-read-credential` — a GitHub Packages or custom-registry target the action holds no read credential for (`github-token`, or that registry's `custom-registries` entry); it is never read anonymously, because an anonymous read there is refused rather than answered. `read-denied` — the registry answered the confirmation read 401 or 403: the credential cannot read the package, which says nothing about whether it landed. `not-published` — this package did not publish, so there is nothing to confirm. `not-reached` — it published, but the phase stopped before the confirmation step ran.",
 			}),
 		).annotate({
 			title: "Skip reason",

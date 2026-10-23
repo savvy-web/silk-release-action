@@ -24,11 +24,11 @@ sources:
     resource: "https://github.com/savvy-web/silk-runtime-action/actions/runs/35233728336/job/105244177242"
 generated:
   by: okfit/claude-code
-  at: 2026-10-23T14:31:27Z
+  at: 2026-10-23T14:45:19Z
 status: draft
 integrity:
   generated:
-    body: 408253f3a425e074
+    body: 6880585a5934a481
 ---
 
 # A green publish can still 404 for minutes on npm
@@ -73,7 +73,8 @@ Phase-3 instance of the rule
 states for Phase 2: a degraded step contributes a finding, never flips a
 boolean. Per package,
 `available: boolean` and `availability.status` distinguish `confirmed`
-from `held` (and `skipped` for non-npm targets, dry-run, or ceiling `0`);
+from `held` (and `skipped` for JSR, a target with no read credential or a
+read the registry refused, dry-run, or ceiling `0`);
 at the top level, `totals.packagesHeld` counts them and a non-zero count
 appends `· N registry target(s) held by the registry` to the phase
 summary.[^confirm-availability-ts] A green run with

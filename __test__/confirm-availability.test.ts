@@ -54,6 +54,8 @@ describe("confirmAvailability", () => {
 				ceilingSeconds: 5,
 				dryRun: false,
 				npmToken: null,
+				githubToken: null,
+				customRegistries: [],
 				schedule: fast,
 			}).pipe(Effect.provide(Layer.mergeAll(base, reg.layer)));
 			const entry = result.get(key);
@@ -74,6 +76,8 @@ describe("confirmAvailability", () => {
 				ceilingSeconds: 0.05,
 				dryRun: false,
 				npmToken: null,
+				githubToken: null,
+				customRegistries: [],
 				schedule: fast,
 			}).pipe(Effect.provide(Layer.mergeAll(base, reg.layer)));
 			expect(result.get(key)?.status).toBe("held");
@@ -100,6 +104,8 @@ describe("confirmAvailability", () => {
 				ceilingSeconds: 5,
 				dryRun: false,
 				npmToken: null,
+				githubToken: null,
+				customRegistries: [],
 				schedule: fast,
 			}).pipe(Effect.provide(Layer.mergeAll(base, layer)));
 			expect(result.get(key)?.status).toBe("confirmed");
@@ -112,9 +118,13 @@ describe("confirmAvailability", () => {
 	it.effect("skips every target without a registry call when the ceiling is 0", () =>
 		Effect.gen(function* () {
 			const reg = registryAfter(0);
-			const result = yield* confirmAvailability([target], { ceilingSeconds: 0, dryRun: false, npmToken: null }).pipe(
-				Effect.provide(Layer.mergeAll(base, reg.layer)),
-			);
+			const result = yield* confirmAvailability([target], {
+				ceilingSeconds: 0,
+				dryRun: false,
+				npmToken: null,
+				githubToken: null,
+				customRegistries: [],
+			}).pipe(Effect.provide(Layer.mergeAll(base, reg.layer)));
 			expect(result.get(key)).toEqual({ status: "skipped", waitedMs: 0, tarball: null, reason: "disabled" });
 			expect(reg.calls()).toBe(0);
 		}),
@@ -123,9 +133,13 @@ describe("confirmAvailability", () => {
 	it.effect("skips every target in dry-run", () =>
 		Effect.gen(function* () {
 			const reg = registryAfter(0);
-			const result = yield* confirmAvailability([target], { ceilingSeconds: 180, dryRun: true, npmToken: null }).pipe(
-				Effect.provide(Layer.mergeAll(base, reg.layer)),
-			);
+			const result = yield* confirmAvailability([target], {
+				ceilingSeconds: 180,
+				dryRun: true,
+				npmToken: null,
+				githubToken: null,
+				customRegistries: [],
+			}).pipe(Effect.provide(Layer.mergeAll(base, reg.layer)));
 			expect(result.get(key)?.status).toBe("skipped");
 			expect(result.get(key)?.reason).toBe("dry-run");
 			expect(reg.calls()).toBe(0);
@@ -135,14 +149,18 @@ describe("confirmAvailability", () => {
 	it.effect("names dry-run, not disabled, when a dry-run also sets a ceiling of 0", () =>
 		Effect.gen(function* () {
 			const reg = registryAfter(0);
-			const result = yield* confirmAvailability([target], { ceilingSeconds: 0, dryRun: true, npmToken: null }).pipe(
-				Effect.provide(Layer.mergeAll(base, reg.layer)),
-			);
+			const result = yield* confirmAvailability([target], {
+				ceilingSeconds: 0,
+				dryRun: true,
+				npmToken: null,
+				githubToken: null,
+				customRegistries: [],
+			}).pipe(Effect.provide(Layer.mergeAll(base, reg.layer)));
 			expect(result.get(key)?.reason).toBe("dry-run");
 		}),
 	);
 
-	it.live("skips non-npm targets and probes npm ones, concurrently", () =>
+	it.live("skips JSR as not-probed, and GitHub Packages with no github-token as no-read-credential", () =>
 		Effect.gen(function* () {
 			const reg = registryAfter(0);
 			const jsr = { name: "@savvy-web/bar", version: "2.0.0", registry: null };
@@ -151,17 +169,19 @@ describe("confirmAvailability", () => {
 				ceilingSeconds: 5,
 				dryRun: false,
 				npmToken: null,
+				githubToken: null,
+				customRegistries: [],
 				schedule: fast,
 			}).pipe(Effect.provide(Layer.mergeAll(base, reg.layer)));
 			expect(result.get(key)?.status).toBe("confirmed");
 			expect(result.get(key)?.reason).toBeNull();
 			expect(result.get(availabilityKey(null, "@savvy-web/bar", "2.0.0"))?.status).toBe("skipped");
-			expect(result.get(availabilityKey(null, "@savvy-web/bar", "2.0.0"))?.reason).toBe("non-npm-registry");
+			expect(result.get(availabilityKey(null, "@savvy-web/bar", "2.0.0"))?.reason).toBe("not-probed");
 			expect(result.get(availabilityKey("https://npm.pkg.github.com/", "@savvy-web/baz", "3.0.0"))?.status).toBe(
 				"skipped",
 			);
 			expect(result.get(availabilityKey("https://npm.pkg.github.com/", "@savvy-web/baz", "3.0.0"))?.reason).toBe(
-				"non-npm-registry",
+				"no-read-credential",
 			);
 			expect(result.size).toBe(3);
 			expect(reg.calls()).toBe(1);
@@ -178,9 +198,14 @@ describe("confirmAvailability", () => {
 						return Option.some(PublishedVersion.make({ name, version }));
 					}),
 			});
-			yield* confirmAvailability([target], { ceilingSeconds: 5, dryRun: false, npmToken: "", schedule: fast }).pipe(
-				Effect.provide(Layer.mergeAll(base, layer)),
-			);
+			yield* confirmAvailability([target], {
+				ceilingSeconds: 5,
+				dryRun: false,
+				npmToken: "",
+				githubToken: null,
+				customRegistries: [],
+				schedule: fast,
+			}).pipe(Effect.provide(Layer.mergeAll(base, layer)));
 			expect(seen).toEqual([undefined]);
 		}),
 	);
@@ -199,6 +224,8 @@ describe("confirmAvailability", () => {
 				ceilingSeconds: 5,
 				dryRun: false,
 				npmToken: "npm_secret",
+				githubToken: null,
+				customRegistries: [],
 				schedule: fast,
 			}).pipe(Effect.provide(Layer.mergeAll(base, layer)));
 			expect(seen).toEqual(["token"]);
@@ -221,7 +248,13 @@ describe("confirmAvailability — the run summary line", () => {
 			const capture = Logger.make<unknown, void>(({ message }) => {
 				lines.push(Array.isArray(message) ? message.join(" ") : String(message));
 			});
-			yield* confirmAvailability(targets, { ...options, npmToken: null, schedule: fast }).pipe(
+			yield* confirmAvailability(targets, {
+				...options,
+				npmToken: null,
+				githubToken: null,
+				customRegistries: [],
+				schedule: fast,
+			}).pipe(
 				Effect.provide(Layer.mergeAll(Logger.layer([capture]), ActionLogger.layerTest(), registryAfter(0).layer)),
 			);
 			return lines.filter((l) => l.includes("Registry confirmation"));
@@ -244,13 +277,13 @@ describe("confirmAvailability — the run summary line", () => {
 		}),
 	);
 
-	it.effect("says why a wave with no npm target probed nothing, naming the count", () =>
+	it.effect("says why a wave with nothing readable probed nothing, naming the count", () =>
 		Effect.gen(function* () {
 			const lines = yield* run([custom], { ceilingSeconds: 180, dryRun: false });
 			expect(lines).toHaveLength(1);
 			expect(lines[0]).toContain("0 confirmed");
 			expect(lines[0]).toMatch(/1 skipped/);
-			expect(lines[0]).toContain("registry.npmjs.org");
+			expect(lines[0]).toContain("1 with no read credential");
 		}),
 	);
 

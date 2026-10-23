@@ -16,8 +16,10 @@ sources:
     resource: ../../src/utils/custom-registries.ts
 generated:
   by: okfit/claude-code
-  at: 2026-09-27T15:46:10Z
-  body_sha256: 7443d7107f9d5a39f6768a0aab4a08410294e0963f66268cb767958fe1a66885
+  at: 2026-10-23T14:45:19Z
+integrity:
+  generated:
+    body: d8183e551674401f
 ---
 
 # Action inputs and outputs
@@ -49,7 +51,7 @@ them.
 | `sbom-config` | no | `""` | SBOM metadata JSON — see `../interfaces/sbom-config.md`. |
 | `custom-registries` | no | `""` | Custom registry auth, one registry per line — see format below. |
 | `on-build` | no | `""` | Command run after the validation build; a non-zero exit fails Phase 2. Gate only: stderr is not inspected, and it must not mutate the repository. Skipped in dry-run along with the build it gates; unset is a total no-op. |
-| `registry-confirm-timeout` | no | `"180"` | Seconds to wait, after publishing, for every npm package version to become resolvable on its registry before the action finishes; `0` skips the probe. Never fails the run — a version still unresolved at the ceiling is reported as held. The probe reads anonymously and npm answers 404 for a private package read without credentials, so a private npm package is reported held at the ceiling on every run unless `npm-token` is set — pass it, or set `0`. |
+| `registry-confirm-timeout` | no | `"180"` | Seconds to wait, after publishing, for every npm package version to become resolvable on its registry before the action finishes; `0` skips the probe. Never fails the run — a version still unresolved at the ceiling is reported as held. GitHub Packages and custom registries are probed too, with their publish credential (`github-token`, `custom-registries`), under a 20s ceiling capped by this value; no read credential (`no-read-credential`) or a 401/403 (`read-denied`) is skipped, never held. On npm the probe reads anonymously and npm answers 404 for a private package read without credentials, so a private npm package is reported held at the ceiling on every run unless `npm-token` is set — pass it, or set `0`. |
 
 Every input is decoded exactly once, in `src/schema/inputs.ts`, against typed
 literal unions rather than cast — the convention this contract depends on is

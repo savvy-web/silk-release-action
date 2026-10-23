@@ -140,20 +140,19 @@ export interface Inputs extends BranchRefs {
 	 * The workflow's own `GITHUB_TOKEN`, for GitHub Packages. Empty when omitted.
 	 *
 	 * @remarks
-	 * **Decoded here and read by nothing in this process, deliberately.** The
-	 * consumer runs in the `pre` process, which cannot be handed `main`'s
-	 * record: `pre.ts` reads the input itself and persists it to
-	 * `GithubPackagesTokenState`, and `release/publish.ts` takes it from there.
+	 * **Two consumers, one value.** The publish runs in `main`, but the
+	 * token's masking and persistence happen in the `pre` process, which cannot
+	 * be handed `main`'s record: `pre.ts` reads the input itself, masks it and
+	 * persists it to `GithubPackagesTokenState`, and `release/publish.ts` takes
+	 * the publish credential from there. The post-publish confirmation probe
+	 * (`steps/confirm-availability.ts`) reads GitHub Packages with this field —
+	 * the same input, already masked by `pre` — handed down by
+	 * `steps/publishing.ts` exactly as `npmToken` is.
 	 *
-	 * The field cannot simply be dropped. `action.yml` declares the input, so
-	 * the manifest leg of the sync test puts it in {@link INPUT_NAMES}, and the
-	 * second leg asserts `readInputs` reads *exactly* that set — removing the
-	 * decode fails `should be exactly the set readInputs reads`. Verified by
-	 * doing it: one test goes red.
-	 *
-	 * So this is a mirror of the manifest rather than dead weight, which is the
-	 * distinction between it and the `build-command` read this action removed —
-	 * that one was declared nowhere and could never be set by any workflow.
+	 * The field could not be dropped before it had that reader either:
+	 * `action.yml` declares the input, so the manifest leg of the sync test
+	 * puts it in {@link INPUT_NAMES}, and the second leg asserts `readInputs`
+	 * reads *exactly* that set.
 	 */
 	readonly githubToken: string;
 	/** Auto-merge method, or `None` when disabled. */

@@ -189,12 +189,21 @@ inputs:
       The probe is bounded by this value and never fails the release. A version
       still unresolved at the ceiling is reported as held in the output
       (`availability.status: "held"`, `totals.packagesHeld`). Set to 0 to skip
-      the probe. Only npm-registry targets are probed.
+      the probe.
 
-      The probe reads anonymously, and npm answers 404 (not 401) for a private
-      package read without credentials, so a private npm package is reported
-      as held at the ceiling on every run unless `npm-token` is set. Pass
-      `npm-token`, or set this input to 0, for private packages.
+      GitHub Packages and custom-registry targets are probed too, with the
+      credential their publish used (`github-token`, or the registry's
+      `custom-registries` token), under a 20-second ceiling capped by this
+      value: those registries have no publish hold, so a version that is not
+      there within seconds is reported as held rather than waited on. A target
+      with no read credential, or whose read is refused (401/403), is reported
+      as skipped with that reason. JSR is not probed.
+
+      On npm the probe reads anonymously unless `npm-token` is set, and npm
+      answers 404 (not 401) for a private package read without credentials,
+      so a private npm package is reported as held at the ceiling on every
+      run unless `npm-token` is set. Pass `npm-token`, or set this input to 0,
+      for private packages.
     required: false
     default: "180"
   snapshot-tag:

@@ -6,13 +6,15 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import type { RegistryCredential } from "@effected/npm";
 import { classifyRegistry } from "@effected/npm";
 import type { PublishTarget, WorkspacePackage } from "@effected/workspaces";
 import { PublishabilityDetector } from "@effected/workspaces";
 import type { PublishTargetBindingError, ReleaseChannel, ReleaseChannelError } from "@savvy-web/silk-effects";
 import { SilkPublishability } from "@savvy-web/silk-effects";
 import type { FileSystem } from "effect";
-import { Effect } from "effect";
+import { Effect, Redacted } from "effect";
+import type { CustomRegistryAuth } from "../utils/custom-registries.js";
 import type { PublishCredentialSource } from "./types.js";
 
 /**
@@ -163,6 +165,57 @@ export function pickToken(
 	customTokens: ReadonlyMap<string, string>,
 ): string | null {
 	return resolveRegistryToken(registry, npmToken, ghPkgsToken, customTokens)?.token ?? null;
+}
+
+/**
+ * Resolve the credential the post-publish confirmation probe reads a registry
+ * with: the one the publish used for it.
+ *
+ * @remarks
+ * The same rules as {@link resolveRegistryToken}, which this delegates to for
+ * everything but the `custom-registries` lookup. That lookup happens here so a
+ * custom token stays `Redacted` end to end: the probe's
+ * `RegistryCredential` takes a `Redacted`, so the input's own value is handed
+ * over and no declassification happens on the read path. The precedence is
+ * the publish's — `custom-registries` before the `registry-env` fallback.
+ *
+ * Whether a `null` answer means "probe anonymously" or "do not probe" is the
+ * caller's decision, not this function's: the public npm registry reads
+ * anonymously, GitHub Packages and pnpr do not.
+ *
+ * OPS-143 seam: pnpr will be published with a minted, publish-only workload
+ * token (`pnpr_workload_<jwt>`) that must never be sent on a read. When that
+ * lands, a custom entry will carry its read credential separately (an
+ * optional, paired `_authToken`), and an entry with none must make this
+ * function answer `null` — giving `no-read-credential` — rather than fall
+ * back to the publish token. The `custom-registries` branch below is the one
+ * place that changes.
+ *
+ * @param registry - The target registry URL.
+ * @param npmToken - The `npm-token` input, or `null`.
+ * @param githubToken - The `github-token` input, or `null`.
+ * @param customRegistries - The parsed `custom-registries` input.
+ * @returns The credential and where it came from, or `null` when none applies.
+ */
+export function resolveReadCredential(
+	registry: string,
+	npmToken: string | null,
+	githubToken: string | null,
+	customRegistries: ReadonlyArray<CustomRegistryAuth>,
+): { readonly credential: RegistryCredential; readonly source: PublishCredentialSource } | null {
+	if (classifyRegistry(registry) === "custom") {
+		// Keys are normalized with a trailing slash at parse time.
+		const normalized = `${registry.replace(/\/+$/, "")}/`;
+		const entry = customRegistries.find((e) => e.registry === normalized);
+		if (entry !== undefined) return { credential: { kind: "token", token: entry.token }, source: "custom-registries" };
+	}
+	// An empty map, deliberately: the `custom-registries` lookup was answered
+	// above, with the Redacted value; what remains is npm, GitHub Packages and
+	// the `registry-env` fallback.
+	const resolved = resolveRegistryToken(registry, npmToken, githubToken, new Map());
+	return resolved === null
+		? null
+		: { credential: { kind: "token", token: Redacted.make(resolved.token) }, source: resolved.source };
 }
 
 /**

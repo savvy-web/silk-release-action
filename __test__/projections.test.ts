@@ -1443,13 +1443,13 @@ describe("toPublishOutput — per-target and per-workspace explanation", () => {
 				availability: new Map<string, TargetAvailability>([
 					[
 						availabilityKey(custom, "@savvy-web/foo", "1.2.0"),
-						{ status: "skipped", waitedMs: 0, tarball: null, reason: "non-npm-registry" },
+						{ status: "skipped", waitedMs: 0, tarball: null, reason: "no-read-credential" },
 					],
 				]),
 			},
 		);
 		const [published, failed] = output.publish.workspaces["@savvy-web/foo"]?.packages ?? [];
-		expect(published?.availability).toEqual({ status: "skipped", waitedMs: 0, reason: "non-npm-registry" });
+		expect(published?.availability).toEqual({ status: "skipped", waitedMs: 0, reason: "no-read-credential" });
 		expect(failed?.availability).toEqual({ status: "skipped", waitedMs: 0, reason: "not-published" });
 		expect(published?.url).toBeNull();
 	});

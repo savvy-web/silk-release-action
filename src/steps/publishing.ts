@@ -328,15 +328,26 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 			// After tags and releases, so a scan hold never delays them; before the
 			// emission, so the output carries the answer. Never fails the phase —
 			// a version still unresolved at the ceiling is a `held` finding beside
-			// the package, not a flipped boolean. `inputs.npmToken` is "" when the
-			// input was not supplied; the step treats that as absent.
+			// the package, not a flipped boolean. The read credentials are the
+			// publish's own, from the decoded record: `npm-token`, `github-token`
+			// (the value `pre` persisted for the publish) and `custom-registries`.
+			// A token is "" when its input was not supplied; the step treats that
+			// as absent. A `filtered-by-releases` target is `success: true` but
+			// uploaded nothing, so it is not handed to the probe — it would poll
+			// for a version that was never meant to land.
 			const availability = yield* confirmAvailability(
 				publishResult.packages.flatMap((p) =>
 					p.targets
-						.filter((t) => t.success)
+						.filter((t) => t.success && t.skipReason !== "filtered-by-releases")
 						.map((t) => ({ name: t.target.name, version: p.version, registry: t.target.registry })),
 				),
-				{ ceilingSeconds: inputs.registryConfirmTimeout, dryRun, npmToken: inputs.npmToken },
+				{
+					ceilingSeconds: inputs.registryConfirmTimeout,
+					dryRun,
+					npmToken: inputs.npmToken,
+					githubToken: inputs.githubToken,
+					customRegistries: inputs.customRegistries,
+				},
 			);
 			const heldCount = [...availability.values()].filter((a) => a.status === "held").length;
 

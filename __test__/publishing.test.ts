@@ -18,7 +18,7 @@
 
 import { Repo, RepoRef } from "@effected/github";
 import { NpmRegistry, PublishedVersion } from "@effected/npm";
-import { Effect, Layer, Logger, Option } from "effect";
+import { Effect, Layer, Logger, Option, Redacted } from "effect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ReleasesError } from "../src/release/errors.js";
 import type { PublishPackagesResult } from "../src/release/types.js";
@@ -92,7 +92,13 @@ const PUBLISH_RESULT: PublishPackagesResult = {
 
 // `registryConfirmTimeout: 0` keeps every test here off the registry probe
 // (→ `skipped`); the one test that exercises the probe overrides it.
-const INPUTS = { targetBranch: "main", npmToken: "", registryConfirmTimeout: 0 } as unknown as Inputs;
+const INPUTS = {
+	targetBranch: "main",
+	npmToken: "",
+	githubToken: "",
+	customRegistries: [],
+	registryConfirmTimeout: 0,
+} as unknown as Inputs;
 
 /** A registry that already serves every version asked of it, and counts the asks. */
 const seededRegistry = () => {
@@ -264,8 +270,8 @@ describe("runPublishing — happy path", () => {
 		// Ordering is the design: the probe runs AFTER tags and releases, so a
 		// scan hold never delays them.
 		expect(text).toContain("Created 1 release(s)");
-		expect(text).toContain("Confirming 1 npm version(s)");
-		expect(text.indexOf("Created 1 release(s)")).toBeLessThan(text.indexOf("Confirming 1 npm version(s)"));
+		expect(text).toContain("Confirming 1 version(s)");
+		expect(text.indexOf("Created 1 release(s)")).toBeLessThan(text.indexOf("Confirming 1 version(s)"));
 		const totals = result?.totals as { packagesConfirmed: number; packagesHeld: number };
 		expect(totals.packagesConfirmed).toBe(1);
 		expect(totals.packagesHeld).toBe(0);
@@ -295,6 +301,84 @@ describe("runPublishing — happy path", () => {
 		const pkg = payload.workspaces["@scope/alpha"]?.packages[0];
 		expect(pkg?.available).toBe(false);
 		expect(pkg?.availability).toEqual({ status: "skipped", waitedMs: 0, reason: "disabled" });
+	});
+});
+
+describe("runPublishing — which targets reach the confirmation probe", () => {
+	/** A registry that serves everything and records the registry + token of each read. */
+	const recordingRegistry = () => {
+		const reads: Array<{ registry: string | undefined; token: string | null }> = [];
+		const layer = NpmRegistry.layerTest({
+			version: (name, version, target) =>
+				Effect.sync(() => {
+					const credential = target?.credential;
+					reads.push({
+						registry: target?.registry,
+						token: credential?.kind === "token" ? Redacted.value(credential.token) : null,
+					});
+					return Option.some(PublishedVersion.make({ name, version }));
+				}),
+		});
+		return { layer, reads };
+	};
+
+	const withTargets = (targets: PublishPackagesResult["packages"][number]["targets"]): PublishPackagesResult => ({
+		...PUBLISH_RESULT,
+		packages: [{ name: "@scope/alpha", version: "1.2.3", targets }],
+	});
+	const ghpTarget = {
+		name: "@test/pkg",
+		protocol: "npm" as const,
+		registry: "https://npm.pkg.github.com/",
+		directory: "/tmp/alpha",
+		access: "public" as const,
+		provenance: false,
+		tag: "latest",
+		tokenEnv: null,
+	};
+
+	it("reads a GitHub Packages target with the decoded github-token input", async () => {
+		runPublishTargetsMock.mockReturnValue(
+			Effect.succeed(withTargets([{ target: ghpTarget, success: true, status: "published" }])),
+		);
+		const registry = recordingRegistry();
+		const { exit, result } = await run(
+			{ ...INPUTS, registryConfirmTimeout: 180, githubToken: "gh-secret", customRegistries: [] } as Inputs,
+			registry.layer,
+		);
+
+		expect(exit._tag).toBe("Success");
+		expect(registry.reads).toEqual([{ registry: "https://npm.pkg.github.com/", token: "gh-secret" }]);
+		const totals = result?.totals as { packagesConfirmed: number; packagesHeld: number };
+		// The totals count non-npm confirmations too.
+		expect(totals.packagesConfirmed).toBe(1);
+	});
+
+	it("never probes a target its releases channel filtered out — nothing was uploaded", async () => {
+		// `filtered-by-releases` targets are `success: true` (a filter is not a
+		// failure), so a `t.success` filter alone would poll the registry for a
+		// version that was never meant to land there, for the whole ceiling.
+		runPublishTargetsMock.mockReturnValue(
+			Effect.succeed(
+				withTargets([
+					{
+						target: { ...ghpTarget, registry: "https://registry.npmjs.org" },
+						success: true,
+						status: "skipped",
+						skipReason: "filtered-by-releases",
+					},
+				]),
+			),
+		);
+		const registry = recordingRegistry();
+		const { exit, text } = await run(
+			{ ...INPUTS, registryConfirmTimeout: 180, githubToken: "", customRegistries: [] } as Inputs,
+			registry.layer,
+		);
+
+		expect(exit._tag).toBe("Success");
+		expect(registry.reads).toEqual([]);
+		expect(text).not.toContain("::group::Confirm registry availability");
 	});
 });
 

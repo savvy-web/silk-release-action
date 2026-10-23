@@ -14,10 +14,10 @@ sources:
     resource: ../../schemas/6.0/output.json
 generated:
   by: okfit/claude-code
-  at: 2026-10-23T14:31:27Z
+  at: 2026-10-23T14:45:19Z
 integrity:
   generated:
-    body: 46c29a300ad64a73
+    body: 2d9ba95178805562
 ---
 
 # The `result` output document
@@ -157,8 +157,8 @@ registry has no standard web page for a version and a guessed link may not
 exist; the endpoint itself is `registry.url`. `tarballUrl` is the registry's own download URL for
 the tarball, read back by the post-publish confirmation probe (below); it is
 `null` whenever that probe did not confirm the version before the run
-finished, or when the registry is not probed at all (JSR, GitHub Packages,
-custom).[^release-output-ts]
+finished, or when the registry is not probed at all
+(JSR).[^release-output-ts]
 
 ## Post-publish registry confirmation (#301)
 
@@ -166,25 +166,40 @@ A `200` from the publish call is not the same as the version being
 installable: npm's publish-time malware scan can hold a newly published
 version back from the registry for minutes, occasionally much longer. The
 `confirm-availability` step (Phase 3, after `runReleases` and before
-`emitPublishing`) polls the exact `name@version` of every successful npm
-target until it resolves or the `registry-confirm-timeout` input's ceiling
-elapses; a hold **never** changes `success` or `outcome` on the package or
-the workspace — the package *is* published, only not yet
+`emitPublishing`) polls the exact `name@version` of every successful
+target on an npm-protocol registry — the public npm registry, GitHub
+Packages and custom registries — until it resolves or its ceiling elapses;
+a hold **never** changes `success` or `outcome` on the package or the
+workspace — the package *is* published, only not yet
 resolvable.[^release-output-ts] See
 [npm-publish-hold](../gotchas/npm-publish-hold.md).
+
+npm gets the full `registry-confirm-timeout` ceiling, because the wait there
+is for a scan hold to elapse. GitHub Packages and custom registries have no
+known hold, so for them confirmation proves the version is installable at
+all; they get a 20-second ceiling, capped by `registry-confirm-timeout`, and
+a `held` there means the version was not installable when checked. Each
+registry is read with the credential its publish used: `npm-token`,
+`github-token`, or that registry's `custom-registries` token. Only the
+public npm registry is ever read anonymously.
 
 Per package, `available: boolean` is true only when
 `availability.status === "confirmed"`, and `availability` carries the status
 (`confirmed` | `held` | `skipped`), `waitedMs`, and a `reason` that is null
 unless the status is `skipped`: `disabled` (a ceiling of `0`), `dry-run`,
-`non-npm-registry` (only the public npm registry is probed), `not-published`
-(the package failed or was blocked, so there is nothing to confirm), or
-`not-reached` (it published, but the phase stopped before the probe
-ran).[^release-output-ts] A dry-run reports `dry-run` even when the ceiling is
-also `0`.
+`not-probed` (JSR, which has no npm-protocol read), `no-read-credential` (a
+GitHub Packages or custom target with no credential to read it with — never
+probed anonymously), `read-denied` (the registry answered the read 401 or
+403, which is not a hold and says nothing about whether the version landed),
+`not-published` (the package failed or was blocked, so there is nothing to
+confirm), or `not-reached` (it published, but the phase stopped before the
+probe ran).[^release-output-ts] A dry-run reports `dry-run` even when the
+ceiling is also `0`. `skipped` therefore means "no verdict", not strictly
+"no read": a `read-denied` entry carries the `waitedMs` its refused read
+took.
 
 At the top level, `PublishTotals` gains `packagesConfirmed` and
-`packagesHeld`; when `packagesHeld > 0`, the phase's `summary` appends
+`packagesHeld`, counted across every probed registry, not only npm; when `packagesHeld > 0`, the phase's `summary` appends
 `· N registry target(s) held by the registry` (the prose says "workspace" for the released unit and "registry target" for one upload; the `packages*` JSON keys are unchanged). A consumer wiring a follow-on
 dispatch (for example the shared release workflow's `packages-released`
 trigger) should gate on `totals.packagesHeld === 0`, not on

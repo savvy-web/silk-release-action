@@ -89,7 +89,7 @@ describe("ReleaseOutput schema", () => {
 							url: "https://github.com/orgs/savvy-web/packages/npm/package/foo",
 							tarballUrl: null,
 							available: false,
-							availability: { status: "skipped", waitedMs: 0, reason: "non-npm-registry" },
+							availability: { status: "skipped", waitedMs: 140, reason: "read-denied" },
 							error: null,
 							recovery: null,
 							tarballDigest: "sha512-abc",
