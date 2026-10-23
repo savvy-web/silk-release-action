@@ -47,6 +47,7 @@ import type { PackagePublishShape, PublishOptions } from "@effected/npm";
 import { NpmRegistry, PackagePublish, PackedTarball, PublishError, RegistryReadError } from "@effected/npm";
 import { SIGSTORE_BUNDLE_V0_3_MEDIA_TYPE, SigstoreBundle, SigstoreSigner } from "@effected/sbom";
 import { PublishTarget, PublishabilityDetector, WorkspaceDiscovery, WorkspacePackage } from "@effected/workspaces";
+import { SilkPublishability } from "@savvy-web/silk-effects";
 import { ConfigProvider, Effect, Layer, Option, Redacted } from "effect";
 import { ChangesetConfig } from "../../../src/release/changeset-config.js";
 import type { BuildSbomResult, DetectedRelease, PublishInputArgs } from "../../../src/release/publish.js";
@@ -1759,7 +1760,7 @@ describe("runPublishTargets — dist-tag and snapshot mode", () => {
 		return { wsPkg, detected, target };
 	};
 
-	it.effect("passes NO tag on a normal publish, so npm's own latest applies and argv is unchanged", () =>
+	it.effect("passes the target's own dist-tag (latest for a final version) on a normal publish", () =>
 		Effect.gen(function* () {
 			const pub = makePackagePublishLayer();
 			const { wsPkg, detected, target } = setup();
@@ -1767,7 +1768,7 @@ describe("runPublishTargets — dist-tag and snapshot mode", () => {
 				Effect.provide(makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [target])),
 			);
 
-			expect(Object.hasOwn(pub.publishTarballCalls[0]?.options ?? {}, "tag")).toBe(false);
+			expect(pub.publishTarballCalls[0]?.options.tag).toBe("latest");
 			expect(result.packages[0]?.targets[0]?.target.tag).toBe("latest");
 		}),
 	);
@@ -1965,6 +1966,136 @@ describe("runPublishTargets — dist-tag and snapshot mode", () => {
 
 			expect(calls.map((c) => c.tag)).toEqual(["next", "next"]);
 			expect(calls[1]?.tokenAuth).toBe(true);
+		}),
+	);
+});
+
+// ─── Per-target release filter ────────────────────────────────────────────────
+
+/**
+ * The real silk-effects detector over an in-memory volume, so the join from a
+ * detected target to its `publishConfig.targets` declaration is exercised.
+ *
+ * @remarks
+ * `makeBaseLayers` stubs the detector, which can never carry a `releases`
+ * channel. These tests need the real one: the `releases` filter lives in
+ * `SilkPublishability.resolveReleaseTargets`, not in the detector. Seed the
+ * files that function reads (`package.json`, `dist/prod/targets.json`).
+ */
+const FILTER_ROOT = "/ws";
+const PNPR = "https://pnpr.example.com/";
+
+const filterManifest = (name: string, targets: Record<string, unknown>) => ({
+	name,
+	version: "1.0.0",
+	private: true,
+	publishConfig: { access: "public", targets },
+});
+
+const filterVolume = (files: Record<string, unknown>) =>
+	MemoryFileSystem.layerWith(
+		Object.fromEntries(
+			Object.entries(files).map(([path, content]) => [path, MemoryFileSystem.file(JSON.stringify(content))]),
+		),
+	);
+
+const makeFilterLayers = (
+	pubLayer: Layer.Layer<PackagePublish>,
+	npmLayer: Layer.Layer<NpmRegistry>,
+	wsPkgs: WorkspacePackage[],
+	files: Record<string, unknown>,
+) =>
+	Layer.mergeAll(
+		loggerLayer,
+		actionStateLayer,
+		configProviderLayer,
+		environmentLayer,
+		outputsLayer,
+		repoLayer,
+		pubLayer,
+		npmLayer,
+		makeAttestationLayer().layer,
+		oidcUnavailableLayer,
+		sigstoreLayer,
+		makeWorkspaceDiscoveryLayer(wsPkgs),
+		SilkPublishability.layer,
+	).pipe(Layer.provideMerge(filterVolume(files)));
+
+const makeFilterPkg = (name: string, version: string, path = `${FILTER_ROOT}/pkg`): WorkspacePackage =>
+	WorkspacePackage.make({
+		name,
+		version,
+		path,
+		packageJsonPath: `${path}/package.json`,
+		relativePath: "pkg",
+		workspaceRoot: FILTER_ROOT,
+	});
+
+const packFor = (version: string): PackedTarball =>
+	PackedTarball.make({
+		tarballPath: "/tmp/test/pkg.tgz",
+		name: PACK_NAME,
+		version,
+		sha256Hex: SUBJECT_SHA,
+		packedSize: 1,
+		unpackedSize: 1,
+		fileCount: 1,
+		integrity: PACK_INTEGRITY,
+	} as Parameters<typeof PackedTarball.make>[0]);
+
+const npmStablePnprAll = { npm: { releases: "stable" }, pnpr: { registry: PNPR, releases: "all" } };
+
+describe("runPublishTargets — per-target release filter", () => {
+	const run = (version: string, snapshot?: { tag: string; dryRun: boolean }, registry?: Layer.Layer<NpmRegistry>) => {
+		const pub = makePackagePublishLayer({ packResult: packFor(version) });
+		const wsPkg = makeFilterPkg(PACK_NAME, version);
+		const effect = runPublishTargets([makeDetected(PACK_NAME, version, wsPkg.path)], new Map(), [], snapshot).pipe(
+			Effect.provide(
+				makeFilterLayers(pub.layer, registry ?? makeRegistryLayer(), [wsPkg], {
+					[`${wsPkg.path}/package.json`]: filterManifest(PACK_NAME, npmStablePnprAll),
+				}),
+			),
+		);
+		return { pub, effect };
+	};
+
+	it.effect("skips a stable-only target at a prerelease without packing it, and publishes the rest under beta", () =>
+		Effect.gen(function* () {
+			const { pub, effect } = run("1.2.0-beta.0");
+			const result = yield* effect;
+
+			const targets = result.packages[0]?.targets ?? [];
+			const filtered = targets.find((t) => t.target.registry === "https://registry.npmjs.org");
+			expect(filtered?.status).toBe("skipped");
+			expect(filtered?.skipReason).toBe("filtered-by-releases");
+			expect(filtered?.success).toBe(true);
+			expect(pub.packCalls).toHaveLength(1);
+			expect(pub.publishTarballCalls).toHaveLength(1);
+			expect(pub.publishTarballCalls[0]?.options.registry).toBe(PNPR);
+			expect(pub.publishTarballCalls[0]?.options.tag).toBe("beta");
+			expect(targets.find((t) => t.target.registry === PNPR)?.target.tag).toBe("beta");
+			expect(result.success).toBe(true);
+		}),
+	);
+
+	it.effect("publishes every target under latest at a stable version", () =>
+		Effect.gen(function* () {
+			const { pub, effect } = run("1.2.0");
+			const result = yield* effect;
+
+			expect(pub.publishTarballCalls.map((c) => c.options.tag)).toEqual(["latest", "latest"]);
+			expect(result.packages[0]?.targets.every((t) => t.status === "published")).toBe(true);
+		}),
+	);
+
+	it.effect("lets the snapshot tag win over the target's own dist-tag", () =>
+		Effect.gen(function* () {
+			const known = NpmRegistry.layerSeeded({ registries: { [PNPR]: { [PACK_NAME]: { "0.9.0": {} } } } });
+			const { pub, effect } = run("1.2.0-beta.0", { tag: "next", dryRun: false }, known);
+			const result = yield* effect;
+
+			expect(pub.publishTarballCalls[0]?.options.tag).toBe("next");
+			expect(result.packages[0]?.targets.find((t) => t.target.registry === PNPR)?.target.tag).toBe("next");
 		}),
 	);
 });

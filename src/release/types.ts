@@ -34,8 +34,11 @@ export interface TargetPublishResult {
 	 * recovered run can report which targets were recovered (the package-
 	 * level `PublishPackage.skipReason` only fires when every target was
 	 * skipped). `never-published` and `dry-run` occur only in snapshot mode.
+	 * `filtered-by-releases` marks a target whose `releases` channel excludes this
+	 * version (a `releases: "stable"` target at a prerelease): nothing was packed
+	 * and no registry was contacted, and it is a success, not a failure.
 	 */
-	skipReason?: "already-published-identical" | "never-published" | "dry-run" | undefined;
+	skipReason?: "already-published-identical" | "never-published" | "dry-run" | "filtered-by-releases" | undefined;
 	/**
 	 * Pair of digests when the orchestrator made a recovery decision — both
 	 * `status: "skipped"` with `skipReason: "already-published-identical"`

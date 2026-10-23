@@ -33,6 +33,7 @@ import type { SigstoreSigner } from "@effected/sbom";
 import { CYCLONEDX_BOM_PREDICATE, Sbom, SbomMetadataSource, SlsaProvenance } from "@effected/sbom";
 import type { PublishabilityDetector } from "@effected/workspaces";
 import { WorkspaceDiscovery, WorkspacePackage } from "@effected/workspaces";
+import { SilkPublishability } from "@savvy-web/silk-effects";
 import type { FileSystem } from "effect";
 import { Config, Effect, Option, Redacted } from "effect";
 import type { ChildProcessSpawner } from "effect/process";
@@ -407,8 +408,8 @@ const toLegacyTarget = (target: TargetSpec, protocol: "npm" | "jsr" = "npm", tag
 	directory: target.directory,
 	access: target.access,
 	provenance: target.provenance,
-	// The dist-tag this target published (or would publish) under. Phase 3
-	// passes none to npm, whose default is `latest`, so that is what it reports.
+	// The dist-tag this target published (or would publish) under: the
+	// snapshot tag, else the target's own channel tag.
 	tag,
 	tokenEnv: null,
 });
@@ -654,8 +655,12 @@ const publishDirectoryGroup = (
 	Effect.gen(function* () {
 		const publishSvc = yield* PackagePublish;
 		const registrySvc = yield* NpmRegistry;
-		const distTag = snapshot?.tag ?? "latest";
-		const legacy = (t: TargetSpec) => toLegacyTarget(t, "npm", distTag);
+		// Per target: each target carries the dist-tag its channel resolves to
+		// (`latest` for a final version, `beta`/`rc`/… for a prerelease). A
+		// snapshot tag still wins — it exists precisely so an unreleased version
+		// never claims `latest`.
+		const tagFor = (t: TargetSpec): string => snapshot?.tag ?? t.distTag;
+		const legacy = (t: TargetSpec) => toLegacyTarget(t, "npm", tagFor(t));
 		let neverPublishedCount = 0;
 		let dryRunCount = 0;
 
@@ -674,7 +679,7 @@ const publishDirectoryGroup = (
 				`runPublishTargets: skipping JSR target for ${packageName}@${version} — JSR publishing is not yet supported in this orchestrator`,
 			);
 			results.push({
-				target: toLegacyTarget(t, "jsr", distTag),
+				target: toLegacyTarget(t, "jsr", tagFor(t)),
 				success: true,
 				status: "skipped",
 			});
@@ -888,7 +893,7 @@ const publishDirectoryGroup = (
 			if (Option.isNone(probe.value)) {
 				if (snapshot?.dryRun === true) {
 					yield* Effect.logInfo(
-						`  ⬆ ${label} · dry-run — would publish ${packResult.name}@${packResult.version} under ${distTag}`,
+						`  ⬆ ${label} · dry-run — would publish ${packResult.name}@${packResult.version} under ${tagFor(t)}`,
 					);
 					results.push({ target: legacy(t), success: true, status: "skipped", skipReason: "dry-run", ...digestFields });
 					dryRunCount += 1;
@@ -912,7 +917,7 @@ const publishDirectoryGroup = (
 						provenance: t.provenance,
 						tokenAuth: isGhPkgs,
 						executor: publishExecutor,
-						...(snapshot !== undefined ? { tag: snapshot.tag } : {}),
+						tag: tagFor(t),
 					})
 					.pipe(
 						Effect.map((r) => ({ ok: true as const, provenanceUrl: r.provenanceUrl })),
@@ -936,7 +941,7 @@ const publishDirectoryGroup = (
 							provenance: false,
 							tokenAuth: true,
 							executor: publishExecutor,
-							...(snapshot !== undefined ? { tag: snapshot.tag } : {}),
+							tag: tagFor(t),
 						})
 						.pipe(
 							Effect.map((r) => ({ ok: true as const, provenanceUrl: r.provenanceUrl })),
@@ -1659,6 +1664,7 @@ export const runPublishTargets = (
 		interface PkgEntry {
 			readonly version: string;
 			readonly targets: ReadonlyArray<TargetSpec>;
+			readonly releaseFiltered: ReadonlyArray<TargetSpec>;
 		}
 		const targetsByPackage = new Map<string, PkgEntry>();
 
@@ -1682,7 +1688,20 @@ export const runPublishTargets = (
 				yield* Effect.logInfo(`⏭ ${rel.name} · ${basename(directory)} — package.json is private, not a publish target`);
 			}
 
-			targetsByPackage.set(rel.name, { version: rel.version, targets: resolved.targets });
+			// The only way a target is filtered is a channel that cannot take this
+			// version: `stable` excludes a prerelease, `prerelease` excludes a final.
+			const excludedBy = SilkPublishability.isPrerelease(rel.version) ? "stable" : "prerelease";
+			for (const t of resolved.releaseFiltered) {
+				yield* Effect.logInfo(
+					`⏭ ${rel.name} · ${registryShortLabel(t.registry)} — releases: ${excludedBy} excludes ${rel.version}`,
+				);
+			}
+
+			targetsByPackage.set(rel.name, {
+				version: rel.version,
+				targets: resolved.targets,
+				releaseFiltered: resolved.releaseFiltered,
+			});
 
 			// Name the kind, not just the count. `0 target(s)` alone reads as a
 			// resolution failure; `GitHub release only` says it is the design.
@@ -1722,12 +1741,25 @@ export const runPublishTargets = (
 					return null;
 				}
 
-				const { version, targets } = pkgEntry;
+				const { version, targets, releaseFiltered } = pkgEntry;
 				yield* Effect.logDebug(`runPublishTargets: publishing ${name}@${version}`);
 
+				// A target whose `releases` channel excludes this version is a
+				// SUCCESSFUL skip: no pack, no registry call, no failure.
+				const filteredResults: TargetPublishResult[] = releaseFiltered.map((t) => ({
+					target: toLegacyTarget(t, "npm", t.distTag),
+					success: true,
+					status: "skipped",
+					skipReason: "filtered-by-releases",
+				}));
+
 				if (targets.length === 0) {
-					yield* Effect.logDebug(`runPublishTargets: ${name} has no publish targets (version-only)`);
-					return { name, version, targets: [] } satisfies PackagePublishResult;
+					yield* Effect.logDebug(
+						filteredResults.length > 0
+							? `runPublishTargets: ${name} has ${filteredResults.length} target(s), none receive ${version}`
+							: `runPublishTargets: ${name} has no publish targets (version-only)`,
+					);
+					return { name, version, targets: filteredResults } satisfies PackagePublishResult;
 				}
 
 				// Group targets by build directory so each unique directory packs
@@ -1767,7 +1799,7 @@ export const runPublishTargets = (
 					targetResults.push(...groupResults);
 				}
 
-				return { name, version, targets: targetResults } satisfies PackagePublishResult;
+				return { name, version, targets: [...targetResults, ...filteredResults] } satisfies PackagePublishResult;
 			}).pipe(Effect.mapError((error: never) => ({ item: name, error }))),
 		);
 
