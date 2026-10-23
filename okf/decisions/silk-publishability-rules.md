@@ -18,7 +18,9 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: 19491e76b3b4cae46eb25b5344bb27dbbbb152b51bf3484b2d6c22fdea7271b4
+integrity:
+  generated:
+    body: 19491e76b3b4cae4
 ---
 
 # Silk publishability rules invert the private flag and live upstream

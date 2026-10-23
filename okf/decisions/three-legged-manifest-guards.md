@@ -16,7 +16,9 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: b87b3f2b0b616a7ecbc73e0e579df0636bc96b9e733a1932c659c9036a2fd935
+integrity:
+  generated:
+    body: b87b3f2b0b616a7e
 ---
 
 # Manifest sync guards need three independent legs, not two

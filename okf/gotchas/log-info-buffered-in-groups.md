@@ -13,8 +13,10 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: 3df39482b659ba8d51795bb3f272f5c7319577f51c01deb2f8d7871221650d84
 status: draft
+integrity:
+  generated:
+    body: 3df39482b659ba8d
 ---
 
 # `Effect.logInfo` inside a group is buffered and discarded on success

@@ -2,7 +2,7 @@
 type: Decision
 title: Disable the persistLocal composite action and its act smoke loop
 description: "action.config.ts sets persistLocal.enabled to false, so no `.github/actions/local` composite is emitted and act-test.yml is gone; re-enabling it is a deliberate decision to start using act, not a default to restore."
-status: draft
+status: stable
 tags:
   - ci
   - bundle
@@ -12,7 +12,16 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: 532a7ee2a097bbfac5b5307488af6d331ba20ef8de0c0e8f235392daec7f4d2c
+integrity:
+  generated:
+    body: 532a7ee2a097bbfa
+  verified:
+    by: human:spencer
+    at: 2026-10-23T18:01:04Z
+    content: 0249eec274b9cd27
+verified:
+  - by: human:spencer
+    at: 2026-10-23T18:01:04Z
 ---
 
 # Disable the persistLocal composite action and its act smoke loop

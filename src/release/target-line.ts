@@ -60,7 +60,9 @@ export interface TargetLineInput {
  */
 export const describeAuth = (auth: PublishAuth): string => {
 	const base =
-		auth.method === "trusted-publishing" ? "trusted publishing" : `token (${auth.credential ?? "no credential"})`;
+		auth.method === "trusted-publishing"
+			? "trusted publishing"
+			: `${auth.method} (${auth.credential ?? "no credential"})`;
 	if (auth.fallback === null) return base;
 	return auth.fallback.from === "trusted-publishing"
 		? `${base} after trusted publishing failed`
@@ -143,18 +145,37 @@ export const fallbackCause = (from: PublishAuthMethod, packageName: string, regi
  * one is a `custom-registries` `_authToken` line. Detection reads the typed
  * `kind`/`status` fields of {@link RegistryReadError}, never message prose.
  *
+ * The line it suggests names the registry's full declared URL, path included
+ * — a host-only line would key a different registry than the one read (pnpr's
+ * `/npm/~savvy/`, an Artifactory repository path). On a pnpr workload
+ * registry (OPS-143) the read was made with the paired `_authToken` reader,
+ * so the hint names that line instead: the minted workload credential cannot
+ * read and is never sent on one.
+ *
  * @param registry - The registry URL that was read.
  * @param error - The read failure.
+ * @param options - `workload: true` when the registry publishes with a `_pnprWorkload` credential.
  * @returns The explanation, or `null` when there is nothing specific to say.
  *
  * @internal
  */
-export const readFailureHint = (registry: string, error: RegistryReadError): string | null => {
+export const readFailureHint = (
+	registry: string,
+	error: RegistryReadError,
+	options: { readonly workload?: boolean } = {},
+): string | null => {
 	if (error.kind !== "status" || (error.status !== 401 && error.status !== 403)) return null;
 	if (classifyRegistry(registry) !== "custom") return null;
 	const host = registryHost(registry);
+	const url = `${registry.replace(/\/+$/, "")}/`;
+	if (options.workload === true) {
+		return (
+			`${host} answered ${error.status} to the read: pnpr workload credentials cannot read, so reads use the ` +
+			`paired \`${url}_authToken=<release-reader>\` line in \`custom-registries\` — check that token can read this package`
+		);
+	}
 	return (
 		`${host} answered ${error.status}: it requires a read credential. Supply one with a \`custom-registries\` ` +
-		`line \`https://${host}/_authToken=<TOKEN>\` (a token that can read as well as publish)`
+		`line \`${url}_authToken=<TOKEN>\` (a token that can read as well as publish)`
 	);
 };

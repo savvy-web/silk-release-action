@@ -270,6 +270,9 @@ describe("runPublishing — happy path", () => {
 		const { text } = await run();
 
 		expect(text).toContain("· 1 registry target(s) published ·");
+		// The tally counts the recovery as a success; saying so keeps "2/2" and
+		// "1 published" from reading as a contradiction.
+		expect(text).toContain("✅ Published 2/2 registry target(s) (1 already on the registry) across 1 workspace(s)");
 	});
 
 	it("does not open the availability group when the ceiling is 0", async () => {

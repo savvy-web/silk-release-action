@@ -180,7 +180,8 @@ export interface Inputs extends BranchRefs {
 	 */
 	readonly onBuild: Option.Option<string>;
 	/**
-	 * Custom registry auth, parsed: one registry URL + `Redacted` token per line.
+	 * Custom registry auth, parsed: one entry per registry URL, carrying its
+	 * `Redacted` `_authToken` and/or a pnpr `_pnprWorkload` audience (OPS-143).
 	 *
 	 * @remarks
 	 * WIRED (issue #215). The auth implementation was lost in the publish-chain
@@ -188,7 +189,10 @@ export interface Inputs extends BranchRefs {
 	 * no-op; it now reaches Phase-3 publishing — `steps/publishing.ts` hands it
 	 * to `runPublishTargets`, which routes each token through `pickToken` into
 	 * `PackagePublish.setupAuth`'s npmrc write. A malformed line fails the
-	 * decode here, typed, rather than silently configuring nothing.
+	 * decode here, typed, rather than silently configuring nothing. A
+	 * `_pnprWorkload` registry publishes with a credential minted per target
+	 * from the job's OIDC token; its `_authToken` is then the read credential
+	 * only, and Phase 2 checks the pairing (`release/validation.ts`).
 	 */
 	readonly customRegistries: ReadonlyArray<CustomRegistryAuth>;
 	/**

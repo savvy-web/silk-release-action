@@ -43,7 +43,7 @@ const REPORT = {
 	sbomConfigSource: { source: "local" as const, location: ".github/silk-release.json" },
 };
 
-const ARGS = { buildsPassed: true, packageManager: "pnpm", targetBranch: "main", dryRun: false };
+const ARGS = { buildsPassed: true, packageManager: "pnpm", targetBranch: "main", dryRun: false, customRegistries: [] };
 
 /** Run the step, capturing every log line it emits alongside the result. */
 const unwrap = async (args: Parameters<typeof publishValidation>[0]) => {
@@ -135,7 +135,15 @@ describe("publishValidation — the build gate", () => {
 
 	it("passes the validation inputs through when the build passed", async () => {
 		runValidationEffect.mockReturnValue(Effect.succeed(REPORT));
-		await unwrap({ buildsPassed: true, packageManager: "yarn", targetBranch: "trunk", dryRun: true });
+		// A non-empty `custom-registries`, so dropping it on the way through is
+		// visible: the inner validation checks pnpr workload lines (OPS-143).
+		const customRegistries = [
+			{
+				registry: "https://registry.savvyweb.systems/npm/~savvy/",
+				workload: { audience: "https://registry.savvyweb.systems" },
+			},
+		];
+		await unwrap({ buildsPassed: true, packageManager: "yarn", targetBranch: "trunk", dryRun: true, customRegistries });
 
 		// `buildsPassed` is the step's own gate and must NOT be forwarded — the
 		// inner validation has no such parameter.
@@ -143,6 +151,7 @@ describe("publishValidation — the build gate", () => {
 			packageManager: "yarn",
 			targetBranch: "trunk",
 			dryRun: true,
+			customRegistries,
 		});
 	});
 });

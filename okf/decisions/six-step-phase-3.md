@@ -18,7 +18,9 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: 480f24042287b998f1229abc9484f776acdf1584ee100f4aa02feabb39aff50d
+integrity:
+  generated:
+    body: 480f24042287b998
 ---
 
 # Phase 3 is six gated steps, target resolution ahead of the build gate

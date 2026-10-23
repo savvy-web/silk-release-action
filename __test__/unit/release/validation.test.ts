@@ -24,9 +24,10 @@ import {
 	WorkspaceStateSnapshot,
 } from "@effected/workspaces";
 import { SilkPublishability } from "@savvy-web/silk-effects";
-import { Effect, Layer, Logger, Option } from "effect";
+import { Effect, Layer, Logger, Option, Redacted } from "effect";
 import { ChangesetConfig } from "../../../src/release/changeset-config.js";
 import { runValidation } from "../../../src/release/validation.js";
+import type { CustomRegistryAuth } from "../../../src/utils/custom-registries.js";
 import { matchesIgnorePattern } from "../../../src/utils/detect-repo-type.js";
 
 // ─── Test helpers ─────────────────────────────────────────────────────────────
@@ -221,9 +222,12 @@ describe("runValidation", () => {
 				);
 
 				// Act
-				const report = yield* runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(
-					Effect.provide(layers),
-				);
+				const report = yield* runValidation({
+					packageManager: "pnpm",
+					targetBranch: "main",
+					dryRun: false,
+					customRegistries: [],
+				}).pipe(Effect.provide(layers));
 
 				// Assert
 				expect(report.publishOk).toBe(true);
@@ -277,9 +281,12 @@ describe("runValidation", () => {
 					makePublishabilityLayer(new Map([["@savvy-web/github-action-builder", [target]]])),
 				);
 
-				const report = yield* runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(
-					Effect.provide(layers),
-				);
+				const report = yield* runValidation({
+					packageManager: "pnpm",
+					targetBranch: "main",
+					dryRun: false,
+					customRegistries: [],
+				}).pipe(Effect.provide(layers));
 
 				// Root workspace should be detected and counted, not silently dropped.
 				expect(rootPkg.isRootWorkspace).toBe(true);
@@ -317,9 +324,12 @@ describe("runValidation", () => {
 				);
 
 				// Act
-				const report = yield* runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(
-					Effect.provide(layers),
-				);
+				const report = yield* runValidation({
+					packageManager: "pnpm",
+					targetBranch: "main",
+					dryRun: false,
+					customRegistries: [],
+				}).pipe(Effect.provide(layers));
 
 				// Assert
 				expect(report.publishOk).toBe(false);
@@ -354,9 +364,12 @@ describe("runValidation", () => {
 				);
 
 				// Act
-				const report = yield* runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(
-					Effect.provide(layers),
-				);
+				const report = yield* runValidation({
+					packageManager: "pnpm",
+					targetBranch: "main",
+					dryRun: false,
+					customRegistries: [],
+				}).pipe(Effect.provide(layers));
 
 				// Assert
 				expect(report.publishOk).toBe(false);
@@ -390,9 +403,12 @@ describe("runValidation", () => {
 				);
 
 				// Act
-				const report = yield* runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(
-					Effect.provide(layers),
-				);
+				const report = yield* runValidation({
+					packageManager: "pnpm",
+					targetBranch: "main",
+					dryRun: false,
+					customRegistries: [],
+				}).pipe(Effect.provide(layers));
 
 				// Assert — package is excluded because no version bump occurred
 				expect(report.publishOk).toBe(true);
@@ -428,9 +444,12 @@ describe("runValidation", () => {
 				);
 
 				// Act
-				const report = yield* runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(
-					Effect.provide(layers),
-				);
+				const report = yield* runValidation({
+					packageManager: "pnpm",
+					targetBranch: "main",
+					dryRun: false,
+					customRegistries: [],
+				}).pipe(Effect.provide(layers));
 
 				// Assert — brand-new package is validated
 				expect(report.publishOk).toBe(true);
@@ -465,9 +484,12 @@ describe("runValidation", () => {
 				);
 
 				// Act
-				const report = yield* runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(
-					Effect.provide(layers),
-				);
+				const report = yield* runValidation({
+					packageManager: "pnpm",
+					targetBranch: "main",
+					dryRun: false,
+					customRegistries: [],
+				}).pipe(Effect.provide(layers));
 
 				// Assert
 				expect(report.publishOk).toBe(true);
@@ -526,10 +548,12 @@ describe("runValidation", () => {
 				makeWorkspaceDiscoveryLayer([pkg]),
 				SilkPublishability.layer.pipe(Layer.provideMerge(NodeServices.layer)),
 			);
-			const effect = runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(
-				Effect.provide(layers),
-				Effect.provide(Logger.layer([capture])),
-			);
+			const effect = runValidation({
+				packageManager: "pnpm",
+				targetBranch: "main",
+				dryRun: false,
+				customRegistries: [],
+			}).pipe(Effect.provide(layers), Effect.provide(Logger.layer([capture])));
 			return { dir, state, logged, effect };
 		};
 
@@ -600,9 +624,12 @@ describe("runValidation", () => {
 				);
 
 				// Act
-				const report = yield* runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(
-					Effect.provide(layers),
-				);
+				const report = yield* runValidation({
+					packageManager: "pnpm",
+					targetBranch: "main",
+					dryRun: false,
+					customRegistries: [],
+				}).pipe(Effect.provide(layers));
 
 				// Assert
 				expect(report.publishOk).toBe(true);
@@ -641,9 +668,12 @@ describe("runValidation", () => {
 						makePublishabilityLayer(new Map([["@test/stable", [makeNpmTarget("@test/stable")]]])),
 					);
 
-					const report = yield* runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(
-						Effect.provide(layers),
-					);
+					const report = yield* runValidation({
+						packageManager: "pnpm",
+						targetBranch: "main",
+						dryRun: false,
+						customRegistries: [],
+					}).pipe(Effect.provide(layers));
 
 					// The run still succeeds — this is a warning, not an error.
 					expect(report.publishOk).toBe(true);
@@ -698,7 +728,7 @@ describe("runValidation", () => {
 				makeWorkspaceDiscoveryLayer([pkg]),
 				makePublishabilityLayer(new Map([["@test/built", [target]]])),
 			);
-			return runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(
+			return runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false, customRegistries: [] }).pipe(
 				Effect.provide(layers),
 			);
 		};
@@ -787,9 +817,12 @@ describe("runValidation", () => {
 				);
 
 				// Act
-				const report = yield* runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(
-					Effect.provide(layers),
-				);
+				const report = yield* runValidation({
+					packageManager: "pnpm",
+					targetBranch: "main",
+					dryRun: false,
+					customRegistries: [],
+				}).pipe(Effect.provide(layers));
 
 				// Assert — the changeset-counting git path does not disrupt the run.
 				expect(report.publishOk).toBe(true);
@@ -823,9 +856,12 @@ describe("runValidation", () => {
 				);
 
 				// Act
-				const report = yield* runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(
-					Effect.provide(layers),
-				);
+				const report = yield* runValidation({
+					packageManager: "pnpm",
+					targetBranch: "main",
+					dryRun: false,
+					customRegistries: [],
+				}).pipe(Effect.provide(layers));
 
 				// Assert
 				expect(report.publishOk).toBe(true);
@@ -864,9 +900,12 @@ describe("runValidation", () => {
 				);
 
 				// Act
-				const report = yield* runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(
-					Effect.provide(layers),
-				);
+				const report = yield* runValidation({
+					packageManager: "pnpm",
+					targetBranch: "main",
+					dryRun: false,
+					customRegistries: [],
+				}).pipe(Effect.provide(layers));
 
 				// Assert — SBOM was generated successfully
 				expect(report.sbomOk).toBe(true);
@@ -905,9 +944,12 @@ describe("runValidation", () => {
 				);
 
 				// Act
-				const report = yield* runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(
-					Effect.provide(layers),
-				);
+				const report = yield* runValidation({
+					packageManager: "pnpm",
+					targetBranch: "main",
+					dryRun: false,
+					customRegistries: [],
+				}).pipe(Effect.provide(layers));
 
 				// Assert — SBOM is generated for the published target even without provenance
 				expect(report.sbomOk).toBe(true);
@@ -940,9 +982,12 @@ describe("runValidation", () => {
 				);
 
 				// Act
-				const report = yield* runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(
-					Effect.provide(layers),
-				);
+				const report = yield* runValidation({
+					packageManager: "pnpm",
+					targetBranch: "main",
+					dryRun: false,
+					customRegistries: [],
+				}).pipe(Effect.provide(layers));
 
 				// Assert — the failed dry-run surfaces as an error finding.
 				const errorFindings = report.findings.filter((f) => f.severity === "error");
@@ -953,6 +998,66 @@ describe("runValidation", () => {
 				expect(publishError?.message).toContain("dry-run failed");
 			}),
 		);
+
+		// OPS-143: a `_pnprWorkload` registry with no paired `_authToken` cannot
+		// publish — every read Phase 3 makes needs the reader — so Phase 2 says
+		// so in the release PR rather than leaving it to a 401 at merge time.
+		// Nothing is minted here: the check is pure configuration.
+		describe("pnpr workload registries (OPS-143)", () => {
+			const SAVVY = "https://registry.savvyweb.systems/npm/~savvy/";
+			const workload = { audience: "https://registry.savvyweb.systems" };
+			const runWorkload = (customRegistries: ReadonlyArray<CustomRegistryAuth>) => {
+				const pkg = makeWsPkg("@test/pnpr", "2.0.0", "packages/pnpr");
+				const target = new PublishTarget({
+					name: "@test/pnpr",
+					registry: SAVVY,
+					directory: "/tmp/dist/pnpr",
+					access: "restricted",
+					provenance: false,
+				});
+				const { layer: pubLayer } = makePublishDouble();
+				const layers = Layer.mergeAll(
+					NodeServices.layer,
+					gitLayer,
+					loggerLayer,
+					actionStateLayer,
+					makeSnapshotsLayer({ "@test/pnpr": "1.9.0" }),
+					pubLayer,
+					changesetConfigDefaultLayer,
+					makeWorkspaceDiscoveryLayer([pkg]),
+					makePublishabilityLayer(new Map([["@test/pnpr", [target]]])),
+				);
+				return runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false, customRegistries }).pipe(
+					Effect.provide(layers),
+				);
+			};
+			const expected =
+				"no-read-credential: pnpr workload credentials cannot read; add " +
+				`\`${SAVVY}_authToken=<release-reader>\` to custom-registries`;
+
+			it.effect("fails a workload-only target with no-read-credential and an error finding", () =>
+				Effect.gen(function* () {
+					const report = yield* runWorkload([{ registry: SAVVY, workload }]);
+					const target = report.validationPackages[0]?.builds[0]?.targets[0];
+					expect(target?.status).toBe("failed");
+					expect(target?.error).toBe(expected);
+					expect(report.publishOk).toBe(false);
+					expect(report.readyTargets).toBe(0);
+					const finding = report.findings.find((f) => f.check === "Publish Validation");
+					expect(finding?.severity).toBe("error");
+					expect(finding?.message).toBe(expected);
+				}),
+			);
+
+			it.effect("leaves a paired workload target ready, with no finding", () =>
+				Effect.gen(function* () {
+					const report = yield* runWorkload([{ registry: SAVVY, workload, token: Redacted.make("fake-reader") }]);
+					expect(report.validationPackages[0]?.builds[0]?.targets[0]?.status).toBe("ready");
+					expect(report.publishOk).toBe(true);
+					expect(report.findings.filter((f) => f.check === "Publish Validation")).toEqual([]);
+				}),
+			);
+		});
 
 		it.effect("produces a warning finding when the generated SBOM is NTIA-incomplete", () =>
 			Effect.gen(function* () {
@@ -978,9 +1083,12 @@ describe("runValidation", () => {
 				);
 
 				// Act
-				const report = yield* runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(
-					Effect.provide(layers),
-				);
+				const report = yield* runValidation({
+					packageManager: "pnpm",
+					targetBranch: "main",
+					dryRun: false,
+					customRegistries: [],
+				}).pipe(Effect.provide(layers));
 
 				// Assert — NTIA-incomplete BOM yields a warning finding; SBOM still "ok".
 				expect(report.sbomOk).toBe(true);
@@ -1016,9 +1124,12 @@ describe("runValidation", () => {
 				);
 
 				// Act
-				const report = yield* runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(
-					Effect.provide(layers),
-				);
+				const report = yield* runValidation({
+					packageManager: "pnpm",
+					targetBranch: "main",
+					dryRun: false,
+					customRegistries: [],
+				}).pipe(Effect.provide(layers));
 
 				// Assert — the publish side is clean, and the SBOM was generated. The
 				// NTIA side is NOT clean, and that is the honest answer: this fixture
@@ -1089,9 +1200,12 @@ describe("runValidation", () => {
 
 				// Act — run through runValidation so that detectReleasedPackages's ignore
 				// filter is exercised in the real Phase-2 call site.
-				const report = yield* runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(
-					Effect.provide(layers),
-				);
+				const report = yield* runValidation({
+					packageManager: "pnpm",
+					targetBranch: "main",
+					dryRun: false,
+					customRegistries: [],
+				}).pipe(Effect.provide(layers));
 
 				// Assert — only the non-ignored package appears in the report. The ignored
 				// @libraries/x package must be absent even though it had a version diff.
@@ -1141,9 +1255,12 @@ describe("runValidation", () => {
 				);
 
 				// Act
-				const report = yield* runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(
-					Effect.provide(layers),
-				);
+				const report = yield* runValidation({
+					packageManager: "pnpm",
+					targetBranch: "main",
+					dryRun: false,
+					customRegistries: [],
+				}).pipe(Effect.provide(layers));
 
 				// Assert — one build node, one SBOM, two registry targets.
 				expect(report.validationPackages).toHaveLength(1);
@@ -1195,9 +1312,12 @@ describe("runValidation", () => {
 				);
 
 				// Act
-				const report = yield* runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(
-					Effect.provide(layers),
-				);
+				const report = yield* runValidation({
+					packageManager: "pnpm",
+					targetBranch: "main",
+					dryRun: false,
+					customRegistries: [],
+				}).pipe(Effect.provide(layers));
 
 				// Assert — two builds, one SBOM each.
 				const builds = report.validationPackages[0]?.builds ?? [];
@@ -1244,9 +1364,12 @@ describe("runValidation", () => {
 				);
 
 				// Act
-				const report = yield* runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(
-					Effect.provide(layers),
-				);
+				const report = yield* runValidation({
+					packageManager: "pnpm",
+					targetBranch: "main",
+					dryRun: false,
+					customRegistries: [],
+				}).pipe(Effect.provide(layers));
 
 				// Assert — both build directories are package-relative, never absolute.
 				const builds = report.validationPackages[0]?.builds ?? [];
@@ -1303,7 +1426,7 @@ describe("runValidation", () => {
 			// exercises the real env-var convention, not Effect's default mapping.
 			const runReport = () =>
 				Effect.runPromise(
-					runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(
+					runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false, customRegistries: [] }).pipe(
 						Effect.provide(layers),
 						Effect.provide(ActionInput.layerDefault),
 					),
@@ -1364,9 +1487,12 @@ describe("runValidation", () => {
 				);
 
 				// Act
-				const report = yield* runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(
-					Effect.provide(layers),
-				);
+				const report = yield* runValidation({
+					packageManager: "pnpm",
+					targetBranch: "main",
+					dryRun: false,
+					customRegistries: [],
+				}).pipe(Effect.provide(layers));
 
 				// Assert — the build has a component-less SBOM but no "no components" finding.
 				const build = report.validationPackages[0]?.builds[0];
@@ -1423,9 +1549,12 @@ describe("runValidation", () => {
 					),
 				);
 
-				const report = yield* runValidation({ packageManager: "pnpm", targetBranch: "main", dryRun: false }).pipe(
-					Effect.provide(layers),
-				);
+				const report = yield* runValidation({
+					packageManager: "pnpm",
+					targetBranch: "main",
+					dryRun: false,
+					customRegistries: [],
+				}).pipe(Effect.provide(layers));
 
 				// The report and the dry-run calls follow dependency order: beta, then alpha.
 				expect(report.packages.map((p) => p.name)).toEqual(["@test/beta", "@test/alpha"]);

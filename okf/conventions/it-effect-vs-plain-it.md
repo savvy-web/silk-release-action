@@ -15,8 +15,10 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-19T01:42:17Z
-  body_sha256: 2af7bf204531ccb84c90b3679fe355178941a5247dfc1f1427f107086c97a079
 status: draft
+integrity:
+  generated:
+    body: 2af7bf204531ccb8
 ---
 
 # Use it.effect for a one-for-one Effect test, plain it() for the four exceptions

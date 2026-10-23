@@ -1,7 +1,7 @@
 ---
 type: Decision
 title: OIDC-first publishing, with token auth as bootstrap and fallback
-description: npm and JSR publish over OIDC trusted publishing by default; a token is used only to bootstrap a first-time npm publish, to retry once after an OIDC 404, or unconditionally for GitHub Packages, which cannot do OIDC at all.
+description: npm and JSR publish over OIDC trusted publishing by default, and pnpr over a workload credential minted from the job's OIDC token; a token is used only to bootstrap a first-time npm publish, to retry once after an OIDC 404, or unconditionally for GitHub Packages, which cannot do OIDC at all.
 status: draft
 tags:
   - security
@@ -11,12 +11,16 @@ sources:
     resource: ../../src/release/publish.ts
   - id: resolve-targets
     resource: ../../src/release/resolve-targets.ts
+  - id: custom-registries
+    resource: ../../src/utils/custom-registries.ts
+  - id: validation
+    resource: ../../src/release/validation.ts
 generated:
   by: okfit/claude-code
-  at: 2026-10-23T15:07:32Z
+  at: 2026-10-23T18:28:37Z
 integrity:
   generated:
-    body: 0206b1ce7a29d713
+    body: 0339ad97b304792c
 ---
 
 # OIDC-first publishing, with token auth as bootstrap and fallback
@@ -56,6 +60,41 @@ the exchange attempt.
   round trip and made the run's `auth` record claim trusted publishing for
   an upload the token authenticated (silk-integration run 39974152493).
   No action-level retry applies: a token-first failure is final.
+- **pnpr workload registries** — a `custom-registries` URL carrying a
+  `_pnprWorkload=<audience>` line[^custom-registries] publishes with a
+  credential the action mints itself: `pnpr_workload_<jwt>`, where `<jwt>`
+  is the job's GitHub Actions OIDC ID token for that audience (exactly
+  `https://registry.savvyweb.systems` for pnpr). It is minted once per
+  target, after the target's reads and immediately before the PUT, masked
+  in full, written by `setupAuth` as the npmrc's only token for that
+  registry, and published with `tokenAuth: true`.[^publish] The auth record
+  is `workload-oidc (custom-registries)`. pnpr accepts the credential only
+  for `PUT /npm/~<registry>/<package>`, so it never authenticates a read:
+  the integrity probe, the snapshot never-published probe and post-publish
+  confirmation all use the `_authToken` paired on the same URL, a read-only
+  `release-reader` token.[^resolve-targets] A workload line with no reader
+  fails that target as `no-read-credential` before any read, rather than as
+  the opaque 401 the integrity probe would otherwise produce, and Phase 2
+  reports the same misconfiguration from configuration alone, minting
+  nothing.[^validation] A mint failure (no `permissions: id-token: write`)
+  fails only that target and names the permission; there is no fallback to
+  the reader token, which pnpr refuses on a PUT anyway. The target declares
+  the `/npm/~savvy/` URL itself; the action maps nothing.
+
+  **The one read the action does not control.** Before its PUT, `npm
+  publish` fetches the packument itself, using the npmrc token, so the
+  workload credential does go out on one `GET` to pnpr. pnpr refuses it, and
+  npm 12 catches every error from that fetch and carries on. All that's lost
+  is npm's own "cannot publish over" and "cannot implicitly tag latest"
+  checks; the action's integrity probe and its explicit `--tag` already
+  cover both. Only `--force` would skip the fetch, and it drops more than
+  that check, so the refused `GET` is accepted.
+
+  **No npm retries.** A workload publish runs npm with `--fetch-retries=0`.
+  npm's defaults retry a 5xx twice, with a 10s and then a 60s backoff, on
+  both that `GET` and the PUT: about 140s per target, which read as a hung
+  run when pnpr answered "OIDC provider unavailable" (silk-integration run
+  40001523546). Other registries keep npm's retries.
 - **JSR** — publishes over OIDC and needs no token of its own. It shares
   the custom-registry token-resolution fall-through in
   `pickToken`[^resolve-targets] only because a predecessor's two
@@ -80,6 +119,12 @@ for the NTIA unique-identifier minimum element the compliance report
 checks.
 
 ## Alternatives rejected
+
+**A long-lived pnpr publish token in `custom-registries`.** Works with the
+existing token path, but keeps a standing publish secret for a registry that
+can verify the workflow's own identity — the cost OIDC exists to remove.
+The workload credential lives for one PUT and is bound to the repository by
+the token's claims.
 
 **Token auth as the default everywhere.** Would avoid the OIDC-vs-token
 branching this decision describes, at the cost of every registry needing a
@@ -106,3 +151,5 @@ npm the OIDC exchange runs through is pinned rather than left on `latest`.
 
 [^publish]: ../../src/release/publish.ts
 [^resolve-targets]: ../../src/release/resolve-targets.ts
+[^custom-registries]: ../../src/utils/custom-registries.ts
+[^validation]: ../../src/release/validation.ts

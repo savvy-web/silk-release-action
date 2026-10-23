@@ -2,7 +2,7 @@
 type: Decision
 title: Check for an existing attestation before writing a new one
 description: Before signing a fresh SLSA provenance or CycloneDX SBOM attestation, probe the GitHub attestation store for the subject digest and reuse an existing URL rather than writing a duplicate.
-status: draft
+status: stable
 tags:
   - security
   - release
@@ -16,7 +16,16 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: 650967ef1152763f83588f048afe6108cbf5431d127ac9dfbb760f2d96c9fbf8
+integrity:
+  generated:
+    body: 650967ef1152763f
+  verified:
+    by: human:spencer
+    at: 2026-10-23T18:01:04Z
+    content: eb985001dc7feb0a
+verified:
+  - by: human:spencer
+    at: 2026-10-23T18:01:04Z
 ---
 
 # Check for an existing attestation before writing a new one

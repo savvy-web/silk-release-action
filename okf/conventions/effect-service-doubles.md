@@ -21,8 +21,10 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: 870f6a6871ffe71b7ef5805051465204e3005f5699d4721c6c5c96ec0fe91b5d
 status: draft
+integrity:
+  generated:
+    body: 870f6a6871ffe71b
 ---
 
 # Double Effect services with layers, never with mocks

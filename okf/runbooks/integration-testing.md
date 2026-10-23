@@ -14,8 +14,10 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: fe14e6c334ff92c931dbfff0efe95a61ab521aa97796594d09fd75dcf2c0948f
 status: draft
+integrity:
+  generated:
+    body: fe14e6c334ff92c9
 ---
 
 # Run an end-to-end integration test on silk-integration

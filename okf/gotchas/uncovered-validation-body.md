@@ -12,8 +12,10 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: 89fd3a6b23bc1ba80985951cf2cee2824d8efc77e07ce994c5e1247994b934e6
 status: draft
+integrity:
+  generated:
+    body: 89fd3a6b23bc1ba8
 ---
 
 # A green suite says nothing about `runValidation`'s own wiring

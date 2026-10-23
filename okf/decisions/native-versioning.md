@@ -2,7 +2,7 @@
 type: Decision
 title: Version natively via the bundled silk-effects ReleasePlanner
 description: Phase 1 versions in-process through the bundled silk-effects ReleasePlanner instead of shelling out to a consumer ci:version script, making Phase 1 zero-install.
-status: draft
+status: stable
 tags:
   - release
   - performance
@@ -17,7 +17,16 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: 9333b848cf116b9123cf15fab36cb66f8191fbb88dbf436c05c3fb9d6327b30a
+integrity:
+  generated:
+    body: 9333b848cf116b91
+  verified:
+    by: human:spencer
+    at: 2026-10-23T18:01:04Z
+    content: 7890ad7e3d2a8a1d
+verified:
+  - by: human:spencer
+    at: 2026-10-23T18:01:04Z
 ---
 
 # Version natively via the bundled silk-effects ReleasePlanner

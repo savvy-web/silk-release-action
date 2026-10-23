@@ -18,7 +18,9 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-19T21:14:04Z
-  body_sha256: 1b3ffeecaf4128f4d067b6d2ab481de589974d311fa59461bc4f5edfa8856f00
+integrity:
+  generated:
+    body: 1b3ffeecaf4128f4
 ---
 
 # Pin the npm publish CLI to 12.x via the package manager's dlx launcher

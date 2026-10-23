@@ -168,6 +168,57 @@ export function pickToken(
 }
 
 /**
+ * Find the `custom-registries` entry for a registry URL.
+ *
+ * @remarks
+ * Entries are keyed with a trailing slash at parse time, so the lookup
+ * normalizes the same way.
+ *
+ * @param registry - The target registry URL.
+ * @param customRegistries - The parsed `custom-registries` input.
+ * @returns The entry, or `undefined` when the input does not name the registry.
+ *
+ * @internal
+ */
+export const findCustomRegistry = (
+	registry: string,
+	customRegistries: ReadonlyArray<CustomRegistryAuth>,
+): CustomRegistryAuth | undefined => {
+	const normalized = `${registry.replace(/\/+$/, "")}/`;
+	return customRegistries.find((e) => e.registry === normalized);
+};
+
+/**
+ * Explain why a pnpr workload registry cannot be published, or `null`.
+ *
+ * @remarks
+ * A `_pnprWorkload` line with no paired `_authToken` cannot work: pnpr
+ * workload credentials are accepted only for the publish PUT, and every read
+ * the publish path makes first — the integrity probe, the snapshot
+ * never-published probe — needs a read credential. Without this check the
+ * misconfiguration surfaces as an opaque 401 from the integrity probe. Phase 2
+ * reports the same sentence as a validation finding, and Phase 3 fails the
+ * target with it before any read or PUT. OPS-143.
+ *
+ * @param registry - The target registry URL.
+ * @param customRegistries - The parsed `custom-registries` input.
+ * @returns The failure reason naming the missing line, or `null` when the registry is not a workload-only entry.
+ *
+ * @public
+ */
+export const workloadReadGap = (
+	registry: string,
+	customRegistries: ReadonlyArray<CustomRegistryAuth>,
+): string | null => {
+	const entry = findCustomRegistry(registry, customRegistries);
+	if (entry?.workload === undefined || entry.token !== undefined) return null;
+	return (
+		"no-read-credential: pnpr workload credentials cannot read; add " +
+		`\`${entry.registry}_authToken=<release-reader>\` to custom-registries`
+	);
+};
+
+/**
  * Resolve the credential the post-publish confirmation probe reads a registry
  * with: the one the publish used for it.
  *
@@ -183,13 +234,13 @@ export function pickToken(
  * caller's decision, not this function's: the public npm registry reads
  * anonymously, GitHub Packages and pnpr do not.
  *
- * OPS-143 seam: pnpr will be published with a minted, publish-only workload
- * token (`pnpr_workload_<jwt>`) that must never be sent on a read. When that
- * lands, a custom entry will carry its read credential separately (an
- * optional, paired `_authToken`), and an entry with none must make this
- * function answer `null` — giving `no-read-credential` — rather than fall
- * back to the publish token. The `custom-registries` branch below is the one
- * place that changes.
+ * A pnpr workload registry (OPS-143) is published with a minted, publish-only
+ * `pnpr_workload_<jwt>` credential that is never sent on a read — and is not
+ * in the parsed input at all, so this function cannot return it. Its read
+ * credential is the paired `_authToken`; a workload entry with none answers
+ * `null` (`no-read-credential`) rather than falling through to the
+ * `registry-env` fallback, which would read with a credential the
+ * configuration never paired with that registry.
  *
  * @param registry - The target registry URL.
  * @param npmToken - The `npm-token` input, or `null`.
@@ -204,10 +255,12 @@ export function resolveReadCredential(
 	customRegistries: ReadonlyArray<CustomRegistryAuth>,
 ): { readonly credential: RegistryCredential; readonly source: PublishCredentialSource } | null {
 	if (classifyRegistry(registry) === "custom") {
-		// Keys are normalized with a trailing slash at parse time.
-		const normalized = `${registry.replace(/\/+$/, "")}/`;
-		const entry = customRegistries.find((e) => e.registry === normalized);
-		if (entry !== undefined) return { credential: { kind: "token", token: entry.token }, source: "custom-registries" };
+		const entry = findCustomRegistry(registry, customRegistries);
+		if (entry?.token !== undefined) {
+			return { credential: { kind: "token", token: entry.token }, source: "custom-registries" };
+		}
+		// A workload-only entry: configured, deliberately without a reader.
+		if (entry?.workload !== undefined) return null;
 	}
 	// An empty map, deliberately: the `custom-registries` lookup was answered
 	// above, with the Redacted value; what remains is npm, GitHub Packages and

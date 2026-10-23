@@ -13,7 +13,9 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: 589ba74464caba1438c6d777736248cc9580ed7d82a0bd78f37a67ff50c0166e
+integrity:
+  generated:
+    body: 589ba74464caba14
 ---
 
 # Replace @actions/attest with the kit's sign/store split, assembled locally

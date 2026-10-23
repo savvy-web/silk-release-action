@@ -27,7 +27,9 @@
  * **Credentials.** Each registry is read with the credential its publish used
  * ({@link resolveReadCredential}): `npm-token` for npm, `github-token` for
  * GitHub Packages, the target's `custom-registries` `_authToken` (or the
- * `registry-env` fallback) for a custom registry. npm alone is read
+ * `registry-env` fallback) for a custom registry — for a pnpr workload
+ * registry, the paired `_authToken` reader, since the minted workload
+ * credential cannot read and never reaches this step. npm alone is read
  * anonymously when no token is supplied, as before; GitHub Packages and a
  * custom registry with no credential are `skipped` as `no-read-credential`
  * without a read, because an anonymous miss there is a 401, not a hold. A
@@ -109,14 +111,15 @@ export interface ConfirmAvailabilityOptions {
 	 */
 	readonly githubToken: string | null;
 	/**
-	 * The parsed `custom-registries` input — each custom registry's publish
-	 * `_authToken`, which is also its read credential today. A custom target
-	 * with no entry (and no `registry-env` fallback) is `no-read-credential`.
+	 * The parsed `custom-registries` input — each custom registry's
+	 * `_authToken`, which is its read credential. A custom target with no entry
+	 * (and no `registry-env` fallback) is `no-read-credential`.
 	 *
 	 * @remarks
-	 * OPS-143: once pnpr publishes with a publish-only workload token, the read
-	 * credential becomes a separate, optional pairing on the entry; see the
-	 * seam in `resolveReadCredential`.
+	 * A pnpr workload registry (OPS-143) publishes with a minted, publish-only
+	 * credential, so its `_authToken` is a separate reader; a workload line
+	 * with no reader is `no-read-credential` too, never the `registry-env`
+	 * fallback. See `resolveReadCredential`.
 	 */
 	readonly customRegistries: ReadonlyArray<CustomRegistryAuth>;
 	/**

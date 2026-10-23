@@ -17,7 +17,9 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: c3a7bb8f888d891e5a74e06ae7e790f57c7c1eea77c296f025835d01a219be8f
+integrity:
+  generated:
+    body: c3a7bb8f888d891e
 ---
 
 # main.ts as guard, program.ts as composition, steps/ per phase body

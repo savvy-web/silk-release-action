@@ -2,7 +2,7 @@
 type: Decision
 title: Pin known-wrong behaviour with characterization tests before fixing it
 description: A test pinning a known bug is written to fail when the fix lands, named to the issue it pins, and converted rather than deleted once the fix ships.
-status: draft
+status: stable
 tags:
   - testing
 sources:
@@ -19,7 +19,16 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: 9638957d145091e70e59fbbd5e99829766e73743ab474a38931a71bfb484e196
+integrity:
+  generated:
+    body: 9638957d145091e7
+  verified:
+    by: human:spencer
+    at: 2026-10-23T18:01:04Z
+    content: 117437bf55fda6fd
+verified:
+  - by: human:spencer
+    at: 2026-10-23T18:01:04Z
 ---
 
 # Pin known-wrong behaviour with characterization tests before fixing it

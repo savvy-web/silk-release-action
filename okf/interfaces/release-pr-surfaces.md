@@ -19,7 +19,9 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: c5913a62f8abc5ea9cd1eb14e2f2f41aa7e31dd15bac8faa551ca66acdcb8a4b
+integrity:
+  generated:
+    body: c5913a62f8abc5ea
 ---
 
 # Release PR surfaces

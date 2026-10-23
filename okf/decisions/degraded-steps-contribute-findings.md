@@ -2,7 +2,7 @@
 type: Decision
 title: A degraded Phase-2 step contributes a finding, never flips a boolean
 description: Every degrading Phase-2 step must add a finding the verdict can read rather than silently reverting to a default, because findings are the only thing deriveCheckConclusion reads; the publish-validation crash path enforces this, the remaining steps do not yet.
-status: draft
+status: stable
 tags:
   - observability
   - release
@@ -21,7 +21,16 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: 8450c87424f8e97bb576f42191ae9b71cafebd52ee829c81489cd0ce6ee2e997
+integrity:
+  generated:
+    body: 8450c87424f8e97b
+  verified:
+    by: human:spencer
+    at: 2026-10-23T18:01:04Z
+    content: 07edd447fd614a5e
+verified:
+  - by: human:spencer
+    at: 2026-10-23T18:01:04Z
 ---
 
 # A degraded Phase-2 step contributes a finding, never flips a boolean

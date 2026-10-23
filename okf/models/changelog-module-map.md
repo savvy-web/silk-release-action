@@ -18,8 +18,10 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: a7acb6f8f1dea3a43a1959ef0c1699aabfa2d3ea4a57da3b9e1b1895304d6272
 status: draft
+integrity:
+  generated:
+    body: a7acb6f8f1dea3a4
 ---
 
 # Changelog module map

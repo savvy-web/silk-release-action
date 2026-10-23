@@ -16,7 +16,9 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-27T17:16:44Z
-  body_sha256: 620adcbd57542967bfaee91f02cd731805498af3931d41ad543a7d8ee540b199
+integrity:
+  generated:
+    body: 620adcbd57542967
 ---
 
 # An explicit-only snapshot phase, never a publish-phase flag

@@ -11,7 +11,9 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: c0127dbb221d1f032c3e3ee63bec92e2ac673df2425de095294a8d867fb879ce
+integrity:
+  generated:
+    body: c0127dbb221d1f03
 ---
 
 # Recreate the release branch from main rather than rebase

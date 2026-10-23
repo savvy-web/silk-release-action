@@ -14,10 +14,10 @@ sources:
     resource: ../../schemas/6.0/output.json
 generated:
   by: okfit/claude-code
-  at: 2026-10-23T17:07:20Z
+  at: 2026-10-23T17:46:00Z
 integrity:
   generated:
-    body: 853cacf20ed2ea42
+    body: 00fa8390289cf58f
 ---
 
 # The `result` output document
@@ -220,16 +220,19 @@ Each `PublishedPackage` also says how it was published:[^release-output-ts]
   when it never did. `method` describes what the **action** set up, not what
   npm did: `token` when the Actions OIDC environment was stripped (always for
   GitHub Packages) or never present, `trusted-publishing` when it was passed
-  through. npm reports nothing about which path it took and `@effected/npm`'s
-  publish result carries nothing either, so a `trusted-publishing` upload
-  with a non-null `credential` may in fact have used that token.
+  through, `workload-oidc` when a pnpr `_pnprWorkload` registry was published
+  with a `pnpr_workload_<jwt>` credential the action minted from the job's
+  OIDC token and wrote as the npmrc's only token for it (`credential` is then
+  `custom-registries`, and there is never a fallback). npm reports nothing
+  about which path it took and `@effected/npm`'s publish result carries
+  nothing either, so a `trusted-publishing` upload with a non-null
+  `credential` may in fact have used that token.
   `credential` names the input that supplied the npmrc token
   (`github-token`, `npm-token`, `custom-registries`, or `registry-env` for the
   `<HOST>_TOKEN` environment fallback). `fallback` is set when the first
   attempt failed and the action retried once with token auth and provenance
-  off; `from` is how that first attempt was set up. The method enum is meant
-  to grow (a per-target workload-OIDC method is planned), so treat an unknown
-  value as opaque.
+  off; `from` is how that first attempt was set up. The method enum may
+  grow further, so treat an unknown value as opaque.
 - `attestations.provenanceUrl` is the **action's** SLSA provenance, a GitHub
   artifact attestation shared by every registry its build published to; npm's
   own Sigstore provenance is the separate `attestations.npmProvenanceUrl`,

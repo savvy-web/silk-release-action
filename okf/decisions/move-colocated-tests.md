@@ -2,7 +2,7 @@
 type: Decision
 title: No test lives under src/ — one location plus a mirrored unit/ subtree
 description: Every test lives at or below __test__/, mirroring source paths under __test__/unit/, with a placement guard making the rule executable instead of a convention nobody could state.
-status: draft
+status: stable
 tags:
   - testing
   - dx
@@ -12,7 +12,16 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: 323662f2204670d406a296d6b21dfdc184b93bd1f724110d1cc1388ec63ed8f7
+integrity:
+  generated:
+    body: 323662f2204670d4
+  verified:
+    by: human:spencer
+    at: 2026-10-23T18:01:04Z
+    content: 0a6c8f33fd7994cc
+verified:
+  - by: human:spencer
+    at: 2026-10-23T18:01:04Z
 ---
 
 # No test lives under src/ — one location plus a mirrored unit/ subtree
