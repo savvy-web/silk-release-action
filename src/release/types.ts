@@ -285,6 +285,13 @@ export interface ValidationPackageResult {
 	/** Builds — one per unique target directory. Empty for a version-only package. */
 	readonly builds: ReadonlyArray<PackageBuildResult>;
 	/**
+	 * Declared registry targets the per-target `releases` filter dropped for
+	 * this version. Absent is zero. A package with no builds and a non-zero
+	 * count is NOT version-only: it declares a registry, it just publishes
+	 * nowhere at this version.
+	 */
+	readonly releaseFilteredTargets?: number;
+	/**
 	 * The extracted `CHANGELOG.md` section for the new version, or a
 	 * discriminated "why nothing was extracted" status.
 	 *

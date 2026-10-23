@@ -12,7 +12,7 @@
 // sticky comment — this module does not render markdown.
 
 import { existsSync, readFileSync } from "node:fs";
-import { isAbsolute, join, relative } from "node:path";
+import { isAbsolute, join, normalize, relative } from "node:path";
 import { ActionLogger } from "@effected/github-actions";
 import { PackagePublish, classifyRegistry, registryShortLabel } from "@effected/npm";
 import { Package } from "@effected/package-json";
@@ -20,6 +20,7 @@ import type { Component, SbomMetadataOptions } from "@effected/sbom";
 import { Contact, NtiaReport, Sbom, SbomMetadata, SbomMetadataSource, Supplier } from "@effected/sbom";
 import type { PublishTarget, WorkspacePackage } from "@effected/workspaces";
 import { WorkspaceDiscovery, WorkspaceSnapshots } from "@effected/workspaces";
+import { SilkPublishability } from "@savvy-web/silk-effects";
 import { Clock, Effect } from "effect";
 import type { SBOMMetadataConfig } from "../types/sbom-config.js";
 import { countChangesetsPerPackage } from "../utils/count-changesets.js";
@@ -593,7 +594,12 @@ export const runValidation = (args: ValidationInputArgs) =>
 			// a dev build was about to be packed. Record it as an error finding rather
 			// than aborting the whole run: the check fails, auto-merge is blocked, and
 			// the remaining packages still get validated and reported.
-			const resolved = yield* Effect.result(resolvePublishableTargets(pkg, workspaceRoot));
+			//
+			// Only the targets that RECEIVE `currentVersion` are dry-run: a target
+			// whose `releases` channel excludes it (`stable` at a prerelease) is
+			// never published at this version, so probing it would fail a release
+			// over something that cannot ship.
+			const resolved = yield* Effect.result(SilkPublishability.resolveReleaseTargets(pkg, currentVersion));
 			if (resolved._tag === "Failure") {
 				const bindingError = resolved.failure;
 				yield* Effect.logError(bindingError.message);
@@ -613,7 +619,24 @@ export const runValidation = (args: ValidationInputArgs) =>
 				});
 				continue;
 			}
-			const targets = resolved.success;
+			const targets = resolved.success.map((r) => r.target);
+
+			// What the filter dropped: the unfiltered set minus the survivors, joined
+			// by registry and absolute directory. `resolveTargets` cannot fail here —
+			// `resolveReleaseTargets` runs it first and succeeded.
+			const targetKey = (t: PublishTarget): string =>
+				`${t.registry}\u0000${normalize(isAbsolute(t.directory) ? t.directory : join(pkg.path, t.directory))}`;
+			const received = new Set(targets.map(targetKey));
+			const unfiltered = yield* resolvePublishableTargets(pkg, workspaceRoot).pipe(
+				Effect.orElseSucceed((): ReadonlyArray<PublishTarget> => []),
+			);
+			const filteredOut = unfiltered.filter((t) => !received.has(targetKey(t)));
+			const excludedBy = SilkPublishability.isPrerelease(currentVersion) ? "stable" : "prerelease";
+			for (const t of filteredOut) {
+				yield* Effect.logInfo(
+					`\u23ED ${pkg.name} · ${registryShortLabel(t.registry)} — releases: ${excludedBy} excludes ${currentVersion}`,
+				);
+			}
 
 			// Read the CHANGELOG.md `changeset version` already wrote — the
 			// release branch carries the per-version section. The extractor
@@ -622,13 +645,21 @@ export const runValidation = (args: ValidationInputArgs) =>
 			const releaseNotes = extractReleaseNotes(pkg.path);
 
 			if (targets.length === 0) {
-				yield* Effect.logDebug(`${pkg.name}: no publish targets (version-only)`);
+				// Two different reasons for the same empty list: a package that
+				// declares no registry is version-only; one whose every target
+				// excludes this version still declares a registry.
+				yield* Effect.logDebug(
+					filteredOut.length > 0
+						? `${pkg.name}: ${filteredOut.length} target(s), none receive ${currentVersion}`
+						: `${pkg.name}: no publish targets (version-only)`,
+				);
 				validationPackages.push({
 					name: pkg.name,
 					version: currentVersion,
 					baseVersion,
 					changesetCount: changesetCounts.get(pkg.name) ?? null,
 					builds: [],
+					releaseFilteredTargets: filteredOut.length,
 					releaseNotes,
 				});
 				continue;
@@ -876,6 +907,7 @@ export const runValidation = (args: ValidationInputArgs) =>
 				baseVersion,
 				changesetCount: changesetCounts.get(pkg.name) ?? null,
 				builds: buildResults,
+				releaseFilteredTargets: filteredOut.length,
 				releaseNotes,
 			});
 		}
@@ -893,7 +925,10 @@ export const runValidation = (args: ValidationInputArgs) =>
 		// canonical `ValidationOutput` and renders the comment from that object;
 		// this module no longer pre-renders markdown.
 
-		const hasVersionOnlyPackages = totalTargets === 0 && validationPackages.length > 0;
+		// A package whose every target was release-filtered declares a registry, so
+		// it is not version-only.
+		const hasVersionOnlyPackages =
+			totalTargets === 0 && validationPackages.some((p) => (p.releaseFilteredTargets ?? 0) === 0);
 
 		const reportPackages = validationPackages.map((p) => ({
 			name: p.name,
