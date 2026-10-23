@@ -675,6 +675,20 @@ const publishDirectoryGroup = (
 
 		const results: TargetPublishResult[] = [];
 
+		// The kit produces provenance only for registry.npmjs.org. A CUSTOM
+		// registry that declares `provenance: true` therefore publishes without
+		// it, and nothing else says so. GitHub Packages is deliberately silent:
+		// its provenance defaults to true and has always been ignored, so a
+		// warning there would fire on every run for a declaration nobody made.
+		for (const t of npmTargets) {
+			if (t.provenance && classifyRegistry(t.registry) === "custom") {
+				yield* Effect.logWarning(
+					`[publish] ${registryHost(t.registry)}: provenance is declared for ${packageName}, but the kit only produces ` +
+						`provenance for registry.npmjs.org — this target publishes without it`,
+				);
+			}
+		}
+
 		for (const t of jsrTargets) {
 			yield* Effect.logWarning(
 				`runPublishTargets: skipping JSR target for ${packageName}@${version} — JSR publishing is not yet supported in this orchestrator`,

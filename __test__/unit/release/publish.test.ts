@@ -2085,9 +2085,10 @@ const makeFilterLayers = (
 	npmLayer: Layer.Layer<NpmRegistry>,
 	wsPkgs: WorkspacePackage[],
 	files: Record<string, unknown>,
+	logger: Layer.Layer<ActionLogger> = loggerLayer,
 ) =>
 	Layer.mergeAll(
-		loggerLayer,
+		logger,
 		actionStateLayer,
 		configProviderLayer,
 		environmentLayer,
@@ -2212,6 +2213,46 @@ describe("runPublishTargets — per-target release filter", () => {
 			expect(goodPkg?.targets.map((t) => t.status)).toEqual(["published"]);
 			expect(pub.packCalls).toHaveLength(1);
 			expect(result.success).toBe(false);
+		}),
+	);
+
+	// The kit produces provenance only for registry.npmjs.org. GitHub Packages
+	// defaults provenance to true and has always ignored it silently, so warning
+	// there would be noise on every run; a CUSTOM registry that asked for it is
+	// the case where the declaration is silently false.
+	it.effect("warns once that a custom registry gets no provenance, and stays quiet for GitHub Packages", () =>
+		Effect.gen(function* () {
+			const warnings: string[] = [];
+			const capture = Logger.make<unknown, void>(({ message, logLevel }) => {
+				if (logLevel === "Warn") warnings.push(Array.isArray(message) ? message.join(" ") : String(message));
+			});
+			const pub = makePackagePublishLayer({ packResult: packFor("1.2.0") });
+			const wsPkg = makeFilterPkg(PACK_NAME, "1.2.0");
+			yield* runPublishTargets([makeDetected(PACK_NAME, "1.2.0", wsPkg.path)]).pipe(
+				Effect.provide(
+					makeFilterLayers(
+						pub.layer,
+						makeRegistryLayer(),
+						[wsPkg],
+						{
+							[`${wsPkg.path}/package.json`]: filterManifest(PACK_NAME, {
+								pnpr: { registry: PNPR, provenance: true },
+								github: true,
+							}),
+						},
+						ActionLogger.layerTest(),
+					),
+				),
+				Effect.provide(Logger.layer([capture])),
+			);
+
+			// Other warnings mention provenance (the best-effort attestation has no
+			// OIDC here), so select the one this behaviour owns by its wording.
+			const provenanceWarnings = warnings.filter((w) => /only produces provenance/i.test(w));
+			expect(provenanceWarnings).toHaveLength(1);
+			expect(provenanceWarnings[0]).toContain("pnpr.example.com");
+			expect(provenanceWarnings[0]).toMatch(/registry\.npmjs\.org/);
+			expect(warnings.some((w) => /only produces provenance/i.test(w) && w.includes("npm.pkg.github.com"))).toBe(false);
 		}),
 	);
 });
