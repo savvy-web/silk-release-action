@@ -10,8 +10,70 @@
  * can share them without importing from implementation modules.
  */
 
+import type { ReleaseChannel } from "@savvy-web/silk-effects";
 import type { AlreadyPublishedReason, ResolvedTarget } from "../types/publish-config.js";
 import type { ReleaseKind } from "../utils/release-kind.js";
+
+/**
+ * How the action set up npm to authenticate one upload.
+ *
+ * @remarks
+ * Describes what the action DID, not what npm did. `"token"` — the Actions
+ * OIDC environment was absent or stripped (`tokenAuth: true`), so npm could
+ * only authenticate with the npmrc token, if any. `"trusted-publishing"` — the
+ * OIDC environment was present and passed through, so npm was free to attempt
+ * its trusted-publishing exchange. npm does not report which path it took, and
+ * `@effected/npm`'s `PublishOutcome` carries nothing about it, so a successful
+ * `"trusted-publishing"` attempt with a credential in the npmrc does not prove
+ * which of the two npm used. Open for growth: a per-target workload-OIDC method
+ * is planned.
+ *
+ * @public
+ */
+export type PublishAuthMethod = "token" | "trusted-publishing";
+
+/**
+ * Where the registry token the action wrote to the npmrc came from.
+ *
+ * @remarks
+ * `registry-env` is the undocumented `<HOST>_TOKEN` environment fallback
+ * `pickToken` keeps for custom registries.
+ *
+ * @public
+ */
+export type PublishCredentialSource = "github-token" | "npm-token" | "custom-registries" | "registry-env";
+
+/**
+ * The auth the action set up for one target's `npm publish` call(s).
+ *
+ * @public
+ */
+export interface PublishAuth {
+	/** How the FINAL attempt was set up; see {@link PublishAuthMethod}. */
+	readonly method: PublishAuthMethod;
+	/** Where the npmrc token came from, or `null` when none was written. */
+	readonly credential: PublishCredentialSource | null;
+	/**
+	 * Set when the first attempt failed and the action retried once with token
+	 * auth and provenance off. `from` is how the first attempt was set up —
+	 * `"trusted-publishing"` in the designed case (a package with no trusted
+	 * publisher yet); `"token"` when the runner exposed no OIDC environment, so
+	 * the retry repeated token auth without provenance.
+	 */
+	readonly fallback: { readonly from: PublishAuthMethod; readonly reason: string } | null;
+}
+
+/**
+ * Which `publishConfig.targets` declaration a target came from.
+ *
+ * @public
+ */
+export interface TargetRef {
+	/** The `publishConfig.targets` key, or `null` for an unkeyed (`access`/`private` fallback) target. */
+	readonly id: string | null;
+	/** The target's declared `releases` channel, `"all"` when undeclared. */
+	readonly releases: ReleaseChannel;
+}
 
 /**
  * Result for a single target publish
@@ -113,6 +175,22 @@ export interface TargetPublishResult {
 				readonly sbom: boolean;
 		  }
 		| undefined;
+	/**
+	 * The `publishConfig.targets` declaration this target resolved from.
+	 *
+	 * @remarks
+	 * Absent when the workspace's targets could not be resolved safely (a
+	 * `targets.json` binding miss or an unknown `releases` value) — the
+	 * declaration was never matched, so naming a key would be a guess.
+	 */
+	targetRef?: TargetRef | undefined;
+	/**
+	 * How the upload authenticated. Present whenever the action invoked
+	 * `npm publish` for this target — on a landed upload and on one that
+	 * failed — and absent when nothing was uploaded (a recovery, a release
+	 * filter, a snapshot skip, or a failure before the upload).
+	 */
+	auth?: PublishAuth | undefined;
 }
 
 /**
@@ -334,6 +412,8 @@ export interface ReleaseInfo {
 	id: number;
 	/** Uploaded assets */
 	assets: AssetInfo[];
+	/** Whether GitHub marks the release a prerelease (as recorded; computed on a dry-run). */
+	prerelease: boolean;
 }
 
 /**
@@ -429,6 +509,11 @@ export interface PublishWorkspacePlan {
 	readonly resolvedPackages: number;
 	/** Repo-relative workspace directory, e.g. `packages/foo`. */
 	readonly path: string;
+	/**
+	 * The version the release's base commit recorded, or `null` when detection
+	 * could not read it. Absent is `null`.
+	 */
+	readonly baseVersion?: string | null | undefined;
 }
 
 /**
@@ -446,6 +531,20 @@ export interface PublishWorkspacePlan {
 export type AvailabilityStatus = "confirmed" | "held" | "skipped";
 
 /**
+ * Why a target's availability is `"skipped"`.
+ *
+ * @remarks
+ * `disabled` — `registry-confirm-timeout` is `0`. `dry-run` — the run made no
+ * uploads to confirm. `non-npm-registry` — only the public npm registry is
+ * probed. `not-published` — the target did not publish, so there is nothing to
+ * confirm. `not-reached` — the target published but the phase stopped before
+ * the confirmation step ran.
+ *
+ * @public
+ */
+export type AvailabilitySkipReason = "disabled" | "dry-run" | "non-npm-registry" | "not-published" | "not-reached";
+
+/**
  * The result of probing a registry for one published (registry, name,
  * version) target, keyed by {@link availabilityKey}.
  *
@@ -456,6 +555,8 @@ export interface TargetAvailability {
 	readonly waitedMs: number;
 	/** Registry tarball URL from the confirmation probe; null unless `confirmed`. */
 	readonly tarball: string | null;
+	/** Why the probe was skipped; null unless `status` is `"skipped"`. */
+	readonly reason: AvailabilitySkipReason | null;
 }
 
 /**

@@ -520,6 +520,8 @@ describe("detectReleases", () => {
 			expect(detected[0]?.name).toBe("@test/commit-pkg");
 			expect(detected[0]?.version).toBe("3.0.0");
 			expect(detected[0]?.path.endsWith(join("packages", "commit-pkg"))).toBe(true);
+			// The version the first parent recorded — the release's base.
+			expect(detected[0]?.baseVersion).toBe("2.0.0");
 		});
 
 		it("does not detect a package when old and new versions are identical", async () => {
@@ -581,6 +583,7 @@ describe("detectReleases", () => {
 			expect(detected).toHaveLength(1);
 			expect(detected[0]?.name).toBe("@test/pr-pkg");
 			expect(detected[0]?.version).toBe("2.0.0");
+			expect(detected[0]?.baseVersion).toBe("1.0.0");
 		});
 
 		it("does not detect a package when old and new versions are identical", async () => {
@@ -675,6 +678,26 @@ describe("planWorkspaces", () => {
 			);
 			expect(plan).toHaveLength(1);
 			expect(plan[0]?.path).toBe(join("packages", "foo"));
+		}),
+	);
+
+	it.effect("carries the detected base version onto the plan, and null when detection had none", () =>
+		Effect.gen(function* () {
+			const a = makeWsPkg("@test/a", "1.1.0", "/ws/a");
+			const b = makeWsPkg("@test/b", "1.0.0", "/ws/b");
+			const plan = yield* planWorkspaces([
+				{ ...makeDetected(a.name, "1.1.0", a.path), baseVersion: "1.0.0" },
+				makeDetected(b.name, "1.0.0", b.path),
+			]).pipe(
+				Effect.provide(
+					Layer.mergeAll(
+						MemoryFileSystem.layer,
+						makeWorkspaceDiscoveryLayer([a, b]),
+						makePublishabilityLayer(new Map()),
+					),
+				),
+			);
+			expect(plan.map((p) => p.baseVersion)).toEqual(["1.0.0", null]);
 		}),
 	);
 
@@ -2291,6 +2314,239 @@ describe("runPublishTargets — per-target release filter", () => {
 			expect(provenanceWarnings[0]).toContain("pnpr.example.com");
 			expect(provenanceWarnings[0]).toMatch(/registry\.npmjs\.org/);
 			expect(warnings.some((w) => /only produces provenance/i.test(w) && w.includes("npm.pkg.github.com"))).toBe(false);
+		}),
+	);
+});
+
+// ─── Per-target explanation: target key, channel and auth ───────────────────
+
+describe("runPublishTargets — target key and channel", () => {
+	it.effect("records each target's publishConfig.targets key and releases channel, filtered or not", () =>
+		Effect.gen(function* () {
+			const pub = makePackagePublishLayer({ packResult: packFor("1.2.0-beta.0") });
+			const wsPkg = makeFilterPkg(PACK_NAME, "1.2.0-beta.0");
+			const result = yield* runPublishTargets([makeDetected(PACK_NAME, "1.2.0-beta.0", wsPkg.path)]).pipe(
+				Effect.provide(
+					makeFilterLayers(pub.layer, makeRegistryLayer(), [wsPkg], {
+						[`${wsPkg.path}/package.json`]: filterManifest(PACK_NAME, npmStablePnprAll),
+					}),
+				),
+			);
+
+			const targets = result.packages[0]?.targets ?? [];
+			const byRegistry = new Map(targets.map((t) => [t.target.registry, t.targetRef]));
+			expect(byRegistry.get("https://registry.npmjs.org")).toEqual({ id: "npm", releases: "stable" });
+			expect(byRegistry.get(PNPR)).toEqual({ id: "pnpr", releases: "all" });
+		}),
+	);
+
+	it.effect("records no target key when the workspace's targets could not be resolved", () =>
+		Effect.gen(function* () {
+			const pub = makePackagePublishLayer({ packResult: packFor("1.2.0") });
+			const bad = makeFilterPkg("@scope/bad", "1.2.0", "/ws/bad");
+			const result = yield* runPublishTargets([makeDetected(bad.name, "1.2.0", bad.path)]).pipe(
+				Effect.provide(
+					makeFilterLayers(pub.layer, makeRegistryLayer(), [bad], {
+						[`${bad.path}/package.json`]: filterManifest(bad.name, { npm: { releases: "final" } }),
+					}),
+				),
+			);
+
+			const targets = result.packages[0]?.targets ?? [];
+			expect(targets.length).toBeGreaterThan(0);
+			expect(targets.every((t) => t.status === "failed" && t.targetRef === undefined)).toBe(true);
+		}),
+	);
+});
+
+describe("runPublishTargets — auth record", () => {
+	const OIDC_ENV = ActionEnvironment.layerTest({
+		ACTIONS_ID_TOKEN_REQUEST_URL: "https://oidc.example/token",
+		ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc-request-token",
+	});
+	const NPM_TOKEN = ActionInput.layer({ "npm-token": "npm-secret" });
+	const DIR = `/tmp/test/${PACK_NAME}`;
+	const setup = () => {
+		const wsPkg = makeWsPkg(PACK_NAME, PACK_VERSION, DIR);
+		return { wsPkg, detected: [makeDetected(PACK_NAME, PACK_VERSION, wsPkg.path)] };
+	};
+	/** A publish double whose first `publishTarball` fails and every later one succeeds. */
+	const failingFirst = (failAll = false) => {
+		const calls: PublishOptions[] = [];
+		const layer = PackagePublish.layerTest({
+			setupAuth: () => Effect.void,
+			pack: () => Effect.succeed(makePackResult()),
+			publishTarball: (_path, options) =>
+				Effect.suspend(() => {
+					calls.push(options);
+					return calls.length === 1 || failAll
+						? Effect.fail(new PublishError({ kind: "publish", registry: options.registry, output: "E404 oidc" }))
+						: Effect.succeed({});
+				}),
+		});
+		return { calls, layer };
+	};
+
+	it.effect("records token auth from the github-token input for a GitHub Packages publish", () =>
+		Effect.gen(function* () {
+			const pub = makePackagePublishLayer();
+			const { wsPkg, detected } = setup();
+			const ghp = new PublishTarget({
+				name: PACK_NAME,
+				registry: "https://npm.pkg.github.com/",
+				directory: DIR,
+				access: "restricted",
+				provenance: false,
+			});
+			const result = yield* runPublishTargets(detected).pipe(
+				Effect.provide(Layer.merge(makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [ghp]), OIDC_ENV)),
+			);
+
+			expect(result.packages[0]?.targets[0]?.auth).toEqual({
+				method: "token",
+				credential: "github-token",
+				fallback: null,
+			});
+		}),
+	);
+
+	it.effect(
+		"records trusted publishing, with no token, when the OIDC env reached npm and the first attempt landed",
+		() =>
+			Effect.gen(function* () {
+				const pub = makePackagePublishLayer();
+				const { wsPkg, detected } = setup();
+				const result = yield* runPublishTargets(detected).pipe(
+					Effect.provide(
+						Layer.merge(
+							makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [makeNpmTarget(PACK_NAME, DIR)]),
+							OIDC_ENV,
+						),
+					),
+				);
+
+				expect(pub.publishTarballCalls[0]?.options.tokenAuth).toBe(false);
+				expect(result.packages[0]?.targets[0]?.auth).toEqual({
+					method: "trusted-publishing",
+					credential: null,
+					fallback: null,
+				});
+			}),
+	);
+
+	it.effect("records token auth when the runner exposes no OIDC env, naming the npm-token input", () =>
+		Effect.gen(function* () {
+			const pub = makePackagePublishLayer();
+			const { wsPkg, detected } = setup();
+			const result = yield* runPublishTargets(detected).pipe(
+				Effect.provide(
+					Layer.merge(
+						makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [makeNpmTarget(PACK_NAME, DIR)]),
+						NPM_TOKEN,
+					),
+				),
+			);
+
+			expect(result.packages[0]?.targets[0]?.auth).toEqual({
+				method: "token",
+				credential: "npm-token",
+				fallback: null,
+			});
+		}),
+	);
+
+	it.effect("records the token fallback and why it fired when trusted publishing failed and the retry landed", () =>
+		Effect.gen(function* () {
+			const pub = failingFirst();
+			const { wsPkg, detected } = setup();
+			const result = yield* runPublishTargets(detected).pipe(
+				Effect.provide(
+					Layer.mergeAll(
+						makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [makeNpmTarget(PACK_NAME, DIR)]),
+						OIDC_ENV,
+						NPM_TOKEN,
+					),
+				),
+			);
+
+			const t = result.packages[0]?.targets[0];
+			expect(t?.status).toBe("published");
+			expect(pub.calls.map((c) => c.tokenAuth)).toEqual([false, true]);
+			expect(t?.auth?.method).toBe("token");
+			expect(t?.auth?.credential).toBe("npm-token");
+			expect(t?.auth?.fallback?.from).toBe("trusted-publishing");
+			expect(t?.auth?.fallback?.reason).toContain("E404 oidc");
+		}),
+	);
+
+	it.effect("names a token first attempt as the fallback's origin when the runner exposed no OIDC env", () =>
+		Effect.gen(function* () {
+			const pub = failingFirst();
+			const { wsPkg, detected } = setup();
+			const result = yield* runPublishTargets(detected).pipe(
+				Effect.provide(
+					Layer.merge(
+						makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [makeNpmTarget(PACK_NAME, DIR)]),
+						NPM_TOKEN,
+					),
+				),
+			);
+
+			expect(result.packages[0]?.targets[0]?.auth?.fallback?.from).toBe("token");
+		}),
+	);
+
+	it.effect("records the auth that was attempted on a target whose upload failed", () =>
+		Effect.gen(function* () {
+			const pub = failingFirst(true);
+			const { wsPkg, detected } = setup();
+			const result = yield* runPublishTargets(detected).pipe(
+				Effect.provide(
+					Layer.merge(makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [makeNpmTarget(PACK_NAME, DIR)]), OIDC_ENV),
+				),
+			);
+
+			const t = result.packages[0]?.targets[0];
+			expect(t?.status).toBe("failed");
+			expect(t?.auth).toEqual({ method: "trusted-publishing", credential: null, fallback: null });
+		}),
+	);
+
+	it.effect("records no auth on a recovered target, which never uploaded", () =>
+		Effect.gen(function* () {
+			const pub = makePackagePublishLayer();
+			const { wsPkg, detected } = setup();
+			const result = yield* runPublishTargets(detected).pipe(
+				Effect.provide(
+					makeBaseLayers(pub.layer, makeRegistryLayer({ integrity: PACK_INTEGRITY }), wsPkg, [
+						makeNpmTarget(PACK_NAME, DIR),
+					]),
+				),
+			);
+
+			const t = result.packages[0]?.targets[0];
+			expect(t?.skipReason).toBe("already-published-identical");
+			expect(t?.auth).toBeUndefined();
+		}),
+	);
+
+	it.effect("names the custom-registries input as the credential for a custom registry", () =>
+		Effect.gen(function* () {
+			const CUSTOM = "https://registry.example.com/";
+			const pub = makePackagePublishLayer();
+			const { wsPkg, detected } = setup();
+			const custom = new PublishTarget({
+				name: PACK_NAME,
+				registry: CUSTOM,
+				directory: DIR,
+				access: "restricted",
+				provenance: false,
+			});
+			const result = yield* runPublishTargets(detected, new Map(), [
+				{ registry: CUSTOM, token: Redacted.make("custom-registry-token") },
+			]).pipe(Effect.provide(makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [custom])));
+
+			expect(result.packages[0]?.targets[0]?.auth?.credential).toBe("custom-registries");
 		}),
 	);
 });

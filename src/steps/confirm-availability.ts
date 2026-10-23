@@ -31,7 +31,7 @@ import { ActionLogger } from "@effected/github-actions";
 import type { RegistryCredential } from "@effected/npm";
 import { NpmRegistry, classifyRegistry } from "@effected/npm";
 import { Clock, Duration, Effect, Option, Redacted, Schedule } from "effect";
-import type { TargetAvailability } from "../release/types.js";
+import type { AvailabilitySkipReason, TargetAvailability } from "../release/types.js";
 import { availabilityKey } from "../release/types.js";
 
 /**
@@ -81,7 +81,12 @@ export interface ConfirmAvailabilityOptions {
 	readonly schedule?: Schedule.Schedule<unknown>;
 }
 
-const SKIPPED: TargetAvailability = { status: "skipped", waitedMs: 0, tarball: null };
+const skipped = (reason: AvailabilitySkipReason): TargetAvailability => ({
+	status: "skipped",
+	waitedMs: 0,
+	tarball: null,
+	reason,
+});
 
 /**
  * 5s, 10s, 20s, 30s, 30s … with jitter — the observed hold is bimodal, mostly
@@ -117,12 +122,12 @@ const probeOne = (
 		const published = Option.flatten(outcome);
 		if (Option.isSome(published)) {
 			yield* Effect.logInfo(`  🔎 ${target.name}@${target.version} · resolvable after ${Math.round(waitedMs / 1000)}s`);
-			return { status: "confirmed", waitedMs, tarball: published.value.tarball ?? null };
+			return { status: "confirmed", waitedMs, tarball: published.value.tarball ?? null, reason: null };
 		}
 		yield* Effect.logWarning(
 			`${target.name}@${target.version} published but not yet resolvable on ${target.registry} after ${Duration.toSeconds(ceiling)}s — npm may be holding it for publish-time scanning; reported as held`,
 		);
-		return { status: "held", waitedMs, tarball: null };
+		return { status: "held", waitedMs, tarball: null, reason: null };
 	});
 
 /** The subset of targets that live on an npm-classified registry. */
@@ -151,9 +156,20 @@ export const confirmAvailability = (
 ): Effect.Effect<ReadonlyMap<string, TargetAvailability>, never, NpmRegistry | ActionLogger> =>
 	Effect.gen(function* () {
 		const result = new Map<string, TargetAvailability>();
-		for (const t of targets) result.set(availabilityKey(t.registry, t.name, t.version), SKIPPED);
 		const npmTargets = npmTargetsOf(targets);
-		if (options.dryRun || options.ceilingSeconds <= 0 || npmTargets.length === 0) return result;
+		// Every target gets an entry naming why it is not probed; a probed one is
+		// overwritten below. Dry-run wins over a ceiling of 0: it is the reason
+		// there is nothing to confirm at all.
+		const runWide: AvailabilitySkipReason | null = options.dryRun
+			? "dry-run"
+			: options.ceilingSeconds <= 0
+				? "disabled"
+				: null;
+		for (const t of targets) {
+			const reason = runWide ?? (npmTargets.includes(t) ? null : "non-npm-registry");
+			if (reason !== null) result.set(availabilityKey(t.registry, t.name, t.version), skipped(reason));
+		}
+		if (runWide !== null || npmTargets.length === 0) return result;
 
 		// `Inputs.npmToken` defaults to "" for an unsupplied input; treat it as
 		// absent, as `publish.ts` does.

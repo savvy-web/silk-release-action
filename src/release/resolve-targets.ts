@@ -13,6 +13,7 @@ import type { PublishTargetBindingError, ReleaseChannel, ReleaseChannelError } f
 import { SilkPublishability } from "@savvy-web/silk-effects";
 import type { FileSystem } from "effect";
 import { Effect } from "effect";
+import type { PublishCredentialSource } from "./types.js";
 
 /**
  * Report whether a built target directory's `package.json` is marked `private`.
@@ -71,20 +72,21 @@ export const resolvePublishableTargets = (
 > => SilkPublishability.resolveTargets(pkg, workspaceRoot);
 
 /**
- * Resolve the auth token for a publish-target registry.
+ * Resolve the auth token for a publish-target registry, naming where it came from.
  *
  * Resolution:
- *  - npm public registry  → the resolved npm token (from `Config` via caller)
- *  - GitHub Packages      → the resolved GitHub Packages token (from `ActionState` via caller)
+ *  - npm public registry  → the resolved npm token (`npm-token`)
+ *  - GitHub Packages      → the resolved GitHub Packages token (`github-token`)
  *  - Custom registries    → the `custom-registries` input (parsed and
  *    declassified by the caller), falling back to an env var derived from the
- *    registry URL
+ *    registry URL (`registry-env`)
  *
  * Returns `null` when no token is found (OIDC / first-time publish).
  *
  * Kept as the single token-selection seam so the rules cannot fork per phase
  * (Phase 2 deliberately resolves no tokens at all — `npm pack --dry-run`
- * never contacts a registry).
+ * never contacts a registry). The source rides along so the release output can
+ * say which input authenticated an upload without re-deriving the rules.
  *
  * @param registry - The target registry URL.
  * @param npmToken - The resolved npm token, or `null`.
@@ -92,9 +94,9 @@ export const resolvePublishableTargets = (
  * @param customTokens - Custom-registry tokens keyed by trailing-slash
  *   normalized registry URL, from the `custom-registries` input. Values are
  *   already masked in the CI log by the caller.
- * @returns The token for the registry, or `null` when none applies.
+ * @returns The token and its source, or `null` when none applies.
  */
-export function pickToken(
+export function resolveRegistryToken(
 	registry: string,
 	npmToken: string | null,
 	ghPkgsToken: string | null,
@@ -103,15 +105,15 @@ export function pickToken(
 	// input regresses to "decoded but consumed by nothing" a second time
 	// without a compile error (issue #215).
 	customTokens: ReadonlyMap<string, string>,
-): string | null {
+): { readonly token: string; readonly source: PublishCredentialSource } | null {
 	// One classification, switched exhaustively — rather than two independent
 	// booleans asked in sequence, which can disagree. `classifyRegistry` is the
 	// construct whose docstring names this call site.
 	switch (classifyRegistry(registry)) {
 		case "npm":
-			return npmToken;
+			return npmToken === null ? null : { token: npmToken, source: "npm-token" };
 		case "github-packages":
-			return ghPkgsToken;
+			return ghPkgsToken === null ? null : { token: ghPkgsToken, source: "github-token" };
 		// JSR is not an npm-protocol registry and publishes over OIDC, so it has
 		// no token of its own. It shares the custom-registry env-var derivation
 		// here only because the predecessor's two booleans both answered false
@@ -124,7 +126,7 @@ export function pickToken(
 			// for issue #215. Keys are normalized with a trailing slash at parse
 			// time (`parseCustomRegistries`), so normalize the lookup the same way.
 			const configured = customTokens.get(`${registry.replace(/\/+$/, "")}/`);
-			if (configured !== undefined) return configured;
+			if (configured !== undefined) return { token: configured, source: "custom-registries" };
 			// Fallback: an env var derived from the URL,
 			// e.g. https://registry.example.com/ → REGISTRY_EXAMPLE_COM_TOKEN.
 			// Undocumented but kept — it is the only path that worked at all while
@@ -136,9 +138,31 @@ export function pickToken(
 				.replace(/_+/g, "_")
 				.replace(/^_|_$/g, "")
 				.concat("_TOKEN");
-			return process.env[envName] ?? null;
+			const fromEnv = process.env[envName];
+			return fromEnv === undefined ? null : { token: fromEnv, source: "registry-env" };
 		}
 	}
+}
+
+/**
+ * Resolve the auth token for a publish-target registry.
+ *
+ * @remarks
+ * {@link resolveRegistryToken} without the source — the same rules, one seam.
+ *
+ * @param registry - The target registry URL.
+ * @param npmToken - The resolved npm token, or `null`.
+ * @param ghPkgsToken - The resolved GitHub Packages token, or `null`.
+ * @param customTokens - Custom-registry tokens keyed by normalized registry URL.
+ * @returns The token for the registry, or `null` when none applies.
+ */
+export function pickToken(
+	registry: string,
+	npmToken: string | null,
+	ghPkgsToken: string | null,
+	customTokens: ReadonlyMap<string, string>,
+): string | null {
+	return resolveRegistryToken(registry, npmToken, ghPkgsToken, customTokens)?.token ?? null;
 }
 
 /**
@@ -163,6 +187,13 @@ export interface TargetSpec {
 	 * renamed publication unreportable.
 	 */
 	readonly name: string;
+	/**
+	 * The `publishConfig.targets` key this target came from, or `null` for an
+	 * unkeyed target (the `access`/`private` fallbacks) — and for every entry of
+	 * {@link ResolvedPublishTargets.declared}, which is built before the binding
+	 * is joined and so cannot know its key.
+	 */
+	readonly id: string | null;
 	readonly registry: string;
 	readonly directory: string;
 	readonly access: "public" | "restricted";
@@ -294,6 +325,7 @@ export const resolvePublishTargetSpecs = (
 			}
 			candidates.push({
 				name: t.name,
+				id: null,
 				registry: t.registry,
 				directory,
 				access: t.access,
@@ -321,6 +353,7 @@ export const resolvePublishTargetSpecs = (
 			if (classifyRegistry(r.target.registry) === "jsr") continue;
 			const spec: TargetSpec = {
 				name: r.target.name,
+				id: r.id ?? null,
 				registry: r.target.registry,
 				directory: isAbsolute(r.target.directory) ? r.target.directory : join(wsPkg.path, r.target.directory),
 				access: r.target.access,

@@ -12,6 +12,7 @@
 
 import { relative } from "node:path";
 import { classifyRegistry, registryDisplayName } from "@effected/npm";
+import { SilkPublishability } from "@savvy-web/silk-effects";
 import type {
 	PackagePublishResult,
 	PublishFailureInput,
@@ -411,10 +412,17 @@ const toPublishedPackage = (
 	// target that did not publish) — reads as `skipped`, the same answer as a
 	// target the probe deliberately did not visit.
 	const probe = input.availability.get(availabilityKey(t.target.registry, t.target.name, workspaceVersion));
+	const landed = outcome === "published" || outcome === "recovered";
 	const availability =
 		probe === undefined
-			? { status: "skipped" as const, waitedMs: 0 }
-			: { status: probe.status, waitedMs: probe.waitedMs };
+			? // Never probed: either nothing landed to confirm, or the phase stopped
+				// before the confirmation step ran.
+				{
+					status: "skipped" as const,
+					waitedMs: 0,
+					reason: landed ? ("not-reached" as const) : ("not-published" as const),
+				}
+			: { status: probe.status, waitedMs: probe.waitedMs, reason: probe.reason };
 	return {
 		// The name on the TARGET, not the workspace — a workspace may publish
 		// under a different name per registry.
@@ -427,6 +435,18 @@ const toPublishedPackage = (
 			type: kind,
 			url: registry,
 		},
+		target: t.targetRef === undefined ? null : { id: t.targetRef.id, releases: t.targetRef.releases },
+		// `target.tag` is the tag the upload used, or would have; only an upload
+		// that landed was actually published under it.
+		distTag: outcome === "published" ? t.target.tag : null,
+		auth:
+			t.auth === undefined
+				? null
+				: {
+						method: t.auth.method,
+						credential: t.auth.credential,
+						fallback: t.auth.fallback === null ? null : { from: t.auth.fallback.from, reason: t.auth.fallback.reason },
+					},
 		url: packagePageUrl(kind, t.target.name, workspaceVersion, input.repo),
 		tarballUrl: probe?.tarball ?? null,
 		// `available` never flips `success`: a hold is a finding beside the
@@ -438,7 +458,10 @@ const toPublishedPackage = (
 			t.recovery !== undefined ? { localDigest: t.recovery.localDigest, remoteDigest: t.recovery.remoteDigest } : null,
 		tarballDigest: t.tarballDigest ?? null,
 		attestations: {
+			// The action's GitHub attestation — NOT npm's provenance, which is
+			// `npmProvenanceUrl`. Name kept so existing readers do not break.
 			provenanceUrl: t.attestationUrl ?? null,
+			npmProvenanceUrl: t.npmProvenanceUrl ?? null,
 			sbomUrl: t.sbomAttestationUrl ?? null,
 			githubAttestationUrl: null,
 			provenanceRecovered: t.recovered !== undefined ? t.recovered.provenance : null,
@@ -486,7 +509,23 @@ export const toPublishOutput = (input: PublishInput): PublishOutput => {
 			result === undefined
 				? []
 				: result.targets.filter((t) => !isFiltered(t)).map((t) => toPublishedPackage(ws.version, t, input));
-		const filtered = result === undefined ? 0 : result.targets.filter(isFiltered).length;
+		const filteredTargets = result === undefined ? [] : result.targets.filter(isFiltered);
+		const filtered = filteredTargets.length;
+		// Listed apart from `packages`, so a partly filtered workspace is
+		// distinguishable from one that never declared the target. A filtered
+		// target always carries its declaration — the filter is what matched it.
+		const skipped = filteredTargets.flatMap((t) => {
+			if (t.targetRef === undefined) return [];
+			const url = t.target.registry ?? "jsr";
+			return [
+				{
+					name: t.target.name,
+					registry: { name: registryDisplayName(url), type: classifyRegistry(url), url },
+					target: { id: t.targetRef.id, releases: t.targetRef.releases },
+					reason: "filtered-by-releases" as const,
+				},
+			];
+		});
 
 		const tag = tagByWorkspace.get(ws.name);
 		const releaseInfo = tag === undefined ? undefined : releaseByTag.get(tag.name);
@@ -501,6 +540,7 @@ export const toPublishOutput = (input: PublishInput): PublishOutput => {
 				: {
 						id: releaseInfo.id,
 						url: releaseInfo.url,
+						prerelease: releaseInfo.prerelease,
 						assets: releaseInfo.assets.map((a) => ({ name: a.name, url: a.downloadUrl, size: a.size })),
 					};
 
@@ -529,8 +569,15 @@ export const toPublishOutput = (input: PublishInput): PublishOutput => {
 
 		const success = outcome === "released" || outcome === "published" || outcome === "recovered";
 
+		const baseVersion = ws.baseVersion ?? null;
+		const bump = baseVersion === null ? "unknown" : deriveBumpType(baseVersion, ws.version);
 		workspaces[ws.name] = {
 			version: ws.version,
+			baseVersion,
+			// `new` cannot arise here: a non-null base means the manifest existed.
+			bumpType: bump === "new" ? "unknown" : bump,
+			releaseType: SilkPublishability.isPrerelease(ws.version) ? "prerelease" : "stable",
+			distTag: SilkPublishability.distTagFor(ws.version),
 			path: ws.path,
 			kind: ws.kind,
 			success,
@@ -543,6 +590,7 @@ export const toPublishOutput = (input: PublishInput): PublishOutput => {
 				filtered,
 			}),
 			packages,
+			skipped,
 			tag: tagEntry,
 			release,
 		};

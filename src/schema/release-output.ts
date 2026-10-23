@@ -980,6 +980,70 @@ const PublishRecoveryDigests = Schema.Struct({
 		"The digest comparison behind a recovery decision. Present when the orchestrator probed the registry — on `recovered` and on a digest-mismatch `failed`; null when the publish went straight to upload.",
 });
 
+/** Which `publishConfig.targets` declaration a publication came from. */
+const PublishTargetRef = Schema.Struct({
+	id: Schema.NullOr(Schema.String).annotate({
+		title: "Target key",
+		description:
+			"The `publishConfig.targets` key this publication was declared under (e.g. `npm`, `github`). Null for a package that publishes through the `access`/`private` fallbacks, which declare no keyed targets.",
+		examples: ["npm", "github"],
+	}),
+	releases: Schema.Literals(["all", "stable", "prerelease"]).annotate({
+		identifier: "PublishTargetReleases",
+		title: "Release channel",
+		description:
+			"The target's declared `releases` channel: `all` takes every version (the default when undeclared), `stable` only versions without a prerelease suffix, `prerelease` only versions with one.",
+	}),
+}).annotate({
+	identifier: "PublishTargetRef",
+	title: "Target declaration",
+	description: "The `publishConfig.targets` entry a publication was resolved from: its key and its release channel.",
+});
+
+const PublishAuthMethod = Schema.Literals(["token", "trusted-publishing"]).annotate({
+	identifier: "PublishAuthMethod",
+	title: "Auth method",
+	description:
+		"How the action set npm up to authenticate — what the action DID, not what npm reports. `token` — the Actions OIDC environment was stripped (always, for GitHub Packages) or the runner never exposed it (no `id-token: write`), so npm could authenticate only with the npmrc token, if any. `trusted-publishing` — the OIDC environment was passed through, so npm was free to attempt its trusted-publishing exchange. npm does not say which path it took, so a `trusted-publishing` upload with a non-null `credential` may have authenticated with that token instead. More methods may be added; treat an unknown value as opaque.",
+});
+
+const PublishAuth = Schema.Struct({
+	method: PublishAuthMethod,
+	credential: Schema.NullOr(
+		Schema.Literals(["github-token", "npm-token", "custom-registries", "registry-env"]).annotate({
+			identifier: "PublishAuthCredential",
+			title: "Credential source",
+			description:
+				"Which input supplied the registry token the action wrote to the npmrc: `github-token` (GitHub Packages), `npm-token` (the public npm registry), `custom-registries`, or `registry-env` (the `<HOST>_TOKEN` environment fallback for a custom registry). Null when no token was written.",
+		}),
+	).annotate({
+		title: "Credential source",
+		description:
+			"Where the npmrc token came from. Null when none was written — a tokenless trusted-publishing attempt.",
+	}),
+	fallback: Schema.NullOr(
+		Schema.Struct({
+			from: PublishAuthMethod,
+			reason: Schema.String.annotate({
+				title: "Why the first attempt failed",
+				description: "npm's failure for the first attempt, as reported. Prose, not a contract.",
+			}),
+		}).annotate({
+			identifier: "PublishAuthFallback",
+			title: "Token fallback",
+			description:
+				"The first attempt failed and the action retried once with token auth and provenance off. `from` is how the first attempt was set up — `trusted-publishing` in the designed case (a package with no trusted publisher configured yet).",
+		}),
+	).annotate({
+		title: "Token fallback",
+		description: "Set when the token retry ran; null when the first attempt's result stands.",
+	}),
+}).annotate({
+	identifier: "PublishAuth",
+	title: "Publish authentication",
+	description: "How the upload to this registry was authenticated, as far as the action can know.",
+});
+
 /** One package, published (or not) to one registry. */
 const PublishedPackage = Schema.Struct({
 	name: Schema.String.annotate({
@@ -1003,11 +1067,27 @@ const PublishedPackage = Schema.Struct({
 			"`published` — new bytes were uploaded to this registry; `recovered` — the version was already present with an identical tarball digest, so nothing was re-uploaded and the run treated it as done; `failed` — the upload was attempted and did not land (see `error`); `blocked` — the upload was never attempted because the phase aborted first (see the phase-level `failure`).",
 	}),
 	registry: PublishRegistry,
+	target: Schema.NullOr(PublishTargetRef).annotate({
+		title: "Target declaration",
+		description:
+			"The `publishConfig.targets` key and release channel this publication was declared with. Null when the workspace's targets could not be resolved (a `dist/prod/targets.json` binding miss or an unknown `releases` value), so no declaration was matched.",
+	}),
+	distTag: Schema.NullOr(Schema.String).annotate({
+		title: "Dist-tag",
+		description:
+			"The dist-tag this upload was published under — the target's channel tag (`latest` for a stable version, the first prerelease identifier such as `beta` otherwise). Null when nothing was uploaded (`recovered`, `failed`, `blocked`).",
+		examples: ["latest", "beta"],
+	}),
+	auth: Schema.NullOr(PublishAuth).annotate({
+		title: "Authentication",
+		description:
+			"How the action authenticated `npm publish` for this registry. Present whenever an upload was attempted — on a `published` package and on a `failed` one whose upload was refused. Null when no upload was attempted: `recovered`, `blocked`, or a failure before the upload (pack, probe, missing token, digest mismatch).",
+	}),
 	url: Schema.NullOr(
 		Schema.String.annotate({
 			title: "Package URL",
 			description:
-				"Web page for this package version — npmjs.com, jsr.io or the repository's GitHub Packages page. Null for a custom registry.",
+				"Web page for this package version — npmjs.com, jsr.io or the repository's GitHub Packages page. Null for a custom registry: an npm-protocol registry has no standard web page for a version, and guessing one would publish a link that may not exist. The registry endpoint is `registry.url`; the tarball, when confirmed, is `tarballUrl`.",
 		}),
 	),
 	tarballUrl: Schema.NullOr(
@@ -1028,11 +1108,22 @@ const PublishedPackage = Schema.Struct({
 			identifier: "PackageAvailabilityStatus",
 			title: "Availability status",
 			description:
-				"`confirmed` — the exact `name@version` resolved on the registry within the ceiling. `held` — the publish succeeded but the version was not resolvable when the ceiling (`registry-confirm-timeout`) elapsed; npm holds new versions during publish-time malware scanning, usually for under three minutes and occasionally much longer. A held package IS published; downstream installs may need to retry. `skipped` — not probed: a non-npm registry, a dry-run, a ceiling of 0, a target that did not publish (`failed`), or a phase that aborted before the probe ran.",
+				"`confirmed` — the exact `name@version` resolved on the registry within the ceiling. `held` — the publish succeeded but the version was not resolvable when the ceiling (`registry-confirm-timeout`) elapsed; npm holds new versions during publish-time malware scanning, usually for under three minutes and occasionally much longer. A held package IS published; downstream installs may need to retry. `skipped` — not probed; `reason` says why.",
 		}),
 		waitedMs: Schema.Natural.annotate({
 			title: "Wait (ms)",
 			description: "Milliseconds spent probing this version. 0 when skipped.",
+		}),
+		reason: Schema.NullOr(
+			Schema.Literals(["disabled", "dry-run", "non-npm-registry", "not-published", "not-reached"]).annotate({
+				identifier: "PackageAvailabilitySkipReason",
+				title: "Skip reason",
+				description:
+					"`disabled` — `registry-confirm-timeout` is 0. `dry-run` — the run uploaded nothing to confirm. `non-npm-registry` — only the public npm registry is probed; GitHub Packages, JSR and custom registries are not. `not-published` — this package did not publish, so there is nothing to confirm. `not-reached` — it published, but the phase stopped before the confirmation step ran.",
+			}),
+		).annotate({
+			title: "Skip reason",
+			description: "Why the probe was skipped. Null unless `status` is `skipped`.",
 		}),
 	}).annotate({
 		identifier: "PackageAvailability",
@@ -1060,15 +1151,23 @@ const PublishedPackage = Schema.Struct({
 	attestations: Schema.Struct({
 		provenanceUrl: Schema.NullOr(Schema.String).annotate({
 			title: "Provenance attestation URL",
-			description: "The npm OIDC sigstore provenance attestation. Null when none was emitted.",
+			description:
+				"The action's own SLSA provenance over this tarball, stored as a GitHub artifact attestation (`gh attestation verify`). Written once per build directory and shared by every registry that build published to, so it appears on GitHub Packages and custom-registry entries too. Null when no target in the build requested provenance, or the attestation could not be written. Distinct from `npmProvenanceUrl`.",
+		}),
+		npmProvenanceUrl: Schema.NullOr(Schema.String).annotate({
+			title: "npm provenance URL",
+			description:
+				"npm's own provenance for this upload — the Sigstore transparency-log entry npm emits when it publishes to the public npm registry with provenance. Null for every other registry, for a provenance-off publish (including the token fallback, which disables it), and when nothing was uploaded.",
 		}),
 		sbomUrl: Schema.NullOr(Schema.String).annotate({
 			title: "SBOM attestation URL",
-			description: "The CycloneDX SBOM attestation. Null when none was emitted.",
+			description:
+				"The CycloneDX SBOM attestation over this tarball, stored as a GitHub artifact attestation. Null when none was emitted.",
 		}),
 		githubAttestationUrl: Schema.NullOr(Schema.String).annotate({
-			title: "GitHub attestation URL",
-			description: "The GitHub artifact-attestation (`gh attestation verify`). Null when none was emitted.",
+			title: "GitHub attestation URL (unused)",
+			description:
+				"Always null. Both GitHub artifact attestations this action writes have their own fields — `provenanceUrl` and `sbomUrl` — so this field never had a distinct value to carry. Kept so existing readers do not break; do not read it.",
 		}),
 		provenanceRecovered: Schema.NullOr(Schema.Boolean).annotate({
 			title: "Provenance attestation recovered",
@@ -1125,6 +1224,11 @@ const PublishRelease = Schema.Struct({
 		description: "GitHub's numeric release id. 0 in dry-run, where no release is created.",
 	}),
 	url: Schema.String.annotate({ title: "Release URL", description: "Web URL of the GitHub release." }),
+	prerelease: Schema.Boolean.annotate({
+		title: "Prerelease",
+		description:
+			"Whether GitHub marks the release a prerelease. The action creates a release for a version with a prerelease suffix as one; a release recovered from an earlier run reports the flag GitHub has on record.",
+	}),
 	assets: Schema.Array(PublishReleaseAsset).annotate({
 		title: "Release assets",
 		description: "Files attached to the release. Empty array when none were uploaded — never null.",
@@ -1136,11 +1240,54 @@ const PublishRelease = Schema.Struct({
 		"The GitHub release created for a workspace. The git tag is a SIBLING of this object, not a child: tags and releases are created by separate operations, so a tag can exist while release creation failed. Nesting the tag here would lose it in exactly that case.",
 });
 
+/** A declared registry target that deliberately received nothing at this version. */
+const PublishSkippedTarget = Schema.Struct({
+	name: Schema.String.annotate({
+		title: "Package name",
+		description: "The package name this target would have published under — the name on the tarball.",
+	}),
+	registry: PublishRegistry,
+	target: PublishTargetRef,
+	reason: Schema.Literals(["filtered-by-releases"]).annotate({
+		identifier: "PublishSkippedTargetReason",
+		title: "Skip reason",
+		description:
+			"`filtered-by-releases` — the target's `releases` channel excludes this version (a `stable` target at a prerelease, or a `prerelease` target at a stable version), so nothing was packed or uploaded for it. Not a failure. The same literal the snapshot phase's `skipped[].reason` uses.",
+	}),
+}).annotate({
+	identifier: "PublishSkippedTarget",
+	title: "Skipped target",
+	description: "A declared registry target this workspace deliberately did not publish to at this version.",
+});
+
 /** One workspace's release. */
 const PublishWorkspace = Schema.Struct({
 	version: Schema.String.annotate({
 		title: "Released version",
 		description: "The version this workspace was bumped to and released at.",
+	}),
+	baseVersion: Schema.NullOr(Schema.String).annotate({
+		title: "Base version",
+		description:
+			"The version the release's base commit recorded — the merged release PR's base, or HEAD's first parent. Null when it could not be read.",
+	}),
+	bumpType: Schema.Literals(["major", "minor", "patch", "unknown"]).annotate({
+		identifier: "PublishWorkspaceBumpType",
+		title: "Bump type",
+		description:
+			"The semver bump from `baseVersion` to `version`. `unknown` when the base version is null, or either version is not a plain `major.minor.patch` — every prerelease version reads `unknown`. Unlike validation's `bumpType` there is no `new`: the publish phase only detects workspaces whose existing manifest changed.",
+	}),
+	releaseType: Schema.Literals(["stable", "prerelease"]).annotate({
+		identifier: "PublishWorkspaceReleaseType",
+		title: "Release type",
+		description:
+			"`prerelease` when `version` carries a SemVer prerelease suffix (`1.2.0-beta.0`); `stable` otherwise. Decides which `releases` channels receive the version.",
+	}),
+	distTag: Schema.String.annotate({
+		title: "Release channel dist-tag",
+		description:
+			"The dist-tag this version resolves to: `latest` for a stable version, the first prerelease identifier otherwise (`beta` for `2.0.0-beta.3`), or `next` when that identifier cannot be a dist-tag. Each `packages[].distTag` is what an upload actually used.",
+		examples: ["latest", "beta", "next"],
 	}),
 	path: Schema.String.annotate({
 		title: "Workspace path",
@@ -1173,7 +1320,12 @@ const PublishWorkspace = Schema.Struct({
 	packages: Schema.Array(PublishedPackage).annotate({
 		title: "Published packages",
 		description:
-			"One entry per (package, registry) publication. Always an empty array — never null — for a `github-only` workspace, and for any workspace whose publishing never ran.",
+			"One entry per (package, registry) publication. Always an empty array — never null — for a `github-only` workspace, and for any workspace whose publishing never ran. A target the release filter excluded is not a publication; it is listed under `skipped`.",
+	}),
+	skipped: Schema.Array(PublishSkippedTarget).annotate({
+		title: "Skipped targets",
+		description:
+			"Declared registry targets that deliberately received nothing at this version, with why. Empty — never null — when every declared target took the version, or none was declared.",
 	}),
 	tag: Schema.NullOr(PublishTag).annotate({
 		title: "Git tag",

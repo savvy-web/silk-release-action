@@ -205,7 +205,7 @@ describe("runPublishing — happy path", () => {
 		runReleasesMock.mockReturnValue(
 			Effect.succeed({
 				success: true,
-				releases: [{ tag: "1.2.3", url: "https://example.test/r", id: 7, assets: [] }],
+				releases: [{ tag: "1.2.3", url: "https://example.test/r", id: 7, assets: [], prerelease: false }],
 				errors: [],
 				tagShas: { "1.2.3": "" },
 			}),
@@ -249,7 +249,7 @@ describe("runPublishing — happy path", () => {
 		runReleasesMock.mockReturnValue(
 			Effect.succeed({
 				success: true,
-				releases: [{ tag: "1.2.3", url: "https://example.test/r", id: 7, assets: [] }],
+				releases: [{ tag: "1.2.3", url: "https://example.test/r", id: 7, assets: [], prerelease: false }],
 				errors: [],
 				tagShas: { "1.2.3": "" },
 			}),
@@ -294,7 +294,7 @@ describe("runPublishing — happy path", () => {
 		};
 		const pkg = payload.workspaces["@scope/alpha"]?.packages[0];
 		expect(pkg?.available).toBe(false);
-		expect(pkg?.availability).toEqual({ status: "skipped", waitedMs: 0 });
+		expect(pkg?.availability).toEqual({ status: "skipped", waitedMs: 0, reason: "disabled" });
 	});
 });
 
@@ -394,7 +394,7 @@ describe("runPublishing — a runReleases failure fails the phase", () => {
 		runReleasesMock.mockReturnValue(
 			Effect.succeed({
 				success: false,
-				releases: [{ tag: "1.2.3", url: "https://example.test/r", id: 7, assets: [] }],
+				releases: [{ tag: "1.2.3", url: "https://example.test/r", id: 7, assets: [], prerelease: false }],
 				errors: ["asset upload failed", "second failure"],
 				tagShas: { "1.2.3": "" },
 			}),

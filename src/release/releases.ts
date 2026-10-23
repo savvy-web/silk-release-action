@@ -403,6 +403,8 @@ const processOneTag = (
 					url: releaseTagUrl(serverUrl, owner, repo, tag.name),
 					id: 0,
 					assets: [],
+					// Nothing was created, so this is the flag the create call WOULD send.
+					prerelease: tag.version.includes("-"),
 				} satisfies ReleaseInfo,
 				null,
 				"",
@@ -521,6 +523,9 @@ const processOneTag = (
 				url: releaseTagUrl(serverUrl, owner, repo, tag.name),
 				id: releaseData.id,
 				assets,
+				// As GitHub recorded it — a recovered release keeps whatever flag it
+				// was created with, which may not be the one this run would send.
+				prerelease: releaseData.prerelease,
 			};
 
 			// Mutable release-notes string; updated after asset uploads to replace

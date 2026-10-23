@@ -77,6 +77,7 @@ describe("confirmAvailability", () => {
 				schedule: fast,
 			}).pipe(Effect.provide(Layer.mergeAll(base, reg.layer)));
 			expect(result.get(key)?.status).toBe("held");
+			expect(result.get(key)?.reason).toBeNull();
 			expect(result.get(key)?.tarball).toBeNull();
 			expect(result.get(key)?.waitedMs).toBeGreaterThan(0);
 			expect(reg.calls()).toBeGreaterThan(1);
@@ -114,7 +115,7 @@ describe("confirmAvailability", () => {
 			const result = yield* confirmAvailability([target], { ceilingSeconds: 0, dryRun: false, npmToken: null }).pipe(
 				Effect.provide(Layer.mergeAll(base, reg.layer)),
 			);
-			expect(result.get(key)).toEqual({ status: "skipped", waitedMs: 0, tarball: null });
+			expect(result.get(key)).toEqual({ status: "skipped", waitedMs: 0, tarball: null, reason: "disabled" });
 			expect(reg.calls()).toBe(0);
 		}),
 	);
@@ -126,7 +127,18 @@ describe("confirmAvailability", () => {
 				Effect.provide(Layer.mergeAll(base, reg.layer)),
 			);
 			expect(result.get(key)?.status).toBe("skipped");
+			expect(result.get(key)?.reason).toBe("dry-run");
 			expect(reg.calls()).toBe(0);
+		}),
+	);
+
+	it.effect("names dry-run, not disabled, when a dry-run also sets a ceiling of 0", () =>
+		Effect.gen(function* () {
+			const reg = registryAfter(0);
+			const result = yield* confirmAvailability([target], { ceilingSeconds: 0, dryRun: true, npmToken: null }).pipe(
+				Effect.provide(Layer.mergeAll(base, reg.layer)),
+			);
+			expect(result.get(key)?.reason).toBe("dry-run");
 		}),
 	);
 
@@ -142,9 +154,14 @@ describe("confirmAvailability", () => {
 				schedule: fast,
 			}).pipe(Effect.provide(Layer.mergeAll(base, reg.layer)));
 			expect(result.get(key)?.status).toBe("confirmed");
+			expect(result.get(key)?.reason).toBeNull();
 			expect(result.get(availabilityKey(null, "@savvy-web/bar", "2.0.0"))?.status).toBe("skipped");
+			expect(result.get(availabilityKey(null, "@savvy-web/bar", "2.0.0"))?.reason).toBe("non-npm-registry");
 			expect(result.get(availabilityKey("https://npm.pkg.github.com/", "@savvy-web/baz", "3.0.0"))?.status).toBe(
 				"skipped",
+			);
+			expect(result.get(availabilityKey("https://npm.pkg.github.com/", "@savvy-web/baz", "3.0.0"))?.reason).toBe(
+				"non-npm-registry",
 			);
 			expect(result.size).toBe(3);
 			expect(reg.calls()).toBe(1);

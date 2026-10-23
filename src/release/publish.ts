@@ -49,12 +49,14 @@ import { attestSubject, buildProvenancePredicate } from "./attest-helpers.js";
 import { ChangesetConfig } from "./changeset-config.js";
 import { humanizeSize } from "./report.js";
 import type { TargetSpec } from "./resolve-targets.js";
-import { pickToken, resolvePublishTargetSpecs } from "./resolve-targets.js";
+import { resolvePublishTargetSpecs, resolveRegistryToken } from "./resolve-targets.js";
 import type {
 	PackagePublishResult,
+	PublishAuth,
 	PublishPackagesResult,
 	PublishWorkspacePlan,
 	TargetPublishResult,
+	TargetRef,
 } from "./types.js";
 
 // ─── Public interfaces ────────────────────────────────────────────────────────
@@ -111,6 +113,13 @@ export interface DetectedRelease {
 	readonly name: string;
 	readonly version: string;
 	readonly path: string;
+	/**
+	 * The version the base commit's `package.json` recorded — read anyway to
+	 * decide whether the manifest changed, so carrying it costs no I/O. `null`
+	 * when the base manifest could not be read; absent (snapshot detection,
+	 * fixtures) is the same as `null`.
+	 */
+	readonly baseVersion?: string | null | undefined;
 }
 
 /** Resolved target shape used internally (subset of the legacy ResolvedTarget). */
@@ -246,44 +255,55 @@ const readLocalManifest = (path: string): { name?: string; version?: string } | 
 	}
 };
 
-/** The version recorded in a `package.json` at a git ref, or `"0.0.0"`. */
+/**
+ * The version recorded in a `package.json` at a git ref, or `null` when there
+ * is none to read (no ref, no file, an unreadable or version-less manifest).
+ */
 const versionAtRef = (
 	content: GitHubContent["Service"],
 	path: string,
 	ref: string,
-): Effect.Effect<string, never, Repo> => {
-	if (ref === "") return Effect.succeed("0.0.0");
+): Effect.Effect<string | null, never, Repo> => {
+	if (ref === "") return Effect.succeed(null);
 	return content.getFileOption(path, { ref }).pipe(
 		Effect.map((maybe) =>
 			Option.match(maybe, {
-				onNone: () => "0.0.0",
+				onNone: () => null,
 				onSome: (text) => {
 					try {
-						return (JSON.parse(text) as { version?: string }).version ?? "0.0.0";
+						return (JSON.parse(text) as { version?: string }).version ?? null;
 					} catch {
-						return "0.0.0";
+						return null;
 					}
 				},
 			}),
 		),
-		Effect.catch(() => Effect.succeed("0.0.0")),
+		Effect.catch(() => Effect.succeed(null)),
 	);
 };
 
-/** Turn a changed `package.json` path plus its base version into a release, if it is one. */
-const releaseFor = (filename: string, oldVersion: string): DetectedRelease | undefined => {
+/**
+ * Turn a changed `package.json` path plus its base version into a release, if it is one.
+ *
+ * @remarks
+ * An unreadable base compares as `"0.0.0"` — the release decision is unchanged
+ * from when `versionAtRef` substituted that sentinel itself — but the release
+ * carries `baseVersion: null`, so the output never reports an invented base.
+ */
+const releaseFor = (filename: string, baseVersion: string | null): DetectedRelease | undefined => {
 	const fullPath = join(process.cwd(), filename);
 	const current = readLocalManifest(fullPath);
 	if (current === undefined) return undefined;
 
 	const newVersion = current.version ?? "0.0.0";
-	if (oldVersion === newVersion) return undefined;
+	if ((baseVersion ?? "0.0.0") === newVersion) return undefined;
 
 	const packageDir = dirname(filename);
 	return {
 		name: current.name ?? packageDir,
 		version: newVersion,
 		path: packageDir === "." ? process.cwd() : join(process.cwd(), packageDir),
+		baseVersion,
 	};
 };
 
@@ -336,7 +356,7 @@ const detectFromPR = (
 			const release = releaseFor(file.path, oldVersion);
 			if (release === undefined) continue;
 			yield* Effect.logDebug(
-				`  ${release.name}: ${oldVersion} → ${release.version} (${inferBumpType(oldVersion, release.version)})`,
+				`  ${release.name}: ${oldVersion ?? "0.0.0"} → ${release.version} (${inferBumpType(oldVersion ?? "0.0.0", release.version)})`,
 			);
 			releases.push(release);
 		}
@@ -413,6 +433,9 @@ const toLegacyTarget = (target: TargetSpec, protocol: "npm" | "jsr" = "npm", tag
 	tag,
 	tokenEnv: null,
 });
+
+/** The `publishConfig.targets` declaration a spec resolved from. */
+const refOf = (target: TargetSpec): TargetRef => ({ id: target.id, releases: target.releases });
 
 /** Outcome of running attestations for a freshly-published target. */
 interface AttestationsOutcome {
@@ -660,7 +683,16 @@ const publishDirectoryGroup = (
 		// snapshot tag still wins — it exists precisely so an unreleased version
 		// never claims `latest`.
 		const tagFor = (t: TargetSpec): string => snapshot?.tag ?? t.distTag;
-		const legacy = (t: TargetSpec) => toLegacyTarget(t, "npm", tagFor(t));
+		// Every result names the legacy target AND the declaration it came from.
+		const base = (t: TargetSpec) => ({ target: toLegacyTarget(t, "npm", tagFor(t)), targetRef: refOf(t) });
+		// Whether npm can attempt trusted publishing at all: it needs BOTH Actions
+		// OIDC request variables, which exist only under `id-token: write`. Without
+		// them a `tokenAuth: false` publish can authenticate only with the npmrc
+		// token, so the auth record says `token`, not `trusted-publishing`.
+		const environment = yield* ActionEnvironment;
+		const oidcOffered =
+			Option.isSome(yield* environment.getOptional("ACTIONS_ID_TOKEN_REQUEST_URL")) &&
+			Option.isSome(yield* environment.getOptional("ACTIONS_ID_TOKEN_REQUEST_TOKEN"));
 		let neverPublishedCount = 0;
 		let dryRunCount = 0;
 
@@ -694,6 +726,7 @@ const publishDirectoryGroup = (
 			);
 			results.push({
 				target: toLegacyTarget(t, "jsr", tagFor(t)),
+				targetRef: refOf(t),
 				success: true,
 				status: "skipped",
 			});
@@ -717,7 +750,7 @@ const publishDirectoryGroup = (
 			yield* Effect.logError(`[publish] ${packageName}: pack ${directory} failed — ${packOutcome.error}`);
 			for (const t of npmTargets) {
 				results.push({
-					target: legacy(t),
+					...base(t),
 					success: false,
 					status: "failed",
 					error: packOutcome.error,
@@ -740,7 +773,7 @@ const publishDirectoryGroup = (
 				`${version} — the build did not pick up the snapshot bump`;
 			yield* Effect.logError(`[publish] ${packageName}: ${reason}`);
 			for (const t of npmTargets) {
-				results.push({ target: legacy(t), success: false, status: "failed", error: reason });
+				results.push({ ...base(t), success: false, status: "failed", error: reason });
 			}
 			return results;
 		}
@@ -775,7 +808,8 @@ const publishDirectoryGroup = (
 			// pipeline buys tidiness and risks a failure mode discovered in
 			// production. Whether the setup can move after the probe is on the
 			// post-migration list.
-			const token = pickToken(t.registry, npmToken, ghPkgsToken, customTokens);
+			const resolvedToken = resolveRegistryToken(t.registry, npmToken, ghPkgsToken, customTokens);
+			const token = resolvedToken?.token ?? null;
 
 			// Name the missing credential instead of letting it surface as a 403.
 			//
@@ -801,7 +835,7 @@ const publishDirectoryGroup = (
 				yield* Effect.logError(`[publish] ${t.registry}: cannot publish ${packResult.name} — ${reason}`);
 				yield* Effect.logWarning(`  ⬆ ${label} · no-token`);
 				results.push({
-					target: legacy(t),
+					...base(t),
 					success: false,
 					status: "failed",
 					error: reason,
@@ -846,7 +880,7 @@ const publishDirectoryGroup = (
 					const reason = `registry lookup failed — ${known.failure.message}; a snapshot never reads an unreadable registry as "never published"`;
 					yield* Effect.logError(`[publish] ${t.registry}: ${packResult.name} — ${reason}`);
 					yield* Effect.logWarning(`  ⬆ ${label} · lookup-failed`);
-					results.push({ target: legacy(t), success: false, status: "failed", error: reason, ...digestFields });
+					results.push({ ...base(t), success: false, status: "failed", error: reason, ...digestFields });
 					failedCount += 1;
 					continue;
 				}
@@ -857,7 +891,7 @@ const publishDirectoryGroup = (
 							"from a private package the probe cannot see; pass npm-token so the never-published check can authenticate";
 						yield* Effect.logError(`[publish] ${t.registry}: ${packResult.name} — ${reason}`);
 						yield* Effect.logWarning(`  ⬆ ${label} · unverifiable`);
-						results.push({ target: legacy(t), success: false, status: "failed", error: reason, ...digestFields });
+						results.push({ ...base(t), success: false, status: "failed", error: reason, ...digestFields });
 						failedCount += 1;
 						continue;
 					}
@@ -867,7 +901,7 @@ const publishDirectoryGroup = (
 					);
 					yield* Effect.logInfo(`  ⬆ ${label} · skipped (never published)`);
 					results.push({
-						target: legacy(t),
+						...base(t),
 						success: true,
 						status: "skipped",
 						skipReason: "never-published",
@@ -894,7 +928,7 @@ const publishDirectoryGroup = (
 				);
 				yield* Effect.logWarning(`  ⬆ ${label} · probe-failed`);
 				results.push({
-					target: legacy(t),
+					...base(t),
 					success: false,
 					status: "failed",
 					error: probe.error,
@@ -909,7 +943,7 @@ const publishDirectoryGroup = (
 					yield* Effect.logInfo(
 						`  ⬆ ${label} · dry-run — would publish ${packResult.name}@${packResult.version} under ${tagFor(t)}`,
 					);
-					results.push({ target: legacy(t), success: true, status: "skipped", skipReason: "dry-run", ...digestFields });
+					results.push({ ...base(t), success: true, status: "skipped", skipReason: "dry-run", ...digestFields });
 					dryRunCount += 1;
 					continue;
 				}
@@ -924,6 +958,15 @@ const publishDirectoryGroup = (
 				// 404s, ignoring the configured _authToken. Publish GitHub Packages with
 				// token auth (OIDC env stripped) from the first attempt.
 				const isGhPkgs = classifyRegistry(t.registry) === "github-packages";
+				// What the action set up — npm reports nothing about which path it
+				// took (see `PublishAuth`). Stripping the OIDC env, or a runner that
+				// never exposed it, leaves only the token.
+				const firstMethod: PublishAuth["method"] = isGhPkgs || !oidcOffered ? "token" : "trusted-publishing";
+				let auth: PublishAuth = {
+					method: firstMethod,
+					credential: resolvedToken?.source ?? null,
+					fallback: null,
+				};
 				let publishOutcome = yield* publishSvc
 					.publishTarball(packResult.tarballPath, {
 						registry: t.registry,
@@ -945,6 +988,7 @@ const publishDirectoryGroup = (
 				// (OIDC env stripped). Once the package exists and trusted publishing is
 				// configured, the first attempt succeeds and this retry never fires.
 				if (!publishOutcome.ok && !isGhPkgs && redactedToken !== null) {
+					auth = { ...auth, method: "token", fallback: { from: firstMethod, reason: publishOutcome.error } };
 					yield* Effect.logWarning(
 						`[publish] ${t.registry}: trusted-publishing publish failed for ${packResult.name}@${packResult.version} (${publishOutcome.error}); retrying with token auth — provenance disabled for this attempt`,
 					);
@@ -969,10 +1013,11 @@ const publishDirectoryGroup = (
 					);
 					yield* Effect.logWarning(`  ⬆ ${label} · publish-failed`);
 					results.push({
-						target: legacy(t),
+						...base(t),
 						success: false,
 						status: "failed",
 						error: publishOutcome.error,
+						auth,
 						...digestFields,
 					});
 					failedCount += 1;
@@ -981,9 +1026,10 @@ const publishDirectoryGroup = (
 
 				yield* Effect.logInfo(`  ⬆ ${label} · published · ${registryHost(t.registry)}`);
 				results.push({
-					target: legacy(t),
+					...base(t),
 					success: true,
 					status: "published",
+					auth,
 					...digestFields,
 					// A plain optional field. It was briefly an `Option`, where a
 					// `!== undefined` check would have been ALWAYS TRUE and stamped the
@@ -1003,7 +1049,7 @@ const publishDirectoryGroup = (
 				);
 				yield* Effect.logInfo(`  ⬆ ${label} · skipped-identical (recovery)`);
 				results.push({
-					target: legacy(t),
+					...base(t),
 					success: true,
 					status: "skipped",
 					skipReason: "already-published-identical",
@@ -1028,7 +1074,7 @@ const publishDirectoryGroup = (
 			);
 			yield* Effect.logWarning(`  ⬆ ${label} · failed-mismatch`);
 			results.push({
-				target: legacy(t),
+				...base(t),
 				success: false,
 				status: "failed",
 				error: `integrity mismatch — local ${localLabel} ≠ remote ${remoteLabel}`,
@@ -1271,6 +1317,7 @@ export const planWorkspaces = (
 				// `DetectedRelease.path` stays absolute (SBOM and pack read from it);
 				// the wire contract is repo-relative, with the root itself as ".".
 				path: relative(process.cwd(), rel.path) || ".",
+				baseVersion: rel.baseVersion ?? null,
 			});
 		}
 		return plan;
@@ -1660,7 +1707,7 @@ export const runPublishTargets = (
 		// exists in this scope (the same mask-at-resolution rule the two tokens
 		// above follow via `setSecret`). No process-environment bridge: the
 		// value reaches npm only through `PackagePublish.setupAuth`'s npmrc
-		// write, keyed for `pickToken` by the parse-normalized registry URL.
+		// write, keyed for `resolveRegistryToken` by the parse-normalized registry URL.
 		const customTokens = new Map<string, string>();
 		for (const entry of customRegistries) {
 			customTokens.set(entry.registry, yield* Secret.forSigning(entry.token));
@@ -1802,6 +1849,7 @@ export const runPublishTargets = (
 				// SUCCESSFUL skip: no pack, no registry call, no failure.
 				const filteredResults: TargetPublishResult[] = releaseFiltered.map((t) => ({
 					target: toLegacyTarget(t, "npm", t.distTag),
+					targetRef: refOf(t),
 					success: true,
 					status: "skipped",
 					skipReason: "filtered-by-releases",

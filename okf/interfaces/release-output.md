@@ -14,10 +14,10 @@ sources:
     resource: ../../schemas/6.0/output.json
 generated:
   by: okfit/claude-code
-  at: 2026-10-19T21:34:10Z
+  at: 2026-10-23T14:17:57Z
 integrity:
   generated:
-    body: 5f2824a0351fc5af
+    body: ea2cb300fa9e8871
 ---
 
 # The `result` output document
@@ -152,8 +152,9 @@ gets a string.[^release-output-ts]
 things that a `null` for npm used to conflate into one field. `url` is the
 human-facing package page — `npmjs.com/package/<name>/v/<version>` for npm,
 `jsr.io/<name>@<version>` for JSR, the repository's GitHub Packages page for
-`github-packages`, and `null` for a custom registry, since there is no
-generic page to link. `tarballUrl` is the registry's own download URL for
+`github-packages`, and `null` for a custom registry, since an npm-protocol
+registry has no standard web page for a version and a guessed link may not
+exist; the endpoint itself is `registry.url`. `tarballUrl` is the registry's own download URL for
 the tarball, read back by the post-publish confirmation probe (below); it is
 `null` whenever that probe did not confirm the version before the run
 finished, or when the registry is not probed at all (JSR, GitHub Packages,
@@ -174,10 +175,13 @@ resolvable.[^release-output-ts] See
 
 Per package, `available: boolean` is true only when
 `availability.status === "confirmed"`, and `availability` carries the status
-(`confirmed` | `held` | `skipped`) plus `waitedMs`. `skipped` covers every
-target the probe did not resolve: a non-npm registry, a dry-run, a ceiling of
-`0`, and any target the probe never reached at all — a failed publish or an
-aborted run.[^release-output-ts]
+(`confirmed` | `held` | `skipped`), `waitedMs`, and a `reason` that is null
+unless the status is `skipped`: `disabled` (a ceiling of `0`), `dry-run`,
+`non-npm-registry` (only the public npm registry is probed), `not-published`
+(the package failed or was blocked, so there is nothing to confirm), or
+`not-reached` (it published, but the phase stopped before the probe
+ran).[^release-output-ts] A dry-run reports `dry-run` even when the ceiling is
+also `0`.
 
 At the top level, `PublishTotals` gains `packagesConfirmed` and
 `packagesHeld`; when `packagesHeld > 0`, the phase's `summary` appends
@@ -185,6 +189,56 @@ At the top level, `PublishTotals` gains `packagesConfirmed` and
 dispatch (for example the shared release workflow's `packages-released`
 trigger) should gate on `totals.packagesHeld === 0`, not on
 `success`.[^release-output-ts]
+
+## Per-target and per-workspace explanation
+
+Each `PublishedPackage` also says how it was published:[^release-output-ts]
+
+- `target` — the `publishConfig.targets` declaration it came from: `id` (the
+  key, null for a package published through the `access`/`private`
+  fallbacks) and `releases` (`all` | `stable` | `prerelease`). Null when the
+  workspace's targets could not be resolved, so no declaration was matched.
+- `distTag` — the dist-tag the upload used (`latest`, `beta`, …). Null unless
+  the outcome is `published`; a `recovered` package uploaded nothing.
+- `auth` — `{ method, credential, fallback }`, non-null whenever the action
+  invoked `npm publish` for the target, including a refused upload, and null
+  when it never did. `method` describes what the **action** set up, not what
+  npm did: `token` when the Actions OIDC environment was stripped (always for
+  GitHub Packages) or never present, `trusted-publishing` when it was passed
+  through. npm reports nothing about which path it took and `@effected/npm`'s
+  publish result carries nothing either, so a `trusted-publishing` upload
+  with a non-null `credential` may in fact have used that token.
+  `credential` names the input that supplied the npmrc token
+  (`github-token`, `npm-token`, `custom-registries`, or `registry-env` for the
+  `<HOST>_TOKEN` environment fallback). `fallback` is set when the first
+  attempt failed and the action retried once with token auth and provenance
+  off; `from` is how that first attempt was set up. The method enum is meant
+  to grow (a per-target workload-OIDC method is planned), so treat an unknown
+  value as opaque.
+- `attestations.provenanceUrl` is the **action's** SLSA provenance, a GitHub
+  artifact attestation shared by every registry its build published to; npm's
+  own Sigstore provenance is the separate `attestations.npmProvenanceUrl`,
+  set only for an upload to the public npm registry with provenance on.
+  `attestations.githubAttestationUrl` is always null — both GitHub
+  attestations already have their own fields — and stays only so existing
+  readers do not break.
+
+Each `PublishWorkspace` adds:
+
+- `skipped` — declared targets that deliberately received nothing at this
+  version, each `{ name, registry, target, reason }` with `reason:
+  "filtered-by-releases"`, the literal the snapshot phase's `skipped` list
+  uses. A filtered target is never a `packages` entry, so without this list a
+  partly filtered workspace read the same as one that never declared the
+  target.
+- `releaseType` (`stable` | `prerelease`) and `distTag`, the channel dist-tag
+  the version resolves to.
+- `baseVersion` — the version the base commit recorded, already read during
+  detection, so it costs no extra I/O; null when unreadable — and
+  `bumpType` (`major` | `minor` | `patch` | `unknown`). Every prerelease
+  version reads `unknown`, as validation's `bumpType` does; there is no `new`,
+  because publish detection only sees manifests that already existed.
+- `release.prerelease` — the flag GitHub has on record for the release.
 
 ## Every numeric field is an integer
 
