@@ -12,7 +12,9 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: 3b042e80c2055baf02ab2683fa237f8a4964cba6b1e8a94f662227874dd7bffa
+integrity:
+  generated:
+    body: 3b042e80c2055baf
 ---
 
 # Remove skip-token-revoke, pr-title-prefix, version-command, and the dead build-command read

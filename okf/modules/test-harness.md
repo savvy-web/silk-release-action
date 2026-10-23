@@ -10,7 +10,6 @@ tags:
 generated:
   by: okfit/claude-code
   at: 2026-09-15T16:08:54Z
-  body_sha256: 01aa163efb9bed99384834e2cedce05bc3090f98c745509efc0512db510fd145
 sources:
   - id: vitest-config
     resource: ../../vitest.config.ts
@@ -24,6 +23,9 @@ sources:
     resource: ../../__test__/publishing.test.ts
   - id: check-collection-script
     resource: ../../scripts/check-test-collection.mjs
+integrity:
+  generated:
+    body: 01aa163efb9bed99
 ---
 
 # Test Harness

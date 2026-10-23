@@ -14,8 +14,10 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: fb264e1d1b7be5e04402ddf2f3288eb67133ee90ae748bc9550c74fe0e6379f8
 status: draft
+integrity:
+  generated:
+    body: fb264e1d1b7be5e0
 ---
 
 # Land feature work on dev, never directly on main

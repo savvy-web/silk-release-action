@@ -16,8 +16,10 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: d73132d6a20e7ae130ebf3a126d73a16737018422ae93d970d5d3d0ceb6c9b5b
 status: draft
+integrity:
+  generated:
+    body: d73132d6a20e7ae1
 ---
 
 # An unrecognized changelog id silently degrades publishability to vanilla rules

@@ -12,8 +12,10 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: 43d44a9e5de0a2341f9cd2ac764f605cb7b0af36c70084d69d03f7933b6465e9
 status: draft
+integrity:
+  generated:
+    body: 43d44a9e5de0a234
 ---
 
 # The shared release workflow

@@ -14,7 +14,9 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: 1d5238a618cf7ec911027f000c9fdf4c6c780a8d0fdaf3cb4f61bf2f3d760fea
+integrity:
+  generated:
+    body: 1d5238a618cf7ec9
 ---
 
 # Three-phase workflow

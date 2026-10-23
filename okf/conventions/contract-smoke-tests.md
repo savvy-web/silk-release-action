@@ -16,8 +16,10 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: 7e30ba2e504d531f6c77b2d24520fc36d7665bcbd9813bf3596edbf7da250260
 status: draft
+integrity:
+  generated:
+    body: 7e30ba2e504d531f
 ---
 
 # Test an upstreamed implementation with a contract smoke test

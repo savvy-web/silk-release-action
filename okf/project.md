@@ -6,7 +6,6 @@ status: draft
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: a3a3a79fbf241ff5bdea6c9dbe199eb4c835aac0a56ec32df4e0d017803ca271
 sources:
   - id: action-yml
     resource: ../action.yml
@@ -17,6 +16,9 @@ sources:
 tags:
   - architecture
   - release
+integrity:
+  generated:
+    body: a3a3a79fbf241ff5
 ---
 
 # silk-release-action

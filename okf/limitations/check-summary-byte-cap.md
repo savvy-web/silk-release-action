@@ -14,8 +14,10 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: 51388cdd2294072734b86349f3bb2b155c243ba6e6c4a3f0624d519bcdef6aac
 status: draft
+integrity:
+  generated:
+    body: 51388cdd22940727
 ---
 
 # Check-run summary byte cap

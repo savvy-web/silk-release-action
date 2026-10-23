@@ -16,8 +16,10 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: cbb7dd13d849be63800898be046d6cf8155e6fdd04352bc23100907a42cf43e2
 status: draft
+integrity:
+  generated:
+    body: cbb7dd13d849be63
 ---
 
 # silk-integration

@@ -26,8 +26,10 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: 0b5bdb85cd23ce93a5fb7d1f5d4fa2433e8cb5a7160614889d7bf3d29d9167ab
 status: draft
+integrity:
+  generated:
+    body: 0b5bdb85cd23ce93
 ---
 
 # Phase 2 reports a green verdict for work that never ran

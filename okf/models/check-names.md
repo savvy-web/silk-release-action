@@ -18,8 +18,10 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: 26ef27629d8ad869443a3afe1f157cb216465cf54141f2c49eacdbece40ab593
 status: draft
+integrity:
+  generated:
+    body: 26ef27629d8ad869
 ---
 
 # Check names

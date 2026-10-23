@@ -2,7 +2,7 @@
 type: Decision
 title: Commits via the Git Data API, branch linking via GitBranch.createLinked
 description: Release-branch commits are created through the Git Data API rather than git push, and branch-to-issue linking uses GitBranch.createLinked, the one operation with no REST equivalent.
-status: draft
+status: stable
 tags:
   - security
   - release
@@ -12,7 +12,16 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: 042851d5391849613de38271a9173c3c95c7fb610264e0b74d931a23b9dfac73
+integrity:
+  generated:
+    body: 042851d539184961
+  verified:
+    by: human:spencer
+    at: 2026-10-23T18:01:04Z
+    content: 1ff75b8048b497c6
+verified:
+  - by: human:spencer
+    at: 2026-10-23T18:01:04Z
 ---
 
 # Commits via the Git Data API, branch linking via GitBranch.createLinked

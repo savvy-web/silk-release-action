@@ -14,7 +14,9 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-29T01:25:34Z
-  body_sha256: 4a9da63a35ebb6ef3c3bda73a46e952c785c63b24eb041b806b9895c49a5e012
+integrity:
+  generated:
+    body: 4a9da63a35ebb6ef
 ---
 
 # Version the output JSON Schema under its own path per release

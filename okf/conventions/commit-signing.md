@@ -14,8 +14,10 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: 5dba729caa5dd679939af7dac40e5c6511cd6d8f224ccd6ae7ae431f30036c72
 status: draft
+integrity:
+  generated:
+    body: 5dba729caa5dd679
 ---
 
 # Sign every commit with the verified GPG key, never the machine default

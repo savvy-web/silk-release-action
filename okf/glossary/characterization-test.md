@@ -7,7 +7,6 @@ tags:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: 7e22a7315711c03525faeaa70795e7f5fd40876808a9377e86e28263ce0819c0
 sources:
   - id: link-issues-test
     resource: ../../__test__/link-issues-and-build-steps.test.ts
@@ -19,6 +18,9 @@ sources:
     resource: ../../__test__/validation-checks.test.ts
   - id: publish-validation-test
     resource: ../../__test__/publish-validation.test.ts
+integrity:
+  generated:
+    body: 7e22a7315711c035
 ---
 
 # characterization test

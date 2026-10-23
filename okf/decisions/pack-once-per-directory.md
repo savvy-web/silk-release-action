@@ -12,7 +12,9 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: 6b7de5c0724397ba3f12d663f235560385195da3893d7c11fdb050ac720318e4
+integrity:
+  generated:
+    body: 6b7de5c0724397ba
 ---
 
 # Pack the tarball once per build directory, not once per target

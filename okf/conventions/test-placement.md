@@ -16,8 +16,10 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: daea808036f18776085db9ecc854bede39d6a508842b6e6a91b2729aa29ceb41
 status: draft
+integrity:
+  generated:
+    body: daea808036f18776
 ---
 
 # Keep every test at or below __test__/, mirrored, never under a utils/ directory

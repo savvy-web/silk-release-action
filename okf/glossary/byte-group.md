@@ -8,12 +8,14 @@ tags:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: 8ca1d4d159a8c1a7f5b57093806903a8bd0bda23c8a7806ccbe879a931e37b1e
 sources:
   - id: group-id-source
     resource: ../../src/utils/group-id.ts
   - id: meta-archive-source
     resource: ../../src/release/meta-archive.ts
+integrity:
+  generated:
+    body: 8ca1d4d159a8c1a7
 ---
 
 # byte-group

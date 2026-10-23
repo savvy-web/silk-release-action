@@ -7,12 +7,14 @@ tags:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: 9d5eb5863cddb69199911e1bbcc2dc1e4663103f5a5964f91d3d7e25505e069a
 sources:
   - id: release-kind-source
     resource: ../../src/utils/release-kind.ts
   - id: build-sbom-result
     resource: ../../src/release/publish.ts
+integrity:
+  generated:
+    body: 9d5eb5863cddb691
 ---
 
 # github-only

@@ -2,7 +2,7 @@
 type: Decision
 title: Never write process.env.GITHUB_TOKEN persistently
 description: Credentials travel as Redacted values through ActionState and pickToken rather than through the process environment; the one scoped, restored exception is Phase-1 native versioning, which never touches a registry or OIDC.
-status: draft
+status: stable
 tags:
   - security
 sources:
@@ -19,7 +19,16 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: ca7c162c3ef2beda1dfc749e972df2132f81c20a107ad055ccc1074052d1f3b1
+integrity:
+  generated:
+    body: ca7c162c3ef2beda
+  verified:
+    by: human:spencer
+    at: 2026-10-23T18:01:04Z
+    content: 08116f55017a4865
+verified:
+  - by: human:spencer
+    at: 2026-10-23T18:01:04Z
 ---
 
 # Never write process.env.GITHUB_TOKEN persistently

@@ -18,8 +18,10 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-29T01:25:34Z
-  body_sha256: d02bf023c2ea39f49a60de98c1e784ae1ffcc568b222764eefbc3741e534327d
 status: draft
+integrity:
+  generated:
+    body: d02bf023c2ea39f4
 ---
 
 # Bump the output schema version

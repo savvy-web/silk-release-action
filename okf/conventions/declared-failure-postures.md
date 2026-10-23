@@ -16,8 +16,10 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: b8b161e674b3ddac233d503f29dfb5f3f31e332c729e1201259d9c3baffc2535
 status: draft
+integrity:
+  generated:
+    body: b8b161e674b3ddac
 ---
 
 # State a steps/ module's failure posture in its docs and its error channel

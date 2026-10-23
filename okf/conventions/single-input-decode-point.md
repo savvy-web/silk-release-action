@@ -14,8 +14,10 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: f8eac66bfae2b9ec0adbb9d649dbdcbf09fc9309ab342294d982ab6a1bc3c14e
 status: draft
+integrity:
+  generated:
+    body: f8eac66bfae2b9ec
 ---
 
 # Decode every action.yml input in schema/inputs.ts, nowhere else

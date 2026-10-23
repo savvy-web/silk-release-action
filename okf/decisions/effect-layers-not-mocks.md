@@ -2,7 +2,7 @@
 type: Decision
 title: Effect layers, not mocks, as the test-double mechanism
 description: Substitute in-memory Effect layers for every service dependency, stub unexercised members with Effect.die, and use a spawner seam plus @effected/memfs rather than a permissive command map or a stubbed filesystem noop.
-status: draft
+status: stable
 tags:
   - testing
 sources:
@@ -15,7 +15,16 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: bb85d9225ed6fb3d664145a6c5c3dfeb4fcd6d52a323b2835fc3421be00f5b5c
+integrity:
+  generated:
+    body: bb85d9225ed6fb3d
+  verified:
+    by: human:spencer
+    at: 2026-10-23T18:01:04Z
+    content: c46bf33786eb4c32
+verified:
+  - by: human:spencer
+    at: 2026-10-23T18:01:04Z
 ---
 
 # Effect layers, not mocks, as the test-double mechanism

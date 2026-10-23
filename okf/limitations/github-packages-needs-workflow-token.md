@@ -16,8 +16,10 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: a7c368fbf32e99453f2a69c853adc5d68616a13e6d412eb5d2fefb8125a1b86d
 status: draft
+integrity:
+  generated:
+    body: a7c368fbf32e9945
 ---
 
 # GitHub Packages needs the workflow's own token

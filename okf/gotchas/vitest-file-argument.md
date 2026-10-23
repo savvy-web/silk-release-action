@@ -17,8 +17,10 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-  body_sha256: d6903694f731b575f89ed71f1f6f1b06527a4074135a37d8bc4dcc4766aaf475
 status: draft
+integrity:
+  generated:
+    body: d6903694f731b575
 ---
 
 # A vitest CLI file argument does not filter the run
