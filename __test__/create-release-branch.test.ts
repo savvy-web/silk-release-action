@@ -210,7 +210,7 @@ const gitScript = (options: GitOptions) => {
 	return (command: string, args: ReadonlyArray<string>) => {
 		if (command !== "git") return ScriptedSpawner.notFound(command);
 		const argv = args.join(" ");
-		if (argv === "status --porcelain -z") {
+		if (argv === "status --porcelain -z --untracked-files=all") {
 			statusReads += 1;
 			return { exit: 0, stdout: (statusReads === 1 ? options.porcelain : options.porcelainZ) ?? "", stderr: "" };
 		}
@@ -446,7 +446,7 @@ describe("createReleaseBranch", () => {
 		expect(f.commits).toHaveLength(0);
 		expect(argvOf(spawns)).toEqual([
 			`git checkout -b ${RELEASE_BRANCH} origin/${TARGET_BRANCH}`,
-			"git status --porcelain -z",
+			"git status --porcelain -z --untracked-files=all",
 			`git checkout ${TARGET_BRANCH}`,
 			`git branch -D ${RELEASE_BRANCH}`,
 		]);

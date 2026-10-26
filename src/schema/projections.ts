@@ -204,7 +204,7 @@ export const deriveBumpType = (
 	const nextPre = next.prerelease.length > 0;
 	if (sameCore) {
 		if (basePre && !nextPre) return "graduation";
-		if (basePre && nextPre && SemVer.gt(next, base)) return "prerelease";
+		if (basePre && nextPre && next.gt(base)) return "prerelease";
 		return "unknown";
 	}
 	if (next.major !== base.major) return next.major > base.major ? "major" : "unknown";

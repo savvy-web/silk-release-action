@@ -41,7 +41,7 @@ const parseChangesetPackages = (content: string): Effect.Effect<ReadonlyArray<st
 		const parsed = MarkdownDocument.parseResult(content, { frontmatter: true });
 		if (Result.isFailure(parsed)) return [];
 
-		const frontmatter = parsed.success.frontmatter;
+		const frontmatter = Option.getOrUndefined(parsed.success.frontmatter);
 		if (frontmatter === undefined) return [];
 
 		const decoded = yield* Effect.result(YamlFrontmatter.decode(frontmatter));

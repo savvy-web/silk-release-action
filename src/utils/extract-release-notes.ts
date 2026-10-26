@@ -29,7 +29,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MarkdownDocument } from "@effected/markdown";
-import { Result } from "effect";
+import { Option, Result } from "effect";
 
 /**
  * Discriminated outcome of {@link extractReleaseNotes}.
@@ -74,7 +74,7 @@ export function extractReleaseNotes(packagePath: string): ReleaseNotesExtraction
 
 	// `depth: 2` is equality, not a maximum — the H1 title never opens a
 	// release section and an H3 sub-section never closes one.
-	const section = parsed.success.firstSection({ depth: 2 });
+	const section = Option.getOrUndefined(parsed.success.firstSection({ depth: 2 }));
 	if (section === undefined) {
 		return { status: "version-not-found", reason: "CHANGELOG has no H2 section" };
 	}
@@ -131,7 +131,7 @@ export function extractVersionReleaseNotes(changelogPath: string, version: strin
 
 	const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 	const heading = new RegExp(`^(?:@[^@]+@)?${escaped}$`);
-	const section = parsed.success.sectionByHeading(heading, { depth: 2 });
+	const section = Option.getOrUndefined(parsed.success.sectionByHeading(heading, { depth: 2 }));
 	if (section === undefined) {
 		return undefined;
 	}

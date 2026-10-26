@@ -259,7 +259,7 @@ const gitScript = (options: GitOptions) => {
 	return (command: string, args: ReadonlyArray<string>) => {
 		if (command !== "git") return ScriptedSpawner.notFound(command);
 		const argv = args.join(" ");
-		if (argv === "status --porcelain -z") {
+		if (argv === "status --porcelain -z --untracked-files=all") {
 			statusReads += 1;
 			if (statusReads === 1) {
 				const exit = options.porcelainExit ?? 0;
@@ -697,7 +697,7 @@ describe("updateReleaseBranch", () => {
 		const argv = spawns.map((sp) => [sp.command, ...sp.args].join(" "));
 		const addIndex = argv.indexOf("git add -- .");
 		expect(addIndex).toBeGreaterThanOrEqual(0);
-		expect(argv.lastIndexOf("git status --porcelain -z")).toBeGreaterThan(addIndex);
+		expect(argv.lastIndexOf("git status --porcelain -z --untracked-files=all")).toBeGreaterThan(addIndex);
 	});
 
 	it("NEVER points the release branch at the target head — the zero-diff window", async () => {
