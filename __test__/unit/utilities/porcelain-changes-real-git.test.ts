@@ -1,13 +1,14 @@
 /**
- * `expandUntrackedDirectories` against a real `git` binary.
+ * `Git.status(cwd, { untrackedFiles: "all" })` against a real `git` binary.
  *
  * @remarks
- * The unit suite in `porcelain-changes.test.ts` feeds hand-built entries, so it
- * cannot prove the two facts the fix rests on: that real `git status
- * --porcelain` collapses a directory of only untracked files to one `?? dir/`
- * entry WITH a trailing slash, and that `Git.untrackedFiles({ relative: false })`
- * lists that directory's files as repo-root-relative paths. Both are git's
- * behaviour, not ours, so this asks git.
+ * Both commit paths read the working tree this way and hand every entry to
+ * `collectPorcelainChanges`, which reads each path as a file. The plain
+ * `normal` mode collapses a directory of only untracked files to ONE `?? dir/`
+ * entry, and reading that path failed the release. This pins the two facts the
+ * commit paths rest on: the `all` mode lists such a directory file by file, and
+ * it leaves ignored files out. Both are git's behaviour through the kit, not
+ * ours, so this asks git.
  *
  * The repo shape is changesets v3's pre mode after `changeset version`: a
  * tracked changeset deleted, and the same file now untracked under
@@ -22,7 +23,6 @@ import { NodeServices } from "@effect/platform-node";
 import { afterEach, describe, expect, it } from "@effect/vitest";
 import { Git } from "@effected/git";
 import { Effect, Layer } from "effect";
-import { expandUntrackedDirectories } from "../../../src/utils/porcelain-changes.js";
 
 const dirs: Array<string> = [];
 
@@ -52,19 +52,20 @@ const preModeRepo = (): string => {
 
 const GitLive = Git.layer.pipe(Layer.provide(NodeServices.layer));
 
-describe("expandUntrackedDirectories with real git", () => {
-	it.effect("expands git's collapsed `.changeset/pre/` entry into its non-ignored files", () =>
+describe("Git.status with untrackedFiles: all, against real git", () => {
+	it.effect("lists pre mode's untracked `.changeset/pre/` file by file, leaving ignored files out", () =>
 		Effect.gen(function* () {
 			const dir = preModeRepo();
 			const g = yield* Git;
 
-			const raw = yield* g.status(dir);
-			// The premise: git collapses the directory, trailing slash included.
-			expect(raw.map((e) => `${e.x}${e.y} ${e.path}`)).toContain("?? .changeset/pre/");
+			// The premise the option exists for: the `normal` mode collapses the
+			// directory, trailing slash included.
+			const collapsed = yield* g.status(dir, { untrackedFiles: "normal" });
+			expect(collapsed.map((e) => `${e.x}${e.y} ${e.path}`)).toContain("?? .changeset/pre/");
 
-			const expanded = yield* expandUntrackedDirectories(raw, g.untrackedFiles(dir, { relative: false }));
+			const entries = yield* g.status(dir, { untrackedFiles: "all" });
 
-			expect(expanded.map((e) => `${e.x}${e.y} ${e.path}`).sort()).toEqual([
+			expect(entries.map((e) => `${e.x}${e.y} ${e.path}`).sort()).toEqual([
 				" D .changeset/beta-wave.md",
 				"?? .changeset/pre/beta-wave.md",
 			]);

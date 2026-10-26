@@ -408,7 +408,7 @@ const makePackagePublishLayer = (
 				registry: input.registry,
 				npmrcPath: input.npmrcPath,
 				kind: input.credential.kind,
-				token: Redacted.value(input.credential.kind === "token" ? input.credential.token : input.credential.encoded),
+				token: Redacted.value(input.credential.kind === "basic" ? input.credential.encoded : input.credential.token),
 			});
 			return Effect.void;
 		},
@@ -421,7 +421,11 @@ const makePackagePublishLayer = (
 		publishTarball: (tarballPath, publishOptions) => {
 			options.events?.push(`publish:${publishOptions.registry}`);
 			publishTarballCalls.push({ tarballPath, options: publishOptions });
-			return Effect.succeed(options.provenanceUrl === undefined ? {} : { provenanceUrl: options.provenanceUrl });
+			return Effect.succeed(
+				options.provenanceUrl === undefined
+					? { auth: "unknown" as const }
+					: { auth: "unknown" as const, provenanceUrl: options.provenanceUrl },
+			);
 		},
 		dryRun: () => Effect.die(new Error("dryRun is not part of the Phase-3 flow")),
 	};
@@ -2072,7 +2076,7 @@ describe("runPublishTargets — dist-tag and snapshot mode", () => {
 						calls.push(options);
 						return calls.length === 1
 							? Effect.fail(new PublishError({ kind: "publish", registry: options.registry, output: "E404" }))
-							: Effect.succeed({});
+							: Effect.succeed({ auth: "unknown" as const });
 					}),
 			});
 			const { wsPkg, detected, target } = setup();
@@ -2401,7 +2405,7 @@ describe("runPublishTargets — auth record", () => {
 					calls.push(options);
 					return calls.length === 1 || failAll
 						? Effect.fail(new PublishError({ kind: "publish", registry: options.registry, output: "E404 oidc" }))
-						: Effect.succeed({});
+						: Effect.succeed({ auth: "unknown" as const });
 				}),
 		});
 		return { calls, layer };
@@ -2669,7 +2673,7 @@ describe("runPublishTargets — log lines", () => {
 					Effect.suspend(() =>
 						++calls === 1
 							? Effect.fail(new PublishError({ kind: "publish", registry: options.registry, output: "E404 oidc" }))
-							: Effect.succeed({}),
+							: Effect.succeed({ auth: "unknown" as const }),
 					),
 			});
 			const { wsPkg, detected } = setup();
@@ -2705,7 +2709,7 @@ describe("runPublishTargets — log lines", () => {
 				setupAuth: (input) =>
 					Effect.fail(new PublishError({ kind: "auth", registry: input.registry, output: "EACCES" })),
 				pack: () => Effect.succeed(makePackResult()),
-				publishTarball: () => Effect.succeed({}),
+				publishTarball: () => Effect.succeed({ auth: "unknown" as const }),
 			});
 			const { wsPkg, detected } = setup();
 			yield* runPublishTargets(detected, new Map(), [{ registry: CUSTOM, token: Redacted.make("custom-token") }]).pipe(

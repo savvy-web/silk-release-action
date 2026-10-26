@@ -24,7 +24,7 @@ import { MemoryFileSystem } from "@effected/memfs";
 import type { FileSystem, Layer } from "effect";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
-import { collectPorcelainChanges, expandUntrackedDirectories } from "../src/utils/porcelain-changes.js";
+import { collectPorcelainChanges } from "../src/utils/porcelain-changes.js";
 
 /**
  * A volume seeded with exactly the files the case names.
@@ -113,56 +113,5 @@ describe("collectPorcelainChanges", () => {
 	it("marks an executable file 100755", async () => {
 		const changes = await run([entry("M ", "run.sh")], { "run.sh": "#!/bin/sh" }, ["run.sh"]);
 		expect(changes[0]).toMatchObject({ mode: "100755" });
-	});
-});
-
-// Changesets v3 in pre mode MOVES each consumed changeset into a new, untracked
-// `.changeset/pre/` directory. Plain `git status --porcelain -z` collapses an
-// untracked directory into ONE entry, `?? .changeset/pre/`, and reading that
-// path fails the release (silk-integration run 39988107872:
-// "FileSystem.readFile (.changeset/pre/)").
-describe("expandUntrackedDirectories", () => {
-	const expand = (entries: ReadonlyArray<StatusEntry>, untracked: ReadonlyArray<string>) => {
-		let listed = 0;
-		const lister = Effect.sync(() => {
-			listed += 1;
-			return untracked;
-		});
-		return Effect.runPromise(expandUntrackedDirectories(entries, lister)).then((out) => ({ out, listed }));
-	};
-
-	it("replaces a collapsed untracked directory with the files under it", async () => {
-		const { out } = await expand(
-			[entry(" D", ".changeset/beta-wave.md"), entry("??", ".changeset/pre/"), entry(" M", "package.json")],
-			[".changeset/pre/beta-wave.md", ".changeset/pre/other.md", "elsewhere.txt"],
-		);
-
-		expect(out.map((e) => `${e.x}${e.y} ${e.path}`)).toEqual([
-			" D .changeset/beta-wave.md",
-			"?? .changeset/pre/beta-wave.md",
-			"?? .changeset/pre/other.md",
-			" M package.json",
-		]);
-	});
-
-	it("does not list untracked files when no directory was collapsed", async () => {
-		const { out, listed } = await expand([entry("??", "new-file.md"), entry(" M", "package.json")], []);
-
-		expect(listed).toBe(0);
-		expect(out.map((e) => e.path)).toEqual(["new-file.md", "package.json"]);
-	});
-
-	it("commits the moved changeset as an addition next to its deletion", async () => {
-		const entries = (
-			await expand([entry(" D", ".changeset/a.md"), entry("??", ".changeset/pre/")], [".changeset/pre/a.md"])
-		).out;
-		const changes = await Effect.runPromise(
-			collectPorcelainChanges(entries).pipe(Effect.provide(fsLayer({ ".changeset/pre/a.md": "---\n---\n" }))),
-		);
-
-		expect(changes.map((c) => [c.path, "content" in c])).toEqual([
-			[".changeset/a.md", false],
-			[".changeset/pre/a.md", true],
-		]);
 	});
 });

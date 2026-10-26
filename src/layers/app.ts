@@ -30,7 +30,7 @@ import {
 	PullRequestComment,
 	Repo,
 } from "@effected/github";
-import type { ActionEnvironment, ActionState } from "@effected/github-actions";
+import type { ActionEnvironment, ActionOutputs, ActionState } from "@effected/github-actions";
 import { ActionsIdentityToken, DryRun, GitHubToken, OidcTokenIssuer } from "@effected/github-actions";
 import { NpmRegistry, PackagePublish } from "@effected/npm";
 import { SigstoreSigner } from "@effected/sbom";
@@ -74,13 +74,14 @@ export type AppServices =
 	| NodeServices.NodeServices;
 
 /**
- * What {@link makeAppLayer} requires — `ActionEnvironment` and `ActionState`
- * from `ActionRuntime`, `LocalExec` from the release layer's workspace graph,
- * and an `HttpClient`.
+ * What {@link makeAppLayer} requires — `ActionEnvironment`, `ActionOutputs`
+ * and `ActionState` from `ActionRuntime`, `LocalExec` from the release layer's
+ * workspace graph, and an `HttpClient`. `ActionOutputs` is the
+ * `OidcTokenIssuer` layer's: it masks every token it issues.
  *
  * @public
  */
-export type AppRequirements = ActionEnvironment | ActionState | HttpClient.HttpClient | LocalExec;
+export type AppRequirements = ActionEnvironment | ActionOutputs | ActionState | HttpClient.HttpClient | LocalExec;
 
 /* v8 ignore start -- pure Layer wiring, exercised indirectly by the modules that consume it */
 
@@ -235,7 +236,7 @@ const releaseLive = ReleaseLive.pipe(Layer.provide(NodeServices.layer), Layer.or
 export const MainLive: Layer.Layer<
 	AppServices | ToolDiscovery | Layer.Success<typeof releaseLive>,
 	never,
-	ActionEnvironment | ActionState | HttpClient.HttpClient
+	ActionEnvironment | ActionOutputs | ActionState | HttpClient.HttpClient
 > = Layer.unwrap(
 	Effect.map(readInputs, (inputs) =>
 		Layer.mergeAll(makeAppLayer(inputs.dryRun), toolDiscovery).pipe(Layer.provideMerge(releaseLive)),
