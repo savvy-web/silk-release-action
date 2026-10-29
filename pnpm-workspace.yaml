@@ -2,7 +2,7 @@ packages:
   - .
 autoInstallPeers: true
 configDependencies:
-  "@effected/pnpm-plugin-effect": 0.18.8
+  "@effected/pnpm-plugin-effect": 0.19.0
   "@savvy-web/pnpm-plugin-silk": 0.51.3
 minimumReleaseAgeExclude:
   - "@effected/pnpm-plugin-effect"
