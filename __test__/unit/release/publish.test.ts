@@ -397,8 +397,9 @@ const makePackagePublishLayer = (
 	// `kind` is recorded alongside the value: the credential's arm picks BOTH the
 	// npmrc key and the probe's HTTP scheme, so a publish that wrote the right
 	// secret under the wrong spelling would authenticate as nobody. This action
-	// only ever issues the bearer arm today — asserting the arm is what makes a
-	// silent switch to `_auth` fail here.
+	// issues the bearer arm for tokens and the publish-only `workload` arm for a
+	// pnpr workload credential — asserting the arm is what makes a silent switch
+	// to `_auth` (or a workload credential typed as a plain token) fail here.
 	const setupAuthCalls: Array<{ registry: string; npmrcPath: string; kind: string; token: string }> = [];
 
 	const shape: PackagePublishShape = {
@@ -2065,6 +2066,60 @@ describe("runPublishTargets — dist-tag and snapshot mode", () => {
 		}),
 	);
 
+	// Issue #459. Phase 3 (no snapshot options) read `dry-run` everywhere except
+	// here: the upload ran unconditionally, and because a dry-run result is
+	// `skipped`, which counts as success for the group, gating the upload alone
+	// would still have signed and uploaded a real attestation.
+	it.effect("in a Phase 3 dry-run, packs and probes but neither uploads nor attests", () =>
+		Effect.gen(function* () {
+			const pub = makePackagePublishLayer();
+			const attestation = makeAttestationLayer();
+			const { wsPkg, detected } = setup();
+			const target = new PublishTarget({
+				name: PACK_NAME,
+				registry: "https://registry.npmjs.org/",
+				directory: `/tmp/test/${PACK_NAME}`,
+				access: "public",
+				provenance: true,
+			});
+			const result = yield* runPublishTargets(detected, new Map(), [], undefined, { dryRun: true }).pipe(
+				Effect.provide(makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [target], attestation.layer)),
+			);
+
+			const t = result.packages[0]?.targets[0];
+			expect(pub.packCalls).toHaveLength(1);
+			expect(pub.publishTarballCalls).toHaveLength(0);
+			expect(attestation.uploads).toHaveLength(0);
+			expect(t?.status).toBe("skipped");
+			expect(t?.skipReason).toBe("dry-run");
+			expect(t?.target.tag).toBe("latest");
+			expect(result.success).toBe(true);
+		}),
+	);
+
+	it.effect("still uploads and attests the same Phase 3 target when dry-run is off", () =>
+		Effect.gen(function* () {
+			const pub = makePackagePublishLayer();
+			const attestation = makeAttestationLayer();
+			const { wsPkg, detected } = setup();
+			const target = new PublishTarget({
+				name: PACK_NAME,
+				registry: "https://registry.npmjs.org/",
+				directory: `/tmp/test/${PACK_NAME}`,
+				access: "public",
+				provenance: true,
+			});
+			yield* runPublishTargets(detected, new Map(), [], undefined, { dryRun: false }).pipe(
+				Effect.provide(makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [target], attestation.layer)),
+			);
+
+			// Positive control: the dry-run case above is only meaningful if this
+			// identical setup does upload and attest.
+			expect(pub.publishTarballCalls).toHaveLength(1);
+			expect(attestation.uploads).toHaveLength(1);
+		}),
+	);
+
 	it.effect("carries the snapshot tag through the token-auth retry, so a fallback can never claim latest", () =>
 		Effect.gen(function* () {
 			const calls: PublishOptions[] = [];
@@ -2895,9 +2950,11 @@ describe("runPublishTargets — pnpr workload credential (OPS-143)", () => {
 			const { results } = yield* runWith(h, [savvyTarget()], paired);
 
 			expect(h.audiences).toEqual([AUDIENCE]);
-			// The workload credential is the ONLY npmrc write for this registry.
+			// The workload credential is the ONLY npmrc write for this registry, and
+			// it goes through the kit's publish-only `workload` arm (#534), which no
+			// read site accepts — so it cannot leak onto a registry read.
 			expect(h.pub.setupAuthCalls).toEqual([
-				{ registry: SAVVY, npmrcPath: userNpmrcPath(), kind: "token", token: WORKLOAD },
+				{ registry: SAVVY, npmrcPath: userNpmrcPath(), kind: "workload", token: WORKLOAD },
 			]);
 			expect(h.pub.publishTarballCalls).toHaveLength(1);
 			expect(h.pub.publishTarballCalls[0]?.options.registry).toBe(SAVVY);
@@ -2919,16 +2976,20 @@ describe("runPublishTargets — pnpr workload credential (OPS-143)", () => {
 		}),
 	);
 
-	it.effect("masks the full minted credential before it reaches the npmrc", () =>
+	it.effect("masks the bare JWT and the full minted credential before either reaches the npmrc", () =>
 		Effect.gen(function* () {
 			const h = harness();
 			yield* runWith(h, [savvyTarget()], paired);
-			expect(h.masked).toContain(WORKLOAD);
 			expect(h.masked).toContain(READER);
-			const maskAt = h.events.indexOf(`mask:${WORKLOAD}`);
 			const writeAt = h.events.indexOf(`setupAuth:${SAVVY}`);
-			expect(maskAt).toBeGreaterThanOrEqual(0);
-			expect(maskAt).toBeLessThan(writeAt);
+			// Both spellings: the runner's log filter matches whole registered
+			// values, so masking only the prefixed form leaves the bare JWT
+			// printable wherever it appears on its own.
+			for (const secret of [JWT, WORKLOAD]) {
+				const maskAt = h.events.indexOf(`mask:${secret}`);
+				expect(maskAt).toBeGreaterThanOrEqual(0);
+				expect(maskAt).toBeLessThan(writeAt);
+			}
 		}),
 	);
 

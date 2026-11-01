@@ -94,7 +94,18 @@ const runDetect = (f: Fixtures): Promise<PhaseDetectionResult> => {
 			// the same routing the predecessor's empty client produced.
 			listAssociatedWithCommit: () =>
 				Effect.fail(GitHubError.notFound("PullRequest.listAssociatedWithCommit", "commit")),
-			list: () => Effect.succeed(f.prs),
+			// Modelled on the real `list` (issue #548): `mergeCommitSha` is absent
+			// unless `mergeCommits: true`, because the REST list stopped carrying it
+			// and the kit fills it from GraphQL only on request. Handing it back
+			// unconditionally is what hid that Strategy 2 could never match.
+			list: (options) =>
+				Effect.succeed(
+					f.prs.map((pr) => {
+						if (options?.mergeCommits === true) return pr;
+						const { mergeCommitSha: _dropped, ...rest } = pr;
+						return PullRequestInfo.make(rest);
+					}),
+				),
 		}),
 		Layer.succeed(Repo, RepoRef.make({ owner: "owner", repo: "repo" })),
 		// An empty volume. `detectWorkflowPhase` itself reads no files — this only

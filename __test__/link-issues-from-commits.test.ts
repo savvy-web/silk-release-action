@@ -186,11 +186,41 @@ const compareCalls: Array<{ base: string; head: string }> = [];
  * Every `PullRequest.list` call, recorded so the filter can be asserted.
  *
  * @remarks
- * `head` is expected to be **absent**: GitHub wants an `owner:ref` there while
- * the projection returns a bare ref, so the head branch is matched locally.
- * Passing it would silently return nothing.
+ * `head` is passed bare: the kit's `list` qualifies it to `owner:ref` itself,
+ * so GitHub filters server-side instead of this module paginating every closed
+ * pull request against the base.
  */
-const listCalls: Array<{ base: string | undefined; state: string | undefined; head: string | undefined }> = [];
+const listCalls: Array<{
+	base: string | undefined;
+	state: string | undefined;
+	head: string | undefined;
+	mergeCommits: boolean | undefined;
+}> = [];
+
+/**
+ * What the real `PullRequest.list` returns for `options`.
+ *
+ * @remarks
+ * Models the two behaviours this module depends on (issue #548):
+ *
+ * - **`mergeCommitSha` is absent unless `mergeCommits: true`.** The REST list
+ *   stopped carrying it, and the kit only fills it from GraphQL on request. A
+ *   fixture that hands it back unconditionally is what kept the full-history
+ *   walk green.
+ * - **`head` filters**, after qualification to `owner:ref`, as GitHub does.
+ */
+const asListed = (
+	prs: ReadonlyArray<PullRequestInfo>,
+	options: { head?: string | undefined; state?: string | undefined; mergeCommits?: boolean | undefined } | undefined,
+): ReadonlyArray<PullRequestInfo> =>
+	prs
+		.filter((pr) => options?.state === undefined || pr.state === options.state)
+		.filter((pr) => options?.head === undefined || options.head.replace(/^[^:]*:/, "") === pr.head)
+		.map((pr) => {
+			if (options?.mergeCommits === true) return pr;
+			const { mergeCommitSha: _dropped, ...rest } = pr;
+			return rest as PullRequestInfo;
+		});
 
 /** Clears both module-level recorders; installed as a `beforeEach` in each suite. */
 const resetRecorders = (): void => {
@@ -237,14 +267,17 @@ const gitHubServices = (f: Fixtures): Layer.Layer<GitHubCommit | GitHubIssue | P
 		PullRequest.layerTest({
 			list: (options) =>
 				Effect.sync(() => {
-					listCalls.push({ base: options?.base, state: options?.state, head: options?.head });
+					listCalls.push({
+						base: options?.base,
+						state: options?.state,
+						head: options?.head,
+						mergeCommits: options?.mergeCommits,
+					});
 				}).pipe(
 					Effect.andThen(
 						f.releasePrs === "fail"
 							? Effect.fail(GitHubError.rejected("PullRequest.list", 500, "boom"))
-							: // Filtered by state, as GitHub does: the boundary lookup asks for
-								// closed PRs, the release-PR lookup for open ones.
-								Effect.succeed(f.releasePrs.filter((pr) => options?.state === undefined || pr.state === options.state)),
+							: Effect.succeed(asListed(f.releasePrs, options)),
 					),
 				),
 			listAssociatedWithCommit: (sha) => Effect.succeed(f.associated.get(sha) ?? []),
@@ -344,18 +377,19 @@ describe("getLinkedIssuesFromCommits", () => {
 		expect(result.linkedIssues).toHaveLength(0);
 	});
 
-	it("filters the head branch locally rather than through the list option", async () => {
+	it("narrows both lookups to the release branch server-side and asks the boundary lookup for merge commits", async () => {
 		const f = makeFixtures({ releasePrs: [releasePr(245, "sha-245")] });
 
 		await runCollect(f);
 
-		// `head` must be absent on BOTH calls. GitHub expects `owner:ref` there
-		// while the projection carries the bare ref, so passing it returns nothing
-		// at all — the boundary would silently fall back to walking the whole
-		// branch, and the release PR would never be found.
+		// Issue #548. Without `mergeCommits: true` the kit leaves `mergeCommitSha`
+		// absent on every result, no boundary is ever found, and the walk falls
+		// through to the whole branch history. Without `head`, the boundary lookup
+		// paginates every closed PR against the base. Only the closed lookup reads
+		// a merge commit, so only it pays the GraphQL call.
 		expect(listCalls).toEqual([
-			{ base: TARGET_BRANCH, state: "closed", head: undefined },
-			{ base: TARGET_BRANCH, state: "open", head: undefined },
+			{ base: TARGET_BRANCH, state: "closed", head: RELEASE_BRANCH, mergeCommits: true },
+			{ base: TARGET_BRANCH, state: "open", head: RELEASE_BRANCH, mergeCommits: undefined },
 		]);
 	});
 

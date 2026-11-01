@@ -11,13 +11,13 @@ import { basename, dirname, join, relative } from "node:path";
 import { Run } from "@effected/commands";
 import type { GitHubError, Repo } from "@effected/github";
 import { Attestation, GitHubCommit, GitHubContent, PullRequest } from "@effected/github";
-import type { ActionLogger, OidcTokenError } from "@effected/github-actions";
+import type { ActionLogger, OidcTokenIssuer } from "@effected/github-actions";
 import {
 	ActionEnvironment,
 	ActionInput,
 	ActionOutputs,
 	ActionState,
-	OidcTokenIssuer,
+	ActionsRegistryCredential,
 	Secret,
 } from "@effected/github-actions";
 import type { RegistryCredential } from "@effected/npm";
@@ -644,35 +644,6 @@ const runAttestationsForBuild = (
 const PNPR_WORKLOAD_PREFIX = "pnpr_workload_";
 
 /**
- * Mint the pnpr workload credential for one publish: `pnpr_workload_<jwt>`,
- * where `<jwt>` is the job's GitHub Actions OIDC ID token for `audience`.
- *
- * @remarks
- * Masked twice before it is returned — the bare JWT by `Secret.forSigning`'s
- * mask-first declassification (the prefix has to be prepended to the raw
- * value), then the full prefixed credential by `Secret.mask` — so neither
- * spelling can reach the log through anything that runs after this. The
- * result stays `Redacted` and reaches npm only through `setupAuth`'s npmrc
- * write. Fails with the issuer's `OidcTokenError` when the job lacks
- * `permissions: id-token: write` or the runner exposes no OIDC service.
- * OPS-143.
- *
- * Temporary: declassifying the JWT just to prepend a prefix is a workaround.
- * spencerbeggs/effected#1064 asks the kit to mint workload credentials without
- * it; adopting that and deleting this helper is tracked in #534.
- */
-const mintWorkloadCredential = (
-	audience: string,
-): Effect.Effect<Redacted.Redacted<string>, OidcTokenError, OidcTokenIssuer | ActionOutputs> =>
-	Effect.gen(function* () {
-		const issuer = yield* OidcTokenIssuer;
-		const jwt = yield* Secret.forSigning(yield* issuer.token(audience));
-		const credential = Redacted.make(`${PNPR_WORKLOAD_PREFIX}${jwt}`);
-		yield* Secret.mask(credential);
-		return credential;
-	});
-
-/**
  * Publish a single package to every target in one build-directory group —
  * the self-recovering, pack-once flow.
  *
@@ -694,8 +665,9 @@ const mintWorkloadCredential = (
  * A pnpr workload registry (`_pnprWorkload` in `custom-registries`, OPS-143)
  * takes a different credential path: every read uses the paired `_authToken`
  * reader, nothing is written to the npmrc before the reads, and the publish
- * credential is minted — `pnpr_workload_<jwt>` from
- * `OidcTokenIssuer.token(audience)`, masked, written by `setupAuth` — only
+ * credential is minted — `pnpr_workload_<jwt>` from the kit's
+ * `ActionsRegistryCredential.workload`, both spellings masked, written by
+ * `setupAuth` as the publish-only `workload` arm — only
  * after the probe says the version is absent, immediately before the PUT.
  * A workload entry with no reader fails before any read; a mint or npmrc
  * failure fails that target only, with no fallback to the reader token.
@@ -716,6 +688,9 @@ const publishDirectoryGroup = (
 	publishExecutor: NpmExecutor,
 	sbomPath: string | null,
 	snapshot: SnapshotPublishOptions | undefined,
+	// Rehearse: pack and probe, never upload or attest. Phase 3's `dry-run`
+	// and a snapshot's own `dryRun` both arrive here (issue #459).
+	dryRun: boolean,
 ): Effect.Effect<ReadonlyArray<TargetPublishResult>, never, PublishServices> =>
 	Effect.gen(function* () {
 		const publishSvc = yield* PackagePublish;
@@ -1031,7 +1006,7 @@ const publishDirectoryGroup = (
 			}
 
 			if (Option.isNone(probe.value)) {
-				if (snapshot?.dryRun === true) {
+				if (dryRun) {
 					yield* Effect.logInfo(
 						line(`dry-run — would publish ${packResult.name}@${packResult.version}`, { tag: tagFor(t) }),
 					);
@@ -1061,7 +1036,14 @@ const publishDirectoryGroup = (
 				// answers the reader token's PUT with 403, so substituting it would
 				// only trade a clear failure for an opaque one.
 				if (workload !== null) {
-					const minted = yield* Effect.result(mintWorkloadCredential(workload.audience));
+					// The kit mints the job's OIDC token for the audience, masks it,
+					// prefixes it inside `@effected/npm` (the JWT is never declassified
+					// here) and masks the prefixed value — both masks land before the
+					// npmrc write. The result is the publish-only `workload` arm, which no
+					// registry read accepts (#534, effected#1064).
+					const minted = yield* Effect.result(
+						ActionsRegistryCredential.workload({ audience: workload.audience, prefix: PNPR_WORKLOAD_PREFIX }),
+					);
 					if (minted._tag === "Failure") {
 						const reason =
 							`could not mint the pnpr workload credential for audience ${workload.audience} — ` +
@@ -1075,7 +1057,7 @@ const publishDirectoryGroup = (
 					const written = yield* Effect.result(
 						publishSvc.setupAuth({
 							registry: t.registry,
-							credential: { kind: "token", token: minted.success },
+							credential: minted.success,
 							npmrcPath,
 						}),
 					);
@@ -1249,8 +1231,11 @@ const publishDirectoryGroup = (
 		};
 		let attestationsRan = false;
 		// Snapshot mode writes no GitHub attestation; npm's own provenance (if
-		// the target requested it) is the only one.
-		if (anySuccess && groupProvenance && snapshot === undefined) {
+		// the target requested it) is the only one. A dry run writes none either:
+		// its results are `skipped`, which counts as success above, so without
+		// the guard a rehearsal would sign and upload a real attestation for a
+		// tarball no registry received (issue #459).
+		if (anySuccess && groupProvenance && snapshot === undefined && !dryRun) {
 			attestations = yield* runAttestationsForBuild(
 				packageName,
 				version,
@@ -1809,6 +1794,10 @@ export const runPublishTargets = (
 	// Snapshot mode (the `snapshot` phase). Absent for Phase 3, which is then
 	// unchanged — see `SnapshotPublishOptions`.
 	snapshot?: SnapshotPublishOptions,
+	// Phase 3's `dry-run` (issue #459): pack and probe every target, record it
+	// `skipped`/`dry-run`, and never upload or attest. A snapshot carries its
+	// own `dryRun`; either one rehearses.
+	options: { readonly dryRun?: boolean } = {},
 ): Effect.Effect<
 	PublishPackagesResult,
 	Config.ConfigError,
@@ -2047,6 +2036,7 @@ export const runPublishTargets = (
 							publishExecutor,
 							sbomPathForPackage,
 							snapshot,
+							snapshot?.dryRun === true || options.dryRun === true,
 						),
 					);
 					targetResults.push(...groupResults);

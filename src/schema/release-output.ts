@@ -1064,7 +1064,7 @@ const PublishedPackage = Schema.Struct({
 		identifier: "PublishedPackageOutcome",
 		title: "Package outcome",
 		description:
-			"`published` — new bytes were uploaded to this registry; `recovered` — the version was already present with an identical tarball digest, so nothing was re-uploaded and the run treated it as done; `failed` — the upload was attempted and did not land (see `error`); `blocked` — the upload was never attempted because the phase aborted first (see the phase-level `failure`).",
+			"`published` — new bytes were uploaded to this registry; `recovered` — the version was already present with an identical tarball digest, so nothing was re-uploaded and the run treated it as done; `failed` — the upload was attempted and did not land (see `error`); `blocked` — the upload was never attempted because the phase aborted first (see the phase-level `failure`). Under `dryRun: true` nothing is uploaded: `published` is the upload this run would have made.",
 	}),
 	registry: PublishRegistry,
 	target: Schema.NullOr(PublishTargetRef).annotate({

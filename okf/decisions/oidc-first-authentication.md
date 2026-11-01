@@ -17,10 +17,10 @@ sources:
     resource: ../../src/release/validation.ts
 generated:
   by: okfit/claude-code
-  at: 2026-10-23T18:28:37Z
+  at: 2026-11-01T19:04:19Z
 integrity:
   generated:
-    body: 0339ad97b304792c
+    body: 9043ddcb315e1214
 ---
 
 # OIDC-first publishing, with token auth as bootstrap and fallback
@@ -65,9 +65,13 @@ the exchange attempt.
   credential the action mints itself: `pnpr_workload_<jwt>`, where `<jwt>`
   is the job's GitHub Actions OIDC ID token for that audience (exactly
   `https://registry.savvyweb.systems` for pnpr). It is minted once per
-  target, after the target's reads and immediately before the PUT, masked
-  in full, written by `setupAuth` as the npmrc's only token for that
-  registry, and published with `tokenAuth: true`.[^publish] The auth record
+  target, after the target's reads and immediately before the PUT, by the
+  kit's `ActionsRegistryCredential.workload`, which masks both the bare
+  token and the prefixed value and never declassifies the token into the
+  action ([#534](https://github.com/savvy-web/silk-release-action/issues/534)).
+  `setupAuth` writes it as the publish-only `workload` credential arm — a
+  type no registry read accepts — as the npmrc's only token for that
+  registry, and it is published with `tokenAuth: true`.[^publish] The auth record
   is `workload-oidc (custom-registries)`. pnpr accepts the credential only
   for `PUT /npm/~<registry>/<package>`, so it never authenticates a read:
   the integrity probe, the snapshot never-published probe and post-publish

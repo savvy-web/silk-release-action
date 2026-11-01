@@ -15,10 +15,10 @@ sources:
     resource: ../../src/schema/release-output.ts
 generated:
   by: okfit/claude-code
-  at: 2026-09-27T17:16:44Z
+  at: 2026-11-01T19:04:19Z
 integrity:
   generated:
-    body: 620adcbd57542967
+    body: 2d87767e7ea8e913
 ---
 
 # An explicit-only snapshot phase, never a publish-phase flag
@@ -156,10 +156,11 @@ with Sigstore provenance, npm recorded the publisher as `GitHubActions
 trusted-publisher configuration binds to the consumer's top-level
 `release.yml`, as it did for the interim job.
 
-Phase 3's `dry-run` input appears not to gate every upload path the same way
-the snapshot phase's dry-run does — tracked as
-[#459](https://github.com/savvy-web/silk-release-action/issues/459) rather
-than assumed identical here.
+Phase 3's `dry-run` now gates the upload the same way the snapshot phase's
+does: both reach `publishDirectoryGroup` as one `dryRun` flag, which packs and
+probes, records `skipped`/`dry-run`, and also suppresses the GitHub
+attestation a rehearsal would otherwise sign
+([#459](https://github.com/savvy-web/silk-release-action/issues/459), fixed).
 
 A published snapshot can carry a **dangling internal dependency**.
 Changesets bumps the dependents of every bumped package and the build pins

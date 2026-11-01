@@ -415,9 +415,15 @@ type PackageOutcome = "published" | "recovered" | "failed" | "blocked";
  * A digest MISMATCH is `failed`, never `recovered` — the registry has
  * different bytes under this version, which is the one case where "already
  * published" must not be treated as done.
+ *
+ * A dry-run target (issue #459) is `published`: the upload it would have made,
+ * reported the way a dry-run release is (id 0, still counted) and flagged by
+ * the document's top-level `dryRun`. It is `skipped` internally, and letting
+ * it fall through to `recovered` would claim the version was already there.
  */
 const classifyPackage = (t: PackagePublishResult["targets"][number]): PackageOutcome => {
 	if (t.status === "failed") return "failed";
+	if (t.skipReason === "dry-run") return "published";
 	if (t.alreadyPublished === true && t.alreadyPublishedReason === "different") return "failed";
 	if (t.status === "skipped" || t.alreadyPublished === true) return "recovered";
 	if (t.status === "published") return "published";

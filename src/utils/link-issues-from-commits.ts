@@ -138,17 +138,23 @@ const lastReleaseBoundary = (
 ): Effect.Effect<Option.Option<string>, never, PullRequest | Repo> =>
 	Effect.gen(function* () {
 		const pulls = yield* PullRequest;
-		const result = yield* Effect.result(pulls.list({ base: targetBranch, state: "closed" }));
+		// `mergeCommits: true` is what makes this boundary findable at all (issue
+		// #548): the REST list no longer carries `merge_commit_sha`, so the kit
+		// leaves `mergeCommitSha` absent unless asked, at one GraphQL call per 100
+		// merged results. Without it every PR was filtered out below and the walk
+		// fell through to the whole branch history.
+		//
+		// `head` narrows server-side, so only release PRs are paginated rather than
+		// every closed PR against the base. The kit qualifies a bare ref to
+		// `owner:ref` itself; the local `head` check stays as a guard.
+		const result = yield* Effect.result(
+			pulls.list({ base: targetBranch, head: releaseBranch, state: "closed", mergeCommits: true }),
+		);
 		if (result._tag === "Failure") {
 			yield* Effect.logWarning(`Failed to list release pull requests: ${result.failure.reason}`);
 			return Option.none<string>();
 		}
 
-		// The head branch is matched here rather than through `list`'s own `head`
-		// option: GitHub expects an `owner:ref` there, while the projection hands
-		// back the bare ref (`raw.head.ref`), so filtering locally compares like
-		// with like instead of guessing at the qualified spelling.
-		//
 		// Highest number wins rather than latest `mergedAt`. Only one release PR
 		// is open against a given head branch at a time and they merge in order,
 		// so the numbers are already the merge order — and an integer comparison
@@ -189,8 +195,9 @@ const lastReleaseBoundary = (
  *
  * Looked up by listing open PRs rather than through `listAssociatedWithCommit`,
  * which is what the cross-referencing step uses and which does not reliably
- * answer for a branch head. The head branch is matched locally for the same
- * reason as in {@link lastReleaseBoundary}.
+ * answer for a branch head. Narrowed by `head` server-side, as in
+ * {@link lastReleaseBoundary}; no merge commit is read here, so no
+ * `mergeCommits`.
  *
  * @internal
  */
@@ -204,7 +211,7 @@ const issuesOnOpenReleasePr = (
 > =>
 	Effect.gen(function* () {
 		const pulls = yield* PullRequest;
-		const result = yield* Effect.result(pulls.list({ base: targetBranch, state: "open" }));
+		const result = yield* Effect.result(pulls.list({ base: targetBranch, head: releaseBranch, state: "open" }));
 		if (result._tag === "Failure") {
 			yield* Effect.logWarning(`Failed to list open pull requests: ${result.failure.reason}`);
 			return [];

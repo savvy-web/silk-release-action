@@ -128,6 +128,7 @@ interface RunCapture {
 const run = async (
 	inputs: Inputs = INPUTS,
 	registry: Layer.Layer<NpmRegistry> = seededRegistry().layer,
+	dryRun = false,
 ): Promise<RunCapture> => {
 	const lines: string[] = [];
 	let result: Record<string, unknown> | undefined;
@@ -163,7 +164,7 @@ const run = async (
 		}),
 		// `emitReleaseOutput` saves the encoded result for the post phase.
 		ActionState.layerTest({ save: () => Effect.void }),
-		DryRun.layerTest({ isDryRun: Effect.succeed(false) }),
+		DryRun.layerTest({ isDryRun: Effect.succeed(dryRun) }),
 		Layer.succeed(Repo, RepoRef.make({ owner: "savvy-web", repo: "silk-release-action" })),
 		registry,
 	);
@@ -204,6 +205,24 @@ beforeEach(() => {
 	runPublishTargetsMock.mockReturnValue(Effect.succeed(PUBLISH_RESULT));
 	runReleasesMock.mockReturnValue(Effect.succeed({ success: true, releases: [], errors: [], tagShas: {} }));
 	closeLinkedIssuesMock.mockReturnValue(Effect.succeed({ closedCount: 2, failedCount: 0, issues: [] }));
+});
+
+describe("runPublishing — dry-run reaches the registry upload", () => {
+	// Issue #459: `dry-run` reached releases, issue closing and the availability
+	// probe, but never `runPublishTargets`, so a rehearsal uploaded for real.
+	it("hands dry-run to the registry publish, alongside every other follow-on", async () => {
+		await run(INPUTS, seededRegistry().layer, true);
+
+		expect(runPublishTargetsMock).toHaveBeenCalledTimes(1);
+		expect(runPublishTargetsMock.mock.calls[0]?.[4]).toEqual({ dryRun: true });
+		expect(closeLinkedIssuesMock).toHaveBeenCalledWith(42, true);
+	});
+
+	it("leaves a real run's registry publish un-rehearsed", async () => {
+		await run();
+
+		expect(runPublishTargetsMock.mock.calls[0]?.[4]).toEqual({ dryRun: false });
+	});
 });
 
 describe("runPublishing — happy path", () => {

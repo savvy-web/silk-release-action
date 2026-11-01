@@ -112,8 +112,11 @@ const attemptReleaseCommitDetection = (
 
 		// Strategy 2: list closed PRs from the release branch.
 		yield* Effect.logInfo(`Checking for merged release PRs with merge_commit_sha matching ${sha}`);
+		// `mergeCommits: true`, or this can never match (issue #548): the REST list
+		// no longer carries `merge_commit_sha`, so the kit leaves `mergeCommitSha`
+		// absent unless asked and fills it from GraphQL.
 		const closed = yield* Effect.result(
-			pr.list({ state: "closed", head: `${owner}:${releaseBranch}`, base: targetBranch }),
+			pr.list({ state: "closed", head: `${owner}:${releaseBranch}`, base: targetBranch, mergeCommits: true }),
 		);
 
 		if (closed._tag === "Success") {

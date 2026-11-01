@@ -956,6 +956,51 @@ describe("toPublishOutput", () => {
 		expect(output.success).toBe(true);
 	});
 
+	// Issue #459. A Phase 3 dry run now uploads nothing, and its target result is
+	// `skipped`/`dry-run`. Classifying every `skipped` as `recovered` would claim
+	// the version was already on the registry. It is reported the way a dry-run
+	// release is (id 0, still counted): as what WOULD have happened, flagged by
+	// the top-level `dryRun`.
+	it("reports a Phase 3 dry-run target as the publish it would have been, never as recovered", () => {
+		const pkg: PackagePublishResult = {
+			name: "@savvy-web/foo",
+			version: "1.2.0",
+			targets: [target({ success: true, status: "skipped", skipReason: "dry-run" })],
+		};
+		const output = toPublishOutput({
+			...baseInput,
+			plan: planOf("@savvy-web/foo", "1.2.0", "github-with-packages", 1),
+			publishResult: {
+				...emptyResult,
+				packages: [pkg],
+				totalPackages: 1,
+				successfulPackages: 1,
+				totalTargets: 1,
+				successfulTargets: 1,
+			},
+			tags: [
+				{
+					name: "@savvy-web/foo@1.2.0",
+					packageName: "@savvy-web/foo",
+					packageNames: ["@savvy-web/foo"],
+					version: "1.2.0",
+				},
+			],
+			releases: [{ tag: "@savvy-web/foo@1.2.0", url: "https://example.com/r", id: 0, assets: [], prerelease: false }],
+			tagShas: {},
+			dryRun: true,
+			failure: null,
+		});
+
+		const ws = output.publish.workspaces["@savvy-web/foo"];
+		expect(ws?.packages[0]?.outcome).toBe("published");
+		expect(ws?.outcome).toBe("published");
+		expect(output.totals.packagesRecovered).toBe(0);
+		expect(output.totals.packagesPublished).toBe(1);
+		expect(output.dryRun).toBe(true);
+		expect(output.success).toBe(true);
+	});
+
 	// A digest MISMATCH is the one "already published" case that must not be
 	// treated as done — the registry holds different bytes under this version.
 	it("reports a content-mismatch target as failed, never recovered", () => {
