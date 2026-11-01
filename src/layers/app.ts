@@ -4,7 +4,7 @@
 // service; no domain services exist yet.
 //
 // **What is deliberately absent.** `ActionEnvironment`, `ActionLogger`,
-// `ActionOutputs`, `ActionState`, `NodeServices` and an `HttpClient` all come
+// `ActionOutputs`, `ActionState`, `NodeServices`, `Digest` and an `HttpClient` all come
 // from `ActionRuntime` via `Action.run`. Because `ActionRunOptions.layer` is
 // `Layer<R, never, ActionServices>`, this layer may *require* any of them
 // rather than rebuild them — which is why there is no `ActionState.layer` or
@@ -35,6 +35,7 @@ import { ActionsIdentityToken, DryRun, GitHubToken, OidcTokenIssuer } from "@eff
 import { NpmRegistry, PackagePublish } from "@effected/npm";
 import { SigstoreSigner } from "@effected/sbom";
 import { Effect, Layer } from "effect";
+import type { Digest } from "effect/crypto";
 import type { HttpClient } from "effect/http";
 import { FetchHttpClient } from "effect/http";
 import { ReleaseLive } from "../release/layers.js";
@@ -74,14 +75,21 @@ export type AppServices =
 	| NodeServices.NodeServices;
 
 /**
- * What {@link makeAppLayer} requires — `ActionEnvironment`, `ActionOutputs`
- * and `ActionState` from `ActionRuntime`, `LocalExec` from the release layer's
- * workspace graph, and an `HttpClient`. `ActionOutputs` is the
- * `OidcTokenIssuer` layer's: it masks every token it issues.
+ * What {@link makeAppLayer} requires — `ActionEnvironment`, `ActionOutputs`,
+ * `ActionState` and `Digest` from `ActionRuntime`, `LocalExec` from the release
+ * layer's workspace graph, and an `HttpClient`. `ActionOutputs` is the
+ * `OidcTokenIssuer` layer's: it masks every token it issues. `Digest` is
+ * `PackagePublish`'s: it hashes every packed tarball.
  *
  * @public
  */
-export type AppRequirements = ActionEnvironment | ActionOutputs | ActionState | HttpClient.HttpClient | LocalExec;
+export type AppRequirements =
+	| ActionEnvironment
+	| ActionOutputs
+	| ActionState
+	| Digest.Digest
+	| HttpClient.HttpClient
+	| LocalExec;
 
 /* v8 ignore start -- pure Layer wiring, exercised indirectly by the modules that consume it */
 
@@ -207,8 +215,8 @@ const releaseLive = ReleaseLive.pipe(Layer.provide(NodeServices.layer), Layer.or
  *
  * @remarks
  * `ActionRuntime` — injected by `Action.run` — provides `ActionEnvironment`,
- * `ActionLogger`, `ActionOutputs`, `ActionState`, `NodeServices` and an
- * `HttpClient`. Because `ActionRunOptions.layer` is
+ * `ActionLogger`, `ActionOutputs`, `ActionState`, `NodeServices`, `Digest` and
+ * an `HttpClient`. Because `ActionRunOptions.layer` is
  * `Layer<R, never, ActionServices>`, this layer may **require** any of them
  * rather than rebuild them.
  *
@@ -236,7 +244,7 @@ const releaseLive = ReleaseLive.pipe(Layer.provide(NodeServices.layer), Layer.or
 export const MainLive: Layer.Layer<
 	AppServices | ToolDiscovery | Layer.Success<typeof releaseLive>,
 	never,
-	ActionEnvironment | ActionOutputs | ActionState | HttpClient.HttpClient
+	ActionEnvironment | ActionOutputs | ActionState | Digest.Digest | HttpClient.HttpClient
 > = Layer.unwrap(
 	Effect.map(readInputs, (inputs) =>
 		Layer.mergeAll(makeAppLayer(inputs.dryRun), toolDiscovery).pipe(Layer.provideMerge(releaseLive)),

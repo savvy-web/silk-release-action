@@ -10,10 +10,10 @@
 // way out only obscures it. Hence the belt-and-braces `Effect.catch` on
 // revocation plus `Effect.catchDefect` around the whole program.
 
+import { NodeCrypto } from "@effect/platform-node";
 import { GitHubApp } from "@effected/github";
 import { Action, ActionOutputs, ActionState, GitHubToken } from "@effected/github-actions";
-import type { Layer } from "effect";
-import { Effect, Option } from "effect";
+import { Effect, Layer, Option } from "effect";
 import { ReleaseResultState, STATE_KEYS, StartTimeState } from "./state.js";
 
 /**
@@ -86,12 +86,14 @@ export const post = Effect.gen(function* () {
  * Domain layers for the post-action.
  *
  * @remarks
- * `GitHubToken.dispose` needs a `GitHubApp`, which is self-contained.
- * `ActionState` arrives from `ActionRuntime` via `Action.run`.
+ * `GitHubToken.dispose` needs a `GitHubApp`, whose App JWT is signed through
+ * core's `Signature` service — not carried by `ActionRuntime`, so provided here
+ * from `NodeCrypto.layerSignature`. `ActionState` arrives from `ActionRuntime`
+ * via `Action.run`.
  *
  * @public
  */
-export const PostLive: Layer.Layer<GitHubApp> = GitHubApp.layer;
+export const PostLive: Layer.Layer<GitHubApp> = GitHubApp.layer.pipe(Layer.provide(NodeCrypto.layerSignature));
 
 /* v8 ignore next 3 -- entry-point guard, only runs in GitHub Actions */
 if (process.env.GITHUB_ACTIONS) {

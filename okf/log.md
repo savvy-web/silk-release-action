@@ -1,5 +1,11 @@
 # Log
 
+## 2026-11-01
+
+* Updated An explicit-only snapshot phase, never a publish-phase flag
+* Updated OIDC-first publishing, with token auth as bootstrap and fallback
+* Updated release-action
+
 ## 2026-10-23
 
 * Updated A green publish can still 404 for minutes on npm

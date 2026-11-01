@@ -242,8 +242,17 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 			// ── Step 4: Publish to registries ──────────────────────────────────────
 			// `inputs.customRegistries` rides along so custom-registry targets get
 			// their configured tokens (issue #215 — this hand-off is the wiring the
-			// publish-chain migration lost).
-			const publishResult = yield* runPublishTargets(detected, buildSbom.sbomPaths, inputs.customRegistries);
+			// publish-chain migration lost). `dryRun` rides along too (issue #459):
+			// without it a rehearsal packed, uploaded and attested for real.
+			const publishResult = yield* runPublishTargets(
+				detected,
+				buildSbom.sbomPaths,
+				inputs.customRegistries,
+				undefined,
+				{
+					dryRun,
+				},
+			);
 			if (!publishResult.success) {
 				yield* Effect.logError(
 					`❌ Published ${publishResult.successfulTargets}/${publishResult.totalTargets} registry target(s) — aborting before releases`,

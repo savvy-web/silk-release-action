@@ -7,7 +7,7 @@ resource: ../../src
 status: draft
 generated:
   by: okfit/claude-code
-  at: 2026-10-23T15:07:32Z
+  at: 2026-11-01T19:04:19Z
 sources:
   - id: src-main
     resource: ../../src/main.ts
@@ -32,7 +32,7 @@ tags:
   - observability
 integrity:
   generated:
-    body: 6ad453171e784b7d
+    body: 8175aa45f5dcc712
 ---
 
 # release-action
@@ -317,7 +317,7 @@ main.ts  (guard + Action.run only)
 
 **GitHub API usage** — all GitHub interaction goes through `@effected/github` services. GraphQL is a **member of `GitHubClient`** — there is no separate `GitHubGraphQL` service to wire — and backs queries needing nested data (`closingIssuesReferences` on PRs, branch protection mutations). No raw Octokit calls remain in `src/`. Registry reads go through `NpmRegistry` over `FetchHttpClient`; publishing goes through `PackagePublish` over `LocalExec`.
 
-**Dry-run mode** — `dry-run` is decoded once in `schema/inputs.ts` and used only to build the `DryRun` service; every consumer asks that service rather than re-reading the input. In dry-run mode, package-manager commands run with `--dry-run` flags, Git branch and commit operations are skipped, check-run titles are prefixed with the `🧪` marker (the only title decoration), and registry publish commands use the dry-run flag. All validation logic runs identically to production mode.
+**Dry-run mode** — `dry-run` is decoded once in `schema/inputs.ts` and used only to build the `DryRun` service; every consumer asks that service rather than re-reading the input. In dry-run mode, package-manager commands run with `--dry-run` flags, Git branch and commit operations are skipped, check-run titles are prefixed with the `🧪` marker (the only title decoration), and Phase 3 packs and probes every registry target but uploads nothing and writes no attestation — each target is recorded `skipped`/`dry-run` and projects as the `published` it would have been, under the document's `dryRun: true` ([#459](https://github.com/savvy-web/silk-release-action/issues/459); a dry-run release is reported the same way, with `id: 0`). All validation logic runs identically to production mode.
 
 [^src-main]: src/main.ts
 [^src-program]: src/program.ts

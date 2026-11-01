@@ -22,7 +22,7 @@
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { NodeServices } from "@effect/platform-node";
+import { NodeCrypto, NodeServices } from "@effect/platform-node";
 import { describe, expect, it } from "@effect/vitest";
 import { LocalExec, ScriptedSpawner } from "@effected/commands";
 import { PackagePublish, PublishError } from "@effected/npm";
@@ -44,6 +44,8 @@ const NPM_12_OUTPUT = fixture("npm-12.0.2.json");
  * The real publish service over a spawner that answers `pnpm dlx npm@… pack`
  * with the given recorded output. `NodeServices.layer` also carries a real
  * `ChildProcessSpawner`; the scripted one is merged LAST so it wins.
+ * `NodeCrypto.layerDigest` is the real tarball hasher `ActionRuntime` supplies
+ * in production.
  */
 const makeHarness = (stdout: string) => {
 	const spawner = ScriptedSpawner.make((command) =>
@@ -51,7 +53,12 @@ const makeHarness = (stdout: string) => {
 	);
 	const layer = PackagePublish.layer.pipe(
 		Layer.provide(
-			Layer.mergeAll(NodeServices.layer, LocalExec.layerFor("pnpm", { directory: repoRoot }), spawner.layer),
+			Layer.mergeAll(
+				NodeServices.layer,
+				NodeCrypto.layerDigest,
+				LocalExec.layerFor("pnpm", { directory: repoRoot }),
+				spawner.layer,
+			),
 		),
 	);
 	return { spawner, layer };
