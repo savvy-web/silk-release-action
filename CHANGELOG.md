@@ -1,5 +1,52 @@
 # @savvy-web/silk-release-action
 
+## 5.10.4
+
+### Bug Fixes
+
+- Phase 3 with `dry-run: true` no longer publishes. Every registry target is packed and probed, then recorded as a `dry-run` skip: nothing is uploaded and no GitHub attestation is signed. In the `result` output a rehearsed package reports the `published` outcome it would have had, under the document's `dryRun: true`, the same way a dry-run release already reported `id: 0`. Before this, a dry run uploaded every tarball for real ([#459][#459])
+- Issue linking on the release branch stops at the last merged release PR again, instead of walking the target branch's whole history. The release-PR lookup now asks GitHub for merge commits and filters to the release branch server-side. The merge-commit fallback in phase detection, which could never match, is fixed the same way ([#548][#548])
+
+### Refactoring
+
+- pnpr workload publishing mints its credential through the kit's `ActionsRegistryCredential.workload`. The OIDC token is never declassified inside the action, both the bare and the prefixed value are masked before the npmrc write, and the credential is the publish-only type no registry read accepts. The minted value, audience and failure messages are unchanged ([#534][#534]) [#549][#549]
+
+### Dependencies
+
+| Dependency | Type | Action | From | To |
+| --- | --- | --- | --- | --- |
+| @effect/platform-node | dependency | updated | ^4.0.6 | ~4.1.1 |
+| @effected/commands | dependency | updated | ^0.17.0 | ^0.19.0 |
+| @effected/git | dependency | updated | ^0.26.0 | ^0.29.0 |
+| @effected/github | dependency | updated | ^0.25.1 | ^0.27.0 |
+| @effected/github-actions | dependency | updated | ^0.28.2 | ^0.30.0 |
+| @effected/github-references | dependency | updated | ^0.11.0 | ^0.13.0 |
+| @effected/jsonc | dependency | updated | ^0.20.1 | ^0.22.0 |
+| @effected/markdown | dependency | updated | ^0.23.0 | ^0.25.0 |
+| @effected/npm | dependency | updated | ^0.27.1 | ^0.29.0 |
+| @effected/package-json | dependency | updated | ^0.26.1 | ^0.28.0 |
+| @effected/sbom | dependency | updated | ^0.17.0 | ^0.19.0 |
+| @effected/schemastore | dependency | updated | ^0.26.3 | ^0.28.0 |
+| @effected/semver | dependency | updated | ^0.18.0 | ^0.20.0 |
+| @effected/workspaces | dependency | updated | ^0.39.1 | ^0.41.0 |
+| @effected/yaml | dependency | updated | ^0.25.1 | ^0.27.0 |
+| @savvy-web/silk-effects | dependency | updated | ^10.2.0 | ^11.0.0 |
+| effect | dependency | updated | ^4.0.6 | ~4.1.1 |
+
+[#549][#549]
+
+### Thanks
+
+Thanks to [@spencerbeggs](https://github.com/spencerbeggs) for their contributions!
+
+[#459]: https://github.com/savvy-web/silk-release-action/issues/459
+
+[#534]: https://github.com/savvy-web/silk-release-action/issues/534
+
+[#548]: https://github.com/savvy-web/silk-release-action/issues/548
+
+[#549]: https://github.com/savvy-web/silk-release-action/pull/549
+
 ## 5.10.3
 
 ### Dependencies
