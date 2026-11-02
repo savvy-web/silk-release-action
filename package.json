@@ -52,7 +52,7 @@
 		"@effected/semver": "catalog:effected",
 		"@effected/workspaces": "catalog:effected",
 		"@effected/yaml": "catalog:effected",
-		"@savvy-web/silk-effects": "^11.0.0",
+		"@savvy-web/silk-effects": "^11.0.1",
 		"effect": "catalog:effected"
 	},
 	"devDependencies": {
@@ -60,10 +60,10 @@
 		"@effected/memfs": "catalog:effected",
 		"@effected/plugin": "catalog:effected",
 		"@effected/schemastore-cli": "catalog:effected",
-		"@okfit/plugin": "^0.5.28",
-		"@savvy-web/github-action-builder": "^2.4.24",
-		"@savvy-web/silk": "^4.5.5",
-		"@vitest-agent/plugin": "^6.0.4",
+		"@okfit/plugin": "^0.5.29",
+		"@savvy-web/github-action-builder": "^2.4.25",
+		"@savvy-web/silk": "^4.5.6",
+		"@vitest-agent/plugin": "^6.0.5",
 		"tsx": "catalog:silk"
 	},
 	"engines": {
@@ -72,13 +72,13 @@
 	"devEngines": {
 		"packageManager": {
 			"name": "pnpm",
-			"version": "12.16.1",
+			"version": "12.17.0",
 			"onFail": "download"
 		},
 		"runtime": [
 			{
 				"name": "node",
-				"version": "26.12.1",
+				"version": "26.13.0",
 				"onFail": "ignore"
 			}
 		]
