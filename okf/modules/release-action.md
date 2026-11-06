@@ -7,7 +7,7 @@ resource: ../../src
 status: draft
 generated:
   by: okfit/claude-code
-  at: 2026-11-01T19:04:19Z
+  at: 2026-11-06T01:10:37Z
 sources:
   - id: src-main
     resource: ../../src/main.ts
@@ -32,7 +32,7 @@ tags:
   - observability
 integrity:
   generated:
-    body: 8175aa45f5dcc712
+    body: 2b409bfa44157e3c
 ---
 
 # release-action
@@ -275,7 +275,6 @@ main.ts  (guard + Action.run only)
                                         + SilkPublishability.layerAdaptive
     schema/outputs.ts     emitReleaseOutput (all phases)
     schema/projections.ts toBranchManagementOutput / toValidationOutput / toPublishOutput / toSnapshotOutput
-    utils/grouped.ts      collapsible Actions log groups (all phases)
     utils/github-urls.ts  instance-aware web URLs (GHES-correct)
     utils/summary-writer.ts  job-summary markdown
 ```

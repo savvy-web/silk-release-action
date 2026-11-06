@@ -477,6 +477,7 @@ const toPublishedPackage = (
 						method: t.auth.method,
 						credential: t.auth.credential,
 						fallback: t.auth.fallback === null ? null : { from: t.auth.fallback.from, reason: t.auth.fallback.reason },
+						observed: t.auth.observed,
 					},
 		url: packagePageUrl(kind, t.target.name, workspaceVersion, input.repo),
 		tarballUrl: probe?.tarball ?? null,

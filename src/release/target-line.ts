@@ -51,7 +51,8 @@ export interface TargetLineInput {
  * A trusted-publishing → token fallback reads `token (npm-token) after trusted
  * publishing failed`; a token-only retry (no OIDC environment on the first
  * attempt) says it was a retry without provenance instead, because blaming
- * trusted publishing there would be false.
+ * trusted publishing there would be false. When npm's own answer contradicts or
+ * cannot confirm a trusted-publishing setup, the line says so.
  *
  * @param auth - The auth record from the publish result.
  * @returns The text after `auth: `.
@@ -59,10 +60,13 @@ export interface TargetLineInput {
  * @internal
  */
 export const describeAuth = (auth: PublishAuth): string => {
-	const base =
-		auth.method === "trusted-publishing"
-			? "trusted publishing"
-			: `${auth.method} (${auth.credential ?? "no credential"})`;
+	if (auth.method === "trusted-publishing") {
+		if (auth.observed === "configured-credential") {
+			return `token (${auth.credential ?? "no credential"}), trusted publishing not used`;
+		}
+		return auth.observed === "unknown" ? "trusted publishing (unconfirmed)" : "trusted publishing";
+	}
+	const base = `${auth.method} (${auth.credential ?? "no credential"})`;
 	if (auth.fallback === null) return base;
 	return auth.fallback.from === "trusted-publishing"
 		? `${base} after trusted publishing failed`

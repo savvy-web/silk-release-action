@@ -46,7 +46,7 @@
  * Runbook: `okf/runbooks/bump-output-schema-version.md`.
  */
 
-import { defineConfig } from "@effected/schemastore";
+import { defineSchemastore } from "@effected/plugin";
 import { ReleaseOutput } from "../../src/schema/release-output.js";
 import {
 	InputSchemaIdentity,
@@ -56,7 +56,7 @@ import {
 	SilkReleaseConfig,
 } from "../../src/schema/silk-release-config.js";
 
-export default defineConfig({
+export default defineSchemastore({
 	// This config's catalog-slice identity: its entries are written to
 	// `schemas/catalogs/<name>.json`, and the CLI keeps the merged
 	// `schemas/catalog.json` (every slice, url-sorted) beside the documents.

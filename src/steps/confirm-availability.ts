@@ -53,7 +53,7 @@
  * @module steps/confirm-availability
  */
 
-import type { ActionLogger } from "@effected/github-actions";
+import { ActionLogger } from "@effected/github-actions";
 import type { RegistryCredential, RegistryKind } from "@effected/npm";
 import { NpmRegistry, classifyRegistry } from "@effected/npm";
 import { Clock, Duration, Effect, Option, Schedule } from "effect";
@@ -61,7 +61,6 @@ import { resolveReadCredential } from "../release/resolve-targets.js";
 import type { AvailabilitySkipReason, PublishCredentialSource, TargetAvailability } from "../release/types.js";
 import { availabilityKey } from "../release/types.js";
 import type { CustomRegistryAuth } from "../utils/custom-registries.js";
-import { grouped } from "../utils/grouped.js";
 
 /**
  * One published (registry, name, version) target to confirm.
@@ -400,7 +399,7 @@ export const confirmAvailability = (
 
 		// The group opens here, past the early returns, so a dry-run, a ceiling
 		// of 0 or a wave with nothing to read never leaves an empty heading.
-		const outcomes = yield* grouped(
+		const outcomes = yield* (yield* ActionLogger).group(
 			"Confirm registry availability",
 			Effect.logInfo(
 				`Confirming ${plans.length} version(s) on their registries (ceiling ${options.ceilingSeconds}s` +

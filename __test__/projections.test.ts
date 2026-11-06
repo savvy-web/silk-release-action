@@ -1426,6 +1426,7 @@ describe("toPublishOutput — per-target and per-workspace explanation", () => {
 					method: "token",
 					credential: "npm-token",
 					fallback: { from: "trusted-publishing", reason: "E404 no trusted publisher" },
+					observed: "configured-credential",
 				},
 			}),
 		]);
@@ -1436,6 +1437,7 @@ describe("toPublishOutput — per-target and per-workspace explanation", () => {
 			method: "token",
 			credential: "npm-token",
 			fallback: { from: "trusted-publishing", reason: "E404 no trusted publisher" },
+			observed: "configured-credential",
 		});
 		expect(Schema.decodeUnknownExit(ReleaseOutput)(output)._tag).toBe("Success");
 	});
@@ -1469,12 +1471,12 @@ describe("toPublishOutput — per-target and per-workspace explanation", () => {
 				status: "failed",
 				success: false,
 				error: "E403",
-				auth: { method: "trusted-publishing", credential: null, fallback: null },
+				auth: { method: "trusted-publishing", credential: null, fallback: null, observed: null },
 			}),
 		]);
 		const p = output.publish.workspaces["@savvy-web/foo"]?.packages[0];
 		expect(p?.distTag).toBeNull();
-		expect(p?.auth).toEqual({ method: "trusted-publishing", credential: null, fallback: null });
+		expect(p?.auth).toEqual({ method: "trusted-publishing", credential: null, fallback: null, observed: null });
 	});
 
 	it("names why availability was skipped: the probe's own reason, or a target that never published", () => {

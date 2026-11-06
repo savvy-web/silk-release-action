@@ -11,10 +11,11 @@ import { basename, dirname, join, relative } from "node:path";
 import { Run } from "@effected/commands";
 import type { GitHubError, Repo } from "@effected/github";
 import { Attestation, GitHubCommit, GitHubContent, PullRequest } from "@effected/github";
-import type { ActionLogger, OidcTokenIssuer } from "@effected/github-actions";
+import type { OidcTokenIssuer } from "@effected/github-actions";
 import {
 	ActionEnvironment,
 	ActionInput,
+	ActionLogger,
 	ActionOutputs,
 	ActionState,
 	ActionsRegistryCredential,
@@ -34,7 +35,6 @@ import { ChildProcess } from "effect/process";
 import { GithubPackagesTokenState, STATE_KEYS } from "../state.js";
 import type { CustomRegistryAuth } from "../utils/custom-registries.js";
 import { getGroupId } from "../utils/group-id.js";
-import { grouped } from "../utils/grouped.js";
 import { npmPrefixDir } from "../utils/npm-cache.js";
 import { releaseKindLabel, releaseKindOf, tallyReleaseKinds } from "../utils/release-kind.js";
 import { sortReleasesTopologically } from "../utils/sort-releases-topologically.js";
@@ -1071,8 +1071,8 @@ const publishDirectoryGroup = (
 					}
 				}
 
-				// What the action set up — npm reports nothing about which path it
-				// took (see `PublishAuth`). Stripping the OIDC env, or a runner that
+				// What the action set up; `observed` joins it once an upload lands (see
+				// `PublishAuth`). Stripping the OIDC env, or a runner that
 				// never exposed it, leaves only the token; a workload registry's
 				// npmrc holds only the minted credential.
 				const firstMethod: PublishAuth["method"] =
@@ -1081,6 +1081,7 @@ const publishDirectoryGroup = (
 					method: firstMethod,
 					credential: workload !== null ? "custom-registries" : (resolvedToken?.source ?? null),
 					fallback: null,
+					observed: null,
 				};
 				// npm retries a 5xx twice (10s, then 60s), on its own pre-publish
 				// packument GET and again on the PUT: about 140s per target before a
@@ -1103,7 +1104,7 @@ const publishDirectoryGroup = (
 						tag: tagFor(t),
 					})
 					.pipe(
-						Effect.map((r) => ({ ok: true as const, provenanceUrl: r.provenanceUrl })),
+						Effect.map((r) => ({ ok: true as const, provenanceUrl: r.provenanceUrl, observed: r.auth })),
 						Effect.catch((e) => Effect.succeed({ ok: false as const, error: e.message })),
 					);
 
@@ -1130,7 +1131,7 @@ const publishDirectoryGroup = (
 							tag: tagFor(t),
 						})
 						.pipe(
-							Effect.map((r) => ({ ok: true as const, provenanceUrl: r.provenanceUrl })),
+							Effect.map((r) => ({ ok: true as const, provenanceUrl: r.provenanceUrl, observed: r.auth })),
 							Effect.catch((e) => Effect.succeed({ ok: false as const, error: e.message })),
 						);
 				}
@@ -1152,6 +1153,7 @@ const publishDirectoryGroup = (
 					continue;
 				}
 
+				auth = { ...auth, observed: publishOutcome.observed };
 				yield* Effect.logInfo(line("published", { tag: tagFor(t), auth }));
 				results.push({
 					...base(t),
@@ -1638,7 +1640,7 @@ export const runBuildAndSbom = (
 	Effect.gen(function* () {
 		const discovery = yield* WorkspaceDiscovery;
 
-		return yield* grouped(
+		return yield* (yield* ActionLogger).group(
 			"Build & SBOM",
 			Effect.gen(function* () {
 				// ── Build (ci:build, once) ─────────────────────────────────────────
@@ -2021,7 +2023,7 @@ export const runPublishTargets = (
 					// `Publish · @scope/pkg@1.2.3`; only a package split across distinct
 					// byte-groups disambiguates with the group id (e.g. `· github`).
 					const groupSuffix = groups.size > 1 ? ` · ${getGroupId(directory)}` : "";
-					const groupResults = yield* grouped(
+					const groupResults = yield* (yield* ActionLogger).group(
 						`Publish · ${name}@${version}${groupSuffix}`,
 						publishDirectoryGroup(
 							name,

@@ -14,10 +14,10 @@ sources:
     resource: ../../schemas/6.0/output.json
 generated:
   by: okfit/claude-code
-  at: 2026-10-23T17:46:00Z
+  at: 2026-11-06T01:10:37Z
 integrity:
   generated:
-    body: 00fa8390289cf58f
+    body: 4c3a321fccef4c06
 ---
 
 # The `result` output document
@@ -215,7 +215,7 @@ Each `PublishedPackage` also says how it was published:[^release-output-ts]
   workspace's targets could not be resolved, so no declaration was matched.
 - `distTag` — the dist-tag the upload used (`latest`, `beta`, …). Null unless
   the outcome is `published`; a `recovered` package uploaded nothing.
-- `auth` — `{ method, credential, fallback }`, non-null whenever the action
+- `auth` — `{ method, credential, fallback, observed }`, non-null whenever the action
   invoked `npm publish` for the target, including a refused upload, and null
   when it never did. `method` describes what the **action** set up, not what
   npm did: `token` when the Actions OIDC environment was stripped (always for
@@ -223,10 +223,11 @@ Each `PublishedPackage` also says how it was published:[^release-output-ts]
   through, `workload-oidc` when a pnpr `_pnprWorkload` registry was published
   with a `pnpr_workload_<jwt>` credential the action minted from the job's
   OIDC token and wrote as the npmrc's only token for it (`credential` is then
-  `custom-registries`, and there is never a fallback). npm reports nothing
-  about which path it took and `@effected/npm`'s publish result carries
-  nothing either, so a `trusted-publishing` upload with a non-null
-  `credential` may in fact have used that token.
+  `custom-registries`, and there is never a fallback). `observed` is what npm
+  did, read from its own log on positive evidence: `oidc-exchange`,
+  `configured-credential`, or `unknown` when npm printed no marker, and null
+  when no upload landed. A `trusted-publishing` upload with
+  `configured-credential` used the npmrc token.
   `credential` names the input that supplied the npmrc token
   (`github-token`, `npm-token`, `custom-registries`, or `registry-env` for the
   `<HOST>_TOKEN` environment fallback). `fallback` is set when the first

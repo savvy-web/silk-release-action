@@ -1,7 +1,7 @@
 ---
 type: Runbook
 title: Bump the output schema version
-description: Respond to a contract change in the versioned ReleaseOutput JSON Schema by bumping OUTPUT_SCHEMA_VERSION, keeping the old label frozen in lib/scripts/schemastore.config.ts, and regenerating with the schemastore CLI.
+description: Respond to a contract change in the versioned ReleaseOutput JSON Schema by bumping OUTPUT_SCHEMA_VERSION, keeping the old label frozen in lib/scripts/schemastore.config.ts, and regenerating with `effected schema`.
 resource: ../../lib/scripts/schemastore.config.ts
 tags:
   - release
@@ -14,14 +14,14 @@ sources:
   - id: silk-release-config
     resource: ../../src/schema/silk-release-config.ts
   - id: schemastore-cli-readme
-    resource: npm:@effected/schemastore-cli
+    resource: npm:@effected/plugin
 generated:
   by: okfit/claude-code
-  at: 2026-09-29T01:25:34Z
+  at: 2026-11-06T01:10:37Z
 status: draft
 integrity:
   generated:
-    body: d02bf023c2ea39f4
+    body: 203097f2e064e4e3
 ---
 
 # Bump the output schema version
@@ -66,7 +66,7 @@ label. This runbook is for the moment a label has shipped.
      the labels; the config entries spell none): keep the old label in the
      array alongside `OUTPUT_SCHEMA_VERSION`. The old label becomes a
      **frozen** version whose file the CLI verifies still exists — and, since
-     `@effected/schemastore-cli` 0.12, still declares exactly its derived
+     `@effected/schemastore` 0.12, still declares exactly its derived
      `$id` — but never regenerates; advertising a label with nothing on disk,
      or with a file whose `$id` is absent, different or unparseable, fails
      the pre-flight before anything is written. A change to the hosting
@@ -120,4 +120,4 @@ See also: [Versioned output schema decision](../decisions/versioned-output-schem
 [^schemastore-config]: `../../lib/scripts/schemastore.config.ts`
 [^release-output]: `../../src/schema/release-output.ts`
 [^silk-release-config]: `../../src/schema/silk-release-config.ts`
-[^schemastore-cli-readme]: `npm:@effected/schemastore-cli`
+[^schemastore-cli-readme]: `npm:@effected/plugin`

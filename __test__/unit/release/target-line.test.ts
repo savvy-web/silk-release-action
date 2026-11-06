@@ -28,7 +28,7 @@ describe("formatTargetLine", () => {
 			registry: CUSTOM,
 			outcome: "published",
 			tag: "latest",
-			auth: { method: "token", credential: "custom-registries", fallback: null },
+			auth: { method: "token", credential: "custom-registries", fallback: null, observed: null },
 		});
 		expect(line).toContain("⬆ savvy · registry.savvyweb.systems · published → latest");
 		expect(line).toContain("auth: token (custom-registries)");
@@ -49,7 +49,12 @@ describe("formatTargetLine", () => {
 			registry: "https://registry.npmjs.org/",
 			outcome: "publish-failed",
 			tag: "next",
-			auth: { method: "token", credential: "npm-token", fallback: { from: "trusted-publishing", reason: "E404" } },
+			auth: {
+				method: "token",
+				credential: "npm-token",
+				fallback: { from: "trusted-publishing", reason: "E404" },
+				observed: null,
+			},
 		});
 		expect(line).toContain("⬆ npm · registry.npmjs.org · publish-failed → next");
 		expect(line).toContain("auth: token (npm-token) after trusted publishing failed");
@@ -58,11 +63,43 @@ describe("formatTargetLine", () => {
 
 describe("describeAuth", () => {
 	it("names trusted publishing on its own", () => {
-		expect(describeAuth({ method: "trusted-publishing", credential: null, fallback: null })).toBe("trusted publishing");
+		expect(describeAuth({ method: "trusted-publishing", credential: null, fallback: null, observed: null })).toBe(
+			"trusted publishing",
+		);
+	});
+
+	it("leaves trusted publishing unqualified when npm confirms the exchange", () => {
+		expect(
+			describeAuth({
+				method: "trusted-publishing",
+				credential: "npm-token",
+				fallback: null,
+				observed: "oidc-exchange",
+			}),
+		).toBe("trusted publishing");
+	});
+
+	it("names the configured credential when trusted publishing was offered and npm did not use it", () => {
+		expect(
+			describeAuth({
+				method: "trusted-publishing",
+				credential: "npm-token",
+				fallback: null,
+				observed: "configured-credential",
+			}),
+		).toBe("token (npm-token), trusted publishing not used");
+	});
+
+	it("marks trusted publishing unconfirmed when npm printed no marker", () => {
+		expect(describeAuth({ method: "trusted-publishing", credential: null, fallback: null, observed: "unknown" })).toBe(
+			"trusted publishing (unconfirmed)",
+		);
 	});
 
 	it("says a token attempt had no credential instead of leaving the parentheses empty", () => {
-		expect(describeAuth({ method: "token", credential: null, fallback: null })).toBe("token (no credential)");
+		expect(describeAuth({ method: "token", credential: null, fallback: null, observed: null })).toBe(
+			"token (no credential)",
+		);
 	});
 
 	it("names a token-only retry without blaming trusted publishing", () => {
@@ -70,6 +107,7 @@ describe("describeAuth", () => {
 			method: "token",
 			credential: "npm-token",
 			fallback: { from: "token", reason: "E500" },
+			observed: null,
 		});
 		expect(text).toContain("token (npm-token)");
 		expect(text).not.toContain("trusted publishing");
@@ -77,9 +115,9 @@ describe("describeAuth", () => {
 	});
 
 	it("names a minted pnpr workload credential and the input that asked for it (OPS-143)", () => {
-		expect(describeAuth({ method: "workload-oidc", credential: "custom-registries", fallback: null })).toBe(
-			"workload-oidc (custom-registries)",
-		);
+		expect(
+			describeAuth({ method: "workload-oidc", credential: "custom-registries", fallback: null, observed: null }),
+		).toBe("workload-oidc (custom-registries)");
 	});
 
 	it("renders the workload-oidc auth on a published pnpr line", () => {
@@ -88,7 +126,7 @@ describe("describeAuth", () => {
 			registry: "https://registry.savvyweb.systems/npm/~savvy/",
 			outcome: "published",
 			tag: "latest",
-			auth: { method: "workload-oidc", credential: "custom-registries", fallback: null },
+			auth: { method: "workload-oidc", credential: "custom-registries", fallback: null, observed: null },
 		});
 		expect(line).toContain(
 			"⬆ savvy · registry.savvyweb.systems · published → latest · auth: workload-oidc (custom-registries)",

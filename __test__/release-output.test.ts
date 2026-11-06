@@ -85,7 +85,7 @@ describe("ReleaseOutput schema", () => {
 							},
 							target: { id: "github", releases: "all" },
 							distTag: "latest",
-							auth: { method: "token", credential: "github-token", fallback: null },
+							auth: { method: "token", credential: "github-token", fallback: null, observed: "configured-credential" },
 							url: "https://github.com/orgs/savvy-web/packages/npm/package/foo",
 							tarballUrl: null,
 							available: false,
