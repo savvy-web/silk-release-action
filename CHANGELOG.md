@@ -1,5 +1,42 @@
 # @savvy-web/silk-release-action
 
+## 5.11.0
+
+### Features
+
+- Each publish target's `auth` in the output gains `observed`: what npm reports it authenticated with (`oidc-exchange`, `configured-credential` or `unknown`), or `null` when no upload landed. `method` still records what the action set up.
+- The per-target log line now says when trusted publishing was offered but npm used the configured token, or when npm's log could not confirm the exchange.
+
+### Dependencies
+
+| Dependency | Type | Action | From | To |
+| --- | --- | --- | --- | --- |
+| @effected/github | dependency | updated | ^0.28.0 | ^0.29.0 |
+| @effected/github-actions | dependency | updated | ^0.31.0 | ^0.32.0 |
+| @effected/jsonc | dependency | updated | ^0.23.0 | ^0.24.0 |
+| @effected/markdown | dependency | updated | ^0.26.0 | ^0.27.0 |
+| @effected/npm | dependency | updated | ^0.30.0 | ^0.30.1 |
+| @effected/package-json | dependency | updated | ^0.29.0 | ^0.30.0 |
+| @effected/sbom | dependency | updated | ^0.20.0 | ^0.20.1 |
+| @effected/schemastore | dependency | updated | ^0.29.0 | ^0.30.0 |
+| @effected/semver | dependency | updated | ^0.21.0 | ^0.22.0 |
+| @effected/workspaces | dependency | updated | ^0.42.0 | ^0.43.0 |
+| @effected/yaml | dependency | updated | ^0.28.0 | ^0.29.0 |
+
+[#556][#556]
+
+### Maintenance
+
+- Log groups now use the kit's nesting-aware `ActionLogger.group` and `heading`, replacing the local wrapper. Log output keeps the same shape.
+- The App JWT is now signed through the `Signature` service the action runtime provides, replacing the separately wired layer in the pre and post steps.
+- Schema generation moved from the retired `schemastore` CLI to `effected schema`. [#556][#556]
+
+### Thanks
+
+Thanks to [@spencerbeggs](https://github.com/spencerbeggs) for their contributions!
+
+[#556]: https://github.com/savvy-web/silk-release-action/pull/556
+
 ## 5.10.6
 
 ### Dependencies
