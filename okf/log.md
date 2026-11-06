@@ -1,5 +1,13 @@
 # Log
 
+## 2026-11-06
+
+* Updated Bump the output schema version
+* Updated The `result` output document
+* Updated Version the output JSON Schema under its own path per release
+* Updated `Effect.logInfo` inside a group is buffered and discarded on success
+* Updated release-action
+
 ## 2026-11-01
 
 * Updated An explicit-only snapshot phase, never a publish-phase flag

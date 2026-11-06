@@ -4,7 +4,7 @@
 // service; no domain services exist yet.
 //
 // **What is deliberately absent.** `ActionEnvironment`, `ActionLogger`,
-// `ActionOutputs`, `ActionState`, `NodeServices`, `Digest` and an `HttpClient` all come
+// `ActionOutputs`, `ActionState`, `NodeServices`, `Digest`, `Signature` and an `HttpClient` all come
 // from `ActionRuntime` via `Action.run`. Because `ActionRunOptions.layer` is
 // `Layer<R, never, ActionServices>`, this layer may *require* any of them
 // rather than rebuild them — which is why there is no `ActionState.layer` or
@@ -215,8 +215,8 @@ const releaseLive = ReleaseLive.pipe(Layer.provide(NodeServices.layer), Layer.or
  *
  * @remarks
  * `ActionRuntime` — injected by `Action.run` — provides `ActionEnvironment`,
- * `ActionLogger`, `ActionOutputs`, `ActionState`, `NodeServices`, `Digest` and
- * an `HttpClient`. Because `ActionRunOptions.layer` is
+ * `ActionLogger`, `ActionOutputs`, `ActionState`, `NodeServices`, `Digest`,
+ * `Signature` and an `HttpClient`. Because `ActionRunOptions.layer` is
  * `Layer<R, never, ActionServices>`, this layer may **require** any of them
  * rather than rebuild them.
  *

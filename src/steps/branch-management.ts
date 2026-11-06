@@ -35,13 +35,12 @@ import type {
 } from "@effected/github";
 import type {
 	ActionEnvironmentError,
-	ActionLogger,
 	ActionOutputError,
 	ActionState,
 	ActionStateError,
 	GitHubTokenError,
 } from "@effected/github-actions";
-import { ActionEnvironment, ActionOutputs, DryRun } from "@effected/github-actions";
+import { ActionEnvironment, ActionLogger, ActionOutputs, DryRun } from "@effected/github-actions";
 import type { PackageManagerDetector, PublishabilityDetector, WorkspaceDiscovery } from "@effected/workspaces";
 import { Changesets } from "@savvy-web/silk-effects";
 import type { Config, FileSystem } from "effect";
@@ -56,7 +55,6 @@ import { createReleaseBranch } from "../utils/create-release-branch.js";
 import { detectPackageManager } from "../utils/detect-package-manager.js";
 import { ensureFullHistory } from "../utils/ensure-full-history.js";
 import { resolveCommitLinker, resolveServerUrl } from "../utils/github-urls.js";
-import { grouped } from "../utils/grouped.js";
 import type { FileReadError } from "../utils/porcelain-changes.js";
 import type { PlannedPackage } from "../utils/release-plan.js";
 import { toReleasePlanReport } from "../utils/release-plan.js";
@@ -167,7 +165,7 @@ export const branchManagement = (
 		// decides what a rehearsal is.
 		const dryRun = yield* (yield* DryRun).isDryRun;
 
-		return yield* grouped(
+		return yield* (yield* ActionLogger).group(
 			"Phase 1: Release Branch Management",
 			Effect.gen(function* () {
 				const { releaseBranch, targetBranch } = inputs;

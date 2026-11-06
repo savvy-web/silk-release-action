@@ -10,6 +10,7 @@
  * can share them without importing from implementation modules.
  */
 
+import type { PublishAuthPath } from "@effected/npm";
 import type { ReleaseChannel } from "@savvy-web/silk-effects";
 import type { AlreadyPublishedReason, ResolvedTarget } from "../types/publish-config.js";
 import type { ReleaseKind } from "../utils/release-kind.js";
@@ -24,10 +25,8 @@ import type { ReleaseKind } from "../utils/release-kind.js";
  * OIDC environment was present and passed through, so npm was free to attempt
  * its trusted-publishing exchange. Only registry.npmjs.org targets are ever
  * offered the environment; every other registry is token-only from the first
- * attempt. npm does not report which path it took, and
- * `@effected/npm`'s `PublishOutcome` carries nothing about it, so a successful
- * `"trusted-publishing"` attempt with a credential in the npmrc does not prove
- * which of the two npm used. `"workload-oidc"` — a pnpr workload registry
+ * attempt. {@link PublishAuth.observed} says which path npm took.
+ * `"workload-oidc"` — a pnpr workload registry
  * (`_pnprWorkload` in `custom-registries`, OPS-143): the action minted a
  * `pnpr_workload_<jwt>` credential from the job's GitHub Actions OIDC token,
  * wrote it as the npmrc's only token for that registry and stripped the OIDC
@@ -67,6 +66,13 @@ export interface PublishAuth {
 	 * the retry repeated token auth without provenance.
 	 */
 	readonly fallback: { readonly from: PublishAuthMethod; readonly reason: string } | null;
+	/**
+	 * What npm reports it authenticated the landed upload with, or `null` when no
+	 * upload landed. `method` is what the action offered; this is what npm did, so
+	 * `"trusted-publishing"` with `"configured-credential"` means npm declined the
+	 * exchange and used the npmrc token.
+	 */
+	readonly observed: PublishAuthPath | null;
 }
 
 /**

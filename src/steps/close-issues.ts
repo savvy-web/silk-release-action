@@ -14,11 +14,10 @@
  * @module steps/close-issues
  */
 
-import { DryRun } from "@effected/github-actions";
+import { ActionLogger, DryRun } from "@effected/github-actions";
 import { Effect, Option } from "effect";
 import { closeLinkedIssues } from "../utils/close-linked-issues.js";
 import { readEventPullRequestNumber } from "../utils/event-payload.js";
-import { grouped } from "../utils/grouped.js";
 
 /**
  * Close the issues the merged release PR references.
@@ -29,7 +28,7 @@ export const runCloseIssues = () =>
 	Effect.gen(function* () {
 		const dryRun = yield* (yield* DryRun).isDryRun;
 
-		yield* grouped(
+		yield* (yield* ActionLogger).group(
 			"Phase 3a: Close Linked Issues",
 			Effect.gen(function* () {
 				const prNumber = yield* readEventPullRequestNumber();

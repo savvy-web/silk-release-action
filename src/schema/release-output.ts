@@ -1004,7 +1004,7 @@ const PublishAuthMethod = Schema.Literals(["token", "trusted-publishing", "workl
 	identifier: "PublishAuthMethod",
 	title: "Auth method",
 	description:
-		"How the action set npm up to authenticate — what the action DID, not what npm reports. `token` — the Actions OIDC environment was stripped (always, for GitHub Packages and custom registries — trusted publishing exists only on registry.npmjs.org) or the runner never exposed it (no `id-token: write`), so npm could authenticate only with the npmrc token, if any. `trusted-publishing` — the OIDC environment was passed through, so npm was free to attempt its trusted-publishing exchange. npm does not say which path it took, so a `trusted-publishing` upload with a non-null `credential` may have authenticated with that token instead. `workload-oidc` — a pnpr workload registry (a `_pnprWorkload` line in `custom-registries`): the action minted a `pnpr_workload_<jwt>` credential from the job's GitHub Actions OIDC token (`id-token: write`), wrote it as the npmrc's only token for that registry and stripped the OIDC environment, so that minted credential authenticated the upload; `credential` is `custom-registries`, and there is never a fallback. More methods may be added; treat an unknown value as opaque.",
+		"How the action set npm up to authenticate — what the action DID; `observed` is what npm reports. `token` — the Actions OIDC environment was stripped (always, for GitHub Packages and custom registries — trusted publishing exists only on registry.npmjs.org) or the runner never exposed it (no `id-token: write`), so npm could authenticate only with the npmrc token, if any. `trusted-publishing` — the OIDC environment was passed through, so npm was free to attempt its trusted-publishing exchange. npm does not say which path it took, so a `trusted-publishing` upload with a non-null `credential` may have authenticated with that token instead. `workload-oidc` — a pnpr workload registry (a `_pnprWorkload` line in `custom-registries`): the action minted a `pnpr_workload_<jwt>` credential from the job's GitHub Actions OIDC token (`id-token: write`), wrote it as the npmrc's only token for that registry and stripped the OIDC environment, so that minted credential authenticated the upload; `credential` is `custom-registries`, and there is never a fallback. More methods may be added; treat an unknown value as opaque.",
 });
 
 const PublishAuth = Schema.Struct({
@@ -1037,6 +1037,17 @@ const PublishAuth = Schema.Struct({
 	).annotate({
 		title: "Token fallback",
 		description: "Set when the token retry ran; null when the first attempt's result stands.",
+	}),
+	observed: Schema.NullOr(
+		Schema.Literals(["oidc-exchange", "configured-credential", "unknown"]).annotate({
+			identifier: "PublishAuthObserved",
+			title: "Observed auth path",
+			description:
+				"What npm's own log says authenticated the upload: `oidc-exchange` (the trusted-publishing exchange succeeded), `configured-credential` (the npmrc credential), or `unknown` (npm printed no marker). Read on positive evidence only.",
+		}),
+	).annotate({
+		title: "Observed auth path",
+		description: "What npm reports it used. Null when no upload landed.",
 	}),
 }).annotate({
 	identifier: "PublishAuth",

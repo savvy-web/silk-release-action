@@ -58,7 +58,7 @@
  */
 
 import { Repo } from "@effected/github";
-import { ActionOutputs, DryRun } from "@effected/github-actions";
+import { ActionLogger, ActionOutputs, DryRun } from "@effected/github-actions";
 import { Effect } from "effect";
 import { PublishError, ReleasesError } from "../release/errors.js";
 import type { DetectedRelease } from "../release/publish.js";
@@ -74,7 +74,6 @@ import { detectPackageManager } from "../utils/detect-package-manager.js";
 import { determineTagStrategy, isMonorepoForTagging } from "../utils/determine-tag-strategy.js";
 import { ensureFullHistory } from "../utils/ensure-full-history.js";
 import { resolveServerUrl } from "../utils/github-urls.js";
-import { headed } from "../utils/grouped.js";
 import { releaseKindLabel, summarizeReleaseWave, tallyReleaseKinds } from "../utils/release-kind.js";
 import { sortReleasesTopologically } from "../utils/sort-releases-topologically.js";
 import { confirmAvailability } from "./confirm-availability.js";
@@ -106,339 +105,341 @@ const RERUN_CONTRACT =
  * @public
  */
 export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | undefined) =>
-	headed(
-		"Phase 3: Publishing",
-		Effect.gen(function* () {
-			const outputs = yield* ActionOutputs;
+	Effect.flatMap(ActionLogger, (logger) =>
+		logger.heading(
+			"Phase 3: Publishing",
+			Effect.gen(function* () {
+				const outputs = yield* ActionOutputs;
 
-			const { targetBranch } = inputs;
-			const dryRun = yield* (yield* DryRun).isDryRun;
-			const packageManager = yield* detectPackageManager;
-			const { owner, repo } = yield* Repo;
-			const serverUrl = yield* resolveServerUrl();
+				const { targetBranch } = inputs;
+				const dryRun = yield* (yield* DryRun).isDryRun;
+				const packageManager = yield* detectPackageManager;
+				const { owner, repo } = yield* Repo;
+				const serverUrl = yield* resolveServerUrl();
 
-			// `plan` is threaded into every emission, including the aborted ones —
-			// it is what keeps the wave's membership and each workspace's `kind`
-			// on the wire when the phase stops early. `availability` is the
-			// registry probe's answer (Step 6); the aborted emissions happen
-			// before that step runs and pass `noAvailability`, so every package
-			// they describe reads as `skipped`.
-			const noAvailability: ReadonlyMap<string, TargetAvailability> = new Map();
-			const emitPublishing = (
-				stage: Pick<PublishInput, "plan" | "publishResult" | "failure"> &
-					Partial<Pick<PublishInput, "tags" | "releases" | "tagShas" | "availability">>,
-			) =>
-				emitReleaseOutput(
-					outputs,
-					toPublishOutput({
-						tags: [],
-						releases: [],
-						tagShas: {},
-						availability: noAvailability,
-						...stage,
-						dryRun,
-						repo: { owner, repo, serverUrl },
-					}),
+				// `plan` is threaded into every emission, including the aborted ones —
+				// it is what keeps the wave's membership and each workspace's `kind`
+				// on the wire when the phase stops early. `availability` is the
+				// registry probe's answer (Step 6); the aborted emissions happen
+				// before that step runs and pass `noAvailability`, so every package
+				// they describe reads as `skipped`.
+				const noAvailability: ReadonlyMap<string, TargetAvailability> = new Map();
+				const emitPublishing = (
+					stage: Pick<PublishInput, "plan" | "publishResult" | "failure"> &
+						Partial<Pick<PublishInput, "tags" | "releases" | "tagShas" | "availability">>,
+				) =>
+					emitReleaseOutput(
+						outputs,
+						toPublishOutput({
+							tags: [],
+							releases: [],
+							tagShas: {},
+							availability: noAvailability,
+							...stage,
+							dryRun,
+							repo: { owner, repo, serverUrl },
+						}),
+						{
+							packageCount: stage.plan.length,
+							releasePrNumber: mergedReleasePRNumber !== undefined ? mergedReleasePRNumber : null,
+						},
+					);
+
+				// ── Prelude (detail) ───────────────────────────────────────────────────
+				yield* Effect.logDebug(`Detected package manager: ${packageManager}`);
+				yield* ensureFullHistory(targetBranch);
+
+				const args = { packageManager, targetBranch, dryRun, mergedReleasePRNumber };
+
+				// ── Step 1: Detect released packages ───────────────────────────────────
+				// `detectReleases` wraps itself in Step.withStep, which emits its own
+				// success line on completion. No extra info line here.
+				const detectedUnordered = yield* detectReleases(args);
+
+				// Order the detected packages dependency-first once, at the source, so
+				// every downstream step — tag strategy (Step 2), build & SBOM (Step 3),
+				// publish (Step 4), and GitHub releases (Step 5) — surfaces packages in
+				// the same topological order. Detection returns workspace glob order
+				// (alphabetical); without this, releases/tags ran alphabetically while
+				// publishing ran topologically. `runPublishTargets` re-sorts internally
+				// (idempotent on an already-ordered list) as defence-in-depth.
+				const detectedByName = new Map(detectedUnordered.map((d) => [d.name, d] as const));
+				const detectedOrder = yield* sortReleasesTopologically(detectedUnordered.map((d) => d.name));
+				const detected: ReadonlyArray<DetectedRelease> = detectedOrder
+					.map((name) => detectedByName.get(name))
+					.filter((d): d is DetectedRelease => d !== undefined);
+
+				// ── Step 1b: Resolve the publish plan (BEFORE the build gate) ─────────
+				// Cheap, manifest-only, and cannot fail — so it runs ahead of the first
+				// step that can. Every later emission, including the aborted ones, is
+				// driven off this plan, which is how a run that dies at `ci:build` can
+				// still report which workspaces were in flight and what kind each is.
+				const plan = yield* planWorkspaces(detected);
+
+				if (detected.length === 0) {
+					const empty: PublishPackagesResult = {
+						success: true,
+						packages: [],
+						totalPackages: 0,
+						successfulPackages: 0,
+						totalTargets: 0,
+						successfulTargets: 0,
+					};
+					yield* emitPublishing({ plan: [], publishResult: empty, failure: null });
+					yield* Effect.logInfo("Release publishing: ✅ no workspaces to release — nothing to tag, release or publish");
+					return;
+				}
+
+				// ── Step 2: Determine tag strategy ─────────────────────────────────────
+				// One line, so no log group: a group around a single line only adds a
+				// fold to click through.
+				// `DetectedRelease` carries no `targets`, and `determineTagStrategy`
+				// only reads `name`/`version` — so the empty `targets` array is safe.
+				// Tag strategy (Step 2) runs on the full detected set before any
+				// publishing, making every detected package a tag candidate; that is
+				// correct because a publish failure (Step 4) aborts releases (Step 5)
+				// before a single tag is ever created.
+				const needsPerPackageTags = yield* isMonorepoForTagging(process.cwd());
+				const tagStrategy = determineTagStrategy(
+					detected.map((d) => ({ name: d.name, version: d.version, targets: [] })),
+					needsPerPackageTags,
+				);
+				yield* Effect.logDebug(`tag strategy: ${tagStrategy.strategy}, ${tagStrategy.tags.length} tag(s)`);
+				const strategyLabel = tagStrategy.strategy === "multiple" ? "per-package tags" : "single shared tag";
+				yield* Effect.logInfo(`✅ ${tagStrategy.tags.length} tag(s), ${strategyLabel}`);
+
+				// ── Step 3: Build & SBOM (fail-fast gate) ──────────────────────────────
+				// `runBuildAndSbom` wraps itself in Step.withStep; its success line emits
+				// from the step on completion.
+				const buildSbom = yield* runBuildAndSbom(detected, args);
+				if (!buildSbom.ok) {
+					const detail =
+						buildSbom.buildError !== undefined
+							? `build failed — ${buildSbom.buildError}`
+							: `SBOM generation failed for ${buildSbom.sbomFailures.join(", ")}`;
+					yield* Effect.logError(`❌ Build & SBOM — ${detail}; aborting before publish`);
+					const failed: PublishPackagesResult = {
+						success: false,
+						packages: [],
+						totalPackages: detected.length,
+						successfulPackages: 0,
+						totalTargets: 0,
+						successfulTargets: 0,
+						...(buildSbom.buildError !== undefined ? { buildError: buildSbom.buildError } : {}),
+					};
+					yield* emitPublishing({
+						plan,
+						publishResult: failed,
+						failure: { stage: "build", reason: buildSbom.buildError ?? detail },
+					});
+					yield* Effect.logInfo("Release publishing: ❌ aborted at Build & SBOM — nothing published");
+					yield* outputs.setFailed("Phase 3 aborted at Build & SBOM");
+					// FAIL, do not return. `setFailed` only annotates; the exit code comes
+					// from whether this effect fails.
+					return yield* Effect.fail(new PublishError({ reason: "build", message: "Phase 3 aborted at Build & SBOM" }));
+				}
+
+				// ── Step 4: Publish to registries ──────────────────────────────────────
+				// `inputs.customRegistries` rides along so custom-registry targets get
+				// their configured tokens (issue #215 — this hand-off is the wiring the
+				// publish-chain migration lost). `dryRun` rides along too (issue #459):
+				// without it a rehearsal packed, uploaded and attested for real.
+				const publishResult = yield* runPublishTargets(
+					detected,
+					buildSbom.sbomPaths,
+					inputs.customRegistries,
+					undefined,
 					{
-						packageCount: stage.plan.length,
-						releasePrNumber: mergedReleasePRNumber !== undefined ? mergedReleasePRNumber : null,
+						dryRun,
 					},
 				);
-
-			// ── Prelude (detail) ───────────────────────────────────────────────────
-			yield* Effect.logDebug(`Detected package manager: ${packageManager}`);
-			yield* ensureFullHistory(targetBranch);
-
-			const args = { packageManager, targetBranch, dryRun, mergedReleasePRNumber };
-
-			// ── Step 1: Detect released packages ───────────────────────────────────
-			// `detectReleases` wraps itself in Step.withStep, which emits its own
-			// success line on completion. No extra info line here.
-			const detectedUnordered = yield* detectReleases(args);
-
-			// Order the detected packages dependency-first once, at the source, so
-			// every downstream step — tag strategy (Step 2), build & SBOM (Step 3),
-			// publish (Step 4), and GitHub releases (Step 5) — surfaces packages in
-			// the same topological order. Detection returns workspace glob order
-			// (alphabetical); without this, releases/tags ran alphabetically while
-			// publishing ran topologically. `runPublishTargets` re-sorts internally
-			// (idempotent on an already-ordered list) as defence-in-depth.
-			const detectedByName = new Map(detectedUnordered.map((d) => [d.name, d] as const));
-			const detectedOrder = yield* sortReleasesTopologically(detectedUnordered.map((d) => d.name));
-			const detected: ReadonlyArray<DetectedRelease> = detectedOrder
-				.map((name) => detectedByName.get(name))
-				.filter((d): d is DetectedRelease => d !== undefined);
-
-			// ── Step 1b: Resolve the publish plan (BEFORE the build gate) ─────────
-			// Cheap, manifest-only, and cannot fail — so it runs ahead of the first
-			// step that can. Every later emission, including the aborted ones, is
-			// driven off this plan, which is how a run that dies at `ci:build` can
-			// still report which workspaces were in flight and what kind each is.
-			const plan = yield* planWorkspaces(detected);
-
-			if (detected.length === 0) {
-				const empty: PublishPackagesResult = {
-					success: true,
-					packages: [],
-					totalPackages: 0,
-					successfulPackages: 0,
-					totalTargets: 0,
-					successfulTargets: 0,
-				};
-				yield* emitPublishing({ plan: [], publishResult: empty, failure: null });
-				yield* Effect.logInfo("Release publishing: ✅ no workspaces to release — nothing to tag, release or publish");
-				return;
-			}
-
-			// ── Step 2: Determine tag strategy ─────────────────────────────────────
-			// One line, so no log group: a group around a single line only adds a
-			// fold to click through.
-			// `DetectedRelease` carries no `targets`, and `determineTagStrategy`
-			// only reads `name`/`version` — so the empty `targets` array is safe.
-			// Tag strategy (Step 2) runs on the full detected set before any
-			// publishing, making every detected package a tag candidate; that is
-			// correct because a publish failure (Step 4) aborts releases (Step 5)
-			// before a single tag is ever created.
-			const needsPerPackageTags = yield* isMonorepoForTagging(process.cwd());
-			const tagStrategy = determineTagStrategy(
-				detected.map((d) => ({ name: d.name, version: d.version, targets: [] })),
-				needsPerPackageTags,
-			);
-			yield* Effect.logDebug(`tag strategy: ${tagStrategy.strategy}, ${tagStrategy.tags.length} tag(s)`);
-			const strategyLabel = tagStrategy.strategy === "multiple" ? "per-package tags" : "single shared tag";
-			yield* Effect.logInfo(`✅ ${tagStrategy.tags.length} tag(s), ${strategyLabel}`);
-
-			// ── Step 3: Build & SBOM (fail-fast gate) ──────────────────────────────
-			// `runBuildAndSbom` wraps itself in Step.withStep; its success line emits
-			// from the step on completion.
-			const buildSbom = yield* runBuildAndSbom(detected, args);
-			if (!buildSbom.ok) {
-				const detail =
-					buildSbom.buildError !== undefined
-						? `build failed — ${buildSbom.buildError}`
-						: `SBOM generation failed for ${buildSbom.sbomFailures.join(", ")}`;
-				yield* Effect.logError(`❌ Build & SBOM — ${detail}; aborting before publish`);
-				const failed: PublishPackagesResult = {
-					success: false,
-					packages: [],
-					totalPackages: detected.length,
-					successfulPackages: 0,
-					totalTargets: 0,
-					successfulTargets: 0,
-					...(buildSbom.buildError !== undefined ? { buildError: buildSbom.buildError } : {}),
-				};
-				yield* emitPublishing({
-					plan,
-					publishResult: failed,
-					failure: { stage: "build", reason: buildSbom.buildError ?? detail },
-				});
-				yield* Effect.logInfo("Release publishing: ❌ aborted at Build & SBOM — nothing published");
-				yield* outputs.setFailed("Phase 3 aborted at Build & SBOM");
-				// FAIL, do not return. `setFailed` only annotates; the exit code comes
-				// from whether this effect fails.
-				return yield* Effect.fail(new PublishError({ reason: "build", message: "Phase 3 aborted at Build & SBOM" }));
-			}
-
-			// ── Step 4: Publish to registries ──────────────────────────────────────
-			// `inputs.customRegistries` rides along so custom-registry targets get
-			// their configured tokens (issue #215 — this hand-off is the wiring the
-			// publish-chain migration lost). `dryRun` rides along too (issue #459):
-			// without it a rehearsal packed, uploaded and attested for real.
-			const publishResult = yield* runPublishTargets(
-				detected,
-				buildSbom.sbomPaths,
-				inputs.customRegistries,
-				undefined,
-				{
-					dryRun,
-				},
-			);
-			if (!publishResult.success) {
-				yield* Effect.logError(
-					`❌ Published ${publishResult.successfulTargets}/${publishResult.totalTargets} registry target(s) — aborting before releases`,
+				if (!publishResult.success) {
+					yield* Effect.logError(
+						`❌ Published ${publishResult.successfulTargets}/${publishResult.totalTargets} registry target(s) — aborting before releases`,
+					);
+					yield* emitPublishing({
+						plan,
+						publishResult,
+						failure: {
+							stage: "publish",
+							reason: `Published ${publishResult.successfulTargets}/${publishResult.totalTargets} registry target(s)`,
+						},
+					});
+					yield* Effect.logInfo("Release publishing: ❌ failed at Publish");
+					yield* outputs.setFailed("Publishing failed");
+					// FAIL, do not return — see the note on `PublishError`. Returning here
+					// is what let a 4-of-8-targets publish report a green run.
+					return yield* Effect.fail(
+						new PublishError({
+							reason: "publish",
+							message: `Published ${publishResult.successfulTargets}/${publishResult.totalTargets} registry target(s)`,
+						}),
+					);
+				}
+				// Name the wave's shape, not just the ratio. `✅ Published 0/0 target(s)`
+				// is true of a release made entirely of private tracking packages and
+				// tells a reader nothing about whether that was the design or a
+				// resolution failure.
+				const publishKinds = tallyReleaseKinds(publishResult.packages.map((pkg) => pkg.targets.length));
+				// A recovery (already on the registry at an identical digest) counts as
+				// a successful target here but not as an upload in the closing line, so
+				// name it, or "13/13" beside "10 published" reads as a contradiction.
+				const recovered = publishResult.packages.reduce(
+					(n, p) => n + p.targets.filter((t) => t.skipReason === "already-published-identical").length,
+					0,
 				);
+				yield* Effect.logInfo(
+					publishKinds.registry === 0
+						? `✅ No registry publishing — all ${publishKinds.githubRelease} workspace(s) are ` +
+								`${releaseKindLabel("github-only")}`
+						: `✅ Published ${publishResult.successfulTargets}/${publishResult.totalTargets} registry target(s) ` +
+								(recovered > 0 ? `(${recovered} already on the registry) ` : "") +
+								`across ${publishKinds.registry} workspace(s)` +
+								(publishKinds.githubRelease > 0
+									? `; ${publishKinds.githubRelease} ${releaseKindLabel("github-only")}`
+									: ""),
+				);
+
+				// ── Step 5: Create releases ────────────────────────────────────────────
+				// `runReleases` wraps itself in Step.withStep.
+				const releasesResult = yield* runReleases({
+					tags: tagStrategy.tags,
+					publishResult,
+					packageManager,
+					dryRun,
+				}).pipe(
+					// Catch, do NOT abort. The phase still has to emit outputs describing
+					// what published and still has to close linked issues; failing here
+					// would skip both. The failure is re-raised at the end of the step —
+					// see "Deferred failure" in the module docs.
+					Effect.catch((e) =>
+						Effect.gen(function* () {
+							yield* Effect.logWarning(`runReleases failed: ${String(e)}`);
+							return { success: false, releases: [] as ReleaseInfo[], errors: [String(e)], tagShas: {} };
+						}),
+					),
+				);
+				yield* Effect.logInfo(
+					releasesResult.success
+						? `✅ Created ${releasesResult.releases.length} release(s)`
+						: `❌ Created ${releasesResult.releases.length} release(s) — ${releasesResult.errors.length} error(s)`,
+				);
+
+				// ── Follow-on: close linked issues ─────────────────────────────────────
+				// No `Effect.catch` here. `closeLinkedIssues` declares its error channel
+				// as `never` — it collapses every service failure into an empty result
+				// itself — so a catch could not fire, and the `null` branch it guarded
+				// was unreachable code that read as coverage. The live failure signal is
+				// `failedCount`, consumed by the deferred failure below.
+				const closeResult =
+					mergedReleasePRNumber !== undefined ? yield* closeLinkedIssues(mergedReleasePRNumber, dryRun) : null;
+				if (closeResult !== null) {
+					yield* Effect.logInfo(
+						closeResult.failedCount > 0
+							? `❌ ${closeResult.closedCount} issue(s) closed — ${closeResult.failedCount} failed`
+							: `✅ ${closeResult.closedCount} issue(s) closed`,
+					);
+				}
+
+				// ── Step 6: Confirm registry availability (#301) ───────────────────────
+				// After tags and releases, so a scan hold never delays them; before the
+				// emission, so the output carries the answer. Never fails the phase —
+				// a version still unresolved at the ceiling is a `held` finding beside
+				// the package, not a flipped boolean. The read credentials are the
+				// publish's own, from the decoded record: `npm-token`, `github-token`
+				// (the value `pre` persisted for the publish) and `custom-registries`.
+				// A token is "" when its input was not supplied; the step treats that
+				// as absent. A `filtered-by-releases` target is `success: true` but
+				// uploaded nothing, so it is not handed to the probe — it would poll
+				// for a version that was never meant to land.
+				const availability = yield* confirmAvailability(
+					publishResult.packages.flatMap((p) =>
+						p.targets
+							.filter((t) => t.success && t.skipReason !== "filtered-by-releases")
+							.map((t) => ({ name: t.target.name, version: p.version, registry: t.target.registry })),
+					),
+					{
+						ceilingSeconds: inputs.registryConfirmTimeout,
+						dryRun,
+						npmToken: inputs.npmToken,
+						githubToken: inputs.githubToken,
+						customRegistries: inputs.customRegistries,
+					},
+				);
+				const heldCount = [...availability.values()].filter((a) => a.status === "held").length;
+
+				// ── Emit outputs + final summary ───────────────────────────────────────
+				// `releasesResult.tagShas` travels every tag `runReleases` processed,
+				// resolved at tag-creation time inside `processOneTag` — reported even
+				// when the GitHub release that follows fails, and unconditionally set
+				// per tag regardless of that outcome. No local `git rev-parse` needed
+				// here, and none would find a tag this clone never fetched.
 				yield* emitPublishing({
 					plan,
 					publishResult,
-					failure: {
-						stage: "publish",
-						reason: `Published ${publishResult.successfulTargets}/${publishResult.totalTargets} registry target(s)`,
-					},
+					tags: tagStrategy.tags,
+					releases: releasesResult.releases,
+					tagShas: releasesResult.tagShas,
+					failure: releasesResult.success
+						? closeResult !== null && closeResult.failedCount > 0
+							? { stage: "linked-issues", reason: `${closeResult.failedCount} issue(s) failed to close` }
+							: null
+						: { stage: "releases", reason: releasesResult.errors.join("; ") },
+					availability,
 				});
-				yield* Effect.logInfo("Release publishing: ❌ failed at Publish");
-				yield* outputs.setFailed("Publishing failed");
-				// FAIL, do not return — see the note on `PublishError`. Returning here
-				// is what let a 4-of-8-targets publish report a green run.
-				return yield* Effect.fail(
-					new PublishError({
-						reason: "publish",
-						message: `Published ${publishResult.successfulTargets}/${publishResult.totalTargets} registry target(s)`,
-					}),
-				);
-			}
-			// Name the wave's shape, not just the ratio. `✅ Published 0/0 target(s)`
-			// is true of a release made entirely of private tracking packages and
-			// tells a reader nothing about whether that was the design or a
-			// resolution failure.
-			const publishKinds = tallyReleaseKinds(publishResult.packages.map((pkg) => pkg.targets.length));
-			// A recovery (already on the registry at an identical digest) counts as
-			// a successful target here but not as an upload in the closing line, so
-			// name it, or "13/13" beside "10 published" reads as a contradiction.
-			const recovered = publishResult.packages.reduce(
-				(n, p) => n + p.targets.filter((t) => t.skipReason === "already-published-identical").length,
-				0,
-			);
-			yield* Effect.logInfo(
-				publishKinds.registry === 0
-					? `✅ No registry publishing — all ${publishKinds.githubRelease} workspace(s) are ` +
-							`${releaseKindLabel("github-only")}`
-					: `✅ Published ${publishResult.successfulTargets}/${publishResult.totalTargets} registry target(s) ` +
-							(recovered > 0 ? `(${recovered} already on the registry) ` : "") +
-							`across ${publishKinds.registry} workspace(s)` +
-							(publishKinds.githubRelease > 0
-								? `; ${publishKinds.githubRelease} ${releaseKindLabel("github-only")}`
-								: ""),
-			);
 
-			// ── Step 5: Create releases ────────────────────────────────────────────
-			// `runReleases` wraps itself in Step.withStep.
-			const releasesResult = yield* runReleases({
-				tags: tagStrategy.tags,
-				publishResult,
-				packageManager,
-				dryRun,
-			}).pipe(
-				// Catch, do NOT abort. The phase still has to emit outputs describing
-				// what published and still has to close linked issues; failing here
-				// would skip both. The failure is re-raised at the end of the step —
-				// see "Deferred failure" in the module docs.
-				Effect.catch((e) =>
-					Effect.gen(function* () {
-						yield* Effect.logWarning(`runReleases failed: ${String(e)}`);
-						return { success: false, releases: [] as ReleaseInfo[], errors: [String(e)], tagShas: {} };
-					}),
-				),
-			);
-			yield* Effect.logInfo(
-				releasesResult.success
-					? `✅ Created ${releasesResult.releases.length} release(s)`
-					: `❌ Created ${releasesResult.releases.length} release(s) — ${releasesResult.errors.length} error(s)`,
-			);
+				// ── Deferred failure ───────────────────────────────────────────────────
+				// Everything above has run: the follow-on close-linked-issues work and the
+				// output emission. Only now is it safe to fail, because `result` already
+				// describes the packages that DID publish.
+				//
+				// This is `ReleasesError`, not `PublishError`: the publish succeeded
+				// (Step 4 gates Step 5), and `PublishError`'s reason union has no member
+				// that honestly names tag/release/asset work.
+				// Each failing surface contributes one clause naming itself and its
+				// count, so the annotation says WHICH housekeeping failed and by how
+				// much — a phase that fails for two reasons must not report only one.
+				const failures: string[] = [];
+				if (!releasesResult.success) {
+					const detail = releasesResult.errors.length > 0 ? `: ${releasesResult.errors.join("; ")}` : "";
+					failures.push(
+						`GitHub releases — created ${releasesResult.releases.length} of ${tagStrategy.tags.length} release(s), ` +
+							`${releasesResult.errors.length} error(s)${detail}`,
+					);
+				}
+				if (closeResult !== null && closeResult.failedCount > 0) {
+					failures.push(
+						`Close linked issues — ${closeResult.failedCount} of ${closeResult.issues.length} issue(s) failed to close`,
+					);
+				}
 
-			// ── Follow-on: close linked issues ─────────────────────────────────────
-			// No `Effect.catch` here. `closeLinkedIssues` declares its error channel
-			// as `never` — it collapses every service failure into an empty result
-			// itself — so a catch could not fire, and the `null` branch it guarded
-			// was unreachable code that read as coverage. The live failure signal is
-			// `failedCount`, consumed by the deferred failure below.
-			const closeResult =
-				mergedReleasePRNumber !== undefined ? yield* closeLinkedIssues(mergedReleasePRNumber, dryRun) : null;
-			if (closeResult !== null) {
+				if (failures.length > 0) {
+					// `reason` names the surface that actually failed. When only the
+					// follow-on failed, calling it "release" would tell an operator the
+					// GitHub release failed when it did not.
+					const reason = !releasesResult.success ? "release" : "linked-issues";
+					const message = `${failures.join(" | ")}. ${RERUN_CONTRACT}`;
+					yield* Effect.logError(`Release publishing: ❌ ${message}`);
+					yield* outputs.setFailed(message);
+					return yield* Effect.fail(new ReleasesError({ reason, message }));
+				}
+
+				// The closing line reports the three facts separately — versioned,
+				// published, released — so a zero in the middle is legible as the shape
+				// of the wave rather than as an absence of work.
 				yield* Effect.logInfo(
-					closeResult.failedCount > 0
-						? `❌ ${closeResult.closedCount} issue(s) closed — ${closeResult.failedCount} failed`
-						: `✅ ${closeResult.closedCount} issue(s) closed`,
+					`Release publishing: ✅ ${summarizeReleaseWave({
+						workspaces: plan.length,
+						// Uploaded this run, as the output's `totals.packagesPublished` counts
+						// it: a recovery (already on the registry) is a success, not an upload.
+						packagesPublished: publishResult.packages.reduce(
+							(n, p) => n + p.targets.filter((t) => t.status === "published").length,
+							0,
+						),
+						releases: releasesResult.releases.length,
+						packagesHeld: heldCount,
+					})}`,
 				);
-			}
-
-			// ── Step 6: Confirm registry availability (#301) ───────────────────────
-			// After tags and releases, so a scan hold never delays them; before the
-			// emission, so the output carries the answer. Never fails the phase —
-			// a version still unresolved at the ceiling is a `held` finding beside
-			// the package, not a flipped boolean. The read credentials are the
-			// publish's own, from the decoded record: `npm-token`, `github-token`
-			// (the value `pre` persisted for the publish) and `custom-registries`.
-			// A token is "" when its input was not supplied; the step treats that
-			// as absent. A `filtered-by-releases` target is `success: true` but
-			// uploaded nothing, so it is not handed to the probe — it would poll
-			// for a version that was never meant to land.
-			const availability = yield* confirmAvailability(
-				publishResult.packages.flatMap((p) =>
-					p.targets
-						.filter((t) => t.success && t.skipReason !== "filtered-by-releases")
-						.map((t) => ({ name: t.target.name, version: p.version, registry: t.target.registry })),
-				),
-				{
-					ceilingSeconds: inputs.registryConfirmTimeout,
-					dryRun,
-					npmToken: inputs.npmToken,
-					githubToken: inputs.githubToken,
-					customRegistries: inputs.customRegistries,
-				},
-			);
-			const heldCount = [...availability.values()].filter((a) => a.status === "held").length;
-
-			// ── Emit outputs + final summary ───────────────────────────────────────
-			// `releasesResult.tagShas` travels every tag `runReleases` processed,
-			// resolved at tag-creation time inside `processOneTag` — reported even
-			// when the GitHub release that follows fails, and unconditionally set
-			// per tag regardless of that outcome. No local `git rev-parse` needed
-			// here, and none would find a tag this clone never fetched.
-			yield* emitPublishing({
-				plan,
-				publishResult,
-				tags: tagStrategy.tags,
-				releases: releasesResult.releases,
-				tagShas: releasesResult.tagShas,
-				failure: releasesResult.success
-					? closeResult !== null && closeResult.failedCount > 0
-						? { stage: "linked-issues", reason: `${closeResult.failedCount} issue(s) failed to close` }
-						: null
-					: { stage: "releases", reason: releasesResult.errors.join("; ") },
-				availability,
-			});
-
-			// ── Deferred failure ───────────────────────────────────────────────────
-			// Everything above has run: the follow-on close-linked-issues work and the
-			// output emission. Only now is it safe to fail, because `result` already
-			// describes the packages that DID publish.
-			//
-			// This is `ReleasesError`, not `PublishError`: the publish succeeded
-			// (Step 4 gates Step 5), and `PublishError`'s reason union has no member
-			// that honestly names tag/release/asset work.
-			// Each failing surface contributes one clause naming itself and its
-			// count, so the annotation says WHICH housekeeping failed and by how
-			// much — a phase that fails for two reasons must not report only one.
-			const failures: string[] = [];
-			if (!releasesResult.success) {
-				const detail = releasesResult.errors.length > 0 ? `: ${releasesResult.errors.join("; ")}` : "";
-				failures.push(
-					`GitHub releases — created ${releasesResult.releases.length} of ${tagStrategy.tags.length} release(s), ` +
-						`${releasesResult.errors.length} error(s)${detail}`,
-				);
-			}
-			if (closeResult !== null && closeResult.failedCount > 0) {
-				failures.push(
-					`Close linked issues — ${closeResult.failedCount} of ${closeResult.issues.length} issue(s) failed to close`,
-				);
-			}
-
-			if (failures.length > 0) {
-				// `reason` names the surface that actually failed. When only the
-				// follow-on failed, calling it "release" would tell an operator the
-				// GitHub release failed when it did not.
-				const reason = !releasesResult.success ? "release" : "linked-issues";
-				const message = `${failures.join(" | ")}. ${RERUN_CONTRACT}`;
-				yield* Effect.logError(`Release publishing: ❌ ${message}`);
-				yield* outputs.setFailed(message);
-				return yield* Effect.fail(new ReleasesError({ reason, message }));
-			}
-
-			// The closing line reports the three facts separately — versioned,
-			// published, released — so a zero in the middle is legible as the shape
-			// of the wave rather than as an absence of work.
-			yield* Effect.logInfo(
-				`Release publishing: ✅ ${summarizeReleaseWave({
-					workspaces: plan.length,
-					// Uploaded this run, as the output's `totals.packagesPublished` counts
-					// it: a recovery (already on the registry) is a success, not an upload.
-					packagesPublished: publishResult.packages.reduce(
-						(n, p) => n + p.targets.filter((t) => t.status === "published").length,
-						0,
-					),
-					releases: releasesResult.releases.length,
-					packagesHeld: heldCount,
-				})}`,
-			);
-		}),
+			}),
+		),
 	);

@@ -13,10 +13,10 @@ sources:
     resource: ../../src/schema/release-output.ts
 generated:
   by: okfit/claude-code
-  at: 2026-09-29T01:25:34Z
+  at: 2026-11-06T01:10:37Z
 integrity:
   generated:
-    body: 4a9da63a35ebb6ef
+    body: cb3d8b54dd0915a5
 ---
 
 # Version the output JSON Schema under its own path per release
@@ -51,7 +51,7 @@ constructed once in `src/schema/silk-release-config.ts` with
 config receives the same values as `hosted`, so the URL a payload carries and
 the `$id` the CLI writes are one derivation rather than two that must agree.
 
-Generation is `@effected/schemastore-cli` over
+Generation is `effected schema` (from `@effected/plugin`) over
 `lib/scripts/schemastore.config.ts`[^schemastore-config]: `pnpm schema:build` writes,
 `pnpm schema:check` is the identical walk with no writes and the CI gate.
 Each entry carries `versions` (every label it advertises; all but the
@@ -91,7 +91,7 @@ alone.
 **A repository-owned generation script.** `lib/scripts/generate-schema.ts`
 used to hand-roll a preflight, then flag parsing, the contract gate and a
 drift test around `SchemaPipeline`; every consumer of the package wrote the
-same plumbing. `@effected/schemastore-cli` ships it once, and the repository
+same plumbing. `effected schema` ships it once, and the repository
 now owns only the target manifest (`lib/scripts/schemastore.config.ts`). What
 the CLI cannot see — an entry handed the wrong identity, a label that moved
 off `OUTPUT_SCHEMA_VERSION` — cannot happen: the config receives the

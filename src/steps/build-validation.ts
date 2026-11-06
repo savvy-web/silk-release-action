@@ -16,11 +16,11 @@
  */
 
 import type { CheckRun, Repo } from "@effected/github";
-import type { ActionEnvironment, ActionLogger, ActionOutputs, DryRun } from "@effected/github-actions";
+import type { ActionEnvironment, ActionOutputs, DryRun } from "@effected/github-actions";
+import { ActionLogger } from "@effected/github-actions";
 import type { FileSystem, Option } from "effect";
 import { Effect } from "effect";
 import type { ChildProcessSpawner } from "effect/process";
-import { grouped } from "../utils/grouped.js";
 import type { BuildValidationResult } from "../utils/validate-builds.js";
 import { validateBuilds } from "../utils/validate-builds.js";
 
@@ -80,7 +80,7 @@ export const buildValidation = (
 	onBuild: Option.Option<string>,
 ): Effect.Effect<BuildValidationResult, never, BuildValidationServices> =>
 	Effect.gen(function* () {
-		const result = yield* grouped(
+		const result = yield* (yield* ActionLogger).group(
 			"Validate builds",
 			validateBuilds(packageManager, onBuild).pipe(
 				Effect.catch((e) =>

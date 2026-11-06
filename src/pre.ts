@@ -13,7 +13,6 @@
 //
 // State bundles are `Schema.Class`es in `./state.ts`.
 
-import { NodeCrypto } from "@effect/platform-node";
 import { GitHubApp } from "@effected/github";
 import {
 	Action,
@@ -24,7 +23,9 @@ import {
 	GitHubToken,
 	Secret,
 } from "@effected/github-actions";
-import { Config, Effect, Layer } from "effect";
+import type { Layer } from "effect";
+import { Config, Effect } from "effect";
+import type { Signature } from "effect/crypto";
 import { GithubPackagesTokenState, STATE_KEYS, StartTimeState } from "./state.js";
 
 /**
@@ -96,15 +97,13 @@ export const pre = Effect.gen(function* () {
  *
  * @remarks
  * `GitHubToken.provision` needs a `GitHubApp`. The App JWT is signed through
- * core's `Signature` service, which `ActionRuntime` does not carry, so it is
- * provided here from `NodeCrypto.layerSignature` (self-contained: it brings its
- * own `SecureRandom`). There is no octokit auth strategy to compose and no
- * `HttpClient` to wire. `ActionEnvironment`, `ActionOutputs` and `ActionState`
- * all arrive from `ActionRuntime` via `Action.run`.
+ * core's `Signature` service. There is no octokit auth strategy to compose and
+ * no `HttpClient` to wire. `Signature`, `ActionEnvironment`, `ActionOutputs` and
+ * `ActionState` all arrive from `ActionRuntime` via `Action.run`.
  *
  * @public
  */
-export const PreLive: Layer.Layer<GitHubApp> = GitHubApp.layer.pipe(Layer.provide(NodeCrypto.layerSignature));
+export const PreLive: Layer.Layer<GitHubApp, never, Signature.Signature> = GitHubApp.layer;
 
 /* v8 ignore next 3 -- entry-point guard, only runs in GitHub Actions */
 if (process.env.GITHUB_ACTIONS) {

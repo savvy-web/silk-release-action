@@ -15,10 +15,10 @@
  */
 
 import type { CheckRun, GitHubCommit, GitHubIssue, PullRequest, Repo } from "@effected/github";
-import type { ActionEnvironment, ActionLogger, ActionOutputs, DryRun } from "@effected/github-actions";
+import type { ActionEnvironment, ActionOutputs, DryRun } from "@effected/github-actions";
+import { ActionLogger } from "@effected/github-actions";
 import { Effect } from "effect";
 import type { BranchRefs } from "../schema/inputs.js";
-import { grouped } from "../utils/grouped.js";
 import type { LinkIssuesResult } from "../utils/link-issues-from-commits.js";
 import { linkIssuesFromCommits } from "../utils/link-issues-from-commits.js";
 
@@ -74,7 +74,7 @@ export type LinkIssuesServices =
  */
 export const linkIssues = (refs: BranchRefs): Effect.Effect<LinkIssuesResult, never, LinkIssuesServices> =>
 	Effect.gen(function* () {
-		const result = yield* grouped(
+		const result = yield* (yield* ActionLogger).group(
 			"Link issues from commits",
 			linkIssuesFromCommits(refs).pipe(
 				Effect.catch((e) =>

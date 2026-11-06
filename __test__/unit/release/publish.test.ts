@@ -43,7 +43,7 @@ import {
 	OidcTokenIssuer,
 } from "@effected/github-actions";
 import { MemoryFileSystem } from "@effected/memfs";
-import type { PackagePublishShape, PublishOptions, RegistryTarget } from "@effected/npm";
+import type { PackagePublishShape, PublishAuthPath, PublishOptions, RegistryTarget } from "@effected/npm";
 import { NpmRegistry, PackagePublish, PackedTarball, PublishError, RegistryReadError } from "@effected/npm";
 import { SIGSTORE_BUNDLE_V0_3_MEDIA_TYPE, SigstoreBundle, SigstoreSigner } from "@effected/sbom";
 import { PublishTarget, PublishabilityDetector, WorkspaceDiscovery, WorkspacePackage } from "@effected/workspaces";
@@ -388,6 +388,8 @@ const makePackagePublishLayer = (
 		readonly packResult?: PackedTarball;
 		readonly packFails?: string;
 		readonly provenanceUrl?: string;
+		/** The auth path npm reports for an upload. Defaults to `unknown`. */
+		readonly authPath?: PublishAuthPath;
 		/** A shared ordered log; `setupAuth:<registry>` and `publish:<registry>` are appended. */
 		readonly events?: string[];
 	} = {},
@@ -422,10 +424,9 @@ const makePackagePublishLayer = (
 		publishTarball: (tarballPath, publishOptions) => {
 			options.events?.push(`publish:${publishOptions.registry}`);
 			publishTarballCalls.push({ tarballPath, options: publishOptions });
+			const auth = options.authPath ?? "unknown";
 			return Effect.succeed(
-				options.provenanceUrl === undefined
-					? { auth: "unknown" as const }
-					: { auth: "unknown" as const, provenanceUrl: options.provenanceUrl },
+				options.provenanceUrl === undefined ? { auth } : { auth, provenanceUrl: options.provenanceUrl },
 			);
 		},
 		dryRun: () => Effect.die(new Error("dryRun is not part of the Phase-3 flow")),
@@ -2460,7 +2461,7 @@ describe("runPublishTargets — auth record", () => {
 					calls.push(options);
 					return calls.length === 1 || failAll
 						? Effect.fail(new PublishError({ kind: "publish", registry: options.registry, output: "E404 oidc" }))
-						: Effect.succeed({ auth: "unknown" as const });
+						: Effect.succeed({ auth: "configured-credential" as const });
 				}),
 		});
 		return { calls, layer };
@@ -2485,6 +2486,7 @@ describe("runPublishTargets — auth record", () => {
 				method: "token",
 				credential: "github-token",
 				fallback: null,
+				observed: "unknown",
 			});
 		}),
 	);
@@ -2513,6 +2515,7 @@ describe("runPublishTargets — auth record", () => {
 				method: "token",
 				credential: "custom-registries",
 				fallback: null,
+				observed: "unknown",
 			});
 		}),
 	);
@@ -2537,8 +2540,44 @@ describe("runPublishTargets — auth record", () => {
 					method: "trusted-publishing",
 					credential: null,
 					fallback: null,
+					observed: "unknown",
 				});
 			}),
+	);
+
+	it.effect("records npm's own answer that the trusted-publishing exchange succeeded", () =>
+		Effect.gen(function* () {
+			const pub = makePackagePublishLayer({ authPath: "oidc-exchange" });
+			const { wsPkg, detected } = setup();
+			const result = yield* runPublishTargets(detected).pipe(
+				Effect.provide(
+					Layer.merge(makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [makeNpmTarget(PACK_NAME, DIR)]), OIDC_ENV),
+				),
+			);
+
+			expect(result.packages[0]?.targets[0]?.auth).toEqual({
+				method: "trusted-publishing",
+				credential: null,
+				fallback: null,
+				observed: "oidc-exchange",
+			});
+		}),
+	);
+
+	it.effect("keeps both sides when trusted publishing was offered and npm used the configured credential", () =>
+		Effect.gen(function* () {
+			const pub = makePackagePublishLayer({ authPath: "configured-credential" });
+			const { wsPkg, detected } = setup();
+			const result = yield* runPublishTargets(detected).pipe(
+				Effect.provide(
+					Layer.merge(makeBaseLayers(pub.layer, makeRegistryLayer(), wsPkg, [makeNpmTarget(PACK_NAME, DIR)]), OIDC_ENV),
+				),
+			);
+
+			const auth = result.packages[0]?.targets[0]?.auth;
+			expect(auth?.method).toBe("trusted-publishing");
+			expect(auth?.observed).toBe("configured-credential");
+		}),
 	);
 
 	it.effect("records token auth when the runner exposes no OIDC env, naming the npm-token input", () =>
@@ -2558,6 +2597,7 @@ describe("runPublishTargets — auth record", () => {
 				method: "token",
 				credential: "npm-token",
 				fallback: null,
+				observed: "unknown",
 			});
 		}),
 	);
@@ -2583,6 +2623,7 @@ describe("runPublishTargets — auth record", () => {
 			expect(t?.auth?.credential).toBe("npm-token");
 			expect(t?.auth?.fallback?.from).toBe("trusted-publishing");
 			expect(t?.auth?.fallback?.reason).toContain("E404 oidc");
+			expect(t?.auth?.observed).toBe("configured-credential");
 		}),
 	);
 
@@ -2615,7 +2656,7 @@ describe("runPublishTargets — auth record", () => {
 
 			const t = result.packages[0]?.targets[0];
 			expect(t?.status).toBe("failed");
-			expect(t?.auth).toEqual({ method: "trusted-publishing", credential: null, fallback: null });
+			expect(t?.auth).toEqual({ method: "trusted-publishing", credential: null, fallback: null, observed: null });
 		}),
 	);
 
@@ -2997,7 +3038,12 @@ describe("runPublishTargets — pnpr workload credential (OPS-143)", () => {
 		Effect.gen(function* () {
 			const h = harness();
 			const { results, lines } = yield* runWith(h, [savvyTarget()], paired);
-			expect(results[0]?.auth).toEqual({ method: "workload-oidc", credential: "custom-registries", fallback: null });
+			expect(results[0]?.auth).toEqual({
+				method: "workload-oidc",
+				credential: "custom-registries",
+				fallback: null,
+				observed: "unknown",
+			});
 			expect(lines.some((l) => l.includes("published → latest · auth: workload-oidc (custom-registries)"))).toBe(true);
 			expect(lines.join("\n")).not.toContain(JWT);
 			expect(lines.join("\n")).not.toContain(READER);

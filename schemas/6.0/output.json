@@ -1419,7 +1419,7 @@
 			"type": "string",
 			"enum": ["token", "trusted-publishing", "workload-oidc"],
 			"title": "Auth method",
-			"description": "How the action set npm up to authenticate — what the action DID, not what npm reports. `token` — the Actions OIDC environment was stripped (always, for GitHub Packages and custom registries — trusted publishing exists only on registry.npmjs.org) or the runner never exposed it (no `id-token: write`), so npm could authenticate only with the npmrc token, if any. `trusted-publishing` — the OIDC environment was passed through, so npm was free to attempt its trusted-publishing exchange. npm does not say which path it took, so a `trusted-publishing` upload with a non-null `credential` may have authenticated with that token instead. `workload-oidc` — a pnpr workload registry (a `_pnprWorkload` line in `custom-registries`): the action minted a `pnpr_workload_<jwt>` credential from the job's GitHub Actions OIDC token (`id-token: write`), wrote it as the npmrc's only token for that registry and stripped the OIDC environment, so that minted credential authenticated the upload; `credential` is `custom-registries`, and there is never a fallback. More methods may be added; treat an unknown value as opaque."
+			"description": "How the action set npm up to authenticate — what the action DID; `observed` is what npm reports. `token` — the Actions OIDC environment was stripped (always, for GitHub Packages and custom registries — trusted publishing exists only on registry.npmjs.org) or the runner never exposed it (no `id-token: write`), so npm could authenticate only with the npmrc token, if any. `trusted-publishing` — the OIDC environment was passed through, so npm was free to attempt its trusted-publishing exchange. npm does not say which path it took, so a `trusted-publishing` upload with a non-null `credential` may have authenticated with that token instead. `workload-oidc` — a pnpr workload registry (a `_pnprWorkload` line in `custom-registries`): the action minted a `pnpr_workload_<jwt>` credential from the job's GitHub Actions OIDC token (`id-token: write`), wrote it as the npmrc's only token for that registry and stripped the OIDC environment, so that minted credential authenticated the upload; `credential` is `custom-registries`, and there is never a fallback. More methods may be added; treat an unknown value as opaque."
 		},
 		"PublishAuthCredential": {
 			"type": "string",
@@ -1443,6 +1443,12 @@
 			"additionalProperties": false,
 			"title": "Token fallback",
 			"description": "The first attempt failed and the action retried once with token auth and provenance off. `from` is how the first attempt was set up — `trusted-publishing` in the designed case (a package with no trusted publisher configured yet)."
+		},
+		"PublishAuthObserved": {
+			"type": "string",
+			"enum": ["oidc-exchange", "configured-credential", "unknown"],
+			"title": "Observed auth path",
+			"description": "What npm's own log says authenticated the upload: `oidc-exchange` (the trusted-publishing exchange succeeded), `configured-credential` (the npmrc credential), or `unknown` (npm printed no marker). Read on positive evidence only."
 		},
 		"PublishAuth": {
 			"type": "object",
@@ -1473,9 +1479,21 @@
 					],
 					"title": "Token fallback",
 					"description": "Set when the token retry ran; null when the first attempt's result stands."
+				},
+				"observed": {
+					"anyOf": [
+						{
+							"$ref": "#/$defs/PublishAuthObserved"
+						},
+						{
+							"type": "null"
+						}
+					],
+					"title": "Observed auth path",
+					"description": "What npm reports it used. Null when no upload landed."
 				}
 			},
-			"required": ["method", "credential", "fallback"],
+			"required": ["method", "credential", "fallback", "observed"],
 			"additionalProperties": false,
 			"title": "Publish authentication",
 			"description": "How the upload to this registry was authenticated, as far as the action can know."
