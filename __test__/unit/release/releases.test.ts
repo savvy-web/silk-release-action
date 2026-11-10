@@ -1486,9 +1486,10 @@ describe("copySbomIntoMeta", () => {
 		expect(() => copySbomIntoMeta(sbomPath, pkgDir)).not.toThrow();
 		expect(existsSync(join(root, "dist", "dev", "meta", "x.sbom.json"))).toBe(false);
 		expect(existsSync(join(root, "dist", "dev", "meta", "tsdoctor.json"))).toBe(false);
+		expect(existsSync(join(root, "dist", "dev", "meta", "bundle.json"))).toBe(false);
 	});
 
-	describe("tsdoctor.json sbom pointer", () => {
+	describe("meta bundle manifest sbom pointer", () => {
 		function makeLayout(): { pkgDir: string; metaDir: string; sbomPath: string } {
 			const root = mkdtempSync(join(tmpdir(), "rel-meta-"));
 			createdDirs.push(root);
@@ -1501,22 +1502,48 @@ describe("copySbomIntoMeta", () => {
 			return { pkgDir, metaDir, sbomPath };
 		}
 
-		function readManifest(metaDir: string): Record<string, unknown> {
-			return JSON.parse(readFileSync(join(metaDir, "tsdoctor.json"), "utf-8")) as Record<string, unknown>;
+		function readManifest(metaDir: string, file = "tsdoctor.json"): Record<string, unknown> {
+			return JSON.parse(readFileSync(join(metaDir, file), "utf-8")) as Record<string, unknown>;
 		}
 
-		it("creates a spec-1 manifest carrying the sbom pointer when none exists", () => {
+		it("creates a spec-1 bundle.json carrying the sbom pointer when no manifest exists", () => {
 			const { pkgDir, metaDir, sbomPath } = makeLayout();
 
 			copySbomIntoMeta(sbomPath, pkgDir);
 
-			expect(readManifest(metaDir)).toEqual({
+			expect(readManifest(metaDir, "bundle.json")).toEqual({
 				spec: 1,
 				sbom: { path: "pkg.sbom.json", format: "cyclonedx-json" },
 			});
+			expect(existsSync(join(metaDir, "tsdoctor.json"))).toBe(false);
 		});
 
-		it("preserves existing manifest fields while adding the sbom pointer", () => {
+		it("upserts the pointer into an emitted bundle.json, keeping its fields", () => {
+			const { pkgDir, metaDir, sbomPath } = makeLayout();
+			writeFileSync(join(metaDir, "bundle.json"), JSON.stringify({ spec: 1, name: "B" }), "utf-8");
+
+			copySbomIntoMeta(sbomPath, pkgDir);
+
+			expect(readManifest(metaDir, "bundle.json")).toEqual({
+				spec: 1,
+				name: "B",
+				sbom: { path: "pkg.sbom.json", format: "cyclonedx-json" },
+			});
+			expect(existsSync(join(metaDir, "tsdoctor.json"))).toBe(false);
+		});
+
+		it("prefers bundle.json over a leftover legacy tsdoctor.json when both exist", () => {
+			const { pkgDir, metaDir, sbomPath } = makeLayout();
+			writeFileSync(join(metaDir, "bundle.json"), JSON.stringify({ spec: 1, name: "B" }), "utf-8");
+			writeFileSync(join(metaDir, "tsdoctor.json"), JSON.stringify({ spec: 1, name: "T" }), "utf-8");
+
+			copySbomIntoMeta(sbomPath, pkgDir);
+
+			expect(readManifest(metaDir, "bundle.json").sbom).toEqual({ path: "pkg.sbom.json", format: "cyclonedx-json" });
+			expect(readManifest(metaDir)).toEqual({ spec: 1, name: "T" });
+		});
+
+		it("preserves a legacy tsdoctor.json's fields while adding the sbom pointer when it is the only manifest", () => {
 			const { pkgDir, metaDir, sbomPath } = makeLayout();
 			writeFileSync(join(metaDir, "tsdoctor.json"), JSON.stringify({ spec: 1, name: "X" }), "utf-8");
 

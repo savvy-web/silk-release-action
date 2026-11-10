@@ -8,9 +8,10 @@ tags:
   - ci
   - release
   - dx
+status: draft
 generated:
   by: okfit/claude-code
-  at: 2026-09-15T03:42:33Z
+  at: 2026-11-10T18:07:09Z
 sources:
   - id: branch-sync-workflow
     resource: ../../.github/workflows/branch-sync.yml
@@ -20,14 +21,16 @@ sources:
     resource: ../../package.json
   - id: workflows-dir
     resource: ../../.github/workflows
+  - id: effected-toml
+    resource: ../../effected.toml
 integrity:
   generated:
-    body: ef39c43fb30665dd
+    body: e6733d30f3d6874a
 ---
 
 # Workspace
 
-The repository root: the `.github/workflows/` automation, `turbo.json`'s two
+The repository root: the `.github/workflows/` automation, `turbo.json`'s three
 cached tasks, the Biome/lint-staged pipeline, and the `dev` → `main` →
 release flow that everything else in this bundle assumes is in place.
 
@@ -44,8 +47,8 @@ release flow that everything else in this bundle assumes is in place.
 
 There is deliberately no `.github/actions/` directory: `persistLocal`, the
 canon slot that would emit a `.github/actions/local` composite for an `act`
-smoke loop, is disabled in `action.config.ts` because this repo does not run
-`act` locally and a second copy of the bundle only adds weight to every
+smoke loop, is disabled in `effected.toml`'s `[action.persistLocal]` table
+because this repo does not run `act` locally and a second copy of the bundle only adds weight to every
 checkout. See
 [No local composite action](../decisions/no-local-composite-action.md).
 
@@ -86,22 +89,27 @@ workflow warning telling a human to rebase it by hand.[^branch-sync-workflow] Se
 ## Turborepo
 
 Strict environment mode; `globalPassThroughEnv: ["GITHUB_ACTIONS", "CI"]`.
-Two tasks, both cached:[^turbo-config]
+Three tasks, all cached:[^turbo-config]
 
 - **`types:check`** — `tsc --noEmit`, no dependencies.
-- **`build:prod`** — `github-action-builder build` → `dist/**`,
+- **`schema:build`** — `effected schema build` → `schemas/**`,
   `dependsOn: ["types:check"]`.
+- **`build:prod`** — `effected action build` → `dist/**`,
+  `dependsOn: ["types:check", "schema:build"]`. Its `inputs` include
+  `effected.toml`, the `[action]` table that declares the entries
+  (`pre`/`main`/`post` plus the `changelog-silk`/`changelog-default`
+  workers), `[action.build]` (`minify`, and the `ignore` list that stubs
+  the unreachable optional `supports-color` and `kerberos`
+  requires) and `[action.persistLocal]`.[^effected-toml] There is no
+  separate `validate` script: validation runs inside the build.
 
 `types:check`'s `inputs` list must mirror the `include` of the tsconfig
-`tsc --noEmit` actually resolves
-(`@savvy-web/github-action-builder/tsconfig/action.json`), which covers
-`__test__/**` as well as `src/**`. The two lists drifted apart once: a
-test-only change hit a cached FULL TURBO and reported a green typecheck
-without a `tsc` invocation ever running, because a type error reachable
-only from a test file could not fail a task whose `inputs` never named
-that file. The rule is now stated as a comment inline in `turbo.json`
-next to the `inputs` array, so the two lists stay in step by
-inspection.[^turbo-config]
+`tsc --noEmit` actually resolves (`@effected/plugin/tsconfig/action.json`,
+which the root `tsconfig.json` extends), which covers `__test__/**` as well
+as `src/**`. The two lists drifted apart once: a test-only change hit a
+cached FULL TURBO and reported a green typecheck without a `tsc` invocation
+ever running. `turbo.json` carries no comment recording the rule; see
+[Turbo typecheck cache inputs](../gotchas/turbo-typecheck-cache-inputs.md).
 
 ## Common commands
 
@@ -153,3 +161,4 @@ changes at a published label.
 [^branch-sync-workflow]: `../../.github/workflows/branch-sync.yml`
 [^turbo-config]: `../../turbo.json`
 [^package-json]: `../../package.json`
+[^effected-toml]: `../../effected.toml`

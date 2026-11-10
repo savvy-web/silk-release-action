@@ -7,7 +7,7 @@ resource: ../../src
 status: draft
 generated:
   by: okfit/claude-code
-  at: 2026-11-06T01:10:37Z
+  at: 2026-11-10T18:07:24Z
 sources:
   - id: src-main
     resource: ../../src/main.ts
@@ -32,7 +32,7 @@ tags:
   - observability
 integrity:
   generated:
-    body: 2b409bfa44157e3c
+    body: 6bfac6f350ad3ca2
 ---
 
 # release-action
@@ -170,7 +170,7 @@ Ordering is established **once, at the source**: immediately after `detectReleas
 
 **Group-keyed assets** — per byte-group, `runReleases` uploads `<name>-<version>.<group>.tgz`, `.sbom.json`, `.api.json`, and an unattested `.meta.tgz`; `insertGroupToken` inserts the group token before the final extension (or before a compound extension like `.meta.tgz`). All uploads are idempotent by asset name.
 
-**`meta.tgz`** — `tarMetaFolder` (`src/release/meta-archive.ts`) packs the bundler's sibling `meta/` folder (`<unscoped>.api.json` + `tsconfig.json` + `package.json`) plus the copied SBOM, for downstream documentation builders; API-reference docs are read from that `meta/` folder, not the publish directory.
+**`meta.tgz`** — `tarMetaFolder` (`src/release/meta-archive.ts`) packs the bundler's sibling `meta/` folder (`<unscoped>.api.json` + `tsconfig.json` + `package.json`) plus the copied SBOM, for downstream documentation builders. Before packing, `copySbomIntoMeta` (`src/release/releases.ts`) copies the SBOM in and upserts an `sbom` pointer (`format: "cyclonedx-json"`) into the bundle manifest `meta/bundle.json` — the file `effected package build` emits (`BUNDLE_MANIFEST_FILENAME` in `@effected/manifest`) — falling back to a legacy `meta/tsdoctor.json` only when that alone exists, and creating `bundle.json` as `{ spec: 1, sbom }` when neither does; a malformed pre-existing manifest degrades to a warning rather than aborting the release; API-reference docs are read from that `meta/` folder, not the publish directory.
 
 ## Phase 3a: issue closing
 

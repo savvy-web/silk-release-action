@@ -1945,7 +1945,7 @@ describe("runPublishTargets — dist-tag and snapshot mode", () => {
 							registry: target?.registry,
 							token: credential?.kind === "token" ? Redacted.value(credential.token) : undefined,
 						});
-						return ["0.9.0"];
+						return Option.some(["0.9.0"]);
 					}),
 				version: () => Effect.succeed(Option.none()),
 			});
@@ -2928,7 +2928,7 @@ describe("runPublishTargets — pnpr workload credential (OPS-143)", () => {
 			versions: (name, target) =>
 				Effect.suspend(() => {
 					const denied = gate("versions", name, target);
-					return denied === null ? Effect.succeed(["0.9.0"]) : Effect.fail(denied);
+					return denied === null ? Effect.succeed(Option.some(["0.9.0"])) : Effect.fail(denied);
 				}),
 		});
 

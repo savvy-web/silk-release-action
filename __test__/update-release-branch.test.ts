@@ -46,7 +46,7 @@ import { ActionEnvironment, ActionOutputs, DryRun } from "@effected/github-actio
 import { MemoryFileSystem } from "@effected/memfs";
 import { PublishabilityDetector, WorkspaceDiscovery } from "@effected/workspaces";
 import { Changesets, PrBody } from "@savvy-web/silk-effects";
-import { DateTime, Effect, Layer, Logger, Option } from "effect";
+import { DateTime, Effect, Layer, Logger, Option, Path } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ChangesetConfig } from "../src/release/changeset-config.js";
 import type { LinkedIssue, UpdateReleaseBranchResult } from "../src/utils/update-release-branch.js";
@@ -290,6 +290,8 @@ const runStage = async (
 	plannerLayer: Layer.Layer<Changesets.ReleasePlanner> = releasePlannerStub,
 	/** Overrides on top of the seeded `GITHUB_*` block — e.g. a GHES host. */
 	envOverrides: Readonly<Record<string, string>> = {},
+	/** Extra files on the volume, beside the seeded `/package.json`. */
+	volume: Readonly<Record<string, string>> = {},
 ): Promise<{ result: UpdateReleaseBranchResult; spawns: ReadonlyArray<SpawnRecord> }> => {
 	const spawner = ScriptedSpawner.make(gitScript(git));
 	const layer = Layer.mergeAll(
@@ -462,7 +464,8 @@ const runStage = async (
 		// replaced by the commit walk — so nothing is seeded there. Reseeding
 		// `/package.json` as `/nope.json` fails this file; that is the check that
 		// the path is pinned rather than merely plausible.
-		MemoryFileSystem.layerWith({ "/package.json": "file contents" }),
+		MemoryFileSystem.layerWith({ "/package.json": "file contents", ...volume }),
+		Path.layer,
 		workspaceDiscoveryStub,
 		publishabilityDetectorStub,
 		changesetConfigStub,
@@ -851,6 +854,31 @@ describe("updateReleaseBranch", () => {
 		// Nothing was destroyed on the way out.
 		expect(f.prs.find((pr) => pr.number === 42)?.state).toBe("open");
 		expect(f.deleted).not.toContain(RELEASE_BRANCH);
+	});
+
+	it("fails before committing when the apply leaves a changeset naming a released package (#558)", async () => {
+		const f = makeFixtures({
+			prs: [{ number: 42, head: RELEASE_BRANCH, base: TARGET_BRANCH, state: "open" }],
+		});
+		// The planner stub released `@scope/a`; this changeset names it and is
+		// still on disk, so committing would plan the same release again.
+		const leftover = {
+			[`${process.cwd()}/.changeset/small-buckets-store.md`]: '---\n"@scope/a": minor\n---\n\nAdd.\n',
+		};
+
+		await expect(runStage(f, withCommit, releasePlannerStub, {}, leftover)).rejects.toThrow(/small-buckets-store\.md/);
+		expect(f.createdCommits).toHaveLength(0);
+	});
+
+	it("commits when the only changeset left on disk names a package the apply did not release", async () => {
+		const f = makeFixtures({
+			prs: [{ number: 42, head: RELEASE_BRANCH, base: TARGET_BRANCH, state: "open" }],
+		});
+		const unrelated = { [`${process.cwd()}/.changeset/other.md`]: '---\n"@scope/b": patch\n---\n\nLater.\n' };
+
+		await runStage(f, withCommit, releasePlannerStub, {}, unrelated);
+
+		expect(f.createdCommits).toHaveLength(1);
 	});
 
 	it("fails when native versioning fails", async () => {

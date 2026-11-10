@@ -922,11 +922,13 @@ const publishDirectoryGroup = (
 			}
 
 			// ── Snapshot: never-published probe, with THIS target's credential ──
-			// Only an HTTP 404 reads as `[]` (see @effected/npm `versions`); any
-			// other failure fails the target, because treating an unreadable
-			// registry as "never published" silently skips packages that exist.
-			// npm also answers 404 to an ANONYMOUS read of a private package, so
-			// `[]` on a restricted target probed without a credential fails too.
+			// `versions` answers `None` for an HTTP 404 and `Some([])` for a
+			// package the registry knows that lists no versions (fully
+			// unpublished); both are "never published". Any other failure fails
+			// the target, because treating an unreadable registry as "never
+			// published" silently skips packages that exist. npm also answers 404
+			// to an ANONYMOUS read of a private package, so `None` on a restricted
+			// target probed without a credential fails too.
 			if (snapshot !== undefined) {
 				const known = yield* Effect.result(
 					registrySvc.versions(packResult.name, {
@@ -945,8 +947,9 @@ const publishDirectoryGroup = (
 					failedCount += 1;
 					continue;
 				}
-				if (known.success.length === 0) {
-					if (credential === null && t.access === "restricted") {
+				const listed = known.success;
+				if (Option.isNone(listed) || listed.value.length === 0) {
+					if (Option.isNone(listed) && credential === null && t.access === "restricted") {
 						const reason =
 							"the registry answered 404 to an anonymous read of a restricted package, which is indistinguishable " +
 							"from a private package the probe cannot see; pass npm-token so the never-published check can authenticate";

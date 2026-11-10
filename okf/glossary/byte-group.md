@@ -5,9 +5,10 @@ description: A set of registries sharing one build directory because their publi
 tags:
   - release
   - bundle
+status: draft
 generated:
   by: okfit/claude-code
-  at: 2026-09-13T19:54:03Z
+  at: 2026-11-10T18:07:24Z
 sources:
   - id: group-id-source
     resource: ../../src/utils/group-id.ts
@@ -15,13 +16,13 @@ sources:
     resource: ../../src/release/meta-archive.ts
 integrity:
   generated:
-    body: 8ca1d4d159a8c1a7
+    body: d0f30f1af7102947
 ---
 
 # byte-group
 
 A byte-group is a set of registries whose published bytes are identical for
-a given package, collapsed by the `@savvy-web/bundler` prod layout into one
+a given package, collapsed by the bundler prod layout into one
 build directory: `dist/prod/<group>/pkg`, with a sibling
 `dist/prod/<group>/meta` folder holding the API doc and manifest data for
 that group. Each package's `publishConfig.targets` resolves through a
@@ -71,7 +72,9 @@ folder itself, via `tar -C <parent> <metaBasename>` so the archive root is
 the folder name rather than an absolute path.[^meta-archive-source] The
 folder it packs holds `<unscoped>.api.json` + `tsconfig.json` +
 `package.json` from the bundler output, plus the group's generated SBOM,
-copied in first by a caller before packing. It is unattested and exists
+copied in first by `copySbomIntoMeta`, which also upserts an `sbom` pointer
+into the group's `meta/bundle.json` manifest (or a legacy
+`meta/tsdoctor.json` when only that exists). It is unattested and exists
 purely for downstream documentation builders; API-reference docs read from
 this `meta/` folder rather than from the publish (`pkg`) directory.
 

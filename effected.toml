@@ -1,0 +1,25 @@
+[action.entries]
+pre = "src/pre.ts"
+main = "src/main.ts"
+post = "src/post.ts"
+
+# The changelog modules the versioning engine resolves by path at runtime and
+# imports itself; each ships as dist/<name>.js beside the lifecycle bundles.
+[action.entries.workers]
+changelog-silk = "src/changelog/silk.ts"
+changelog-default = "src/changelog/default.ts"
+
+[action.build]
+minify = true
+# Optional requires on the Azure blob path (@effected/github-actions ->
+# @azure/storage-blob -> @typespec/ts-http-runtime -> proxy agents), both
+# try/catch-guarded and unreachable on a hosted runner: debug's
+# require("supports-color") and proxy-agent-negotiate's import("kerberos").
+# Each is replaced with a stub that throws if it is ever loaded.
+ignore = ["supports-color", "kerberos"]
+
+# Deliberately off: this repo does not run act locally. See
+# okf/decisions/no-local-composite-action.md.
+[action.persistLocal]
+enabled = false
+path = ".github/actions/local"
