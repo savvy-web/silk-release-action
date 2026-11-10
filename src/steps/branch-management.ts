@@ -43,7 +43,7 @@ import type {
 import { ActionEnvironment, ActionLogger, ActionOutputs, DryRun } from "@effected/github-actions";
 import type { PackageManagerDetector, PublishabilityDetector, WorkspaceDiscovery } from "@effected/workspaces";
 import { Changesets } from "@savvy-web/silk-effects";
-import type { Config, FileSystem } from "effect";
+import type { Config, FileSystem, Path } from "effect";
 import { Effect, Option } from "effect";
 import type { ChildProcessSpawner } from "effect/process";
 import type { ChangesetConfig } from "../release/changeset-config.js";
@@ -51,6 +51,7 @@ import type { Inputs } from "../schema/inputs.js";
 import { emitReleaseOutput } from "../schema/outputs.js";
 import { toBranchManagementOutput } from "../schema/projections.js";
 import { checkReleaseBranch } from "../utils/check-release-branch.js";
+import type { ConsumedChangesetError } from "../utils/consumed-changesets.js";
 import { createReleaseBranch } from "../utils/create-release-branch.js";
 import { detectPackageManager } from "../utils/detect-package-manager.js";
 import { ensureFullHistory } from "../utils/ensure-full-history.js";
@@ -105,6 +106,7 @@ export type BranchManagementError =
 	| CommandFailedError
 	| CommandOutputError
 	| Config.ConfigError
+	| ConsumedChangesetError
 	| FileReadError
 	| GitCommandError
 	| GitHubError
@@ -139,6 +141,7 @@ export type BranchManagementServices =
 	| GitHubRepository
 	| GitTag
 	| PackageManagerDetector
+	| Path.Path
 	| PublishabilityDetector
 	| PullRequest
 	| PullRequestComment

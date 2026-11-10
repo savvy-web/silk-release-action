@@ -33,13 +33,15 @@ import type { PublishabilityDetector } from "@effected/workspaces";
 import { WorkspaceDiscovery } from "@effected/workspaces";
 import type { Changesets } from "@savvy-web/silk-effects";
 import { PrBody } from "@savvy-web/silk-effects";
-import type { Config } from "effect";
+import type { Config, Path } from "effect";
 import { Effect, FileSystem, Option } from "effect";
 import type { ChildProcessSpawner } from "effect/process";
 import type { ChangesetConfig } from "../release/changeset-config.js";
 import type { BranchRefs } from "../schema/inputs.js";
 import { applyAutoMerge } from "./auto-merge.js";
 import { resolveSignoff } from "./commit-signoff.js";
+import type { ConsumedChangesetError } from "./consumed-changesets.js";
+import { verifyConsumedChangesetsRemoved } from "./consumed-changesets.js";
 import { isSinglePackage } from "./detect-repo-type.js";
 import { isMonorepoForTagging } from "./determine-tag-strategy.js";
 import { formatWorkspaceWithBiome } from "./format-workspace.js";
@@ -109,6 +111,7 @@ export const updateReleaseBranch = (
 	| CommandFailedError
 	| CommandOutputError
 	| Config.ConfigError
+	| ConsumedChangesetError
 	| FileReadError
 	| GitCommandError
 	| GitHubError
@@ -131,6 +134,7 @@ export const updateReleaseBranch = (
 	| GitCommit
 	| GitHubCommit
 	| GitHubIssue
+	| Path.Path
 	| PublishabilityDetector
 	| PullRequest
 	| Repo
@@ -280,6 +284,13 @@ export const updateReleaseBranch = (
 				);
 			}
 			yield* formatWorkspaceWithBiome();
+			// Issue #558: a consumed changeset left on disk is committed into the
+			// release PR and re-releases its packages on the next run. Checked after
+			// the format pass, the last write before the status read below.
+			yield* verifyConsumedChangesetsRemoved(
+				process.cwd(),
+				appliedRelease.releases.map((release) => release.name),
+			);
 		} else {
 			yield* Effect.logInfo("[DRY RUN] Would natively apply pending changesets");
 		}
@@ -698,6 +709,10 @@ export const updateReleaseBranch = (
 				// mode's `.changeset/pre/`) file by file; the `normal` mode collapses it
 				// to one `?? dir/` entry, which cannot be read as a file.
 				const changes = yield* collectPorcelainChanges(yield* git.status(process.cwd(), { untrackedFiles: "all" }));
+
+				// Issue #558: the counts make a lost deletion visible in the log.
+				const deletions = changes.filter((change) => change._tag === "FileDeletion").length;
+				yield* Effect.logInfo(`  ${changes.length} changed path(s) to commit, ${deletions} deletion(s)`);
 
 				if (changes.length === 0) {
 					yield* Effect.logWarning("No changes to commit via API");
