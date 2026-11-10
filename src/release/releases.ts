@@ -122,24 +122,39 @@ export function metaDirFor(buildDirectory: string): string {
 }
 
 /**
- * The `format` label recorded in the meta bundle's `tsdoctor.json` sbom
- * pointer. The action generates CycloneDX JSON via `@effected/sbom`
+ * The `format` label recorded in the meta bundle manifest's sbom pointer. The action generates CycloneDX JSON via `@effected/sbom`
  * (`Sbom.generate` → `bomFormat: "CycloneDX"`), so this is the matching
  * tsdoctor label, not `spdx-json`.
  */
 const SBOM_POINTER_FORMAT = "cyclonedx-json";
 
 /**
+ * The bundle manifest `effected package build` emits into `meta/`
+ * (`BUNDLE_MANIFEST_FILENAME` in `@effected/manifest`).
+ */
+const BUNDLE_MANIFEST_FILE = "bundle.json";
+
+/**
+ * The manifest name the retired `@savvy-web/bundler` emitted. Still honoured
+ * when it is the only manifest present, so a package built before the move to
+ * `effected package build` keeps its pointer where its reader looks.
+ */
+const LEGACY_MANIFEST_FILE = "tsdoctor.json";
+
+/**
  * Copy a generated SBOM file into the group's `meta/` folder (beside its `pkg/`
  * build dir) so the `…{group}.meta.tgz` doc bundle includes it, then upsert an
- * `sbom` pointer into `meta/tsdoctor.json`. No-op when the meta folder is
+ * `sbom` pointer into the meta bundle manifest. No-op when the meta folder is
  * absent (a non-bundler package) or the source is missing. The copy keeps the
  * SBOM's basename (`<unscoped>.sbom.json`).
  *
- * The pointer is layer 3 of the tsdoctor bundle spec: only this action knows
- * the SBOM's final name, so it is recorded here rather than pre-declared by the
- * bundler. An existing manifest keeps its other fields; a missing one is
- * created as `{ spec: 1, sbom }`; a stale `sbom` entry is overwritten.
+ * The pointer is recorded here rather than pre-declared by the bundler, because
+ * only this action knows the SBOM's final name — the bundler's
+ * `composeBundleManifest` documents that it never writes one. The manifest is
+ * `meta/bundle.json`; a legacy `meta/tsdoctor.json` is upserted instead only
+ * when it exists and `bundle.json` does not. An existing manifest keeps its
+ * other fields; a missing one is created as `bundle.json` `{ spec: 1, sbom }`;
+ * a stale `sbom` entry is overwritten.
  */
 export function copySbomIntoMeta(sbomPath: string, buildDirectory: string): void {
 	const metaDir = metaDirFor(buildDirectory);
@@ -147,7 +162,9 @@ export function copySbomIntoMeta(sbomPath: string, buildDirectory: string): void
 	const sbomName = basename(sbomPath);
 	copyFileSync(sbomPath, join(metaDir, sbomName));
 
-	const manifestPath = join(metaDir, "tsdoctor.json");
+	const bundlePath = join(metaDir, BUNDLE_MANIFEST_FILE);
+	const legacyPath = join(metaDir, LEGACY_MANIFEST_FILE);
+	const manifestPath = !existsSync(bundlePath) && existsSync(legacyPath) ? legacyPath : bundlePath;
 	const existing: Record<string, unknown> = existsSync(manifestPath)
 		? (JSON.parse(readFileSync(manifestPath, "utf-8")) as Record<string, unknown>)
 		: { spec: 1 };
@@ -159,7 +176,7 @@ export function copySbomIntoMeta(sbomPath: string, buildDirectory: string): void
  * Find the API Extractor doc file (`<unscopedName>.api.json`) in the sibling
  * `meta/` folder beside the build directory.
  *
- * The `@savvy-web/bundler` prod layout emits `<unscoped>.api.json` into
+ * The bundler prod layout emits `<unscoped>.api.json` into
  * `dist/prod/<group>/meta/` (not `dist/prod/<group>/pkg/`), so we resolve
  * the sibling folder via `metaDirFor` before searching.
  *
@@ -641,7 +658,7 @@ const processOneTag = (
 					// ── SBOM meta copy ──────────────────────────────────────────────────
 					// Runs after publish succeeded, so it degrades to a warning like the
 					// meta tar below: the meta bundle is a best-effort doc-builder asset,
-					// and a malformed pre-existing tsdoctor.json must not abort the release.
+					// and a malformed pre-existing manifest must not abort the release.
 					if (targetResult.sbomPath) {
 						const sbomPath = targetResult.sbomPath;
 						yield* Effect.try({

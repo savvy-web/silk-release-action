@@ -7,6 +7,8 @@
 * Updated Disable the persistLocal composite action and its act smoke loop
 * Updated Version natively via the bundled silk-effects ReleasePlanner
 * Updated Workspace
+* Updated byte-group
+* Updated release-action
 
 ## 2026-11-06
 
