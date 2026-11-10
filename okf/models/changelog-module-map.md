@@ -9,19 +9,19 @@ tags:
 sources:
   - id: native-version
     resource: ../../src/utils/native-version.ts
-  - id: action-config
-    resource: ../../action.config.ts
+  - id: effected-toml
+    resource: ../../effected.toml
   - id: changelog-silk
     resource: ../../src/changelog/silk.ts
   - id: changelog-default
     resource: ../../src/changelog/default.ts
 generated:
   by: okfit/claude-code
-  at: 2026-09-13T19:54:03Z
+  at: 2026-11-10T18:07:09Z
 status: draft
 integrity:
   generated:
-    body: a7acb6f8f1dea3a4
+    body: 5aed4ab07cf6d288
 ---
 
 # Changelog module map
@@ -71,21 +71,25 @@ the wrong changelog function, and nothing downstream re-validates that the
 generated prose matches the format the consumer's config actually asked
 for.
 
-## Why `build.nativeDynamicImports` is load-bearing
+## How the engine loads a bundle
 
-Both bundles are emitted as `workers` entries in `action.config.ts`
-(`../../action.config.ts:8-11`) rather than folded into the main bundle,
-because the changesets engine resolves the changelog module path at
-*runtime* and dynamic-imports it by that resolved absolute path. Without
-`build.nativeDynamicImports` set, rspack compiles a dynamic `import()` whose
-specifier it cannot statically resolve into a context module — and a
-context module throws `Cannot find module` for an on-disk path handed to it
-at runtime, since it only knows the finite set of specifiers rspack saw at
-build time. `nativeDynamicImports` keeps that `import()` a native, unbundled
-runtime import instead, so `CHANGELOG_MODULES`'s absolute `resolve(HERE,
-…)` paths actually load.
+Both bundles are emitted as `[action.entries.workers]` entries in
+`effected.toml`[^effected-toml] (`changelog-silk` and `changelog-default`,
+written as `dist/changelog-silk.js` and `dist/changelog-default.js`) rather
+than folded into the main bundle, because the engine resolves the changelog
+module by *path at runtime*. `ReleasePlanner.apply`'s `withChangelogModules`
+swaps the consumer's configured changelog id for the mapped absolute
+`dist/changelog-*.js` path, and the `@effected/changesets` engine underneath
+loads that path with a native `import()`. The action's bundler (rolldown,
+via `effected action build`) keeps a computed `import()` native on its own,
+so no build option is needed for `CHANGELOG_MODULES`'s absolute
+`resolve(HERE, …)` paths to load. What does break the load is a rename: an
+entry name in `effected.toml` that no longer matches the `changelog-*.js`
+file name `CHANGELOG_MODULES` resolves leaves the map pointing at a file
+that is never emitted.
 
 See also: [Native versioning decision](../decisions/native-versioning.md),
 [Unrecognized changelog id gotcha](../gotchas/unrecognized-changelog-id.md).
 
 [^native-version]: `../../src/utils/native-version.ts`
+[^effected-toml]: `../../effected.toml`

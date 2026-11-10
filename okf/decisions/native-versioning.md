@@ -14,12 +14,14 @@ sources:
     resource: ../../src/utils/format-workspace.ts
   - id: release-layers
     resource: ../../src/release/layers.ts
+  - id: effected-toml
+    resource: ../../effected.toml
 generated:
   by: okfit/claude-code
-  at: 2026-09-13T19:54:03Z
+  at: 2026-11-10T18:07:09Z
 integrity:
   generated:
-    body: 9333b848cf116b91
+    body: a163ad0e2a855c70
   verified:
     by: human:spencer
     at: 2026-10-23T18:01:04Z
@@ -64,11 +66,13 @@ generator by module id. `CHANGELOG_MODULES` maps the known ids
 `@changesets/changelog-git` bundle) onto action-shipped ESM bundles
 rather than packages a consumer would otherwise have to install. An
 unmapped id fails inside `ReleasePlanner.apply` with a typed error naming
-it. The bundles are emitted as `workers` entries in `action.config.ts`,
-and `build.nativeDynamicImports` keeps the runtime dynamic imports inside
-`@changesets/apply-release-plan` and `@effected/workspaces` native,
-because rspack would otherwise compile them into context modules that
-throw on on-disk paths. See
+it. `ReleasePlanner.apply` (through `withChangelogModules`) swaps the
+configured id for the mapped absolute `dist/changelog-*.js` path, and the
+`@effected/changesets` engine underneath loads that path with a native
+`import()`. The bundles are emitted as `[action.entries.workers]` entries in
+`effected.toml`[^effected-toml]; the action's bundler (rolldown, via `effected action
+build`) leaves a computed `import()` native on its own, so no build option
+is needed to keep that runtime load working. See
 [Changelog module map](../models/changelog-module-map.md).
 
 **Token scoping.** The changelog's GitHub-info fetch
@@ -139,3 +143,4 @@ repository that uses this action.
 [^native-version]: `../../src/utils/native-version.ts`
 [^format-workspace]: `../../src/utils/format-workspace.ts`
 [^release-layers]: `../../src/release/layers.ts`
+[^effected-toml]: `../../effected.toml`

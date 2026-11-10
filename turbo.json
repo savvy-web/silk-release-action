@@ -12,6 +12,7 @@
 				"$TURBO_ROOT$/pnpm-lock.yaml",
 				"$TURBO_ROOT$/pnpm-workspace.yaml",
 				"action.yml",
+				"effected.toml",
 				"package.json",
 				"tsconfig.json",
 				"src/**/*.ts",
@@ -55,12 +56,18 @@
 				"package.json",
 				"tsconfig.json",
 				"*.ts",
+				"*.mts",
+				"*.cts",
 				"src/**/*.ts",
+				"src/**/*.mts",
+				"src/**/*.cts",
 				"lib/**/*.ts",
 				"lib/**/*.mts",
+				"lib/**/*.cts",
 				"__test__/**/*.ts",
 				"__test__/**/*.mts",
-				"__test__/**/*.cts"
+				"__test__/**/*.cts",
+				"types/**/*.d.ts"
 			],
 			"outputLogs": "errors-only",
 			"outputs": []

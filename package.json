@@ -16,7 +16,7 @@
 	"type": "module",
 	"scripts": {
 		"build": "turbo run build:prod --log-order=grouped",
-		"build:prod": "github-action-builder build",
+		"build:prod": "effected action build",
 		"check:collection": "node scripts/check-test-collection.mjs",
 		"ci:build": "CI=\"true\" turbo run build:prod --log-order=grouped --output-logs=full",
 		"ci:test": "node scripts/check-test-collection.mjs && effected schema check lib/scripts/schemastore.config.ts && CI=\"true\" vitest run --coverage",
@@ -33,11 +33,11 @@
 		"test:coverage": "vitest run --coverage --pass-with-no-tests",
 		"test:watch": "vitest --watch --pass-with-no-tests",
 		"typecheck": "turbo run types:check --log-prefix=none --log-order=grouped",
-		"types:check": "tsc --noEmit",
-		"validate": "github-action-builder validate"
+		"types:check": "tsc --noEmit"
 	},
 	"dependencies": {
 		"@effect/platform-node": "catalog:effected",
+		"@effected/changesets": "catalog:effected",
 		"@effected/commands": "catalog:effected",
 		"@effected/git": "catalog:effected",
 		"@effected/github": "catalog:effected",
@@ -52,7 +52,7 @@
 		"@effected/semver": "catalog:effected",
 		"@effected/workspaces": "catalog:effected",
 		"@effected/yaml": "catalog:effected",
-		"@savvy-web/silk-effects": "^11.0.1",
+		"@savvy-web/silk-effects": "^12.0.0",
 		"effect": "catalog:effected"
 	},
 	"devDependencies": {
@@ -60,10 +60,9 @@
 		"@effected/memfs": "catalog:effected",
 		"@effected/plugin": "catalog:effected",
 		"@okfit/plugin": "^0.5.29",
-		"@savvy-web/github-action-builder": "^2.4.25",
-		"@savvy-web/silk": "^4.5.6",
+		"@savvy-web/silk": "^5.0.0",
 		"@vitest-agent/plugin": "^6.0.5",
-		"tsx": "catalog:silk"
+		"tsx": "catalog:effected:build"
 	},
 	"engines": {
 		"node": ">=24.11.0"
