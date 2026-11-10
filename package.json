@@ -59,9 +59,9 @@
 		"@effect/vitest": "catalog:effected",
 		"@effected/memfs": "catalog:effected",
 		"@effected/plugin": "catalog:effected",
-		"@okfit/plugin": "^0.5.29",
+		"@okfit/plugin": "^0.5.32",
 		"@savvy-web/silk": "^5.0.0",
-		"@vitest-agent/plugin": "^6.0.5",
+		"@vitest-agent/plugin": "^6.0.9",
 		"tsx": "catalog:effected:build"
 	},
 	"engines": {
@@ -70,7 +70,7 @@
 	"devEngines": {
 		"packageManager": {
 			"name": "pnpm",
-			"version": "12.17.0",
+			"version": "12.19.0",
 			"onFail": "download"
 		},
 		"runtime": [
