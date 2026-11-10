@@ -1,5 +1,50 @@
 # @savvy-web/silk-release-action
 
+## 5.11.1
+
+### Bug Fixes
+
+- Phase 1 now fails before committing to the release branch when the version step left a changeset in `.changeset/` that names a package it just released. The changeset would otherwise be committed into the release PR and release the same package again on the next run. The commit step also logs how many changed paths and deletions it commits. Closes #558
+- The SBOM pointer for the `…meta.tgz` documentation bundle is written into `meta/bundle.json`, which is the manifest `effected package build` emits. A package built with the older bundler still gets its pointer in `meta/tsdoctor.json` when that is the only manifest present
+- Snapshot publishing reads a package that the registry knows but that lists no versions as never published, rather than failing the target [#559][#559]
+
+### Build System
+
+- The action now builds with `effected action build` from `@effected/plugin`, configured by the `[action]` table in `effected.toml`; the deprecated `@savvy-web/github-action-builder` and its `action.config.ts` are gone
+- The committed bundles are 11–16% smaller and keep the same `dist/` file names, so `action.yml` is unchanged
+- The changelog modules are still bundled as `dist/changelog-silk.js` and `dist/changelog-default.js`, and Phase 1 still loads them with a native `import()` [#559][#559]
+
+### Dependencies
+
+| Dependency | Type | Action | From | To |
+| --- | --- | --- | --- | --- |
+| @effect/platform-node | dependency | updated | ~4.1.2 | 4.1.3 |
+| @effected/commands | dependency | updated | ^0.20.0 | ^0.21.0 |
+| @effected/git | dependency | updated | ^0.30.0 | ^0.32.0 |
+| @effected/github | dependency | updated | ^0.28.0 | ^0.32.0 |
+| @effected/github-actions | dependency | updated | ^0.31.0 | ^0.33.0 |
+| @effected/github-references | dependency | updated | ^0.14.0 | ^0.15.0 |
+| @effected/jsonc | dependency | updated | ^0.23.0 | ^0.25.0 |
+| @effected/markdown | dependency | updated | ^0.26.0 | ^0.29.0 |
+| @effected/npm | dependency | updated | ^0.30.0 | ^0.33.0 |
+| @effected/package-json | dependency | updated | ^0.29.0 | ^0.32.0 |
+| @effected/sbom | dependency | updated | ^0.20.0 | ^0.21.0 |
+| @effected/schemastore | dependency | updated | ^0.29.0 | ^0.32.0 |
+| @effected/semver | dependency | updated | ^0.21.0 | ^0.24.0 |
+| @effected/workspaces | dependency | updated | ^0.42.0 | ^0.45.0 |
+| @effected/yaml | dependency | updated | ^0.28.0 | ^0.30.0 |
+| @savvy-web/silk-effects | dependency | updated | ^11.0.1 | ^12.0.0 |
+| effect | dependency | updated | ~4.1.2 | 4.1.3 |
+| @effected/changesets | dependency | added | — | ^0.4.0 |
+
+[#559][#559]
+
+### Thanks
+
+Thanks to [@spencerbeggs](https://github.com/spencerbeggs) for their contributions!
+
+[#559]: https://github.com/savvy-web/silk-release-action/pull/559
+
 ## 5.11.0
 
 ### Features
