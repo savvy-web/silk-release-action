@@ -52,14 +52,14 @@
 		"@effected/semver": "catalog:effected",
 		"@effected/workspaces": "catalog:effected",
 		"@effected/yaml": "catalog:effected",
-		"@savvy-web/silk-effects": "^12.0.0",
+		"@savvy-web/silk-effects": "^12.1.1",
 		"effect": "catalog:effected"
 	},
 	"devDependencies": {
 		"@effect/vitest": "catalog:effected",
 		"@effected/memfs": "catalog:effected",
 		"@effected/plugin": "catalog:effected",
-		"@okfit/plugin": "^0.5.32",
+		"@okfit/plugin": "^0.5.33",
 		"@savvy-web/silk": "^5.1.1",
 		"@vitest-agent/plugin": "^6.0.10",
 		"tsx": "catalog:effected:build"
