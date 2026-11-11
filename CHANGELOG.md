@@ -1,5 +1,22 @@
 # @savvy-web/silk-release-action
 
+## 5.11.2
+
+### Bug Fixes
+
+- Completing a check run right after creating it no longer fails Phase 1 or Phase 2 when GitHub briefly answers 404 for the new run. The completing request now retries the 404 three times over 1.75s, so a check such as Release Validation Summary or Create Release Branch is no longer left stuck in progress. Refs #563.
+
+### Dependencies
+
+| Dependency | Type | Action | From | To |
+| --- | --- | --- | --- | --- |
+| @effected/changesets | dependency | updated | ^0.4.0 | ^0.4.1 |
+| @effected/github | dependency | updated | ^0.32.0 | ^0.32.1 |
+| @effected/github-actions | dependency | updated | ^0.33.0 | ^0.33.1 |
+| @effected/npm | dependency | updated | ^0.33.0 | ^0.34.0 |
+| @effected/package-json | dependency | updated | ^0.32.0 | ^0.32.1 |
+| @effected/workspaces | dependency | updated | ^0.45.0 | ^0.46.0 |
+
 ## 5.11.1
 
 ### Bug Fixes
