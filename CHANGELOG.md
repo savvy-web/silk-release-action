@@ -1,5 +1,13 @@
 # @savvy-web/silk-release-action
 
+## 5.11.3
+
+### Dependencies
+
+| Dependency | Type | Action | From | To |
+| --- | --- | --- | --- | --- |
+| @savvy-web/silk-effects | dependency | updated | ^12.0.0 | ^12.1.1 |
+
 ## 5.11.2
 
 ### Bug Fixes
