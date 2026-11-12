@@ -51,7 +51,7 @@ jobs:
           source-branch: dev
           config-dependencies: |
             @savvy-web/pnpm-plugin-silk
-            @effected/pnpm-plugin-effect
+            @effected/pnpm-plugin-effected
           dependencies: |
             @effected/*
             @okfit/*
