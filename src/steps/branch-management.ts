@@ -41,7 +41,12 @@ import type {
 	GitHubTokenError,
 } from "@effected/github-actions";
 import { ActionEnvironment, ActionLogger, ActionOutputs, DryRun } from "@effected/github-actions";
-import type { PackageManagerDetector, PublishabilityDetector, WorkspaceDiscovery } from "@effected/workspaces";
+import type {
+	PackageManagerDetector,
+	PublishabilityDetector,
+	UnsupportedPackageManagerError,
+	WorkspaceDiscovery,
+} from "@effected/workspaces";
 import { Changesets } from "@savvy-web/silk-effects";
 import type { Config, FileSystem, Path } from "effect";
 import { Effect, Option } from "effect";
@@ -112,7 +117,8 @@ export type BranchManagementError =
 	| GitHubError
 	| GitHubTokenError
 	| NotARepositoryError
-	| UnknownRefError;
+	| UnknownRefError
+	| UnsupportedPackageManagerError;
 
 /**
  * Everything the phase needs provided. The union of its callees' channels, plus

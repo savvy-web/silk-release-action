@@ -146,9 +146,9 @@ describe("validateBuilds", () => {
 		// reason the four-way table existed; `scriptPrefix` shipped in round 1.
 		//
 		// BEHAVIOURAL CHANGE, deliberate: the old table emitted `pnpm ci:build`
-		// (bare) for pnpm and yarn but `npm run ci:build` for npm and bun. pnpm and
-		// yarn accept the shorthand, so the two are equivalent — but the table was
-		// carrying the inconsistency for no reason. Now all four go through `run`.
+		// (bare) for pnpm but `npm run ci:build` for npm and bun. pnpm accepts the
+		// shorthand, so the two are equivalent — but the table was carrying the
+		// inconsistency for no reason. Now all three go through `run`.
 		const f = makeFixtures();
 
 		const { spawner } = await runStage(f, { script: () => ({ exit: 0 }) });

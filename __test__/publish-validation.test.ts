@@ -143,12 +143,12 @@ describe("publishValidation — the build gate", () => {
 				workload: { audience: "https://registry.savvyweb.systems" },
 			},
 		];
-		await unwrap({ buildsPassed: true, packageManager: "yarn", targetBranch: "trunk", dryRun: true, customRegistries });
+		await unwrap({ buildsPassed: true, packageManager: "bun", targetBranch: "trunk", dryRun: true, customRegistries });
 
 		// `buildsPassed` is the step's own gate and must NOT be forwarded — the
 		// inner validation has no such parameter.
 		expect(runValidationEffect).toHaveBeenCalledWith({
-			packageManager: "yarn",
+			packageManager: "bun",
 			targetBranch: "trunk",
 			dryRun: true,
 			customRegistries,

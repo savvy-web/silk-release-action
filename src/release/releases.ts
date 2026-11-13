@@ -44,7 +44,7 @@ export interface ReleasesInputArgs {
 	readonly tags: ReadonlyArray<TagInfo>;
 	/** Results from the preceding publish step. */
 	readonly publishResult: PublishPackagesResult;
-	/** Package manager used (pnpm / npm / yarn / bun). */
+	/** Package manager used (pnpm / npm / bun). */
 	readonly packageManager: string;
 	/** When true skip all real mutations and return a synthetic report. */
 	readonly dryRun: boolean;

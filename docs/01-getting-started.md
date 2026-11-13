@@ -5,7 +5,7 @@
 - A GitHub repository using [changesets](https://github.com/changesets/changesets) for version management
 - A `.changeset/config.json` whose `changelog` field uses a supported changelog id (see [Changelog configuration](./03-configuration.md#changelog-configuration))
 - A [GitHub App](https://docs.github.com/en/apps/creating-github-apps) with the required permissions (see below)
-- Node.js project with a supported package manager (npm, pnpm, yarn or bun)
+- Node.js project with a supported package manager (npm, pnpm or bun; yarn is not supported)
 
 ## GitHub App permissions
 
