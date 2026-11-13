@@ -20,7 +20,7 @@ This is a **private GitHub Actions and Workflows repository** (`@savvy-web/silk-
 **You MUST install pnpm globally before running any commands:**
 
 ```bash
-npm install -g pnpm@11.20.0
+npm install -g pnpm@12.19.0
 ```
 
 **Then install dependencies:**
@@ -223,7 +223,7 @@ The repository uses **Husky with lint-staged** for automatic validation before c
 **Solution:** Install pnpm globally first:
 
 ```bash
-npm install -g pnpm@11.20.0
+npm install -g pnpm@12.19.0
 ```
 
 ### Error: "turbo_json_parse_error" (Found unknown key 'daemon')
@@ -377,7 +377,7 @@ The repository has **instruction files** in `.github/instructions/` that provide
 **Start working:**
 
 ```bash
-npm install -g pnpm@11.20.0
+npm install -g pnpm@12.19.0
 pnpm install
 ```
 

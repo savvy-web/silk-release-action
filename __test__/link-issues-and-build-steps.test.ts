@@ -162,9 +162,9 @@ describe("buildValidation", () => {
 
 	it("passes the package manager through", async () => {
 		validateBuilds.mockReturnValue(Effect.succeed({ success: true, errors: "", checkId: 0, htmlUrl: "" }));
-		await run(buildValidation("yarn", Option.none()));
+		await run(buildValidation("bun", Option.none()));
 
-		expect(validateBuilds).toHaveBeenCalledWith("yarn", Option.none());
+		expect(validateBuilds).toHaveBeenCalledWith("bun", Option.none());
 	});
 
 	it("passes the on-build gate through", async () => {

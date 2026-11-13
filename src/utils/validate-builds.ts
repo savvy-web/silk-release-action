@@ -36,16 +36,16 @@ export interface BuildValidationResult {
  * @remarks
  * `LocalExec.prefixes(launcher).scriptPrefix` is the single home of this
  * knowledge now — the hand-rolled four-way table this replaces had drifted into
- * a real inconsistency: pnpm and yarn emitted the script name bare
- * (`pnpm ci:build`) while npm and bun emitted `run` (`npm run ci:build`).
- * Equivalent for pnpm and yarn, which accept the shorthand, but the table was
- * carrying the difference for no reason and had to be read twice to see it.
+ * a real inconsistency: pnpm emitted the script name bare (`pnpm ci:build`)
+ * while npm and bun emitted `run` (`npm run ci:build`). Equivalent for pnpm,
+ * which accepts the shorthand, but the table was carrying the difference for
+ * no reason and had to be read twice to see it.
  *
  * An unrecognised name falls back to `npm`, which is what the table did and
  * what `main.ts`'s detector already narrows to.
  */
 const asLauncher = (packageManager: string): Launcher =>
-	packageManager === "pnpm" || packageManager === "yarn" || packageManager === "bun" ? packageManager : "npm";
+	packageManager === "pnpm" || packageManager === "bun" ? packageManager : "npm";
 
 /**
  * The build script every validated workspace is expected to expose.
