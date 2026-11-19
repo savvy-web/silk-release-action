@@ -60,7 +60,7 @@
 		"@effected/memfs": "catalog:effected",
 		"@effected/plugin": "catalog:effected",
 		"@okfit/plugin": "^0.5.37",
-		"@savvy-web/silk": "^5.1.5",
+		"@savvy-web/silk": "^5.1.6",
 		"@vitest-agent/plugin": "^6.0.15",
 		"tsx": "catalog:effected:build"
 	},
@@ -70,7 +70,7 @@
 	"devEngines": {
 		"packageManager": {
 			"name": "pnpm",
-			"version": "12.21.0",
+			"version": "12.22.0",
 			"onFail": "download"
 		},
 		"runtime": [
