@@ -143,10 +143,10 @@ const run = async (
 		Logger.layer([capture]),
 		// `resolveServerUrl` reads GITHUB_SERVER_URL for the package page URLs.
 		ActionEnvironment.layerTest({ GITHUB_SERVER_URL: "https://github.com" }),
-		// `layerTest`'s `group` is a pass-through; record each opening so a test
-		// can assert a group was — or was not — opened.
+		// `layerTest`'s `step` is a pass-through; record each opening so a test
+		// can assert a step was — or was not — opened.
 		ActionLogger.layerTest({
-			group: (name, effect) => Effect.logInfo(`::group::${name}`).pipe(Effect.andThen(effect)),
+			step: (name, effect) => Effect.logInfo(`::step::${name}`).pipe(Effect.andThen(effect)),
 		}),
 		ActionOutputs.layerTest({
 			setJson: (name: string, value: unknown) =>
@@ -294,14 +294,14 @@ describe("runPublishing — happy path", () => {
 		expect(text).toContain("✅ Published 2/2 registry target(s) (1 already on the registry) across 1 workspace(s)");
 	});
 
-	it("does not open the availability group when the ceiling is 0", async () => {
-		// The default INPUTS ceiling is 0, so nothing is probed; the group would be
+	it("does not open the availability step when the ceiling is 0", async () => {
+		// The default INPUTS ceiling is 0, so nothing is probed; the step would be
 		// an empty heading over no work, and its absence is what proves the
-		// skip happens before the group opens rather than inside it.
+		// skip happens before the step opens rather than inside it.
 		const { exit, result, text } = await run();
 
 		expect(exit._tag).toBe("Success");
-		expect(text).not.toContain("::group::Confirm registry availability");
+		expect(text).not.toContain("::step::Confirm registry availability");
 		expect(text).not.toContain("Confirming ");
 		// The all-`skipped` map is still produced for every package.
 		const totals = result?.totals as { packagesConfirmed: number; packagesHeld: number };
@@ -439,7 +439,7 @@ describe("runPublishing — which targets reach the confirmation probe", () => {
 
 		expect(exit._tag).toBe("Success");
 		expect(registry.reads).toEqual([]);
-		expect(text).not.toContain("::group::Confirm registry availability");
+		expect(text).not.toContain("::step::Confirm registry availability");
 	});
 });
 

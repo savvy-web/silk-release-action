@@ -1337,7 +1337,7 @@ export const detectReleases = (
 	never,
 	ActionEnvironment | ChangesetConfig | GitHubCommit | GitHubContent | PullRequest | Repo
 > =>
-	// No log group: this step emits one line, and a group holding a single line
+	// No `ActionLogger.step`: this emits one line, and a step holding a single line
 	// only adds a fold to click through.
 	Effect.gen(function* () {
 		let detected: ReadonlyArray<DetectedRelease>;
@@ -1643,7 +1643,7 @@ export const runBuildAndSbom = (
 	Effect.gen(function* () {
 		const discovery = yield* WorkspaceDiscovery;
 
-		return yield* (yield* ActionLogger).group(
+		return yield* (yield* ActionLogger).step(
 			"Build & SBOM",
 			Effect.gen(function* () {
 				// ── Build (ci:build, once) ─────────────────────────────────────────
@@ -2026,7 +2026,7 @@ export const runPublishTargets = (
 					// `Publish · @scope/pkg@1.2.3`; only a package split across distinct
 					// byte-groups disambiguates with the group id (e.g. `· github`).
 					const groupSuffix = groups.size > 1 ? ` · ${getGroupId(directory)}` : "";
-					const groupResults = yield* (yield* ActionLogger).group(
+					const groupResults = yield* (yield* ActionLogger).step(
 						`Publish · ${name}@${version}${groupSuffix}`,
 						publishDirectoryGroup(
 							name,

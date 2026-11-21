@@ -165,6 +165,10 @@ const oidcLayer = OidcTokenIssuer.layerFor(
 		runnerEnvironment: "github-hosted",
 		runId: 10,
 		runAttempt: 1,
+		refProtected: true,
+		refType: "branch",
+		baseRef: "",
+		headRef: "",
 	}),
 );
 

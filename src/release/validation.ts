@@ -698,10 +698,10 @@ export const runValidation = (args: ValidationInputArgs) =>
 				// name/version.
 				const manifest = yield* readBuiltManifest(build.absoluteDirectory);
 
-				// One collapsible group per package-build, mirroring the Phase-3 publish
+				// One step per package-build, mirroring the Phase-3 publish
 				// tree: a `📦 pack` line (dry-run sizing), per-registry readiness rows,
-				// and a `📄 sbom` line, capped by a group summary line.
-				const buildResult = yield* (yield* ActionLogger).group(
+				// and a `📄 sbom` line, capped by the step's result line.
+				const buildResult = yield* (yield* ActionLogger).step(
 					`Validate · ${pkg.name}@${pkg.version}${groupSuffix}`,
 					Effect.gen(function* () {
 						// ── 📦 pack / dry-run (sizing, one per directory) ──────────────

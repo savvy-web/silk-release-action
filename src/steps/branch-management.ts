@@ -174,7 +174,7 @@ export const branchManagement = (
 		// decides what a rehearsal is.
 		const dryRun = yield* (yield* DryRun).isDryRun;
 
-		return yield* (yield* ActionLogger).group(
+		return yield* (yield* ActionLogger).phase(
 			"Phase 1: Release Branch Management",
 			Effect.gen(function* () {
 				const { releaseBranch, targetBranch } = inputs;

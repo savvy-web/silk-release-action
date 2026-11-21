@@ -67,7 +67,7 @@ export type BuildValidationServices =
 	| Repo;
 
 /**
- * Run the build validation inside a collapsible log group.
+ * Run the build validation inside an `ActionLogger.step`.
  *
  * @param packageManager - The detected package manager, for the script argv.
  * @param onBuild - The optional `on-build` gate command; `None` is a no-op.
@@ -80,7 +80,7 @@ export const buildValidation = (
 	onBuild: Option.Option<string>,
 ): Effect.Effect<BuildValidationResult, never, BuildValidationServices> =>
 	Effect.gen(function* () {
-		const result = yield* (yield* ActionLogger).group(
+		const result = yield* (yield* ActionLogger).step(
 			"Validate builds",
 			validateBuilds(packageManager, onBuild).pipe(
 				Effect.catch((e) =>

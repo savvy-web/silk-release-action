@@ -397,9 +397,9 @@ export const confirmAvailability = (
 			return result;
 		}
 
-		// The group opens here, past the early returns, so a dry-run, a ceiling
-		// of 0 or a wave with nothing to read never leaves an empty heading.
-		const outcomes = yield* (yield* ActionLogger).group(
+		// The step opens here, past the early returns, so a dry-run, a ceiling
+		// of 0 or a wave with nothing to read never leaves an empty result line.
+		const outcomes = yield* (yield* ActionLogger).step(
 			"Confirm registry availability",
 			Effect.logInfo(
 				`Confirming ${plans.length} version(s) on their registries (ceiling ${options.ceilingSeconds}s` +

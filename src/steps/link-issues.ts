@@ -65,7 +65,7 @@ export type LinkIssuesServices =
 	| Repo;
 
 /**
- * Link the issues this release closes, inside a collapsible log group.
+ * Link the issues this release closes, inside an `ActionLogger.step`.
  *
  * @param refs - The release and target branch names, from the one input decode.
  * @returns The linked issues, or {@link LINK_ISSUES_FAILED}. Never fails.
@@ -74,7 +74,7 @@ export type LinkIssuesServices =
  */
 export const linkIssues = (refs: BranchRefs): Effect.Effect<LinkIssuesResult, never, LinkIssuesServices> =>
 	Effect.gen(function* () {
-		const result = yield* (yield* ActionLogger).group(
+		const result = yield* (yield* ActionLogger).step(
 			"Link issues from commits",
 			linkIssuesFromCommits(refs).pipe(
 				Effect.catch((e) =>

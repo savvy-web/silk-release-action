@@ -5,7 +5,7 @@
 // what it should do, and where the two differ the test says so and is written
 // to fail when the fix lands.
 //
-// The two steps share a shape — run a util inside a log group, degrade any
+// The two steps share a shape — run a util inside an `ActionLogger.step`, degrade any
 // error to a named fallback, emit a summary line — so they share a harness.
 // What that harness makes visible is where they DIFFER, which is the point:
 // one degradation is honest and the other is invisible.
@@ -38,35 +38,35 @@ const LINKED = {
 };
 
 /**
- * Run a step, recording the log-group names it opened and every line it logged.
+ * Run a phase-2 unit, recording the `ActionLogger.step` names it opened and every line it logged.
  *
  * @remarks
- * `ActionLogger.layerTest` takes overrides, so `group` records its name and
- * runs the body — that is how "the step opened its own group, and the summary
+ * `ActionLogger.layerTest` takes overrides, so `step` records its name and
+ * runs the body — that is how "the unit opened its own step, and the summary
  * line landed OUTSIDE it" becomes observable. Every unstubbed member keeps the
  * kit double's die-loudly default.
  */
 const run = async <A, R>(step: Effect.Effect<A, never, R>) => {
 	const lines: Array<string> = [];
-	const groups: Array<string> = [];
+	const steps: Array<string> = [];
 	const capture = Logger.make<unknown, void>((options) => {
 		lines.push(String(options.message));
 	});
 	const loggerLayer = ActionLogger.layerTest({
-		group: (name, body) =>
+		step: (name, body) =>
 			Effect.gen(function* () {
-				groups.push(name);
-				// Marks where the group ended, so the summary line's position relative
+				steps.push(name);
+				// Marks where the step ended, so the summary line's position relative
 				// to it is assertable rather than assumed.
 				const value = yield* body;
-				lines.push(`<<group:${name} closed>>`);
+				lines.push(`<<step:${name} closed>>`);
 				return value;
 			}),
 	});
 	const result = await Effect.runPromise(
 		step.pipe(Effect.provide(loggerLayer), Effect.provide(Logger.layer([capture]))) as Effect.Effect<A>,
 	);
-	return { result, lines, groups, text: lines.join("\n") };
+	return { result, lines, steps, text: lines.join("\n") };
 };
 
 beforeEach(() => {
@@ -103,19 +103,19 @@ describe("buildValidationFailed", () => {
 });
 
 describe("linkIssues", () => {
-	it("returns what the linker found, inside its own log group", async () => {
+	it("returns what the linker found, inside its own step", async () => {
 		linkIssuesFromCommits.mockReturnValue(Effect.succeed(LINKED));
-		const { result, groups } = await run(linkIssues(REFS));
+		const { result, steps } = await run(linkIssues(REFS));
 
 		expect(result).toEqual(LINKED);
-		expect(groups).toEqual(["Link issues from commits"]);
+		expect(steps).toEqual(["Link issues from commits"]);
 	});
 
-	it("emits the summary line OUTSIDE the group, so it survives a collapsed block", async () => {
+	it("emits the summary line OUTSIDE the step, so it survives a folded step", async () => {
 		linkIssuesFromCommits.mockReturnValue(Effect.succeed(LINKED));
 		const { lines } = await run(linkIssues(REFS));
 
-		const closed = lines.indexOf("<<group:Link issues from commits closed>>");
+		const closed = lines.indexOf("<<step:Link issues from commits closed>>");
 		const summary = lines.findIndex((l) => l.includes("Link issues —"));
 		expect(closed).toBeGreaterThanOrEqual(0);
 		expect(summary).toBeGreaterThan(closed);
@@ -151,13 +151,13 @@ describe("linkIssues", () => {
 });
 
 describe("buildValidation", () => {
-	it("returns what the validator found, inside its own log group", async () => {
+	it("returns what the validator found, inside its own step", async () => {
 		const passed = { success: true, errors: "", checkId: 9, htmlUrl: "https://gh/build" };
 		validateBuilds.mockReturnValue(Effect.succeed(passed));
-		const { result, groups } = await run(buildValidation("pnpm", Option.none()));
+		const { result, steps } = await run(buildValidation("pnpm", Option.none()));
 
 		expect(result).toEqual(passed);
-		expect(groups).toEqual(["Validate builds"]);
+		expect(steps).toEqual(["Validate builds"]);
 	});
 
 	it("passes the package manager through", async () => {

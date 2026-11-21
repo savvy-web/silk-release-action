@@ -7,7 +7,7 @@ resource: ../../src
 status: draft
 generated:
   by: okfit/claude-code
-  at: 2026-11-10T18:07:24Z
+  at: 2026-11-21T22:19:59Z
 sources:
   - id: src-main
     resource: ../../src/main.ts
@@ -32,7 +32,7 @@ tags:
   - observability
 integrity:
   generated:
-    body: 6bfac6f350ad3ca2
+    body: 96002ae86b67674b
 ---
 
 # release-action
@@ -148,7 +148,7 @@ Triggers on merge of the release PR to `main`. `steps/publishing.ts` is the phas
 3. **`runBuildAndSbom`** — runs `ci:build` once, then generates one CycloneDX SBOM per package that resolved a publish target; a `github-only` workspace is named in `sbomSkipped` rather than getting a stray unattached SBOM. Aborts the phase on a build failure.
 4. **`runPublishTargets`** — publishes packages: resolves targets, sorts topologically (idempotent re-sort), and calls `publishDirectoryGroup` per unique build directory. Aborts before any releases unless every target published or recovered (`publishResult.success` is all-or-nothing).
 5. **`runReleases`** (`release/releases.ts`) — creates Git tags (sha-aware idempotency) and GitHub releases, uploads group-keyed assets, creates SLSA provenance and SBOM attestations (idempotent: checks for an existing attestation first). One attestation per build directory, not per target.
-6. **`confirmAvailability`** (`steps/confirm-availability.ts`) — after `runReleases` and the close-linked-issues follow-on, before `emitPublishing`, so a hold never delays tags or releases: polls every successful target's exact `name@version` on its npm-protocol registry (npm, GitHub Packages, custom) until it resolves or its ceiling elapses — `registry-confirm-timeout` on npm, 20s capped by that input elsewhere, since only npm holds new versions — concurrently, under its own `Confirm registry availability` log group (opened only when there is something to read — not on dry-run, ceiling `0`, or a wave whose targets are all JSR or lack a read credential). Each registry is read with its publish credential (`resolveReadCredential` in `release/resolve-targets.ts`); a non-npm target with none is `no-read-credential`, and a 401/403 is `read-denied`, never `held`. A `filtered-by-releases` target is never handed to it. Requires `NpmRegistry | ActionLogger`; `npm-token`, `github-token` and `custom-registries` arrive as options from the decoded `Inputs`, not a second input read. Never fails the run and never flips `success`/`outcome` — a held package is published, just not yet resolvable. See [npm-publish-hold](../gotchas/npm-publish-hold.md).
+6. **`confirmAvailability`** (`steps/confirm-availability.ts`) — after `runReleases` and the close-linked-issues follow-on, before `emitPublishing`, so a hold never delays tags or releases: polls every successful target's exact `name@version` on its npm-protocol registry (npm, GitHub Packages, custom) until it resolves or its ceiling elapses — `registry-confirm-timeout` on npm, 20s capped by that input elsewhere, since only npm holds new versions — concurrently, as its own `Confirm registry availability` step (opened only when there is something to read — not on dry-run, ceiling `0`, or a wave whose targets are all JSR or lack a read credential, so none of those leaves an empty result line). Each registry is read with its publish credential (`resolveReadCredential` in `release/resolve-targets.ts`); a non-npm target with none is `no-read-credential`, and a 401/403 is `read-denied`, never `held`. A `filtered-by-releases` target is never handed to it. Requires `NpmRegistry | ActionLogger`; `npm-token`, `github-token` and `custom-registries` arrive as options from the decoded `Inputs`, not a second input read. Never fails the run and never flips `success`/`outcome` — a held package is published, just not yet resolvable. See [npm-publish-hold](../gotchas/npm-publish-hold.md).
 
 Ordering is established **once, at the source**: immediately after `detectReleases`, `steps/publishing.ts` sorts the detected set dependency-first via `sortReleasesTopologically`, so tag strategy, build & SBOM, publish, and releases all run in the same order — previously only `runPublishTargets` sorted while the rest consumed alphabetical detection order.
 
@@ -285,7 +285,6 @@ main.ts  (guard + Action.run only)
 - `src/layers/app.ts` — `MainLive`, `makeAppLayer(dryRun)`, `toolDiscovery` (see Layer graph, above).
 - `src/utils/write-sections.ts` — the read-fold-refresh-post both phases perform on the sticky comment: read before writing (an `upsert` from `""` deletes every other section); a failed read degrades to `""` rather than aborting; one write, not one per section; banners are refreshed across the whole body afterward.
 - `src/utils/managed-sections.ts` — per-section state for the release PR body and sticky comment, so a caller cannot get the `running`-transition write wrong.
-- `src/utils/grouped.ts` — runs an effect inside a collapsible Actions log group, resolving `ActionLogger` itself.
 - `src/utils/github-urls.ts` — web URLs into the GitHub instance the run executes against, so a new link cannot be added without confronting where the host comes from (GHES-correct rather than hardcoded `github.com`).
 - `src/utils/npm-cache.ts` — redirects npm's cache off GitHub macOS runners' partially root-owned `~/.npm/_cacache`; called at the top of `program.ts` before any phase runs an npm command.
 - `src/utils/detect-package-manager.ts` — delegates to `@effected/workspaces`' `PackageManagerDetector`, which additionally consults `devEngines.packageManager`; falls back to `"npm"` on detection failure.
@@ -308,7 +307,7 @@ main.ts  (guard + Action.run only)
 
 ## Key patterns
 
-**Grouped logging** — phase bodies use `grouped(name, effect)` (`src/utils/grouped.ts`) for collapsible Actions log groups and emit their own summary lines; `Effect.logInfo` is buffered/discarded on success inside a group, so live log output must go through the logger's own line members.
+**Phases and steps in the log** — the Actions log is built from the kit's two `ActionLogger` members, called inline (there is no local wrapper, and no `ActionLogger.group` call remains in `src/`). `phase(title, effect)` writes one bold heading, never folded and nothing on end; each phase body runs under one: `Phase 1: Release Branch Management`, `Phase 2: Validation`, `Phase 3: Publishing`, `Phase 3a: Close Linked Issues`, `Snapshot`, and `Create releases` inside publishing. `step(name, effect, { summary?, failure?, window? })` wraps every unit of work — `Link issues from commits`, `Validate builds`, `Validate · <pkg>@<version>`, `Validation check`, `Build & SBOM`, `Publish · <pkg>@<version>`, `Confirm registry availability`, `Release · <tag>`, and the snapshot `Version` and `Build`. A step holds its detail (every line below `Warn`, `Effect.logInfo` included) for its window (30s by default); on success it writes one folded `::group::` titled `✓ <summary or name> · <duration>` with the detail inside, so nothing is discarded; on failure it writes `✗` and the detail unfolded, and the failure propagates unchanged. Warnings and errors go out at once as annotations and turn the mark `⚠`. The logging carries no failure posture: every catch sits where it did before the steps were introduced, and the CHARACTERIZATION-pinned `✅ Link issues — N issue(s) linked` line ([issue #216](https://github.com/savvy-web/silk-release-action/issues/216)) is written verbatim outside its step. `ActionLogger.layerTest`/`makeTest` pass `group`/`phase`/`step` through unchanged, and `ActionLogger.recording()` records the structure for a test that asserts on it. `rg -n "\.(phase|step)\(" src` lists every call. The pre-0.36 trap where info logs inside a group were discarded on success is gone ([log-info-buffered-in-groups](../gotchas/log-info-buffered-in-groups.md), deprecated).
 
 **State management** — GitHub Actions state passes data between `pre`, `main`, and `post` via `Schema.Class`es in `src/state.ts`: `StartTimeState` (wall-clock timestamp for duration reporting) and `GithubPackagesTokenState` (the optional workflow `github-token`, written by `pre.ts`, read by the Phase-3 publish flow). The App installation token is a third identity, persisted by `GitHubToken.provision` under the kit's own internal key and read back via `GitHubToken.read()`. `process.env.GITHUB_TOKEN` is never written persistently; the one scoped exception is native versioning's bounded mutation around `ReleasePlanner.apply`. Every secret-bearing token API takes or decodes to `Redacted<string>` — `GitHubApp.generateToken` / `revokeToken`, the client constructors, `PackagePublish.setupAuth`, and the decoded `InstallationToken.token`.
 

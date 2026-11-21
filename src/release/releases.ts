@@ -855,7 +855,7 @@ const processOneTag = (
  */
 export const runReleases = (args: ReleasesInputArgs): Effect.Effect<ReleasesReport, ReleasesError, ReleasesServices> =>
 	Effect.gen(function* () {
-		return yield* (yield* ActionLogger).heading(
+		return yield* (yield* ActionLogger).phase(
 			"Create releases",
 			Effect.gen(function* () {
 				if (args.tags.length === 0) {
@@ -888,7 +888,7 @@ export const runReleases = (args: ReleasesInputArgs): Effect.Effect<ReleasesRepo
 					// Find packages associated with this tag (mirrors the original logic)
 					const associatedPackages = args.publishResult.packages.filter((pkg) => tag.packageNames.includes(pkg.name));
 
-					const [releaseInfo, error, tagSha] = yield* (yield* ActionLogger).group(
+					const [releaseInfo, error, tagSha] = yield* (yield* ActionLogger).step(
 						`Release · ${tag.packageName}@${tag.version}`,
 						processOneTag(tag, associatedPackages, owner, repo, headSha, args.dryRun),
 					);

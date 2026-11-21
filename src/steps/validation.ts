@@ -84,7 +84,7 @@ export const runValidation = (inputs: Inputs) =>
 		const packageManager = yield* detectPackageManager;
 		const { repositoryOwner: owner, sha } = yield* env.github;
 
-		yield* (yield* ActionLogger).heading(
+		yield* (yield* ActionLogger).phase(
 			"Phase 2: Validation",
 			Effect.gen(function* () {
 				yield* Effect.logDebug(`Detected package manager: ${packageManager}`);
@@ -212,11 +212,13 @@ export const runValidation = (inputs: Inputs) =>
 					"</details>",
 				].join("\n");
 
-				const unified = yield* (yield* ActionLogger).group(
+				const unified = yield* (yield* ActionLogger).step(
 					"Validation check",
 					createValidationCheck(checkResults, dryRun, jsonBlock),
+					// The step's result line carries the conclusion. Its ✓ means the check
+					// run was written; the conclusion is the verdict inside it.
+					{ summary: (u) => `Validation check — conclusion: ${u.success ? "success" : "failure"}` },
 				);
-				yield* Effect.logInfo(`✅ Validation check — conclusion: ${unified.success ? "success" : "failure"}`);
 				const unifiedUrl = unified.htmlUrl !== "" ? unified.htmlUrl : undefined;
 
 				// Patch the emitted result with the now-known unified check URL /

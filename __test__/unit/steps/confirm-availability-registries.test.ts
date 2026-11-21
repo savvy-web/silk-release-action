@@ -97,7 +97,7 @@ const options = (overrides: Partial<ConfirmAvailabilityOptions> = {}): ConfirmAv
 	...overrides,
 });
 
-/** Run the step, capturing log lines and the groups it opened. */
+/** Run the step, capturing log lines and the steps it opened. */
 const run = (
 	targets: Parameters<typeof confirmAvailability>[0],
 	opts: ConfirmAvailabilityOptions,
@@ -105,7 +105,7 @@ const run = (
 ) =>
 	Effect.gen(function* () {
 		const lines: string[] = [];
-		const groups: string[] = [];
+		const steps: string[] = [];
 		const capture = Logger.make<unknown, void>(({ message }) => {
 			lines.push(Array.isArray(message) ? message.join(" ") : String(message));
 		});
@@ -114,13 +114,13 @@ const run = (
 				Layer.mergeAll(
 					Logger.layer([capture]),
 					ActionLogger.layerTest({
-						group: (name, effect) => Effect.sync(() => void groups.push(name)).pipe(Effect.andThen(effect)),
+						step: (name, effect) => Effect.sync(() => void steps.push(name)).pipe(Effect.andThen(effect)),
 					}),
 					registry,
 				),
 			),
 		);
-		return { result, lines, groups, summary: lines.filter((l) => l.includes("Registry confirmation")) };
+		return { result, lines, steps, summary: lines.filter((l) => l.includes("Registry confirmation")) };
 	});
 
 describe("confirmAvailability — GitHub Packages and custom registries", () => {
@@ -297,7 +297,7 @@ describe("confirmAvailability — GitHub Packages and custom registries", () => 
 	it.effect("keeps JSR skipped as not-probed", () =>
 		Effect.gen(function* () {
 			const reg = authRegistry(seededEverywhere, {});
-			const { result, groups } = yield* run([jsrTarget], options(), reg.layer);
+			const { result, steps } = yield* run([jsrTarget], options(), reg.layer);
 			expect(result.get(keyOf(jsrTarget))).toEqual({
 				status: "skipped",
 				waitedMs: 0,
@@ -305,27 +305,27 @@ describe("confirmAvailability — GitHub Packages and custom registries", () => 
 				reason: "not-probed",
 			});
 			expect(reg.reads).toEqual([]);
-			expect(groups).toEqual([]);
+			expect(steps).toEqual([]);
 		}),
 	);
 
-	it.live("opens the confirmation group for a wave whose only probe-able target is a custom registry", () =>
+	it.live("opens the confirmation step for a wave whose only probe-able target is a custom registry", () =>
 		Effect.gen(function* () {
 			const reg = authRegistry(seededEverywhere, { [PNPR]: PNPR_TOKEN });
-			const { groups } = yield* run([pnprTarget, jsrTarget], options(), reg.layer);
-			expect(groups).toEqual(["Confirm registry availability"]);
+			const { steps } = yield* run([pnprTarget, jsrTarget], options(), reg.layer);
+			expect(steps).toEqual(["Confirm registry availability"]);
 		}),
 	);
 
-	it.effect("does not open the group when every non-npm target lacks a read credential", () =>
+	it.effect("does not open the step when every non-npm target lacks a read credential", () =>
 		Effect.gen(function* () {
 			const reg = authRegistry(seededEverywhere, {});
-			const { groups } = yield* run(
+			const { steps } = yield* run(
 				[ghpTarget, pnprTarget],
 				options({ githubToken: null, customRegistries: [] }),
 				reg.layer,
 			);
-			expect(groups).toEqual([]);
+			expect(steps).toEqual([]);
 		}),
 	);
 
