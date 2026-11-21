@@ -1,5 +1,24 @@
 # @savvy-web/silk-release-action
 
+## 5.12.2
+
+### Dependencies
+
+| Dependency | Type | Action | From | To |
+| --- | --- | --- | --- | --- |
+| @effect/platform-node | dependency | updated | 4.1.4 | 4.1.5 |
+| @effected/changesets | dependency | updated | ^0.6.1 | ^0.6.2 |
+| @effected/git | dependency | updated | ^0.32.0 | ^0.34.0 |
+| @effected/github | dependency | updated | ^0.33.0 | ^0.34.0 |
+| @effected/github-actions | dependency | updated | ^0.35.0 | ^0.36.1 |
+| @effected/workspaces | dependency | updated | ^0.48.1 | ^0.49.0 |
+| @savvy-web/silk-effects | dependency | updated | ^13.0.1 | ^14.0.0 |
+| effect | dependency | updated | 4.1.4 | 4.1.5 |
+
+### Maintenance
+
+- The runner log now uses the kit's step log. Each phase opens with a bold `ActionLogger.phase` heading. Each unit of work is an `ActionLogger.step` that folds its output on success under one result line, `✓ <name> · <duration>`, or `⚠` when it logged a warning. On failure it prints the output unfolded under `✗`. That covers issue linking, build validation, the per-package validate, publish and release units, Build & SBOM, registry confirmation, the validation check and the snapshot version and build. The validation check's result line now carries its conclusion. Inputs, outputs, the result schema and every step's failure behaviour are unchanged.
+
 ## 5.12.1
 
 ### Dependencies
