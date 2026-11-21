@@ -69,7 +69,7 @@ interface Stop {
  */
 export const runSnapshot = (inputs: Inputs) =>
 	Effect.flatMap(ActionLogger, (logger) =>
-		logger.heading(
+		logger.phase(
 			"Snapshot",
 			Effect.gen(function* () {
 				const outputs = yield* ActionOutputs;
@@ -146,7 +146,7 @@ export const runSnapshot = (inputs: Inputs) =>
 					prereleaseTemplate: SNAPSHOT_PRERELEASE_TEMPLATE,
 				};
 				const versioned = yield* Effect.result(
-					(yield* ActionLogger).group("Version", runNativeVersion(cwd, { snapshot })),
+					(yield* ActionLogger).step("Version", runNativeVersion(cwd, { snapshot })),
 				);
 				if (versioned._tag === "Failure") {
 					return yield* finish([], null, { reason: "version", stage: "version", message: versioned.failure.message });
@@ -196,7 +196,7 @@ export const runSnapshot = (inputs: Inputs) =>
 
 				// ── 3. Build (no SBOM) ─────────────────────────────────────────────
 				const packageManager = yield* detectPackageManager;
-				const build = yield* (yield* ActionLogger).group("Build", runCiBuild(packageManager));
+				const build = yield* (yield* ActionLogger).step("Build", runCiBuild(packageManager));
 				if (!build.ok) {
 					return yield* finish(releases, null, {
 						reason: "build",

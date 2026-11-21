@@ -1,5 +1,10 @@
 # Log
 
+## 2026-11-21
+
+* Updated `Effect.logInfo` inside a group is buffered and discarded on success (no longer true)
+* Updated release-action
+
 ## 2026-11-10
 
 * Updated A FULL TURBO green typecheck can mean no typecheck ran

@@ -28,7 +28,7 @@ export const runCloseIssues = () =>
 	Effect.gen(function* () {
 		const dryRun = yield* (yield* DryRun).isDryRun;
 
-		yield* (yield* ActionLogger).group(
+		yield* (yield* ActionLogger).phase(
 			"Phase 3a: Close Linked Issues",
 			Effect.gen(function* () {
 				const prNumber = yield* readEventPullRequestNumber();

@@ -133,9 +133,10 @@ describe("listTurboRunSummaryPaths", () => {
 });
 
 // The predecessor's step buffer DISCARDED info logs on success, so this marker
-// had to bypass it via `Step.line`. `ActionLogger.withBuffer` flushes on every
-// exit path INCLUDING success — which is the whole reason the bypass could be
-// dropped for a plain `Effect.logInfo`.
+// had to bypass it via `Step.line`. `ActionLogger.step` writes its detail on
+// every exit path INCLUDING success (folded into a `::group::`, never dropped) —
+// which is the whole reason the bypass could be dropped for a plain
+// `Effect.logInfo`.
 //
 // This drives the REAL `ActionLogger` (not `layerTest`, whose buffer wrapper
 // passes its effect through unchanged and would make the assertion vacuous)
@@ -158,7 +159,7 @@ describe("emitConciseMarker (survives a buffered success)", () => {
 				Effect.gen(function* () {
 					const logger = yield* ActionLogger;
 					// Succeeds — the exact case the old buffer threw away.
-					yield* logger.withBuffer("Validate builds", emitConciseMarker("/x/run.json", summary));
+					yield* logger.step("Validate builds", emitConciseMarker("/x/run.json", summary));
 				}).pipe(
 					Effect.provide(ActionLogger.layer.pipe(Layer.provide(ActionEnvironment.layerTest({})))),
 					Effect.provide(ActionLogger.layerLogger),

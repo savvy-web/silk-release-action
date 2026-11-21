@@ -41,6 +41,10 @@ const CLAIMS = ActionsOidcClaims.make({
 	runnerEnvironment: "github-hosted",
 	runId: 10,
 	runAttempt: 1,
+	refProtected: true,
+	refType: "branch",
+	baseRef: "",
+	headRef: "",
 });
 
 const run = (issuer: Layer.Layer<OidcTokenIssuer>) =>

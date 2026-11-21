@@ -331,11 +331,12 @@ export function formatConciseMarkerLines(path: string, summary: TurboRunSummary)
  * to **bypass** the step buffer: that buffer *discarded* on success, so an
  * `Effect.logInfo` marker vanished on exactly the runs it was meant to describe.
  *
- * `ActionLogger.withBuffer` flushes on **every** exit path, success included, so
- * the bypass is no longer needed and the marker is a plain `Effect.logInfo`.
+ * `ActionLogger.step` writes its detail on **every** exit path, success included
+ * (folded into a `::group::` on success, never dropped), so the bypass is no
+ * longer needed and the marker is a plain `Effect.logInfo`.
  * That is the load-bearing assumption behind dropping `Step.line`, and it is
  * pinned by a test that drives the real `ActionLogger` through a *succeeding*
- * buffered effect.
+ * step.
  *
  * Requiring nothing (`R = never`) is deliberate: the marker is emitted from
  * inside `readTurboDiagnostics`' non-fatal arm in `validateBuilds`, and taking

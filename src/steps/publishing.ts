@@ -106,7 +106,7 @@ const RERUN_CONTRACT =
  */
 export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | undefined) =>
 	Effect.flatMap(ActionLogger, (logger) =>
-		logger.heading(
+		logger.phase(
 			"Phase 3: Publishing",
 			Effect.gen(function* () {
 				const outputs = yield* ActionOutputs;
@@ -152,8 +152,8 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 				const args = { packageManager, targetBranch, dryRun, mergedReleasePRNumber };
 
 				// ── Step 1: Detect released packages ───────────────────────────────────
-				// `detectReleases` wraps itself in Step.withStep, which emits its own
-				// success line on completion. No extra info line here.
+				// `detectReleases` logs its own `✅` line on completion, so no extra info
+				// line here.
 				const detectedUnordered = yield* detectReleases(args);
 
 				// Order the detected packages dependency-first once, at the source, so
@@ -191,7 +191,7 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 				}
 
 				// ── Step 2: Determine tag strategy ─────────────────────────────────────
-				// One line, so no log group: a group around a single line only adds a
+				// One line, so no `ActionLogger.step`: a step around a single line only adds a
 				// fold to click through.
 				// `DetectedRelease` carries no `targets`, and `determineTagStrategy`
 				// only reads `name`/`version` — so the empty `targets` array is safe.
@@ -209,8 +209,8 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 				yield* Effect.logInfo(`✅ ${tagStrategy.tags.length} tag(s), ${strategyLabel}`);
 
 				// ── Step 3: Build & SBOM (fail-fast gate) ──────────────────────────────
-				// `runBuildAndSbom` wraps itself in Step.withStep; its success line emits
-				// from the step on completion.
+				// `runBuildAndSbom` wraps itself in an `ActionLogger.group`; its success line
+				// emits from inside the group on completion.
 				const buildSbom = yield* runBuildAndSbom(detected, args);
 				if (!buildSbom.ok) {
 					const detail =
@@ -301,7 +301,7 @@ export const runPublishing = (inputs: Inputs, mergedReleasePRNumber: number | un
 				);
 
 				// ── Step 5: Create releases ────────────────────────────────────────────
-				// `runReleases` wraps itself in Step.withStep.
+				// `runReleases` wraps itself in an `ActionLogger.phase`.
 				const releasesResult = yield* runReleases({
 					tags: tagStrategy.tags,
 					publishResult,

@@ -145,7 +145,7 @@ const run = async (
 			}),
 		]),
 		ActionEnvironment.layerTest({ GITHUB_REF: options.ref ?? "refs/heads/feat/lockfile-integrity" }),
-		ActionLogger.layerTest({ group: (_name, effect) => effect }),
+		ActionLogger.layerTest(),
 		ActionOutputs.layerTest({
 			setJson: (name: string, value: unknown) =>
 				Effect.sync(() => {
