@@ -52,16 +52,16 @@
 		"@effected/semver": "catalog:effected",
 		"@effected/workspaces": "catalog:effected",
 		"@effected/yaml": "catalog:effected",
-		"@savvy-web/silk-effects": "^14.0.0",
+		"@savvy-web/silk-effects": "^14.0.1",
 		"effect": "catalog:effected"
 	},
 	"devDependencies": {
 		"@effect/vitest": "catalog:effected",
 		"@effected/memfs": "catalog:effected",
 		"@effected/plugin": "catalog:effected",
-		"@okfit/plugin": "^0.5.37",
-		"@savvy-web/silk": "^5.1.7",
-		"@vitest-agent/plugin": "^6.0.15",
+		"@okfit/plugin": "^0.5.40",
+		"@savvy-web/silk": "^5.1.9",
+		"@vitest-agent/plugin": "^6.1.0",
 		"tsx": "catalog:effected:build"
 	},
 	"engines": {
