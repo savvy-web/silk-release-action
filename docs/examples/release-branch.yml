@@ -83,7 +83,7 @@ jobs:
 
       - name: Setup workflow runtime environment
         id: workflow-runtime
-        uses: savvy-web/silk-runtime-action@v1
+        uses: savvy-web/silk-runtime-action@v2
 
       - name: Run release action
         uses: savvy-web/silk-release-action@v5
