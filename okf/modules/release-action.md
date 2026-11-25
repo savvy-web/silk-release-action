@@ -2,7 +2,7 @@
 type: Module
 title: release-action
 description: The three-phase release orchestration under src/ — phase detection, layer graph, phase-body steps, schema, and reporting.
-kind: action
+x-okfit-kind: action
 resource: ../../src
 status: draft
 generated:
@@ -30,7 +30,7 @@ tags:
   - release
   - security
   - observability
-integrity:
+x-okfit-integrity:
   generated:
     body: 96002ae86b67674b
 ---

@@ -2,7 +2,7 @@
 type: Limitation
 title: GitHub Packages needs the workflow's own token
 description: A GitHub Packages publish target with no github-token input fails by name, because a GitHub App installation token cannot authenticate to GitHub Packages at all.
-bounds: ../interfaces/action-inputs.md
+x-okfit-bounds: ../interfaces/action-inputs.md
 tags:
   - security
   - release
@@ -17,7 +17,7 @@ generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
 status: draft
-integrity:
+x-okfit-integrity:
   generated:
     body: a7c368fbf32e9945
 ---

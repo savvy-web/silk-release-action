@@ -2,7 +2,7 @@
 type: Limitation
 title: Check-run summary byte cap
 description: A Phase-2 check-run summary over GitHub's 65535-byte limit is truncated on a byte budget, which is why per-package release notes are stripped from the structured output.
-bounds: ../modules/release-action.md
+x-okfit-bounds: ../modules/release-action.md
 tags:
   - observability
   - release
@@ -15,7 +15,7 @@ generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
 status: draft
-integrity:
+x-okfit-integrity:
   generated:
     body: 51388cdd22940727
 ---

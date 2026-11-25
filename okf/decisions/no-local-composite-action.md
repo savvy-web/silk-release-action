@@ -12,16 +12,18 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-11-10T18:07:09Z
-integrity:
+x-okfit-integrity:
   generated:
     body: 114c44d8e051b52f
   verified:
     by: human:spencer
-    at: 2026-10-23T18:01:04Z
-    content: 0249eec274b9cd27
+    at: 2026-11-25T23:14:26Z
+    content: 6750ff48e32c9342
 verified:
   - by: human:spencer
     at: 2026-10-23T18:01:04Z
+  - by: human:spencer
+    at: 2026-11-25T23:14:26Z
 ---
 
 # Disable the persistLocal composite action and its act smoke loop

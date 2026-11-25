@@ -2,7 +2,7 @@
 type: Module
 title: Test Harness
 description: The vitest suite under __test__ that exercises the built action's phase steps, Effect orchestration, and utility modules.
-kind: harness
+x-okfit-kind: harness
 resource: ../../__test__
 tags:
   - testing
@@ -23,7 +23,7 @@ sources:
     resource: ../../__test__/publishing.test.ts
   - id: check-collection-script
     resource: ../../scripts/check-test-collection.mjs
-integrity:
+x-okfit-integrity:
   generated:
     body: 01aa163efb9bed99
 ---

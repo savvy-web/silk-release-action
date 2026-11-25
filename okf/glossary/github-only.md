@@ -12,7 +12,7 @@ sources:
     resource: ../../src/utils/release-kind.ts
   - id: build-sbom-result
     resource: ../../src/release/publish.ts
-integrity:
+x-okfit-integrity:
   generated:
     body: 9d5eb5863cddb691
 ---

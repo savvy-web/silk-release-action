@@ -16,7 +16,7 @@ sources:
 tags:
   - architecture
   - release
-integrity:
+x-okfit-integrity:
   generated:
     body: a3a3a79fbf241ff5
 ---

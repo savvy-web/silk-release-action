@@ -14,7 +14,7 @@ sources:
     resource: ../../src/utils/group-id.ts
   - id: meta-archive-source
     resource: ../../src/release/meta-archive.ts
-integrity:
+x-okfit-integrity:
   generated:
     body: d0f30f1af7102947
 ---

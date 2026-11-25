@@ -2,7 +2,7 @@
 type: Interface
 title: SBOM configuration
 description: "The layered `sbom-config` contract Phase 2 reads to fill in SBOM supplier, author, and copyright metadata, and the NTIA compliance it enables."
-kind: config
+x-okfit-kind: config
 resource: ../../src/schema/silk-release-config.ts
 tags: [release, security]
 sources:
@@ -15,7 +15,7 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-10-19T21:40:37Z
-integrity:
+x-okfit-integrity:
   generated:
     body: d63e8323c102b4c4
 ---

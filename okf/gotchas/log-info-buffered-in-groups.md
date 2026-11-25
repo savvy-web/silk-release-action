@@ -12,7 +12,7 @@ generated:
   by: okfit/claude-code
   at: 2026-11-21T22:19:59Z
 status: deprecated
-integrity:
+x-okfit-integrity:
   generated:
     body: 97e72f2e94a525af
 ---

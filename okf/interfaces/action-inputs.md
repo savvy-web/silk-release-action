@@ -2,7 +2,7 @@
 type: Interface
 title: Action inputs and outputs
 description: "The `action.yml` inputs a workflow author sets and the outputs a workflow reads, decoded exactly once on each side."
-kind: config
+x-okfit-kind: config
 resource: ../../action.yml
 tags: [release, security]
 sources:
@@ -17,7 +17,7 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-10-23T17:46:00Z
-integrity:
+x-okfit-integrity:
   generated:
     body: bd1c460896740843
 ---
