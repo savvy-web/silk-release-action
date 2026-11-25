@@ -2,7 +2,7 @@
 type: Interface
 title: Release PR surfaces
 description: "The two managed regions a reader of the release PR relies on: the PR description's marker-delimited region, and the sticky comment's independently-stamped sections."
-kind: wire
+x-okfit-kind: wire
 resource: ../../src/utils/managed-sections.ts
 tags: [release, observability]
 sources:
@@ -19,7 +19,7 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
-integrity:
+x-okfit-integrity:
   generated:
     body: c5913a62f8abc5ea
 ---

@@ -19,16 +19,18 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-11-10T18:07:09Z
-integrity:
+x-okfit-integrity:
   generated:
     body: a163ad0e2a855c70
   verified:
     by: human:spencer
-    at: 2026-10-23T18:01:04Z
-    content: 7890ad7e3d2a8a1d
+    at: 2026-11-25T23:14:26Z
+    content: 5f63deded7c48630
 verified:
   - by: human:spencer
     at: 2026-10-23T18:01:04Z
+  - by: human:spencer
+    at: 2026-11-25T23:14:26Z
 ---
 
 # Version natively via the bundled silk-effects ReleasePlanner

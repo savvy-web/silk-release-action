@@ -2,7 +2,7 @@
 type: Interface
 title: The `result` output document
 description: "The phase-discriminated JSON document the action emits as the `result` output, and the version contract it carries."
-kind: wire
+x-okfit-kind: wire
 resource: ../../src/schema/release-output.ts
 tags: [release, compat]
 sources:
@@ -15,7 +15,7 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-11-06T01:10:37Z
-integrity:
+x-okfit-integrity:
   generated:
     body: 4c3a321fccef4c06
 ---

@@ -2,7 +2,7 @@
 type: Consumer
 title: The shared release workflow
 description: The savvy-web/.github reusable workflow that every consumer, including this repository, calls to run the three-phase release process.
-repository: savvy-web/.github
+x-okfit-repository: savvy-web/.github
 tags:
   - ci
   - release
@@ -13,7 +13,7 @@ generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
 status: draft
-integrity:
+x-okfit-integrity:
   generated:
     body: 43d44a9e5de0a234
 ---

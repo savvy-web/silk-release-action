@@ -3,7 +3,7 @@ type: Decision
 title: Pin the npm publish CLI to 12.x via the package manager's dlx launcher
 description: Run every npm publish/pack invocation through the detected package manager's dlx launcher pinned to npm@12, never the runner's bundled npm; the pin is a major line, not latest, and moves only with a real-npm pack probe against the installed @effected/npm.
 status: draft
-supersedes: pin-npm-11.md
+x-okfit-supersedes: pin-npm-11.md
 tags:
   - deps
   - compat
@@ -18,7 +18,7 @@ sources:
 generated:
   by: okfit/claude-code
   at: 2026-09-19T21:14:04Z
-integrity:
+x-okfit-integrity:
   generated:
     body: 1b3ffeecaf4128f4
 ---

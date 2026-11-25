@@ -18,7 +18,7 @@ sources:
     resource: ../../__test__/validation-checks.test.ts
   - id: publish-validation-test
     resource: ../../__test__/publish-validation.test.ts
-integrity:
+x-okfit-integrity:
   generated:
     body: 7e22a7315711c035
 ---

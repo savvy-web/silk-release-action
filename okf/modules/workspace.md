@@ -2,7 +2,7 @@
 type: Module
 title: Workspace
 description: The monorepo root — tooling, CI, branch-pair housekeeping, and shared config for silk-release-action.
-kind: workspace
+x-okfit-kind: workspace
 resource: ../..
 tags:
   - ci
@@ -23,7 +23,7 @@ sources:
     resource: ../../.github/workflows
   - id: effected-toml
     resource: ../../effected.toml
-integrity:
+x-okfit-integrity:
   generated:
     body: e6733d30f3d6874a
 ---

@@ -2,7 +2,7 @@
 type: Consumer
 title: silk-integration
 description: The end-to-end test repository that exercises this action's committed bundle against real registries and a real release PR.
-repository: savvy-web/silk-integration
+x-okfit-repository: savvy-web/silk-integration
 tags:
   - testing
   - release
@@ -17,7 +17,7 @@ generated:
   by: okfit/claude-code
   at: 2026-09-13T19:54:03Z
 status: draft
-integrity:
+x-okfit-integrity:
   generated:
     body: cbb7dd13d849be63
 ---
