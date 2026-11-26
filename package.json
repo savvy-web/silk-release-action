@@ -52,7 +52,7 @@
 		"@effected/semver": "catalog:effected",
 		"@effected/workspaces": "catalog:effected",
 		"@effected/yaml": "catalog:effected",
-		"@savvy-web/silk-effects": "^14.0.1",
+		"@savvy-web/silk-effects": "^14.0.2",
 		"effect": "catalog:effected"
 	},
 	"devDependencies": {
@@ -60,8 +60,8 @@
 		"@effected/memfs": "catalog:effected",
 		"@effected/plugin": "catalog:effected",
 		"@okfit/plugin": "^0.6.0",
-		"@savvy-web/silk": "^5.1.9",
-		"@vitest-agent/plugin": "^6.1.0",
+		"@savvy-web/silk": "^5.1.11",
+		"@vitest-agent/plugin": "^6.2.1",
 		"tsx": "catalog:effected:build"
 	},
 	"engines": {
@@ -70,7 +70,7 @@
 	"devEngines": {
 		"packageManager": {
 			"name": "pnpm",
-			"version": "12.22.0",
+			"version": "12.23.0",
 			"onFail": "download"
 		},
 		"runtime": [
